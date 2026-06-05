@@ -95,3 +95,5 @@ corporate CLA before your team submits PRs.
 
 Questions? Open a [Discussion](https://github.com/AniketTati/draft-legal/discussions)
 or email the maintainer. Thank you for helping build draftLegal in the open. 🚀
+
+<!-- CLA bot smoke test — this line is removed when the test PR closes -->
