@@ -246,6 +246,11 @@ async def _process_and_update(
         "x-internal-service": "agents",
         "x-internal-secret": settings.internal_service_secret,
     }
+    # x-org-id is required — without it requireAuth falls back to the
+    # 'system' sentinel, which matches no real org's contracts and every
+    # PATCH/POST below 404s silently against the real org's data.
+    if org_id:
+        headers["x-org-id"] = org_id
 
     async with httpx.AsyncClient() as client:
         # PATCH contract

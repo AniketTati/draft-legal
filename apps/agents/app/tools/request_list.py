@@ -22,7 +22,7 @@ class RequestListArgs(BaseModel):
 def build_request_list(org_id: str) -> StructuredTool:
     async def _arun(status=None, assigned_to_id=None, priority=None, type=None, limit: int = 20) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/request_list"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id, "limit": limit}
         if status:         payload["status"]       = status
         if assigned_to_id: payload["assignedToId"] = assigned_to_id

@@ -5,12 +5,12 @@ POST /draft — run the 5-step draft pipeline
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from typing import Any
-import os
 
 from app.agents.draft_agent import run_draft
+from app.config import settings
 
 router = APIRouter()
-INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
+INTERNAL_SECRET = settings.internal_service_secret
 
 
 class DraftRequest(BaseModel):

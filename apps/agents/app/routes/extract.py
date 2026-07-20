@@ -12,14 +12,15 @@ production this should ship with a tesseract or Textract backend behind
 the same interface; the detector + handoff are what matter.
 """
 import logging
-import os
 import re
 import statistics
 from fastapi import APIRouter, UploadFile, File, HTTPException, Header
 
+from app.config import settings
+
 logger = logging.getLogger("extract")
 router = APIRouter()
-INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
+INTERNAL_SECRET = settings.internal_service_secret
 
 try:
     import fitz

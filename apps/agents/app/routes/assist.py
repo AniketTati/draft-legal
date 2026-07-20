@@ -9,11 +9,10 @@ from pydantic import BaseModel
 from typing import Any, Literal
 import json
 from ..jsonish import loads_lenient
-import os
 
 from app.agents.assist_agent import run_assist, AssistAction
 from app.providers import build_llm
-from app.config import active_provider, smart_model
+from app.config import active_provider, smart_model, settings
 from langchain_core.messages import HumanMessage, SystemMessage
 
 _FAST_MODEL: dict[str, str] = {
@@ -23,7 +22,7 @@ _FAST_MODEL: dict[str, str] = {
 }
 
 router = APIRouter()
-INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
+INTERNAL_SECRET = settings.internal_service_secret
 
 
 class AssistRequest(BaseModel):

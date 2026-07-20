@@ -42,6 +42,7 @@ def build_contract_validate(org_id: str) -> StructuredTool:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_validate"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type":      "application/json",
         }
         payload = {"orgId": org_id, "contractId": contract_id, "maxIssues": max_issues}

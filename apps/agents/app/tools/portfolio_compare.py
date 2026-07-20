@@ -38,7 +38,7 @@ class PortfolioCompareArgs(BaseModel):
 def build_portfolio_compare(org_id: str) -> StructuredTool:
     async def _arun(contract_ids: list[str], topics: list[str], excerpt_chars: int = 220) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/portfolio_compare"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload = {
             "orgId":        org_id,
             "contractIds":  contract_ids,
