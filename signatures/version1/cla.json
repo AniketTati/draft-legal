@@ -1,1 +1,12 @@
-{"signedContributors":[]}
+{
+  "signedContributors": [
+    {
+      "name": "Pascal1812",
+      "id": 67648310,
+      "comment_id": 5034568833,
+      "created_at": "2026-07-21T13:21:27Z",
+      "repoId": 1227903927,
+      "pullRequestNo": 26
+    }
+  ]
+}
