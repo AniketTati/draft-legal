@@ -11,13 +11,14 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
-  ArrowLeft, Download, FileText, Clock, Tag, User,
+  ArrowLeft, Copy, Download, FileText, Clock, Tag, User,
   AlertCircle, Sparkles, Loader2,
   CheckCircle2, AlertTriangle, XCircle, Shield, TrendingUp,
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
 } from 'lucide-react'
+import { toast } from '@/components/common/Toaster'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuSeparator,
@@ -994,6 +995,20 @@ export function ContractDetailPage() {
             >
               {contract.title}
             </h1>
+            <button
+              type="button"
+              onClick={() => {
+                if (!id) return
+                navigator.clipboard.writeText(id)
+                  .then(() => toast.success('Copied', { description: 'Contract ID copied to clipboard' }))
+                  .catch(() => toast.error('Copy failed', { description: "Couldn't access the clipboard" }))
+              }}
+              title="Copy contract ID"
+              aria-label="Copy contract ID"
+              className="mt-0.5 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+            >
+              <Copy className="h-4 w-4" />
+            </button>
           </div>
           {/* Row 1 right — action buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
