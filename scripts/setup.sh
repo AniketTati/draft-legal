@@ -23,6 +23,12 @@ cyan "▶ draftLegal setup"
 command -v docker  >/dev/null || { echo "✗ Docker is required — install Docker Desktop / OrbStack and start it."; exit 1; }
 command -v pnpm    >/dev/null || { echo "✗ pnpm is required — 'npm i -g pnpm' (v9+)."; exit 1; }
 command -v python3 >/dev/null || { echo "✗ python3 (3.11+) is required."; exit 1; }
+# The agents venv targets 3.11+. Fail early with a clear message rather than
+# letting `pip install -r requirements.txt` blow up further down on an old runtime.
+python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 11) else 1)' || {
+  echo "✗ Python 3.11+ is required — found $(python3 --version 2>&1 | awk '{print $2}'). Install a newer Python (e.g. \`pyenv install 3.11\` or python.org) and re-run."
+  exit 1
+}
 docker info >/dev/null 2>&1   || { echo "✗ Docker daemon isn't running — start Docker Desktop / OrbStack first."; exit 1; }
 
 # ── 1. Environment file ──────────────────────────────────────────────────────
