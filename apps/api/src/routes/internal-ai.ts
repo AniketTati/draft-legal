@@ -25,6 +25,7 @@ import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
 import { applyPiiPolicy } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
+import { rrfScore } from '../lib/rrf.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -1294,7 +1295,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // RRF fusion. Track dense/bm25 rank separately so the caller can
     // see which source carried each hit (useful for the UI: "matched
     // on clause text" vs "matched on title").
-    const K = 60
     const fused = new Map<string, {
       contractId: string
       clauseId?:  string
@@ -1306,7 +1306,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     dense.forEach((h, rank) => {
       const key = `${h.contractId}::${h.clauseId}`
       const prev = fused.get(key)
-      const rrf = 1 / (K + rank + 1)
+      const rrf = rrfScore(rank)
       fused.set(key, {
         contractId: h.contractId,
         clauseId:   h.clauseId,
@@ -1327,7 +1327,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const best = contractDense[0]
       const key = best ? `${h.id}::${best.clauseId}` : h.id
       const prev = fused.get(key)
-      const rrf = 1 / (K + rank + 1)
+      const rrf = rrfScore(rank)
       fused.set(key, {
         contractId: h.id,
         clauseId:   best?.clauseId,

@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { searchContracts, advancedSearch, getContractFacets } from '../lib/elasticsearch.js'
 import { searchClauses, rerankClauses } from '../lib/embeddings.js'
+import { fuseRRF } from '../lib/rrf.js'
 
 const SearchSchema = z.object({
   q: z.string().min(1).max(500),
@@ -134,25 +135,18 @@ export async function searchRoutes(app: FastifyInstance) {
           esHits = esResult.hits
         } catch { /* ES down — fall back to semantic only */ }
 
-        const rrfScores: Record<string, number> = {}
-        const K = 60
-
-        esHits.forEach((h, rank) => {
-          if (h.id) rrfScores[h.id] = (rrfScores[h.id] ?? 0) + 1 / (K + rank + 1)
-        })
-
-        const seenContracts = new Set<string>()
-        clauseMatches.forEach((m, rank) => {
-          if (!seenContracts.has(m.contractId)) {
-            seenContracts.add(m.contractId)
-            rrfScores[m.contractId] = (rrfScores[m.contractId] ?? 0) + 1 / (K + rank + 1)
-          }
-        })
-
-        const sortedIds = Object.entries(rrfScores)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, limit)
-          .map(([id]) => id)
+        // Fuse the two ranked lists (ES title/metadata hits + pgvector
+        // clause matches). fuseRRF de-dupes a repeated contractId within
+        // the clause list to its first-seen rank, matching what this did
+        // by hand before the fusion core was extracted to lib/rrf.
+        const fused = fuseRRF([
+          esHits.map(h => h.id),
+          clauseMatches.map(m => m.contractId),
+        ])
+        const rrfScores: Record<string, number> = Object.fromEntries(
+          fused.map(f => [f.id, f.score]),
+        )
+        const sortedIds = fused.slice(0, limit).map(f => f.id)
 
         const contracts = await prisma.contract.findMany({
           where: { id: { in: sortedIds }, orgId, deletedAt: null },
