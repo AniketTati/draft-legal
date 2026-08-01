@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { formatRelativeTime } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { UploadModal } from '@/components/contracts/UploadModal'
@@ -562,7 +563,10 @@ export function ContractsPage() {
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-gray-400 mt-0.5">{c.type.replace(/_/g, ' ')} · {new Date(c.createdAt).toLocaleDateString()}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {c.type.replace(/_/g, ' ')} ·{' '}
+                        <span title={new Date(c.createdAt).toLocaleString()}>{formatRelativeTime(c.createdAt)}</span>
+                      </p>
                       {/* U3 — search-match field hint. When ES matched a
                           field other than the title (counterparty,
                           summary, clause body), tell the user — without
