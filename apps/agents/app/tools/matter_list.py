@@ -45,6 +45,7 @@ def build_matter_list(org_id: str, user_id: str | None = None) -> StructuredTool
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/matter_list"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type": "application/json",
         }
         payload: dict = {"orgId": org_id, "limit": limit}

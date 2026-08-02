@@ -28,7 +28,7 @@ def build_approval_list(org_id: str, user_id: str | None = None) -> StructuredTo
 
     async def _arun(scope: str = "my-queue", status: str | None = None, limit: int = 20) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/approval_list"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id, "userId": _user_id, "scope": scope, "limit": limit}
         if status: payload["status"] = status
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:

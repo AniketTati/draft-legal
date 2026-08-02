@@ -46,6 +46,7 @@ def build_playbook_check(org_id: str) -> StructuredTool:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/playbook_check"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type": "application/json",
         }
         payload = {

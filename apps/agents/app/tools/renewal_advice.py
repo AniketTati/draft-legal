@@ -28,7 +28,7 @@ class RenewalAdviceArgs(BaseModel):
 def build_renewal_advice(org_id: str) -> StructuredTool:
     async def _arun(contract_id=None, lead_days: int = 90, limit: int = 20) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/renewal_advice"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id, "leadDays": lead_days, "limit": limit}
         if contract_id: payload["contractId"] = contract_id
         async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:
