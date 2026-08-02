@@ -55,7 +55,7 @@ S3_SECRET_KEY=gcs-hmac-secret:latest,\
 ANTHROPIC_API_KEY=anthropic-key:latest,\
 OPENAI_API_KEY=openai-key:latest,\
 GOOGLE_API_KEY=google-key:latest,\
-SMTP_PASS=sendgrid-key:latest"
+SENDGRID_API_KEY=sendgrid-key:latest"
 
 AGENTS_SECRETS="INTERNAL_SERVICE_SECRET=internal-secret:latest,\
 REDIS_URL=redis-url:latest,\
