@@ -54,6 +54,7 @@ def build_contract_cite(org_id: str) -> StructuredTool:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_cite"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type":      "application/json",
         }
         payload = {

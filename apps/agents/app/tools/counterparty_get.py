@@ -22,7 +22,7 @@ class CounterpartyGetArgs(BaseModel):
 def build_counterparty_get(org_id: str) -> StructuredTool:
     async def _arun(name: str | None = None, id: str | None = None) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/counterparty_get"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id}
         if name: payload["name"] = name
         if id:   payload["id"]   = id

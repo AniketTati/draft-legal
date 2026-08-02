@@ -53,6 +53,7 @@ def build_counterparty_memory(org_id: str) -> StructuredTool:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/counterparty_memory"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type":      "application/json",
         }
         payload: dict = {

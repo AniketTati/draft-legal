@@ -35,7 +35,7 @@ class OrgMemoryArgs(BaseModel):
 def build_org_memory(org_id: str) -> StructuredTool:
     async def _arun(topic: str, contract_type=None, clause_type=None, limit: int = 8) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/org_memory"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id, "topic": topic, "limit": limit}
         if contract_type: payload["contractType"] = contract_type
         if clause_type:   payload["clauseType"]   = clause_type

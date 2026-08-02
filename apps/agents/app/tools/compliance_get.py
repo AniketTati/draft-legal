@@ -27,7 +27,7 @@ class ComplianceGetArgs(BaseModel):
 def build_compliance_get(org_id: str) -> StructuredTool:
     async def _arun(contract_id: str) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/compliance_get"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload = {"orgId": org_id, "contractId": contract_id}
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
             r = await client.post(url, json=payload, headers=headers)

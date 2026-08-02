@@ -18,7 +18,7 @@ class CustomFieldListArgs(BaseModel):
 def build_custom_field_list(org_id: str) -> StructuredTool:
     async def _arun(contract_type: str | None = None) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/custom_field_list"
-        headers = {"x-internal-secret": settings.internal_service_secret, "content-type": "application/json"}
+        headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload: dict = {"orgId": org_id}
         if contract_type: payload["contractType"] = contract_type
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

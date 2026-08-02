@@ -78,6 +78,7 @@ def build_contract_search(org_id: str) -> StructuredTool:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_search"
         headers = {
             "x-internal-secret": settings.internal_service_secret,
+            "x-internal-service": "agents",
             "content-type": "application/json",
         }
         # Zod's .optional() rejects explicit null — only send keys that are
