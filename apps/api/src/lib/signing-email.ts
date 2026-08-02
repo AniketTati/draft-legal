@@ -15,6 +15,7 @@
  *     deduplicate (the route is the dedup boundary).
  */
 import type { Signer } from '@prisma/client'
+import { sendEmail } from './mailer.js'
 
 interface SendSigningEmailArgs {
   to: string
@@ -40,36 +41,23 @@ export function sendSigningEmail(args: SendSigningEmailArgs): void {
     `  (${args.contractType} "${args.contractTitle}", signer "${args.signerName}"${expiresStr})`,
   )
 
-  // 2. Attempt real email if SMTP is configured. Lazy-load nodemailer
-  // so the module doesn't have to be installed in dev/test.
-  if (!process.env.SMTP_HOST) return
-
+  // 2. Send via the unified mailer — SendGrid HTTPS API on Cloud Run (where
+  // outbound SMTP is blocked), nodemailer SMTP for self-host. Fire-and-forget:
+  // the SignatureRequest + Signer.token are already in the DB, so a delivery
+  // failure is non-fatal and only logged (with the provider's reason, e.g. an
+  // unverified sender).
   const subject = `[${args.orgName}] Signature requested: ${args.contractTitle}`
-  const text = renderTextBody(args)
-  const html = renderHtmlBody(args)
-
-  import('nodemailer').then((nodemailer) => {
-    const transporter = nodemailer.createTransport({
-      host:   process.env.SMTP_HOST,
-      port:   parseInt(process.env.SMTP_PORT ?? '587', 10),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: process.env.SMTP_USER ? {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      } : undefined,
-    })
-    return transporter.sendMail({
-      from: process.env.SMTP_FROM ?? process.env.EMAIL_FROM ?? `${args.orgName} <noreply@clm.app>`,
-      to:   args.to,
-      subject,
-      text,
-      html,
-    })
-  }).catch((err) => {
-    // Non-fatal — the signing record is already in the DB and the link
-    // is shareable manually if email delivery is wedged.
-    console.warn(`[signing] email send failed for ${args.to}: ${(err as Error).message}`)
+  sendEmail({
+    to: args.to,
+    subject,
+    text: renderTextBody(args),
+    html: renderHtmlBody(args),
   })
+    .then((r) => {
+      if (r.sent) console.info(`[signing] delivered via ${r.via} → ${args.to}`)
+      else console.warn(`[signing] email send failed for ${args.to}: ${r.reason}`)
+    })
+    .catch((err) => console.warn(`[signing] email send error for ${args.to}: ${(err as Error).message}`))
 }
 
 /** Plain-text email body — falls back when HTML isn't rendered. */

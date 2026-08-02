@@ -15,6 +15,7 @@ import type { NotificationJob, EscalationJob, SigningReminderJob } from '../lib/
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { sendSigningEmailForSigner } from '../lib/signing-email.js'
+import { sendEmail, isEmailConfigured } from '../lib/mailer.js'
 
 // ─── notify ───────────────────────────────────────────────────────────────────
 
@@ -32,36 +33,17 @@ async function handleNotify(data: NotificationJob): Promise<void> {
     },
   })
 
-  // 2. Optional email — only if SMTP_HOST is set; failure does NOT fail the job
-  if (data.email && process.env.SMTP_HOST) {
-    sendEmailNonBlocking(data)
+  // 2. Optional email — only if a provider is configured; failure does NOT
+  // fail the job (the DB notification is authoritative).
+  if (data.email && isEmailConfigured()) {
+    sendEmail({ to: data.email, subject: data.title, text: data.body })
+      .then((r) => {
+        if (!r.sent) console.warn('[notify] email failed for userId=%s: %s', data.userId, r.reason)
+      })
+      .catch((err) => console.warn('[notify] email error for userId=%s: %s', data.userId, err.message))
   } else {
-    console.info('[notify] no SMTP configured — notification written to DB for userId=%s type=%s', data.userId, data.type)
+    console.info('[notify] no email provider configured — notification written to DB for userId=%s type=%s', data.userId, data.type)
   }
-}
-
-function sendEmailNonBlocking(data: NotificationJob): void {
-  // Lazy-load nodemailer so it doesn't affect startup if not installed
-  import('nodemailer').then(nodemailer => {
-    const transporter = nodemailer.createTransport({
-      host:   process.env.SMTP_HOST,
-      port:   parseInt(process.env.SMTP_PORT ?? '587', 10),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: process.env.SMTP_USER ? {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      } : undefined,
-    })
-    return transporter.sendMail({
-      from:    process.env.SMTP_FROM ?? process.env.EMAIL_FROM ?? 'noreply@clm.app',
-      to:      data.email,
-      subject: data.title,
-      text:    data.body,
-    })
-  }).catch(err => {
-    // Email failure is non-fatal — DB notification is already written
-    console.warn('[notify] email failed for userId=%s: %s', data.userId, err.message)
-  })
 }
 
 // ─── escalate ─────────────────────────────────────────────────────────────────
