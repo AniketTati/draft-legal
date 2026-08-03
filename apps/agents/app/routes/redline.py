@@ -41,6 +41,7 @@ async def _process_redline(
     headers = {
         "x-internal-service": "agents",
         "x-internal-secret": settings.internal_service_secret,
+        "x-org-id": org_id,
     }
     api_url = settings.api_url
 

@@ -14,7 +14,7 @@
     "db:migrate": "prisma migrate dev",
     "db:migrate:prod": "prisma migrate deploy",
     "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts",
+    "db:seed": "tsx --env-file=../../.env prisma/seed.ts",
     "db:generate": "prisma generate",
     "backfill-es-index": "tsx --env-file=../../.env scripts/backfill-es-index.ts",
     "cleanup-broken-drafts": "tsx scripts/cleanup-broken-drafts.ts",

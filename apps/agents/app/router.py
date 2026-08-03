@@ -172,7 +172,7 @@ async def _resolve_via_node(
 ) -> ResolvedLlm:
     """Internal — call Node's POST /api/internal/ai/resolve."""
     url = f"{settings.api_url.rstrip('/')}/api/internal/ai/resolve"
-    headers = {"x-internal-secret": settings.internal_service_secret}
+    headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents"}
     body = {"orgId": org_id, "tier": tier}
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
         r = await client.post(url, json=body, headers=headers)

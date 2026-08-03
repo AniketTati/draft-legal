@@ -1,5 +1,4 @@
 import logging
-import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,6 +17,7 @@ from app.routes import approval
 from app.routes import obligations
 from app.routes import renewals
 from app.routes import compliance
+from app.config import settings
 from app import tracing
 
 logging.basicConfig(
@@ -54,7 +54,7 @@ async def require_internal_secret(request: Request, call_next):
     """
     if request.url.path in ("/health", "/"):
         return await call_next(request)
-    expected = os.environ.get("INTERNAL_SERVICE_SECRET", "")
+    expected = settings.internal_service_secret
     if not expected:
         # Fail closed if the env var is missing — refuse all requests rather
         # than silently letting anyone through.

@@ -102,9 +102,12 @@ async def run_portfolio_query(question: str, org_id: str) -> dict[str, Any]:
     filters["limit"] = 50  # fetch up to 50 for portfolio queries
 
     # Step 2: Fetch contracts from API
+    # x-org-id is required — requireAuth falls back to the 'system' sentinel
+    # without it, which matches no real org and silently returns zero results.
     headers = {
         "x-internal-service": "agents",
         "x-internal-secret": settings.internal_service_secret,
+        "x-org-id": org_id,
     }
     contracts: list[dict] = []
     try:

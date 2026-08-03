@@ -34,19 +34,18 @@ from __future__ import annotations
 import json
 from ..jsonish import loads_lenient
 import logging
-import os
 
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
 from app.providers import build_llm
-from app.config import active_provider, smart_model
+from app.config import active_provider, smart_model, settings
 from app.router import resolve_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger("renewals")
 router = APIRouter()
-INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
+INTERNAL_SECRET = settings.internal_service_secret
 
 
 class RenewalAdviceRequest(BaseModel):
