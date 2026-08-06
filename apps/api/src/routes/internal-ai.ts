@@ -24,6 +24,7 @@ import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
+import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
@@ -553,6 +554,17 @@ const RedlineApplySchema = z.object({
 // Grounded in the contract's clause + matching playbook position +
 // rules. The agent shows all three variants; the user picks one + fires
 // redline_apply (P1.5) to turn it into a new ContractVersion.
+// Phase 1 — batch rewrite for whole-document redlining. One aggression for the
+// document rather than three variants per clause: the pipeline keeps one
+// rewrite, so asking for three triples the cost of output it discards.
+const RedlineProposeBatchSchema = z.object({
+  orgId:        z.string().min(1),
+  contractId:   z.string().min(1),
+  clauseIds:    z.array(z.string().min(1)).min(1).max(200),
+  aggression:   z.enum(['least', 'moderate', 'aggressive']).default('moderate'),
+  instructions: z.string().max(2_000).optional(),
+})
+
 const RedlineProposeSchema = z.object({
   orgId:       z.string().min(1),
   contractId:  z.string().min(1),
@@ -2197,6 +2209,30 @@ export async function internalAiRoutes(app: FastifyInstance) {
       orgId:        body.orgId,
       clauseId:     body.clauseId,
       clauseType:   body.clauseType,
+      instructions: body.instructions,
+    })
+    if (!result.ok) {
+      return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
+    }
+    return reply.send(result.data)
+  })
+
+
+  // ── POST /internal/ai/tools/redline_propose_batch (Phase 1) ────────────────
+  // Read-only. Rewrites many clauses in one round-trip, each grounded in its
+  // OWN playbook positions — see lib/clause-propose-batch.ts for why that
+  // separation matters. Concurrency is bounded on the Python side.
+  app.post('/tools/redline_propose_batch', async (req, reply) => {
+    let body
+    try { body = RedlineProposeBatchSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+    const result = await proposeClauseBatch({
+      orgId:        body.orgId,
+      contractId:   body.contractId,
+      clauseIds:    body.clauseIds,
+      aggression:   body.aggression,
       instructions: body.instructions,
     })
     if (!result.ok) {

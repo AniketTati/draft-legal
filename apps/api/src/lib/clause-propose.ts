@@ -71,13 +71,21 @@ export async function proposeClauseAlternatives(args: {
   // about which category a clause belongs to — this used to normalise only
   // underscores, so a hyphenated clauseType silently lost its playbook.
   const category = await findCategoryForClauseType(orgId, clause.clauseType)
+  // Load EVERY position type, not just `preferred`. A negotiator aims at
+  // `acceptable` or `fallback` when `preferred` is unreachable, and the
+  // rewriter previously could not see that language at all — so its "least
+  // aggressive" variant had nothing to anchor on but the counterparty's text.
   let preferred: { content: string; rules: unknown } | null = null
+  let allPositions: Array<{ positionType: string; content: string }> = []
   if (category) {
-    const pos = await prisma.playbookPosition.findFirst({
-      where:  { orgId, clauseCategoryId: category.id, positionType: 'preferred' },
-      select: { content: true, rules: true },
+    const rows = await prisma.playbookPosition.findMany({
+      where:   { orgId, clauseCategoryId: category.id },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      select:  { positionType: true, content: true, rules: true },
     })
-    if (pos) preferred = pos
+    allPositions = rows.map(r => ({ positionType: r.positionType, content: r.content }))
+    const pref = rows.find(r => r.positionType === 'preferred')
+    if (pref) preferred = { content: pref.content, rules: pref.rules }
   }
 
   const pyRes = await fetch(`${AGENTS_URL}/redline_propose`, {
@@ -91,6 +99,10 @@ export async function proposeClauseAlternatives(args: {
       clauseType:       clause.clauseType,
       category:         category?.name,
       preferredContent: preferred?.content ?? null,
+      // Fallback/acceptable/walkaway language, so the "least aggressive"
+      // variant has something of ours to anchor on rather than only the
+      // counterparty's text.
+      positions:        allPositions,
       rules:            preferred?.rules ?? null,
       contractType:     contract.type,
       instructions,

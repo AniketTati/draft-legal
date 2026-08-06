@@ -7,16 +7,21 @@ from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Any, Literal
+import asyncio
 import json
 from ..jsonish import loads_lenient
 import os
 
 from app.agents.assist_agent import run_assist, AssistAction
 from app.router import resolve_llm
+from app.untrusted import wrap_untrusted_document
 from langchain_core.messages import HumanMessage, SystemMessage
 
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
+
+# Bounded so a long contract cannot open one model call per clause.
+_BATCH_CONCURRENCY = 6
 
 
 class AssistRequest(BaseModel):
@@ -59,12 +64,44 @@ class RedlineProposeRequest(BaseModel):
     clauseType:         str | None = None   # e.g. 'limitation_of_liability'
     category:           str | None = None   # e.g. 'Limitation of Liability'
     preferredContent:   str | None = None   # the playbook's preferred prose
+    # Every position type for this category. The "least aggressive" variant is
+    # supposed to land near our fallback, and it could not see one before —
+    # pydantic drops undeclared fields, so this has to be declared to arrive.
+    positions:          list[dict[str, Any]] = []
     rules:              dict[str, Any] | None = None
     contractType:       str = "general commercial"
     instructions:       str | None = None   # user-supplied direction
     provider:           str = ""
     model_id:           str = ""
     orgId:              str | None = None   # enables per-org BYOK key + Langfuse tracing
+
+
+# Phase 1 — batch redlining. The single-clause route above asks for three
+# aggression variants so a human can pick a posture; a whole-document redline
+# picks the posture once and keeps ONE rewrite per clause, so asking for three
+# would triple the cost of output the pipeline discards.
+#
+# Each clause carries its OWN playbook context. Handing the model many clauses
+# and one shared playbook produces plausible rewrites aimed at the wrong
+# targets, and nothing in the output would reveal it.
+class BatchClauseItem(BaseModel):
+    clauseId:         str
+    clauseText:       str
+    clauseType:       str | None = None
+    category:         str | None = None
+    # All position types for this clause's category, not just "preferred" —
+    # aiming at "acceptable" when "preferred" is unreachable is what a
+    # negotiator does, and the rewriter could not see those positions before.
+    positions:        list[dict[str, Any]] = []
+    rules:            dict[str, Any] | None = None
+
+
+class RedlineProposeBatchRequest(BaseModel):
+    clauses:      list[BatchClauseItem]
+    aggression:   Literal["least", "moderate", "aggressive"] = "moderate"
+    contractType: str = "general commercial"
+    instructions: str | None = None
+    orgId:        str | None = None
 
 
 # P6.2 — Background clause classifier. For each visible paragraph in
@@ -488,8 +525,19 @@ async def redline_propose(req: RedlineProposeRequest, x_internal_secret: str = H
     if req.rules:
         rules_block = f"\n\nPlaybook rules to respect:\n{json.dumps(req.rules, indent=2)}"
 
+    positions_block = ""
+    if req.positions:
+        lines = []
+        for pos in req.positions[:6]:
+            ptype = pos.get("positionType", "position")
+            body = _clean_html(str(pos.get("content", "")))[:1200]
+            if body:
+                lines.append(f"- [{ptype}] {body}")
+        if lines:
+            positions_block = "\n\nOur playbook positions for this clause:\n" + "\n".join(lines)
+
     preferred_block = ""
-    if req.preferredContent:
+    if req.preferredContent and not positions_block:
         # Strip HTML tags from the playbook's stored position content so
         # the LLM sees clean prose.
         clean_preferred = req.preferredContent
@@ -508,7 +556,7 @@ async def redline_propose(req: RedlineProposeRequest, x_internal_secret: str = H
     user_content = f"""Clause to redline{category_line}:
 \"\"\"
 {req.clauseText[:3000]}
-\"\"\"{preferred_block}{rules_block}{instructions_block}
+\"\"\"{positions_block}{preferred_block}{rules_block}{instructions_block}
 
 Contract type: {req.contractType}
 
@@ -653,3 +701,164 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
             yield json.dumps({"type": "error", "message": f"{type(e).__name__}: {str(e)[:180]}"}) + "\n"
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
+
+
+_BATCH_REDLINE_SYSTEM = """You are a contract negotiation attorney rewriting \
+ONE clause to match your client's playbook.
+
+Return ONLY valid JSON with this exact shape:
+
+{
+  "proposedText": "<full rewritten clause text>",
+  "rationale": "<=2 sentences: what changed and which playbook position it targets>",
+  "changes": [
+    {"before": "<verbatim excerpt from the original>", "after": "<replacement>", "reason": "<1 sentence>"}
+  ]
+}
+
+Rules:
+ • Target the playbook position marked "preferred". If the original clause is \
+so far from it that a wholesale rewrite would read as a non-starter, target \
+"acceptable" or "fallback" instead and say which in the rationale.
+ • changes[].before MUST be a verbatim substring of the original clause text. \
+Skip the entry rather than paraphrase.
+ • proposedText is a complete self-contained clause, not a diff.
+ • Never invent facts, figures, dates or party names. Carry over the ones in \
+the original unless a playbook rule explicitly requires otherwise.
+ • Stay in the register of the original clause."""
+
+
+def _clean_html(text: str) -> str:
+    """Playbook positions are stored as HTML; the model should see prose."""
+    for tag in ("<p>", "</p>", "<strong>", "</strong>", "<em>", "</em>", "<br/>", "<br>", "<ul>", "</ul>", "<li>", "</li>"):
+        text = text.replace(tag, " ")
+    return " ".join(text.split())
+
+
+@router.post("/redline_propose_batch")
+async def redline_propose_batch(
+    req: RedlineProposeBatchRequest,
+    x_internal_secret: str = Header(default=""),
+):
+    """
+    Rewrite many clauses in one request.
+
+    Concurrency is bounded here rather than left to the caller: a 43-clause
+    contract must not open 43 simultaneous reasoning-tier calls. Each clause is
+    an independent model call so one failure cannot take the others with it —
+    a dropped batch would silently miss deviations, which is precisely the
+    failure this feature exists to remove.
+    """
+    if INTERNAL_SECRET and x_internal_secret != INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if not req.clauses:
+        raise HTTPException(status_code=400, detail="clauses is required")
+    if len(req.clauses) > 200:
+        raise HTTPException(status_code=400, detail="at most 200 clauses per batch")
+
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="assist.redline_propose_batch",
+    )
+    llm = resolved.llm
+    callbacks = resolved.callbacks
+
+    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+    async def one(item: BatchClauseItem) -> dict[str, Any]:
+        if not item.clauseText.strip():
+            # Reported, not omitted. An omitted clause is indistinguishable
+            # from a clause that needed no change.
+            return {
+                "clauseId": item.clauseId,
+                "clauseType": item.clauseType,
+                "error": "empty_clause_text",
+            }
+
+        positions_block = ""
+        if item.positions:
+            lines = []
+            for pos in item.positions[:6]:
+                ptype = pos.get("positionType", "position")
+                body = _clean_html(str(pos.get("content", "")))[:1200]
+                if body:
+                    lines.append(f"- [{ptype}] {body}")
+            if lines:
+                positions_block = "\n\nOur playbook positions for this clause:\n" + "\n".join(lines)
+
+        rules_block = ""
+        if item.rules:
+            rules_block = f"\n\nPlaybook rules to respect:\n{json.dumps(item.rules, indent=2)[:2000]}"
+
+        instructions_block = ""
+        if req.instructions and req.instructions.strip():
+            instructions_block = f"\n\nUser direction: {req.instructions.strip()}"
+
+        category_line = f" (category: {item.category})" if item.category else ""
+        user_content = f"""Clause to redline{category_line}:
+{wrap_untrusted_document(item.clauseText[:6000], source="counterparty contract clause")}{positions_block}{rules_block}{instructions_block}
+
+Contract type: {req.contractType}
+Negotiating posture: {req.aggression}
+
+Produce the rewrite now. JSON only."""
+
+        async with semaphore:
+            try:
+                response = await llm.ainvoke(
+                    [
+                        SystemMessage(content=_BATCH_REDLINE_SYSTEM),
+                        HumanMessage(content=user_content),
+                    ],
+                    config={"callbacks": callbacks},
+                )
+            except Exception as e:  # noqa: BLE001
+                return {
+                    "clauseId": item.clauseId,
+                    "clauseType": item.clauseType,
+                    "error": f"llm_failed: {type(e).__name__}",
+                }
+
+        try:
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            content = content.strip()
+            if content.startswith("```"):
+                content = content.split("```", 2)[1]
+                if content.startswith("json"):
+                    content = content[4:]
+            parsed = loads_lenient(content)
+            proposed = str(parsed.get("proposedText") or "").strip()
+            if not proposed:
+                return {
+                    "clauseId": item.clauseId,
+                    "clauseType": item.clauseType,
+                    "error": "no_proposed_text",
+                }
+            return {
+                "clauseId":     item.clauseId,
+                "clauseType":   item.clauseType,
+                "proposedText": proposed,
+                "rationale":    str(parsed.get("rationale") or "").strip(),
+                "changes":      parsed.get("changes") or [],
+                "aggression":   req.aggression,
+            }
+        except Exception as e:  # noqa: BLE001
+            return {
+                "clauseId": item.clauseId,
+                "clauseType": item.clauseType,
+                "error": f"parse_failed: {type(e).__name__}",
+            }
+
+    # gather keeps input order, so proposals line up with the request.
+    proposals = await asyncio.gather(*(one(c) for c in req.clauses))
+
+    return {
+        "proposals": list(proposals),
+        "requested": len(req.clauses),
+        "succeeded": sum(1 for p in proposals if p.get("proposedText")),
+        "failed":    sum(1 for p in proposals if p.get("error")),
+        "model":     resolved.model,
+        "provider":  resolved.provider,
+    }
