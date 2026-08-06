@@ -170,6 +170,34 @@ The lesson worth keeping: the check was written against the *symptoms listed in
 the plan*, not against the *surface the change touched*. A second code path
 building the same response shape was exactly where the regression hid.
 
+#### UI verification (it was missing entirely)
+
+Phase 0 changed a response shape the browser consumes, and the first pass only
+**typechecked** the renderer. That proves nothing here: `Number(someBoolean)`
+compiles perfectly and would have rendered "0 passed" or "1 passed" for every
+clause in the document regardless of its rules.
+
+`artifact-from-tool.ts` is the only UI consumer of `playbook_check` (verified by
+grep, not assumed). It now has unit coverage against real response fixtures —
+including a **pre-Phase-0 payload**, because an agent turn can replay a tool
+result recorded before the change and a stale tab can receive one mid-deploy.
+Degrading is fine; throwing is not. 6/6.
+
+Two things the screenshot caught that no assertion had:
+
+- **The probe was polluting the product.** Its categories are org-scoped and the
+  Playbook page lists every category, so "P0 Probe — Unknown Severity" was
+  sitting in front of a real user. A check that dirties the thing it checks is
+  not finished.
+- **Its cleanup was failing silently.** `contract.deleteMany(...).catch(() => {})`
+  cannot delete a contract that still has versions and clauses, and the `catch`
+  turned that into silence — ten probe contracts had accumulated. Cleanup is now
+  leaf-first and unconditional. Swallowing an error is only acceptable when the
+  failure genuinely does not matter.
+
+Verified after: 25/25 API, 6/6 renderer, 15/15 Playwright, Playbook page free of
+probe data, and re-running the probe twice leaves nothing behind.
+
 ### Phase 1 — Batch propose (~1 week)
 
 A new Python `POST /redline_propose_batch` taking N clauses in one request,

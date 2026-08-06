@@ -40,8 +40,34 @@ const TITLE = 'P0 playbook probe'
 //   - `governing-law`           → HYPHENATED type, category exists (matcher skew)
 //   - 40 filler clauses         → exceeds the maxClauses cap (invisible truncation)
 
+/**
+ * Delete every contract this probe has ever created, leaf-first.
+ *
+ * A bare `contract.deleteMany` fails on the versions and clauses that
+ * reference it, and wrapping that in `.catch(() => {})` turned the failure
+ * into silence — ten probe contracts had quietly accumulated in the org before
+ * a screenshot showed them. Swallowing an error is only acceptable when the
+ * failure genuinely does not matter; here it left visible junk in the product.
+ */
+async function purgeProbeContracts() {
+  const stale = await prisma.contract.findMany({
+    where: { orgId, title: TITLE }, select: { id: true },
+  })
+  if (stale.length === 0) return
+  const ids = stale.map(c => c.id)
+  // Break the version FK before deleting versions.
+  await prisma.contract.updateMany({ where: { id: { in: ids } }, data: { currentVersionId: null } })
+  const versions = await prisma.contractVersion.findMany({
+    where: { contractId: { in: ids } }, select: { id: true },
+  })
+  const versionIds = versions.map(v => v.id)
+  await prisma.contractClause.deleteMany({ where: { versionId: { in: versionIds } } })
+  await prisma.contractVersion.deleteMany({ where: { id: { in: versionIds } } })
+  await prisma.contract.deleteMany({ where: { id: { in: ids } } })
+}
+
 async function seed() {
-  await prisma.contract.deleteMany({ where: { orgId, title: TITLE } }).catch(() => {})
+  await purgeProbeContracts()
 
   const contract = await prisma.contract.create({
     data: {
@@ -171,7 +197,27 @@ async function seed() {
     data: clauses.map((c, i) => ({ ...c, versionId: version.id, sortOrder: i })),
   })
 
-  return { contractId: contract.id, versionId: version.id, totalClauses: clauses.length }
+  return {
+    contractId: contract.id, versionId: version.id, totalClauses: clauses.length,
+    probeCategoryIds: [orphan.id, prosey.id, unknownSev.id],
+  }
+}
+
+/**
+ * Remove the probe's own categories and positions.
+ *
+ * These are org-scoped and the Playbook page lists every category, so leaving
+ * them behind puts "P0 Probe — Unknown Severity" in front of a real user. A
+ * check that dirties the product it is checking is not finished.
+ */
+async function cleanup(fx) {
+  await prisma.playbookPosition.deleteMany({
+    where: { orgId, clauseCategoryId: { in: fx.probeCategoryIds } },
+  }).catch(() => {})
+  await prisma.clauseCategory.deleteMany({
+    where: { orgId, id: { in: fx.probeCategoryIds } },
+  }).catch(() => {})
+  await purgeProbeContracts()
 }
 
 const fx = await seed()
@@ -201,6 +247,7 @@ let body
 
   if (usable.status !== 200) {
     check('playbook_check responds at all', false, `status=${usable.status} ${JSON.stringify(usable.body).slice(0, 160)}`)
+    await cleanup(fx)
     await prisma.$disconnect()
     report('P0 playbook checker integrity')
     process.exit(1)
@@ -402,5 +449,6 @@ section('9. Judge mode returns the same shape as the plain path')
   }
 }
 
+await cleanup(fx)
 await prisma.$disconnect()
 report('P0 playbook checker integrity')
