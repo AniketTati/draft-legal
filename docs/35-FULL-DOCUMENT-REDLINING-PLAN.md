@@ -115,7 +115,7 @@ that silently under-reports.
 exercising every defect: a clause whose category has no positions, a `critical`
 rule followed by a `low` one, a hyphenated clause type, and 43 clauses total.
 
-**Result: 3/16 → 16/16.** Every failure was real on the code as merged:
+**Result: 3/16 → 25/25** (the check grew after the first pass — see below). Every failure was real on the code as merged:
 
 | | Before | After |
 |---|---|---|
@@ -144,6 +144,31 @@ Also fixed here, ahead of Phase 2: `versionNumber` is now derived inside the
 transaction from the contract's true high-water mark. It was computed outside
 against a `@@unique([contractId, versionNumber])` constraint — fine for
 one-clause-at-a-time, a routine collision once a batch applies several.
+
+#### Re-audit of Phase 0 (the first pass was incomplete)
+
+The 16/16 above was a green result on a check that did not cover everything the
+change touched. Re-examining it found two defects **introduced by the fix
+itself**:
+
+1. **Raising `maxClauses` 30 → 500 armed an unbounded fan-out.** The judge
+   branch ran `Promise.all(checks.map(…))` with one LLM round-trip per check.
+   Safe at 30; at 500 it would have opened 500 simultaneous model calls and
+   taken the request down with the provider's rate limit. Now a fixed pool of 6,
+   writing results back by index so order is preserved.
+2. **The judge branch silently reverted the field-semantics fix.** It builds its
+   own result objects and still set `passed` as a *count* and never set
+   `failedCount` — so `judge: true` undid the boolean verdict AND made
+   `summary.deviationCount` read zero. Both paths now emit the same shape.
+
+Neither was visible from the original check, because it never exercised
+`judge: true`. Three sections were added: judge-mode field parity, an
+unrecognised severity ranking above a later `low`, and the
+`positions_have_no_rules` case. **25/25.**
+
+The lesson worth keeping: the check was written against the *symptoms listed in
+the plan*, not against the *surface the change touched*. A second code path
+building the same response shape was exactly where the regression hid.
 
 ### Phase 1 — Batch propose (~1 week)
 

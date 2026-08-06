@@ -74,6 +74,41 @@ async function seed() {
   const orphan = await category('P0 Probe — Category With No Positions')
   await prisma.playbookPosition.deleteMany({ where: { orgId, clauseCategoryId: orphan.id } }).catch(() => {})
 
+  // A position with prose but NO rules JSON. It produces zero violations,
+  // which reads identically to "every rule passed" unless it is reported.
+  const prosey = await category('P0 Probe — Position With No Rules')
+  await prisma.playbookPosition.deleteMany({ where: { orgId, clauseCategoryId: prosey.id } }).catch(() => {})
+  await prisma.playbookPosition.create({
+    data: {
+      org: { connect: { id: orgId } },
+      clauseCategory: { connect: { id: prosey.id } },
+      createdById: userId,
+      positionType: 'preferred',
+      content: 'We prefer a mutual confidentiality obligation of three years.',
+      // rules deliberately omitted
+    },
+  })
+
+  // A rule whose severity is a value the code has never seen. Unknown must
+  // rank HIGH — ranking it low is exactly the bug that made `critical` lose.
+  const unknownSev = await category('P0 Probe — Unknown Severity')
+  await prisma.playbookPosition.deleteMany({ where: { orgId, clauseCategoryId: unknownSev.id } }).catch(() => {})
+  await prisma.playbookPosition.create({
+    data: {
+      org: { connect: { id: orgId } },
+      clauseCategory: { connect: { id: unknownSev.id } },
+      createdById: userId,
+      positionType: 'preferred',
+      content: 'Placeholder.',
+      rules: { must_have: [
+        { id: 'weird', description: 'Severity nobody recognises',
+          check: 'contains', value: 'zzz-never-present', severity: 'catastrophic' },
+        { id: 'trivial', description: 'A low one, evaluated after',
+          check: 'contains', value: 'yyy-never-present', severity: 'low' },
+      ] },
+    },
+  })
+
   // Positions ONLY for liability and governing law. Indemnification gets a
   // category but no positions — the silent-drop case.
   await prisma.playbookPosition.deleteMany({
@@ -121,6 +156,10 @@ async function seed() {
     // Hyphenated on purpose — normalisedKey handles it, other matchers do not.
     { clauseType: 'governing-law', sectionRef: 'Section 12.1',
       content: 'This Agreement shall be governed by the laws of the State of New York.' },
+    { clauseType: 'p0 probe — position with no rules', sectionRef: 'Section 8.1',
+      content: 'Confidential information shall be kept confidential for two years.' },
+    { clauseType: 'p0 probe — unknown severity', sectionRef: 'Section 9.1',
+      content: 'This clause satisfies neither rule.' },
   ]
   for (let i = 0; i < 40; i++) {
     clauses.push({
@@ -302,6 +341,65 @@ section('6. Result fields mean what their names suggest')
     `passed=${JSON.stringify(liability?.passed)} (${typeof liability?.passed}) — ` +
     'a count is truthy for one passing rule, so `if (check.passed)` reads backwards',
   )
+}
+
+// ─── 7. Uncovered reasons are specific ─────────────────────────────────────
+
+section('7. "Not judged" is distinguishable from "judged clean"')
+{
+  const noRules = (body.uncovered ?? []).find(u => u.clauseType === 'p0 probe — position with no rules')
+  check(
+    'a position with prose but no rules is reported as uncovered',
+    !!noRules,
+    'zero violations reads identically to "all rules passed" unless it is called out',
+  )
+  check(
+    'the reason distinguishes it from "no positions at all"',
+    noRules?.reason === 'positions_have_no_rules',
+    `reason=${noRules?.reason}`,
+  )
+}
+
+// ─── 8. Unknown severities ─────────────────────────────────────────────────
+
+section('8. An unrecognised severity ranks HIGH, not low')
+{
+  const c = findCheck(body, 'p0 probe — unknown severity')
+  check('the unknown-severity clause was evaluated', !!c, `worstSeverity=${c?.worstSeverity}`)
+  check(
+    'the unknown severity wins over the low one evaluated after it',
+    c?.worstSeverity === 'catastrophic',
+    `worstSeverity=${c?.worstSeverity} — ranking unknowns low is the same bug that made 'critical' lose to 'low'`,
+  )
+}
+
+// ─── 9. Judge mode ─────────────────────────────────────────────────────────
+
+section('9. Judge mode returns the same shape as the plain path')
+{
+  // The judge branch builds its own result objects. It previously emitted
+  // `passed` as a count and no failedCount at all, so turning judge on
+  // silently reverted the field semantics and left the rollup counting zero.
+  const j = await internal('/tools/playbook_check', {
+    orgId, contractId: fx.contractId, maxClauses: fx.totalClauses, judge: true,
+  }, orgId)
+
+  if (j.status !== 200) {
+    check('judge mode responds', false, `status=${j.status} ${JSON.stringify(j.body).slice(0, 160)}`)
+  } else {
+    const jc = (j.body.checks ?? [])[0]
+    check('judge mode responds', true, `judged=${j.body.judged} checks=${(j.body.checks ?? []).length}`)
+    check('`passed` is still a boolean under judge mode',
+      typeof jc?.passed === 'boolean', `passed=${JSON.stringify(jc?.passed)}`)
+    check('failedCount is present under judge mode',
+      typeof jc?.failedCount === 'number', `failedCount=${jc?.failedCount}`)
+    check('the rollup still counts deviations under judge mode',
+      typeof j.body.summary?.deviationCount === 'number' && j.body.summary.deviationCount > 0,
+      `deviationCount=${j.body.summary?.deviationCount}`)
+    check('every check kept its position in the result',
+      (j.body.checks ?? []).every(c => !!c && !!c.clauseType),
+      'the worker pool writes back by index — a hole here means order was lost')
+  }
 }
 
 await prisma.$disconnect()

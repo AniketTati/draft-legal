@@ -2049,7 +2049,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
 
     if (body.judge && checks.length > 0) {
-      const judged = await Promise.all(checks.map(async (ck) => {
+      // Bounded fan-out. Each judged check is its own LLM round-trip, and this
+      // used to be an unbounded Promise.all — survivable only because
+      // maxClauses was capped at 30. Raising that cap to admit a whole
+      // contract turned the same line into "up to 500 simultaneous model
+      // calls", which would exhaust the provider rate limit and take the
+      // request down with it. Order is preserved: results are written back by
+      // index, not by completion.
+      const JUDGE_CONCURRENCY = 6
+      const judged: Array<Record<string, unknown>> = new Array(checks.length)
+      const judgeOne = async (ck: Record<string, unknown>) => {
         // Pick the rules to judge: prefer the "preferred" position's
         // rules (that's what we're measuring against). Skip if none.
         const preferredPos = (ck.positions as Array<{ positionType: string }>)
@@ -2113,15 +2122,33 @@ export async function internalAiRoutes(app: FastifyInstance) {
             ...ck,
             violations: merged,
             worstSeverity: worst,
-            passed: merged.filter(v => v.passed === true).length,
-            failed: merged.filter(v => v.passed === false).length,
+            // Same shape as the non-judge branch. This used to emit `passed`
+            // as a count and no failedCount at all, so turning on judge mode
+            // silently reverted the field semantics AND left buildSummary
+            // counting zero deviations.
+            passed:      merged.every(v => v.passed !== false),
+            passedCount: merged.filter(v => v.passed === true).length,
+            failedCount: merged.filter(v => v.passed === false).length,
+            failed:      merged.filter(v => v.passed === false).length,
             bestMatch: judged.bestMatchPositionType,
             judgeConfidence: judged.confidence,
           }
         } catch {
           return ck
         }
-      }))
+      }
+
+      // Fixed-size worker pool pulling from a shared cursor.
+      let cursor = 0
+      await Promise.all(
+        Array.from({ length: Math.min(JUDGE_CONCURRENCY, checks.length) }, async () => {
+          for (;;) {
+            const i = cursor++
+            if (i >= checks.length) return
+            judged[i] = await judgeOne(checks[i])
+          }
+        }),
+      )
 
       return reply.send({
         contract: {
