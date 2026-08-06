@@ -57,8 +57,38 @@ Shared harness: `scripts/week-zero/lib/harness.mjs` (login, authenticated
 requests, internal-service requests, role/org fixtures, pass/fail reporting).
 
 ```bash
+# API layer — each check states its before/after expectation
 node scripts/week-zero/w0-1-agent-rbac.mjs
+node scripts/week-zero/w0-2-clause-apply.mjs
+node scripts/week-zero/w0-3-byok.mjs
+node scripts/week-zero/w0-4-injection.mjs
+node scripts/week-zero/w0-5-pii.mjs
+node scripts/week-zero/w0-6-usage.mjs
+
+# UI layer — Playwright, screenshots land in scripts/week-zero/screenshots/
+node scripts/week-zero/w0-ui-verify.mjs
 ```
+
+### Where it all landed
+
+| Check | Before | After |
+|---|---|---|
+| W0-1 agent apply/undo RBAC | 5/9 | **9/9** |
+| W0-2 clause apply integrity | 9/17 | **17/17** |
+| W0-3 BYOK routing | — | **7/7** |
+| W0-4 injection framing | — | **15/15** |
+| W0-5 PII coverage | — | **25/25** |
+| W0-6 usage reporting | — | **13/13** |
+| UI verification | — | **16/16** |
+| API unit tests | 135 | **144** |
+| API integration tests | 15 | **15** |
+
+The W0-1 and W0-2 "before" columns are the ones that matter most: those checks
+were written first and genuinely reproduced the bugs — a VIEWER moving a
+contract's status through the agent, and a confirmed clause replacement landing
+as an appended amendment. The later checks were written alongside their fixes,
+so their honest claim is "they pass now and will fail if this regresses", not
+"they caught it red-handed".
 
 ---
 
@@ -533,3 +563,31 @@ just-streamed conversation is lost.
 | 2026-08-06 | W0-4 | Extracted the injection helpers to `app/untrusted.py`; framed 8 whole-document ingestion points across review/redline/playbook-review; taught the forged-marker regex about JSON-escaped newlines. | `w0-4-injection.mjs` **15/15**, incl. a live injected-override probe that did not flip the verdict |
 | 2026-08-06 | W0-6 | `recordUsage()` writes `OrgUsageDaily` alongside the Redis cap counter, wired into the four AI call sites; BYOK excluded from the cap; null `toolName` coalesced so rows accumulate; response flagged `estimated`. | `w0-6-usage.mjs` **13/13**; unit 135/135; integration 15/15 |
 | 2026-08-06 | W0-5 | Retuned the redactor (EMAIL/PHONE opt-in, CC/IBAN context-anchored, phone bracket bug fixed); added `applyPiiPolicyBatch` + `redactExcerpts`; wired all nine excerpt-emitting handlers. | `w0-5-pii.mjs` **25/25**; redactor tests 35/35; unit 144/144; integration 15/15 |
+| 2026-08-06 | UI | Playwright pass over every surface the Week-0 changes touched: contracts list, agent home, admin AI config + usage panel, and the review drawer's new refusal branch. Dismisses the first-run onboarding modal, which otherwise swallows clicks on every page. | `w0-ui-verify.mjs` **16/16**; screenshots in `scripts/week-zero/screenshots/` |
+
+---
+
+## Where this leaves things
+
+All six Week-0 items are fixed and verified at both layers. Two of the original
+seven findings were dropped as false, one was dropped as intentional design, and
+one new one was added — which is the argument for re-verifying an audit before
+acting on it.
+
+### Worth doing next, in rough order
+
+1. **Wire these checks into CI.** They currently run by hand against a local
+   stack. The structural halves (W0-3's no-`build_llm` invariant, W0-5's
+   handler coverage, W0-4's framing) are cheap and would gate a PR today.
+2. **Rotate `AI_KEY_ENCRYPTION_KEY` where it is a stub.** The local `.env` had
+   an 8-byte value, so `encrypt()` threw and BYOK could not work at all. Worth
+   confirming the deployed value is a real 32-byte key — the failure is silent
+   from the outside.
+3. **Confirm Langfuse actually receives traces in the deployed environment.**
+   The import is fixed and the handler loads, but nothing here proved a span
+   arriving at the far end.
+4. **Decide whether an org should be able to opt into full PII redaction**
+   (including email/phone). The redactor now supports it per call; there is no
+   org-level setting for it.
+5. **Drop the orphaned client-supplied token fields** from the turn-write
+   schema, together with the matching web change.
