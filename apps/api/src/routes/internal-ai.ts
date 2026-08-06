@@ -26,6 +26,7 @@ import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
+import { normalisedKey } from '../lib/clause-category.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -36,10 +37,9 @@ const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
 
 // D.5.1 — normalise clauseType ("limitation_of_liability") +
 // ClauseCategory.name ("Limitation of Liability") to the same key so a
-// lightweight join works without a formal FK.
-function normalisedKey(s: string): string {
-  return s.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
-}
+// lightweight join works without a formal FK. Shared with clause-propose so
+// the checker and the rewriter resolve a clause to the same category.
+
 
 // ── P7.5.1 — PII redaction for the multi-excerpt agent tools ────────────
 // Most tools in this file return MANY document-derived excerpts per call
@@ -95,7 +95,16 @@ async function redactExcerpts(
 // `PlaybookPosition.rules` is free-form JSON; we runtime-type it via
 // the shape below. Everything optional — orgs can ship must_have without
 // must_not, bounds-only configs, etc.
-type PlaybookSeverity = 'low' | 'medium' | 'high' | 'walkaway'
+/**
+ * One severity vocabulary for the whole playbook surface.
+ *
+ * The structured-rules path used `low|medium|high|walkaway`; the LLM review
+ * path (playbook_review_agent.py) emits `low|medium|high|critical`. Both write
+ * into the same field, so an org whose rules say `critical` was silently
+ * mis-ranked. `critical` is accepted here and treated as equivalent to
+ * `walkaway` — both mean "a human must look at this before it goes anywhere".
+ */
+type PlaybookSeverity = 'low' | 'medium' | 'high' | 'critical' | 'walkaway'
 type PlaybookRuleCheck = 'contains' | 'regex' | 'present' | 'absent'
 
 interface PlaybookRule {
@@ -121,7 +130,24 @@ interface PlaybookRules {
   variables?:   Array<{ key: string; type: string; required?: boolean; default?: unknown }>
 }
 
-const SEVERITY_ORDER: PlaybookSeverity[] = ['low', 'medium', 'high', 'walkaway']
+// Ascending. `critical` and `walkaway` are peers — different words for the same
+// stop condition, arriving from the LLM path and the rules path respectively.
+const SEVERITY_ORDER: PlaybookSeverity[] = ['low', 'medium', 'high', 'critical', 'walkaway']
+
+/**
+ * Rank a severity, tolerating values written by hand into a rules JSON.
+ *
+ * `SEVERITY_ORDER.indexOf(x)` returns -1 for anything unrecognised, and -1 is
+ * LOWER than every real rank — so an unknown severity lost to the next `low`
+ * that came along. That is how a `critical` violation ended up reported as
+ * `low`. Unknown values now rank at the TOP: if we cannot interpret how
+ * serious something is, the safe reading is "serious".
+ */
+function severityRank(sev: string | undefined | null): number {
+  if (!sev) return -1
+  const i = SEVERITY_ORDER.indexOf(sev as PlaybookSeverity)
+  return i === -1 ? SEVERITY_ORDER.length : i
+}
 
 /**
  * Walk a rules object against a clause's text. Returns one entry per
@@ -191,7 +217,7 @@ function pickWorstSeverity(
     if (v.passed === true || v.passed === null) continue // no violation
     const sev = v.severity as PlaybookSeverity | undefined
     if (!sev) continue
-    if (!worst || SEVERITY_ORDER.indexOf(sev) > SEVERITY_ORDER.indexOf(worst)) {
+    if (!worst || severityRank(sev) > severityRank(worst)) {
       worst = sev
     }
   }
@@ -253,10 +279,13 @@ const ContractSummarizeSchema = z.object({
 const PlaybookCheckSchema = z.object({
   orgId:      z.string().min(1),
   contractId: z.string().min(1),
-  // How many clauses to return. A long contract has too many to stuff
-  // into one LLM turn — 10 is a pragmatic ceiling that still covers the
-  // interesting material ones.
-  maxClauses: z.number().int().min(1).max(30).default(10),
+  // How many clauses to examine. The default stays small because an agent
+  // turn can't absorb more, but the ceiling has to admit a whole contract:
+  // this endpoint is the input to full-document redlining, and a hard 400 at
+  // 30 meant a 43-clause agreement could not be checked at all. When the cap
+  // does bite, `summary.truncated` says so rather than the caller having to
+  // infer it.
+  maxClauses: z.number().int().min(1).max(500).default(10),
   // P1.3 — opt into the LLM judge pass. When true, we call the Python
   // /playbook_judge endpoint for every check that has structured rules
   // + bounds, and merge the judge's verdict back in (filling extracted
@@ -1831,6 +1860,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
       },
       take: body.maxClauses,
     })
+    // Counted separately from the page above: reporting clauses.length as the
+    // total made a capped run indistinguishable from a complete one, so a
+    // caller could not tell whether it had seen the whole contract.
+    const totalClauseCount = await prisma.contractClause.count({
+      where: { versionId, isSubChunk: false },
+    })
 
     // Org's categories + positions. Fetch all in one shot; we filter to
     // matching ones per clause in memory (3-20 categories per org is the
@@ -1871,12 +1906,33 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const checks: Array<Record<string, unknown>> = []
     const unmapped = new Set<string>()
+    // Clauses we looked at but could not judge. Previously these were dropped
+    // on the floor: absent from checks[] AND from unmapped[], so a contract
+    // whose clauses mostly had no playbook coverage came back looking clean.
+    // "We found nothing wrong" and "we did not look" have to be distinguishable,
+    // because a redlining pipeline treats the first as done.
+    const uncovered: Array<{ clauseId: string; clauseType: string; sectionRef: string | null; reason: string }> = []
     for (const cl of clauses) {
       const key = normalisedKey(cl.clauseType)
       const category = categoryByNormalisedName.get(key)
       if (!category) { unmapped.add(cl.clauseType); continue }
       const matchingPositions = positionsByCategory.get(category.id) ?? []
-      if (matchingPositions.length === 0) continue
+      if (matchingPositions.length === 0) {
+        uncovered.push({
+          clauseId: cl.id, clauseType: cl.clauseType, sectionRef: cl.sectionRef,
+          reason: 'no_positions_for_category',
+        })
+        continue
+      }
+      // A position with prose but no `rules` JSON produces zero violations,
+      // which reads identically to "every rule passed". Say which it was.
+      if (!matchingPositions.some(p => ruleCountOf(p.rules as PlaybookRules | null) > 0)) {
+        uncovered.push({
+          clauseId: cl.id, clauseType: cl.clauseType, sectionRef: cl.sectionRef,
+          reason: 'positions_have_no_rules',
+        })
+        continue
+      }
 
       // P1.2 — evaluate every position's `rules` (if any) against the
       // clause text. Combine hits into a single violations[] for the
@@ -1891,6 +1947,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const worstSeverity = pickWorstSeverity(violations)
 
       checks.push({
+        // Required to chain into a rewrite: redline_propose and redline_apply
+        // both key on clauseId, and it was selected here but never emitted, so
+        // a caller had to re-derive it from (clauseType, sectionRef).
+        clauseId:    cl.id,
         clauseType:  cl.clauseType,
         sectionRef:  cl.sectionRef,
         excerpt:     cl.content.slice(0, 800),
@@ -1908,8 +1968,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
         })),
         // P1.2 — structured evaluation output.
         violations,
-        worstSeverity,   // null | 'low' | 'medium' | 'high' | 'walkaway'
-        passed:          violations.filter(v => v.passed === true).length,
+        worstSeverity,   // null | 'low' | 'medium' | 'high' | 'critical' | 'walkaway'
+        // `passed` used to be the COUNT of passing rules, which made
+        // `if (check.passed)` read backwards — truthy whenever a single rule
+        // passed, however many failed alongside it. It is now the verdict, and
+        // the counts live under names that say they are counts.
+        passed:          violations.every(v => v.passed !== false),
+        passedCount:     violations.filter(v => v.passed === true).length,
+        failedCount:     violations.filter(v => v.passed === false).length,
+        // Kept for the artifact renderer, which reads `failed` as a number.
         failed:          violations.filter(v => v.passed === false).length,
       })
     }
@@ -1954,8 +2021,44 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // rules through Python /playbook_judge for extracted-bound values +
     // corrected pass/fail. One LLM call per check, fired in parallel to
     // keep wall-time tolerable on a 10-clause response.
+    /**
+     * Document-level rollup.
+     *
+     * Every consumer previously had to recompute this — the artifact renderer
+     * sums `failed` itself — and none of them could see what had NOT been
+     * examined. A redlining pipeline needs both: which clauses deviate, and
+     * how much of the document the answer actually covers.
+     */
+    const buildSummary = (rows: Array<Record<string, unknown>>) => {
+      const allViolations = rows.flatMap(r => (r.violations as Array<Record<string, unknown>>) ?? [])
+      const deviating = rows.filter(r => (r.failedCount as number) > 0)
+      return {
+        worstSeverity:   pickWorstSeverity(allViolations),
+        deviationCount:  deviating.length,
+        checkedClauses:  rows.length,
+        coveredClauses:  rows.length,
+        uncoveredClauses: uncovered.length + unmapped.size,
+        totalClauses:    totalClauseCount,
+        // True when the cap stopped us short of the whole document. Without
+        // this a capped run and a complete one look identical.
+        truncated:       totalClauseCount > clauses.length,
+        requiresHumanGate: allViolations.some(v =>
+          v.passed === false &&
+          (v.severity === 'walkaway' || v.severity === 'critical')),
+      }
+    }
+
     if (body.judge && checks.length > 0) {
-      const judged = await Promise.all(checks.map(async (ck) => {
+      // Bounded fan-out. Each judged check is its own LLM round-trip, and this
+      // used to be an unbounded Promise.all — survivable only because
+      // maxClauses was capped at 30. Raising that cap to admit a whole
+      // contract turned the same line into "up to 500 simultaneous model
+      // calls", which would exhaust the provider rate limit and take the
+      // request down with it. Order is preserved: results are written back by
+      // index, not by completion.
+      const JUDGE_CONCURRENCY = 6
+      const judged: Array<Record<string, unknown>> = new Array(checks.length)
+      const judgeOne = async (ck: Record<string, unknown>) => {
         // Pick the rules to judge: prefer the "preferred" position's
         // rules (that's what we're measuring against). Skip if none.
         const preferredPos = (ck.positions as Array<{ positionType: string }>)
@@ -2019,23 +2122,44 @@ export async function internalAiRoutes(app: FastifyInstance) {
             ...ck,
             violations: merged,
             worstSeverity: worst,
-            passed: merged.filter(v => v.passed === true).length,
-            failed: merged.filter(v => v.passed === false).length,
+            // Same shape as the non-judge branch. This used to emit `passed`
+            // as a count and no failedCount at all, so turning on judge mode
+            // silently reverted the field semantics AND left buildSummary
+            // counting zero deviations.
+            passed:      merged.every(v => v.passed !== false),
+            passedCount: merged.filter(v => v.passed === true).length,
+            failedCount: merged.filter(v => v.passed === false).length,
+            failed:      merged.filter(v => v.passed === false).length,
             bestMatch: judged.bestMatchPositionType,
             judgeConfidence: judged.confidence,
           }
         } catch {
           return ck
         }
-      }))
+      }
+
+      // Fixed-size worker pool pulling from a shared cursor.
+      let cursor = 0
+      await Promise.all(
+        Array.from({ length: Math.min(JUDGE_CONCURRENCY, checks.length) }, async () => {
+          for (;;) {
+            const i = cursor++
+            if (i >= checks.length) return
+            judged[i] = await judgeOne(checks[i])
+          }
+        }),
+      )
+
       return reply.send({
         contract: {
           id:            contract.id,
           title:         contract.title,
           type:          contract.type,
-          totalClauses:  clauses.length,
+          totalClauses:  totalClauseCount,
         },
-        checks: judged,
+        summary:  buildSummary(judged),
+        checks:   judged,
+        uncovered,
         unmapped: [...unmapped],
         judged: true,
       })
@@ -2046,9 +2170,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id:            contract.id,
         title:         contract.title,
         type:          contract.type,
-        totalClauses:  clauses.length,
+        totalClauses:  totalClauseCount,
       },
+      summary: buildSummary(checks),
       checks,
+      uncovered,
       unmapped: [...unmapped],
     })
   })

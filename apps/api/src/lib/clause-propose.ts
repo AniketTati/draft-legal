@@ -9,6 +9,7 @@
  * directly, hence a shared implementation rather than a self-HTTP call.
  */
 import { prisma } from './prisma.js'
+import { findCategoryForClauseType } from './clause-category.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
 
@@ -66,14 +67,10 @@ export async function proposeClauseAlternatives(args: {
   if (!clause) return { ok: false, status: 404, detail: 'Clause not found' }
 
   // Map clauseType → ClauseCategory → preferred PlaybookPosition.
-  const category = await prisma.clauseCategory.findFirst({
-    where: {
-      orgId,
-      // Same normalisation rule as playbook_check.
-      name: { equals: clause.clauseType.replace(/_/g, ' '), mode: 'insensitive' },
-    },
-    select: { id: true, name: true },
-  })
+  // Shared with playbook_check so the checker and the rewriter cannot disagree
+  // about which category a clause belongs to — this used to normalise only
+  // underscores, so a hyphenated clauseType silently lost its playbook.
+  const category = await findCategoryForClauseType(orgId, clause.clauseType)
   let preferred: { content: string; rules: unknown } | null = null
   if (category) {
     const pos = await prisma.playbookPosition.findFirst({

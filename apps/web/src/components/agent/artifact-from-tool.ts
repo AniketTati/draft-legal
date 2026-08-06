@@ -167,22 +167,37 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
     // position × violations); a table beats prose for scanning gaps.
     const checks = (r.checks ?? []) as Array<Record<string, unknown>>
     if (!Array.isArray(checks) || checks.length === 0) return null
+    // `passed` is now the clause's verdict (boolean); the tallies live under
+    // passedCount/failedCount. Reading `passed` as a number here would render
+    // every clause as "0 passed" or "1 passed" regardless of its rules.
     const rows = checks.map(c => ({
       clauseType:    c.clauseType,
       sectionRef:    c.sectionRef ? `§${c.sectionRef}` : '',
       riskRating:    c.riskRating ?? '',
       worstSeverity: c.worstSeverity ?? '—',
-      violations:    `${Number(c.failed ?? 0)} failed / ${Number(c.passed ?? 0)} passed`,
+      violations:    `${Number(c.failedCount ?? c.failed ?? 0)} failed / ${Number(c.passedCount ?? 0)} passed`,
       category:      (c.category as { name?: string } | undefined)?.name ?? '',
     }))
-    const failedTotal = checks.reduce((s, c) => s + Number(c.failed ?? 0), 0)
+    const summary = (r.summary ?? {}) as Record<string, unknown>
+    const failedTotal = checks.reduce((s, c) => s + Number(c.failedCount ?? c.failed ?? 0), 0)
     const unmapped = Array.isArray(r.unmapped) ? r.unmapped.length : 0
+    // The server now reports what it could NOT judge. Saying "12 clauses
+    // checked" while silently skipping 30 was the more misleading half.
+    const uncovered = Array.isArray(r.uncovered) ? r.uncovered.length : 0
+    const totalClauses = Number(summary.totalClauses ?? checks.length)
+    const truncated = summary.truncated === true
     const a: TableArtifact = {
       kind: 'table',
       id: nextId('art'),
       dedupeKey: stableKey(call.name, `count=${checks.length}:fails=${failedTotal}`),
       title: 'Playbook check',
-      subtitle: `${checks.length} clauses checked · ${failedTotal} rule failure${failedTotal === 1 ? '' : 's'}${unmapped > 0 ? ` · ${unmapped} unmapped clause type${unmapped === 1 ? '' : 's'}` : ''}`,
+      subtitle: [
+        `${checks.length} of ${totalClauses} clauses checked`,
+        `${failedTotal} rule failure${failedTotal === 1 ? '' : 's'}`,
+        uncovered > 0 ? `${uncovered} not covered by the playbook` : null,
+        unmapped > 0 ? `${unmapped} unmapped clause type${unmapped === 1 ? '' : 's'}` : null,
+        truncated ? 'results truncated' : null,
+      ].filter(Boolean).join(' · '),
       columns: [
         { key: 'clauseType',    label: 'Clause',     align: 'left' },
         { key: 'sectionRef',    label: '§',          align: 'left' },
