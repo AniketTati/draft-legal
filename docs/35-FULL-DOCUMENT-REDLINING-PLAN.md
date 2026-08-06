@@ -7,7 +7,7 @@ counterparty can open in Word with real tracked changes.
 This is gap #1 from the agent audit — the capability every serious competitor
 ships and the one in-house teams name first. Estimated 4–6 weeks.
 
-**Status:** Phase 0 complete and verified. Phases 1–4 not started.
+**Status:** Phases 0 and 1 complete and verified. Phases 2–4 not started.
 
 ---
 
@@ -198,7 +198,7 @@ Two things the screenshot caught that no assertion had:
 Verified after: 25/25 API, 6/6 renderer, 15/15 Playwright, Playbook page free of
 probe data, and re-running the probe twice leaves nothing behind.
 
-### Phase 1 — Batch propose (~1 week)
+### Phase 1 — Batch propose ✅ **done** (2026-08-07)
 
 A new Python `POST /redline_propose_batch` taking N clauses in one request,
 returning one variant per clause at a chosen aggression (not three — we discard
@@ -209,10 +209,77 @@ Grounding must improve at the same time: pass **all** position types, not just
 `preferred`, so the model can aim at `acceptable` when `preferred` is
 unreachable — which is what a negotiator actually does.
 
-**Check:** `p1-batch-propose.mjs` — 12 deviating clauses. Assert one HTTP call,
-one proposal per clause, each grounded in its own position (a proposal that
-ignores its playbook position fails), and that a partial model failure degrades
-to "no proposal for clause N" rather than dropping the batch.
+**Check:** `scripts/redline/p1-batch-propose.mjs`. **Result: 0/5 → 23/23.**
+
+Two clause types with deliberately distinct playbook positions (a 2x liability
+cap; Delaware governing law), so a batch that grounds every clause in one shared
+playbook produces a liability rewrite talking about Delaware — the failure that
+would otherwise look completely plausible in the output.
+
+| Assertion | Result |
+|---|---|
+| One call rewrites N clauses | one HTTP call, one proposal each |
+| Each clause hits **its own** position | liability → "two times (2x) the fees"; governing law → Delaware |
+| No cross-contamination between clauses | neither borrowed the other's marker |
+| One variant per clause, not three | confirmed |
+| A bad clause doesn't discard the batch | 2 usable of 3, the empty one returned `error: empty_clause_text` |
+| Fan-out is bounded | `asyncio.Semaphore(6)` in the Python route |
+| All position types reach the rewriter | `preferred` + `fallback` both sent |
+
+**What shipped**
+
+- `POST /redline_propose_batch` (Python) — N clauses, one variant each at a
+  chosen posture, `asyncio.Semaphore(6)`. Each clause is an independent model
+  call so one failure cannot take the others with it, and every requested
+  clause gets an entry — a *missing* entry is indistinguishable from "no change
+  needed", which is the silent miss this feature exists to remove.
+- `lib/clause-propose-batch.ts` — loads each clause's own category and
+  positions, and back-fills an explicit `no_response` entry for anything the
+  service didn't answer on.
+- The single-clause path now sends **all** position types too. It had only ever
+  loaded `preferred`, so its "least aggressive" variant had nothing of ours to
+  anchor on but the counterparty's text.
+
+#### A real quality defect, found by measuring rather than asserting
+
+The grounding assertion failed intermittently. Rather than widen it, the hit
+rate was measured — and the model was **substituting a different figure for the
+playbook's** in roughly 1 in 6 rewrites:
+
+| | Capped at all | Capped at **our 2x** |
+|---|---|---|
+| Before hardening | 12/12 | **10/12** |
+| After hardening | 16/16 | **16/16** |
+
+A cap at some other number is a perfectly good clause and a **wrong redline** —
+it quietly substitutes another position for the org's, and reads entirely
+convincingly while doing it. A reviewer skimming twelve clauses approves it.
+That is exactly the silent failure this feature exists to remove, and it would
+have shipped as "working".
+
+One run produced something worse: `SHALL BE LIMITED TO [MUTUALLY AGREED…` — an
+unfilled **placeholder** in contract text. It does not read as wrong; it reads
+as finished.
+
+Two fixes, because a prompt rule is a request and this needed a guarantee:
+
+- **Both** prompts (batch and single-clause) now state that carrying the
+  playbook's figures through exactly is non-negotiable, and say why: a cap of a
+  different size is a different position, applied to a real contract as though
+  it were ours.
+- A **deterministic guard** refuses any rewrite containing a fill-in-the-blank.
+  Verified it catches `[MUTUALLY AGREED AMOUNT]`, `[insert date here]`, `____`
+  and `TBD` while leaving legitimate citations like `[Exhibit A]` alone.
+
+Both are permanent assertions now, not one-off measurements.
+
+**A brittle assertion, caught and fixed.** The grounding check first demanded
+the literal token `2x` and failed on a run where the model wrote "two times"
+instead. Inspecting the output showed the grounding was *working perfectly* —
+the rationale even named the position. The check now accepts any faithful
+phrasing of the same position while still catching a rewrite that ignored it
+entirely. Asserting on exact model wording tests the model's vocabulary, not the
+code.
 
 ### Phase 2 — Multi-clause apply in ONE version (~1 week)
 
