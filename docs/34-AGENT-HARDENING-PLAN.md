@@ -418,7 +418,7 @@ text), then extend coverage to the nine endpoints, batching the audit event so
 
 ## W0-6 — Admin AI usage dashboard reports $0.00 forever
 
-**Severity: Low** · Status: ☐ Not started · *Found while disproving the cost-spoofing claim*
+**Severity: Low** · Status: ✅ **Fixed and verified** (2026-08-06) · *Found while disproving the cost-spoofing claim*
 
 `GET /admin/ai/usage` (`admin-ai.ts:320`) aggregates `prisma.orgUsageDaily`.
 Nothing in the application ever writes that table — the only references outside
@@ -442,6 +442,33 @@ turn write starts 400ing.
    (they already don't — this just closes the door).
 3. UI: Admin → AI Config → usage panel shows real numbers.
 
+**Result: 13/13.** `recordUsage()` in `costCap.ts` now does both halves — the
+Redis cap increment and an `OrgUsageDaily` upsert — and the four AI call sites
+(agent chat, renewal advice, obligation extraction, compliance check) use it.
+The panel's totals, token counts and per-provider breakdown all move with real
+traffic.
+
+Two details worth recording, because both are easy to get wrong:
+
+- **BYOK spend does not touch the platform cap.** If an org pays with its own
+  key, consuming our budget with it would be plainly wrong. It is still
+  recorded for the dashboard, flagged `isByok`.
+- **`toolName` is coalesced to `'-'` rather than left null.** It is part of the
+  unique key, and Postgres treats NULLs as distinct in a unique index — a null
+  would create a brand-new row on *every single call* instead of accumulating,
+  quietly turning the daily rollup into an append-only log.
+
+The response now carries `estimated: true`. These figures come from a
+characters-to-tokens heuristic at the call site, not from provider billing, and
+an admin looking at a dollar figure deserves to know which of those they are
+reading.
+
+**Deliberately not done:** the orphaned client-supplied `inputTokens` /
+`outputTokens` / `costUsd` on the turn-write schema. Nothing reads them, so
+they are not a live defect, and removing them is coupled to a matching client
+change — do it together or the turn write starts 400ing and the
+just-streamed conversation is lost.
+
 ---
 
 ## Change log
@@ -453,3 +480,4 @@ turn write starts 400ing.
 | 2026-08-06 | W0-2 | Three match tiers (exact → escaped → normalized) with an ambiguity refusal in `clause-apply.ts`; refuse with `CLAUSE_TEXT_NOT_FOUND` instead of appending; `allowAppendFallback` opt-in threaded through both callers + `RedlineApplySchema`; escape every insertion; index-splice instead of `String.replace`; `spliced` now requires both bodies. Review drawer surfaces the refusal. | `w0-2-clause-apply.mjs` 9/17 → **17/17**; 11 new unit tests; API unit suite 135/135 |
 | 2026-08-06 | W0-3 | Routed 26 LLM call sites across 12 files through `resolve_llm(tier, org_id=…)`; added OpenRouter to the router tier tables + placeholder-key rejection; removed the now-dead `build_llm` fallbacks; fixed `renewal_advice`'s UnboundLocalError; repaired Langfuse imports + pins; warn when `API_URL` is missing. | `w0-3-byok.mjs` **7/7** (incl. live invalid-BYOK probe); unit 135/135; integration 15/15 |
 | 2026-08-06 | W0-4 | Extracted the injection helpers to `app/untrusted.py`; framed 8 whole-document ingestion points across review/redline/playbook-review; taught the forged-marker regex about JSON-escaped newlines. | `w0-4-injection.mjs` **15/15**, incl. a live injected-override probe that did not flip the verdict |
+| 2026-08-06 | W0-6 | `recordUsage()` writes `OrgUsageDaily` alongside the Redis cap counter, wired into the four AI call sites; BYOK excluded from the cap; null `toolName` coalesced so rows accumulate; response flagged `estimated`. | `w0-6-usage.mjs` **13/13**; unit 135/135; integration 15/15 |

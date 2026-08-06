@@ -9,7 +9,7 @@ import { ChatMessageSchema } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
-import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError } from '../lib/costCap.js'
+import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -187,11 +187,22 @@ export async function agentRoutes(app: FastifyInstance) {
       if (!reply.raw.writableEnded) {
         try { reply.raw.end() } catch { /* */ }
       }
-      // Record chat spend to the same counter the 429 gate reads. Estimate on
-      // input + output size, mirroring the compliance/obligation/renewal paths.
-      // Fire-and-forget — a Redis failure must not affect the already-sent reply.
-      recordCost(orgId, estimateCostUsd(body.message.length + streamedChars))
-        .catch(e => app.log.warn({ err: e }, '[costCap] recordCost(agent_chat) failed'))
+      // Record chat spend to the same counter the 429 gate reads, and to the
+      // table the admin usage panel aggregates. Estimate on input + output
+      // size, mirroring the compliance/obligation/renewal paths.
+      // Fire-and-forget — a failure must not affect the already-sent reply.
+      recordUsage(orgId, estimateCostUsd(body.message.length + streamedChars), {
+        // What the caller asked for. The router may resolve to a different
+        // model for the tier, and the SSE stream doesn't echo the resolved
+        // pair back, so treat this as the requested model rather than a
+        // billing record — same caveat as the cost estimate itself.
+        provider: body.provider ?? 'requested-default',
+        model:    body.modelId  ?? 'requested-default',
+        tier:     'default',
+        toolName: 'agent_chat',
+        inputChars:  body.message.length,
+        outputChars: streamedChars,
+      }).catch(e => app.log.warn({ err: e }, '[costCap] recordUsage(agent_chat) failed'))
     }
   })
 

@@ -15,7 +15,7 @@ import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { applyPiiPolicy } from '../lib/pii-policy.js'
-import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError } from '../lib/costCap.js'
+import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
@@ -2346,9 +2346,16 @@ export async function contractRoutes(app: FastifyInstance) {
     }
     const parsed = await pyRes.json() as Record<string, unknown>
 
-    // P7.5.2 — record estimated cost.
-    recordCost(orgId, estimateCostUsd(text.length)).catch((e) => {
-      req.log.warn({ err: e }, '[costCap] recordCost(renewal_advice) failed')
+    // Record estimated cost against the cap, and the call against the admin
+    // usage panel. provider/model are what the agents service actually ran.
+    recordUsage(orgId, estimateCostUsd(text.length), {
+      provider: String(parsed.provider ?? 'unknown'),
+      model:    String(parsed.model ?? 'unknown'),
+      tier:     'default',
+      toolName: 'renewal_advice',
+      inputChars: text.length,
+    }).catch((e) => {
+      req.log.warn({ err: e }, '[costCap] recordUsage(renewal_advice) failed')
     })
 
     const nextMeta: Record<string, unknown> = {
