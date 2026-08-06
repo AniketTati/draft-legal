@@ -62,6 +62,16 @@ function labelClauseType(t: string | null | undefined): string {
     .replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
+/** The `code` the apply endpoint returns on a structured refusal, if any. */
+function applyClauseErrorCode(err: unknown): string | undefined {
+  return (err as { response?: { data?: { code?: string } } })?.response?.data?.code
+}
+
+function applyClauseErrorDetail(err: unknown): string {
+  return (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    ?? 'That change could not be applied. Try again in a moment.'
+}
+
 export function FocusedReviewDrawer({
   contractId,
   clauses,
@@ -121,11 +131,18 @@ export function FocusedReviewDrawer({
   // "apply" always should have meant — the old Accept button only marked the
   // clause resolved and wrote no text at all.
   const applyVariant = useMutation({
-    mutationFn: async (v: { aggression: string; proposedText: string; rationale: string }) => {
+    mutationFn: async (v: {
+      aggression: string; proposedText: string; rationale: string
+      allowAppendFallback?: boolean
+    }) => {
       const r = await api.post(`/contracts/${contractId}/clauses/${clause!.id}/apply`, {
         proposedText: v.proposedText,
         aggression:   v.aggression,
         rationale:    v.rationale,
+        // Only ever set by the explicit "add as an amendment" button below —
+        // the server refuses rather than appending silently, because an
+        // amendment is a different instrument from the replacement shown here.
+        ...(v.allowAppendFallback ? { allowAppendFallback: true } : {}),
       })
       return r.data as { newVersionNumber: number; spliced: boolean }
     },
@@ -314,6 +331,38 @@ export function FocusedReviewDrawer({
                     <FileEdit className="h-3.5 w-3.5" />
                     {applyVariant.isPending ? 'Applying…' : 'Apply to document'}
                   </button>
+
+                  {/*
+                    The server refuses when it can't find the original clause
+                    text — the clause was edited after this proposal was
+                    generated. Say that, and make the amendment an explicit
+                    choice rather than something that quietly happened.
+                  */}
+                  {applyVariant.isError && applyVariant.variables?.aggression === v.aggression && (
+                    <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-2 py-1.5">
+                      {applyClauseErrorCode(applyVariant.error) === 'CLAUSE_TEXT_NOT_FOUND' ? (
+                        <>
+                          <p className="text-[11px] text-amber-800">
+                            This clause has changed since the suggestion was written, so it can’t
+                            be replaced automatically. Regenerate the suggestion, or add this
+                            language to the end of the document as an amendment.
+                          </p>
+                          <button
+                            onClick={() => applyVariant.mutate({ ...v, allowAppendFallback: true })}
+                            disabled={applyVariant.isPending}
+                            data-testid={`append-variant-${v.aggression}`}
+                            className="mt-1.5 w-full inline-flex items-center justify-center gap-1.5 px-2 py-1 rounded border border-amber-300 bg-white text-[11px] font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                          >
+                            Add as an amendment instead
+                          </button>
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-amber-800">
+                          {applyClauseErrorDetail(applyVariant.error)}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))
             )}

@@ -837,10 +837,11 @@ export async function contractRoutes(app: FastifyInstance) {
     const { id, clauseId } = req.params as { id: string; clauseId: string }
     const { orgId, sub: userId } = req.user
     const body = (req.body ?? {}) as {
-      proposedText?: string
-      aggression?:   string
-      rationale?:    string
-      changes?:      Array<{ before: string; after: string; reason?: string }>
+      proposedText?:        string
+      aggression?:          string
+      rationale?:           string
+      changes?:             Array<{ before: string; after: string; reason?: string }>
+      allowAppendFallback?: boolean
     }
     // This writes into the contract body, so validate rather than trust the
     // cast. Bounds mirror RedlineApplySchema on the internal route — both paths
@@ -880,8 +881,13 @@ export async function contractRoutes(app: FastifyInstance) {
       aggression: body.aggression,
       rationale:  body.rationale,
       changes,
+      allowAppendFallback: body.allowAppendFallback === true,
     })
-    if (!result.ok) return reply.status(result.status).send({ detail: result.detail })
+    // Forward the machine-readable code so the client can tell "the clause
+    // moved, offer to append" apart from a generic failure.
+    if (!result.ok) {
+      return reply.status(result.status).send({ detail: result.detail, code: result.code })
+    }
 
     // Best-effort: the version is already written and currentVersionId flipped,
     // so a failed audit write must not turn a successful apply into a 500.

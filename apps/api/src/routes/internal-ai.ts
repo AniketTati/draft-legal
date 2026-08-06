@@ -464,6 +464,9 @@ const RedlineApplySchema = z.object({
     after:  z.string().max(5_000),
     reason: z.string().max(500).optional(),
   })).max(40).optional(),
+  // Zod strips unknown keys, so this has to be declared or the flag silently
+  // never reaches applyClauseProposal and the route always refuses.
+  allowAppendFallback: z.boolean().optional(),
 })
 
 // P1.4 — redline_propose. Read-only: generates THREE variant rewrites
@@ -2428,8 +2431,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       aggression:   body.aggression,
       rationale:    body.rationale,
       changes:      body.changes,
+      allowAppendFallback: body.allowAppendFallback === true,
     })
-    if (!applied.ok) return reply.status(applied.status).send({ detail: applied.detail })
+    if (!applied.ok) {
+      return reply.status(applied.status).send({ detail: applied.detail, code: applied.code })
+    }
     return reply.send(applied.data)
   })
 

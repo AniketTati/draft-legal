@@ -143,7 +143,7 @@ threads, so the `users` delete hit an FK violation. Added
 
 ## W0-2 — Clause apply can silently do something other than what was confirmed
 
-**Severity: High** · Status: ☐ Not started
+**Severity: High** · Status: ✅ **Fixed and verified** (2026-08-06)
 
 The apply logic moved to `apps/api/src/lib/clause-apply.ts` (commit `fab7605`)
 and now has **two** callers: the agent thread path
@@ -199,6 +199,25 @@ normalized matching removes most misses:
 6. Divergence: assert `htmlContent` and `plainText` agree after every apply.
 7. UI: review drawer Apply — success still applies; a refusal surfaces a real
    message rather than a silent no-op.
+
+**Result.** Before the fix: **9/17.** All three defects reproduced exactly —
+a genuine miss returned `200 {"ok":true}` and created v2 with an appended
+amendment; `spliced:true` was returned while HTML had spliced and plainText had
+appended; and `Fees < $50,000` went into stored HTML with a raw `<`.
+
+After the fix: **17/17.** Plus 11 unit tests on the matching tiers
+(`clause-apply.test.ts`) and the full API unit suite at **135/135**.
+
+**A fourth defect found while fixing.** The original code spliced with
+`String.replace(before, proposedText)`. With a string pattern, `$&` and
+`` $` `` in the *replacement* are still substitution patterns — so proposed
+language containing them would have silently corrupted the document. Rewrote
+all tiers to splice by index, and added a unit test pinning it.
+
+**UI.** The review drawer had no error rendering at all, so a refusal would
+have been an invisible no-op. It now explains that the clause changed since the
+suggestion was written and offers an explicit "Add as an amendment instead"
+button — which is the only way `allowAppendFallback` is ever set.
 
 ---
 
@@ -344,3 +363,4 @@ turn write starts 400ing.
 |---|---|---|---|
 | 2026-08-06 | — | Branched `fix/agent-week-zero` from `main` @ `14d9a11`; applied the pending `share_link_invited_email` migration locally; built `scripts/week-zero/lib/harness.mjs`. | harness self-test 4/4 |
 | 2026-08-06 | W0-1 | `WRITE_TOOLS` Set → Map of tool→[action,resource]; new `checkToolPermission()` enforced on both the apply and undo routes in `agent-threads.ts`. Added 4 regression tests to `rbac.integration.test.ts`; fixed the agent-thread FK leak in `cleanupAll()`. | `w0-1-agent-rbac.mjs` 5/9 → **9/9**; integration suite 15/15 |
+| 2026-08-06 | W0-2 | Three match tiers (exact → escaped → normalized) with an ambiguity refusal in `clause-apply.ts`; refuse with `CLAUSE_TEXT_NOT_FOUND` instead of appending; `allowAppendFallback` opt-in threaded through both callers + `RedlineApplySchema`; escape every insertion; index-splice instead of `String.replace`; `spliced` now requires both bodies. Review drawer surfaces the refusal. | `w0-2-clause-apply.mjs` 9/17 → **17/17**; 11 new unit tests; API unit suite 135/135 |
