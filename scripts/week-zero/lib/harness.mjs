@@ -84,9 +84,15 @@ export async function api(token, method, path, body) {
   return { status: r.status, body: parsed }
 }
 
-/** Request against an internal-AI tool endpoint, as the agents service. */
+/**
+ * Request against an internal-AI tool endpoint, as the agents service.
+ *
+ * NB: the internal plugin mounts at `/api/internal/ai` — no `/v1`, unlike every
+ * public route. Getting this wrong yields a 404 that reads like a missing
+ * endpoint rather than a wrong path.
+ */
 export async function internal(path, body, orgId) {
-  const r = await fetch(`${API}/api/v1/internal/ai${path}`, {
+  const r = await fetch(`${API}/api/internal/ai${path}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -87,17 +87,37 @@ const PATTERNS: Array<{
   kind: PiiKind
   rx: RegExp
   validate?: (m: RegExpExecArray) => boolean
+  /**
+   * When set, the pattern only fires if this also matches somewhere in the
+   * surrounding text. Used for patterns whose shape is common in ordinary
+   * contract language (long digit runs, uppercase reference codes) and which
+   * therefore need a nearby word to justify treating a match as an identifier.
+   */
+  requiresContext?: RegExp
 }> = [
   // Credit card — 13-19 digits, optionally separated by space/dash.
   // We strip separators before Luhn-checking.
+  //
+  // Luhn is only a 1-in-10 filter, so roughly one in ten long reference
+  // numbers passes it: an agreement id, an invoice number, a claim number.
+  // Contracts are full of those, and redacting one changes what the document
+  // says. Require a payment-ish word nearby before treating a bare digit run
+  // as a card number.
   {
     kind: 'CC',
     rx: /\b(?:\d[ -]?){12,18}\d\b/g,
     validate: (m) => luhnValid(m[0].replace(/[ -]/g, '')),
+    requiresContext: /\b(?:card|credit|debit|visa|mastercard|amex|american express|cvv|cvc|pan)\b/i,
   },
   // IBAN — letters AA + 2 digits + up to 30 alphanumerics.
-  // Country prefix list could be tighter but this is good enough for v1.
-  { kind: 'IBAN', rx: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g },
+  //
+  // Same problem in a different shape: this pattern happily eats an uppercase
+  // document reference like "AB1234567890123456". Anchor it to banking words.
+  {
+    kind: 'IBAN',
+    rx: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g,
+    requiresContext: /\b(?:iban|swift|bic|bank|wire|remit|account\s*(?:no|number|#))\b/i,
+  },
   // SSN — NNN-NN-NNNN. Excludes obvious invalids (000-, 666-, 9XX-).
   {
     kind: 'SSN',
@@ -115,8 +135,13 @@ const PATTERNS: Array<{
   { kind: 'EMAIL', rx: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
   // E.164 phone — +<countrycode><number>, 9-15 digits total.
   { kind: 'PHONE', rx: /\+\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,9}\b/g },
-  // US phone — (NNN) NNN-NNNN or NNN-NNN-NNNN, with optional ext.
-  { kind: 'PHONE', rx: /\b\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/g },
+  // US phone — (NNN) NNN-NNNN or NNN-NNN-NNNN.
+  //
+  // The leading `\b` used to sit before the optional `(`, where a word
+  // boundary can never match — so "(415) 555-0142" matched from the digits
+  // onward and the replacement left an orphaned "(" behind, corrupting the
+  // sentence. Make the parenthesised and bare forms explicit alternatives.
+  { kind: 'PHONE', rx: /(?:\(\d{3}\)\s?|\b\d{3}[-.\s])\d{3}[-.\s]\d{4}\b/g },
   // DOB — keyword-anchored YYYY-MM-DD or MM/DD/YYYY.
   {
     kind: 'DOB',
@@ -138,14 +163,45 @@ function pseudonym(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex').slice(0, 8)
 }
 
-export function redactPii(input: string, mode: PiiMode = 'redact'): RedactionResult {
+/**
+ * Kinds skipped by default when redacting CONTRACT text.
+ *
+ * An email address in a notice clause is not incidental personal data — it is
+ * the operative term ("notices shall be sent to legal@acme.com"), and a lawyer
+ * asking "where do I send termination notice?" needs the answer. Same for the
+ * counterparty's switchboard number in a signature block. The module has always
+ * documented this ("Counterparty contact info… redacting it breaks
+ * extraction") but redacted them anyway.
+ *
+ * Callers handling genuinely personal records rather than contract bodies can
+ * opt back in with `kinds`.
+ */
+export const CONTRACT_TEXT_EXEMPT: PiiKind[] = ['EMAIL', 'PHONE']
+
+export interface RedactOptions {
+  /** Restrict redaction to these kinds. Defaults to everything except CONTRACT_TEXT_EXEMPT. */
+  kinds?: PiiKind[]
+}
+
+export function redactPii(
+  input: string,
+  mode: PiiMode = 'redact',
+  options: RedactOptions = {},
+): RedactionResult {
   if (mode === 'off' || !input) {
     return { text: input, counts: {}, total: 0 }
   }
+  const enabled = new Set<PiiKind>(
+    options.kinds ?? PATTERNS.map(p => p.kind).filter(k => !CONTRACT_TEXT_EXEMPT.includes(k)),
+  )
   const counts: Partial<Record<PiiKind, number>> = {}
   let text = input
 
-  for (const { kind, rx, validate } of PATTERNS) {
+  for (const { kind, rx, validate, requiresContext } of PATTERNS) {
+    if (!enabled.has(kind)) continue
+    // Context is judged against the ORIGINAL input: an earlier pattern may
+    // already have replaced the very word that justifies this one.
+    if (requiresContext && !requiresContext.test(input)) continue
     text = text.replace(rx, (...args) => {
       // The args layout differs depending on capturing groups; the
       // matched substring is always args[0].

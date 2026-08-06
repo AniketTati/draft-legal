@@ -381,7 +381,7 @@ this text gets quoted back to lawyers.
 
 ## W0-5 — PII redaction covers 1 of 10 excerpt-emitting tools
 
-**Severity: Medium** · Status: ☐ Not started · **Sequenced last, deliberately**
+**Severity: Medium** · Status: ✅ **Fixed and verified** (2026-08-06) · *Sequenced last, deliberately*
 
 `applyPiiPolicy` is called at exactly one place in `internal-ai.ts`
 (`contract_get`, `:631`). Nine other agent-tool endpoints ship raw stored
@@ -413,6 +413,57 @@ text), then extend coverage to the nine endpoints, batching the audit event so
    still come back verbatim, and `contract_get`'s `counterpartyName` unchanged.
    This check must pass *before* coverage is extended.
 5. Audit batching: a 20-hit search writes 1 `PII_REDACTED` event, not 20.
+
+**Result: 25/25.** Sequencing the over-redaction fix first was the right call —
+measuring the redactor against realistic contract text found it worse than
+reported:
+
+| Input | Before | Now |
+|---|---|---|
+| `notices shall be sent to legal@acmecorp.com` | `[REDACTED:EMAIL]` | preserved |
+| `Phone: (415) 555-0142.` | `Phone: ([REDACTED:PHONE].` — **orphaned bracket** | preserved |
+| `Agreement (Ref. No. 4532015112830366)` | `[REDACTED:CC]` (Luhn passed) | preserved |
+| `Invoice AB1234567890123456` | `[REDACTED:IBAN]` | preserved |
+| `Employee SSN: 123-45-6789` | redacted | redacted |
+| `credit card 4532015112830366` | redacted | redacted |
+| `Wire to IBAN GB29NWBK…` | redacted | redacted |
+
+The phone one is not just over-redaction — it **corrupted the text**. The
+pattern put `\b` before an optional `(`, where a word boundary can never
+match, so it matched from the digits onward and left the opening bracket
+stranded in the contract body it was supposed to protect.
+
+Three changes to the redactor: `EMAIL` and `PHONE` are now opt-in
+(`CONTRACT_TEXT_EXEMPT`) because in a contract a notice-clause address is an
+operative term, not incidental personal data — which is what the module's own
+docstring always said, while the code did the opposite; `CC` and `IBAN` require
+a payment/banking word nearby, because Luhn is only a 1-in-10 filter and
+contracts are full of long reference numbers; and the phone pattern now handles
+the parenthesised form as an explicit alternative.
+
+Coverage then extended to all nine endpoints via a batched `redactExcerpts`
+helper — one policy read and **one** audit row per user action, instead of up
+to 100 for a 10×10 comparison matrix.
+
+**On the tests.** This change broke 8 existing assertions, which encoded the old
+"redact email and phone by default" contract. They were not rewritten to make
+the change pass: the detection still works and is still asserted, now with an
+explicit `{ kinds: [...] }`, and new tests pin the new default (notice clauses
+and signature blocks survive) plus the specific false positives above. 35/35.
+
+**The behavioural probe is honest about what it proves.** "Response doesn't
+contain the SSN" is trivially true of an empty result, so the check separates
+leaked / genuinely redacted / nothing-returned, and fails if *no* tool actually
+exercised redaction. Only `contract_summarize` returns an excerpt for this
+fixture (the others need embeddings, a structure tree, or an ES index), so
+coverage for the remaining eight is asserted at the source instead — each
+handler must call the helper before returning.
+
+**Note on how this was built:** four agents edited `internal-ai.ts` in parallel
+and collided; one briefly deleted the shared helper. The merged file was checked
+afterwards — one helper definition, nine wired handlers, typecheck clean, 144
+unit + 15 integration tests green. Fanning out onto a single file was a mistake
+worth not repeating.
 
 ---
 
@@ -481,3 +532,4 @@ just-streamed conversation is lost.
 | 2026-08-06 | W0-3 | Routed 26 LLM call sites across 12 files through `resolve_llm(tier, org_id=…)`; added OpenRouter to the router tier tables + placeholder-key rejection; removed the now-dead `build_llm` fallbacks; fixed `renewal_advice`'s UnboundLocalError; repaired Langfuse imports + pins; warn when `API_URL` is missing. | `w0-3-byok.mjs` **7/7** (incl. live invalid-BYOK probe); unit 135/135; integration 15/15 |
 | 2026-08-06 | W0-4 | Extracted the injection helpers to `app/untrusted.py`; framed 8 whole-document ingestion points across review/redline/playbook-review; taught the forged-marker regex about JSON-escaped newlines. | `w0-4-injection.mjs` **15/15**, incl. a live injected-override probe that did not flip the verdict |
 | 2026-08-06 | W0-6 | `recordUsage()` writes `OrgUsageDaily` alongside the Redis cap counter, wired into the four AI call sites; BYOK excluded from the cap; null `toolName` coalesced so rows accumulate; response flagged `estimated`. | `w0-6-usage.mjs` **13/13**; unit 135/135; integration 15/15 |
+| 2026-08-06 | W0-5 | Retuned the redactor (EMAIL/PHONE opt-in, CC/IBAN context-anchored, phone bracket bug fixed); added `applyPiiPolicyBatch` + `redactExcerpts`; wired all nine excerpt-emitting handlers. | `w0-5-pii.mjs` **25/25**; redactor tests 35/35; unit 144/144; integration 15/15 |

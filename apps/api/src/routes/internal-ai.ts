@@ -22,7 +22,7 @@ import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses } from '../lib/embeddings.js'
 import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
-import { applyPiiPolicy } from '../lib/pii-policy.js'
+import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
@@ -39,6 +39,56 @@ const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
 // lightweight join works without a formal FK.
 function normalisedKey(s: string): string {
   return s.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+// ── P7.5.1 — PII redaction for the multi-excerpt agent tools ────────────
+// Most tools in this file return MANY document-derived excerpts per call
+// (a deal list, a check list, a citation list, a comparison matrix).
+// Running the single-value `applyPiiPolicy` per excerpt would re-read the
+// org policy N times and write N PII_REDACTED audit rows for what the
+// user experienced as ONE action, burying the audit trail it exists to
+// provide. `applyPiiPolicyBatch` does one policy read and emits one audit
+// event for the whole page; this wrapper adds two things on top:
+//
+//   1. Null-safety. Excerpts and summaries are routinely null. Callers
+//      pass the sparse array straight through and get nulls back in the
+//      same positions, so response shape and ordering never change.
+//   2. Errors never break the tool call — but they must not silently
+//      ship raw PII either. A thrown policy lookup is retried once with
+//      an explicit force-redact, which skips the org-settings DB read
+//      (the only realistic failure point, since `redactPii` itself is
+//      pure regex). Only if that ALSO throws do we withhold the text.
+const REDACTION_UNAVAILABLE = '[text withheld: PII redaction unavailable]'
+
+async function redactExcerpts(
+  orgId: string,
+  values: Array<string | null | undefined>,
+  opts: { surface: string; contractId?: string; userId?: string },
+): Promise<Array<string | null>> {
+  // Compact to the positions that actually carry text, remembering where
+  // each came from so we can put the redacted values back in place.
+  const idx: number[] = []
+  const texts: string[] = []
+  values.forEach((v, i) => {
+    if (typeof v === 'string' && v.length > 0) { idx.push(i); texts.push(v) }
+  })
+  const out: Array<string | null> = values.map(v => (typeof v === 'string' ? v : null))
+  if (texts.length === 0) return out
+
+  let redacted: string[]
+  try {
+    redacted = (await applyPiiPolicyBatch(orgId, texts, opts)).texts
+  } catch (err) {
+    console.error(`[internal-ai] PII redaction failed for ${opts.surface}; retrying force-redact:`, err)
+    try {
+      redacted = (await applyPiiPolicyBatch(orgId, texts, { ...opts, override: 'redact' })).texts
+    } catch (err2) {
+      console.error(`[internal-ai] force-redact failed for ${opts.surface}; withholding text:`, err2)
+      redacted = texts.map(() => REDACTION_UNAVAILABLE)
+    }
+  }
+  idx.forEach((position, k) => { out[position] = redacted[k] ?? REDACTION_UNAVAILABLE })
+  return out
 }
 
 // ── P1.2 — Structured playbook rules (docs/28 C.2.1) ────────────────────
@@ -919,6 +969,21 @@ export async function internalAiRoutes(app: FastifyInstance) {
       if (citations.length >= body.limit) break
     }
 
+    // P7.5.1 — the quotes are verbatim document text headed for the LLM, so
+    // redact them. One batch call for the whole citation list: a 20-citation
+    // answer is one user action and gets one audit row. Ordering and every
+    // other field (page, bbox, sectionRef, sectionTitle, score, exact) are
+    // structural anchors the citation UI depends on and stay untouched.
+    const redactedQuotes = await redactExcerpts(
+      body.orgId,
+      citations.map(c => (typeof c.quote === 'string' ? c.quote : null)),
+      { surface: 'contract_cite.quote', contractId: contract.id },
+    )
+    citations.forEach((c, i) => {
+      const q = redactedQuotes[i]
+      if (typeof q === 'string') c.quote = q
+    })
+
     return reply.send({
       contractId: contract.id,
       title:      contract.title,
@@ -1074,11 +1139,52 @@ export async function internalAiRoutes(app: FastifyInstance) {
       bySeverity[s] = (bySeverity[s] ?? 0) + 1
     }
 
+    // ── PII redaction at the agent boundary ────────────────────────
+    // Every `excerpt` here is a raw slice of version.plainText, so all
+    // three passes (defined_term_drift, unresolved_crossref,
+    // dangling_section_ref) leak stored document text to the LLM.
+    // Redact them in ONE batch: a single policy read and a single
+    // PII_REDACTED audit row for what is one user action, rather than
+    // up to maxIssues (200) rows.
+    //
+    // Deliberately NOT redacted: `term` / `definedTerms` (the drift
+    // matcher only admits /[A-Z][A-Za-z]+/, a single alphabetic word —
+    // it is a defined-term label the product reasons over, and no
+    // redactor pattern can match it anyway), `match` / `ref` (regex-
+    // constrained to "Section ___" placeholders and digit refs), and
+    // the `message` strings, which are built purely from those fields
+    // plus occurrence counts — no free document text.
+    const visibleIssues = issues.slice(0, body.maxIssues)
+    try {
+      const excerptIdx: number[] = []
+      const excerpts: string[] = []
+      visibleIssues.forEach((issue, i) => {
+        if (typeof issue.excerpt === 'string') {
+          excerptIdx.push(i)
+          excerpts.push(issue.excerpt)
+        }
+      })
+      if (excerpts.length > 0) {
+        const redacted = await applyPiiPolicyBatch(body.orgId, excerpts, {
+          surface: 'contract_validate.excerpt',
+          contractId: contract.id,
+        })
+        excerptIdx.forEach((issueIndex, k) => {
+          const issue = visibleIssues[issueIndex]
+          if (issue) issue.excerpt = redacted.texts[k] ?? issue.excerpt
+        })
+      }
+    } catch (err) {
+      // Redaction must never break the tool call. Fall through with a
+      // loud log; the excerpts stay raw for this one response.
+      console.error('[contract_validate] PII redaction failed:', err)
+    }
+
     return reply.send({
       contractId: contract.id,
       title:      contract.title,
       type:       contract.type,
-      issues:     issues.slice(0, body.maxIssues),
+      issues:     visibleIssues,
       totalIssues: issues.length,
       bySeverity,
       definedTerms: [...definedTerms],
@@ -1211,6 +1317,41 @@ export async function internalAiRoutes(app: FastifyInstance) {
         createdAt:        c.createdAt,
       }
     })
+
+    // P7.5.1 — redact the two document-derived fields on each deal card
+    // before they leave for the LLM: the clause `excerpt` (verbatim
+    // contract text) and `summary` (an LLM summary OF contract text, so
+    // it can carry PII straight out of the document).
+    //
+    // Structured metadata stays raw on purpose — counterpartyName is the
+    // whole point of this tool, and title/type/status/dates/ids/riskScore
+    // are product data the UI and the agent's reasoning depend on.
+    //
+    // One batch per field: two policy reads and two audit rows for the
+    // whole call regardless of how many deals came back, versus 2N if we
+    // called the single-value helper per card.
+    {
+      const excerptIdx: number[] = []
+      const excerptTexts: string[] = []
+      const summaryIdx: number[] = []
+      const summaryTexts: string[] = []
+      deals.forEach((d, i) => {
+        if (d.excerpt) { excerptIdx.push(i); excerptTexts.push(d.excerpt) }
+        if (d.summary) { summaryIdx.push(i); summaryTexts.push(d.summary) }
+      })
+      const [redactedExcerpts, redactedSummaries] = await Promise.all([
+        redactExcerpts(body.orgId, excerptTexts, { surface: 'counterparty_memory.excerpt' }),
+        redactExcerpts(body.orgId, summaryTexts, { surface: 'counterparty_memory.summary' }),
+      ])
+      excerptIdx.forEach((dealIndex, k) => {
+        const d = deals[dealIndex]
+        if (d) d.excerpt = redactedExcerpts[k] ?? d.excerpt
+      })
+      summaryIdx.forEach((dealIndex, k) => {
+        const d = deals[dealIndex]
+        if (d) d.summary = redactedSummaries[k] ?? d.summary
+      })
+    }
 
     // Aggregate signals.
     const totalValue = contracts.reduce((acc, c) => acc + (c.value != null ? Number(c.value) : 0), 0)
@@ -1424,6 +1565,23 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
     })
 
+    // P7.5.1 — hits[].excerpt is raw clause text bound for the LLM; redact it.
+    // One batch call across the whole result set, so a topK=20 search costs one
+    // policy read and one audit row. NOTE: no contractId — these hits span many
+    // contracts, and attributing the audit row to an arbitrary one of them
+    // would be worse than leaving it request-scoped. Ranking inputs and the
+    // structured metadata (titles, counterparty, clauseType, sectionRef,
+    // page/bbox, scores) are untouched, so ordering is unchanged.
+    const redactedExcerpts = await redactExcerpts(
+      body.orgId,
+      hits.map(h => h.excerpt),
+      { surface: 'portfolio_search.excerpt' },
+    )
+    hits.forEach((h, i) => {
+      const e = redactedExcerpts[i]
+      if (typeof e === 'string') h.excerpt = e
+    })
+
     return reply.send({
       query:   body.query,
       hits,
@@ -1476,6 +1634,28 @@ export async function internalAiRoutes(app: FastifyInstance) {
       : null
     const snippet = (version?.plainText ?? '').slice(0, 1_500)
 
+    // P21 PII boundary. Both document-derived blobs this tool returns —
+    // the AI summary (written from contract text) and the plainText
+    // snippet — go through one batch call: one policy read, ONE audit
+    // row for what the user experienced as a single tool call.
+    // Structured metadata (counterparty, title, dates, riskFactors) is
+    // deliberately left raw: the product depends on it.
+    let summaryOut = contract.summary
+    let snippetOut = snippet
+    try {
+      const redacted = await applyPiiPolicyBatch(
+        body.orgId,
+        [contract.summary ?? '', snippet],
+        { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id },
+      )
+      // Keep `summary: null` null — don't turn an absent summary into ''.
+      summaryOut = contract.summary != null ? (redacted.texts[0] ?? contract.summary) : null
+      snippetOut = redacted.texts[1] ?? snippet
+    } catch (err) {
+      // Redaction must never break the tool call.
+      console.error('[contract_summarize] PII redaction failed, returning unredacted text:', err)
+    }
+
     return reply.send({
       id:               contract.id,
       title:            contract.title,
@@ -1487,11 +1667,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       expiryDate:       contract.expiryDate,
       value:            contract.value != null ? Number(contract.value) : null,
       currency:         contract.currency,
-      summary:          contract.summary,
+      summary:          summaryOut,
       keyTerms:         contract.keyTerms,
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
-      plainTextSnippet: snippet,
+      plainTextSnippet: snippetOut,
     })
   })
 
@@ -1568,6 +1748,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
       matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint })
       cursor = idx + q.length
     }
+
+    // P7.5.1 — every window here is verbatim contract text going to the LLM:
+    // the match itself and both context sides. Flatten all three fields of all
+    // matches into ONE batch (3N strings, one policy read, one audit row) and
+    // map back by index, so ordering and shape are unchanged. `index` and
+    // `sectionHint` are positional/structural metadata and stay raw.
+    const flatWindows: string[] = []
+    for (const m of matches) flatWindows.push(m.beforeContext, m.match, m.afterContext)
+    const redactedWindows = await redactExcerpts(body.orgId, flatWindows, {
+      surface: 'clause_search.excerpt',
+      contractId: contract.id,
+    })
+    matches.forEach((m, i) => {
+      const before = redactedWindows[i * 3]
+      const mid    = redactedWindows[i * 3 + 1]
+      const after  = redactedWindows[i * 3 + 2]
+      if (typeof before === 'string') m.beforeContext = before
+      if (typeof mid    === 'string') m.match         = mid
+      if (typeof after  === 'string') m.afterContext  = after
+    })
 
     return reply.send({
       contractId: contract.id,
@@ -1711,6 +1911,42 @@ export async function internalAiRoutes(app: FastifyInstance) {
         worstSeverity,   // null | 'low' | 'medium' | 'high' | 'walkaway'
         passed:          violations.filter(v => v.passed === true).length,
         failed:          violations.filter(v => v.passed === false).length,
+      })
+    }
+
+    // P7.5.1 — redact the verbatim clause text ONCE, here, before it is
+    // used anywhere downstream. This is the highest-stakes redaction in
+    // the file because `excerpt` feeds TWO separate third-party LLM
+    // hops in the same turn:
+    //   1. the tool result returned to the agent's model, and
+    //   2. `clauseText` on the Python /playbook_judge call below.
+    // Overwriting the value in place (rather than redacting at each
+    // call site) guarantees the two hops see the same text and that
+    // neither can be added later without redaction.
+    //
+    // Deliberately AFTER evaluatePlaybookRules, which ran against raw
+    // `cl.content` above: rule matching, violations[], worstSeverity and
+    // the passed/failed counts are all computed from the original text,
+    // so scoring is bit-for-bit unchanged by this addition.
+    //
+    // `positions[].content` is NOT redacted — that is the org's own
+    // playbook language, not document-derived text.
+    {
+      const excerptIdx: number[] = []
+      const excerptTexts: string[] = []
+      checks.forEach((ck, i) => {
+        if (typeof ck.excerpt === 'string' && ck.excerpt.length > 0) {
+          excerptIdx.push(i)
+          excerptTexts.push(ck.excerpt)
+        }
+      })
+      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+        surface: 'playbook_check.excerpt',
+        contractId: contract.id,
+      })
+      excerptIdx.forEach((checkIndex, k) => {
+        const ck = checks[checkIndex]
+        if (ck) ck.excerpt = redacted[k] ?? ck.excerpt
       })
     }
 
@@ -2934,6 +3170,31 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerpt:          cl.content.slice(0, 500),
         })
       }
+
+      // P7.5.1 — `excerpt` is verbatim clause text from executed deals,
+      // pulled across many contracts and shipped to the LLM. Redact the
+      // whole page in one batch: one policy read, one PII_REDACTED audit
+      // row for the call. No contractId on the audit event because the
+      // excerpts span multiple contracts.
+      //
+      // Everything else on the card is structured metadata the agent
+      // needs to answer the question at all (which deal, whose, when,
+      // what section, how risky) and stays raw.
+      const excerptIdx: number[] = []
+      const excerptTexts: string[] = []
+      pastDeals.forEach((d, i) => {
+        if (typeof d.excerpt === 'string' && d.excerpt.length > 0) {
+          excerptIdx.push(i)
+          excerptTexts.push(d.excerpt)
+        }
+      })
+      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+        surface: 'org_memory.excerpt',
+      })
+      excerptIdx.forEach((dealIndex, k) => {
+        const d = pastDeals[dealIndex]
+        if (d) d.excerpt = redacted[k] ?? d.excerpt
+      })
     }
 
     return reply.send({
@@ -3524,6 +3785,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const foundCount = perContract.filter(p => p.found).length
       return { topic, foundCount, perContract }
     })
+
+    // P21 PII boundary. Every cell excerpt is raw document text bound for
+    // the LLM. A 10-topic × 10-contract matrix is up to 100 excerpts, so
+    // flatten and redact in ONE batch call (one policy read, one audit
+    // row) and map back by position — order, scoring and `found` flags
+    // are untouched. Structured cell fields (contractId, sectionRef) and
+    // the contracts[] metadata block stay raw on purpose.
+    let redactedMatrix = matrix
+    try {
+      const flat = matrix.flatMap(row => row.perContract.map(cell => cell.excerpt))
+      const { texts } = await applyPiiPolicyBatch(body.orgId, flat, {
+        surface: 'portfolio_compare.excerpt',
+      })
+      let i = 0
+      redactedMatrix = matrix.map(row => ({
+        ...row,
+        perContract: row.perContract.map(cell => {
+          const text = texts[i++]
+          return { ...cell, excerpt: text ?? cell.excerpt }
+        }),
+      }))
+    } catch (err) {
+      // Redaction must never break the tool call.
+      console.error('[portfolio_compare] PII redaction failed, returning unredacted excerpts:', err)
+    }
+
     return reply.send({
       contracts: contracts.map(c => ({
         id: c.id, title: c.title, type: c.type, status: c.status,
@@ -3532,7 +3819,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         currency: c.currency,
       })),
       topics: body.topics,
-      matrix,
+      matrix: redactedMatrix,
     })
   })
 }
