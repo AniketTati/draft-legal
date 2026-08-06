@@ -46,6 +46,8 @@ const FIXTURES = [
     // faithful to the playbook as "2x" — while still catching a rewrite that
     // ignored the position entirely (it would say none of these).
     markers: ['2x', 'two times', 'twice'],
+    // The playbook says 2x. Any other multiplier is a different position.
+    quantum: /2\s*x|two\s*\(?\s*2x?\s*\)?\s*times|two times|twice/i,
     content: 'The parties accept unlimited liability for all direct and indirect losses.',
   },
   {
@@ -53,6 +55,7 @@ const FIXTURES = [
     categoryName: 'Governing Law',
     preferred: 'This Agreement shall be governed by the laws of the State of Delaware.',
     markers: ['delaware'],
+    quantum: /delaware/i,
     content: 'This Agreement shall be governed by the laws of the State of New York.',
   },
 ]
@@ -168,6 +171,24 @@ let batch
         f.markers.some(m => text.includes(m)),
         `expected one of [${f.markers.join(', ')}]; got: ${(p?.proposedText ?? '(none)').slice(0, 140)}`,
       )
+      // A rewrite that caps liability at SOME number is a good clause and a
+      // wrong redline — it quietly substitutes another position for ours, and
+      // reads perfectly convincingly while doing it. Measured at ~1 in 6
+      // before the prompt was tightened to carry the playbook's figures
+      // through verbatim.
+      check(
+        `${f.clauseType} carried the playbook's own figure, not a substitute`,
+        !f.quantum || f.quantum.test(p?.proposedText ?? ''),
+        `expected ${f.quantum}; got: ${(p?.proposedText ?? '(none)').slice(0, 160)}`,
+      )
+      // An unfilled blank in a contract is worse than no rewrite: it looks
+      // finished. The service refuses these, so one arriving here means the
+      // guard regressed.
+      check(
+        `${f.clauseType} contains no fill-in-the-blank placeholder`,
+        !/\[[A-Z0-9][A-Z0-9 _/&.,'-]{2,}\]|_{3,}|\bTBD\b/.test(p?.proposedText ?? ''),
+        `placeholder found in: ${(p?.proposedText ?? '').slice(0, 160)}`,
+      )
       const others = FIXTURES.filter((_, j) => j !== i)
       const leaked = others.filter(o => o.markers.some(m => text.includes(m)))
       check(
@@ -246,6 +267,52 @@ section('3. The batch is bounded, in calls and in concurrency')
     'rewrites are grounded in all position types, not only "preferred"',
     !/positionType:\s*'preferred'\s*\}/.test(node) || /positionType:\s*\{\s*in:/.test(node),
     "clause-propose loaded only positionType:'preferred', so fallback language never reached the rewriter",
+  )
+}
+
+// ─── 4. The single-clause path still works ─────────────────────────────────
+
+section('4. The review drawer\'s existing path is not regressed')
+{
+  // This phase changed clause-propose.ts to send ALL position types, and
+  // changed the Python prompt to use them. That path is NOT new — it backs
+  // FocusedReviewDrawer's "suggest alternatives", which reads
+  // `{hasPlaybook, variants[3]}`. Calling this additive would have been wrong.
+  const auth = admin.accessToken
+  const res = await fetch(`${process.env.API_BASE ?? 'http://localhost:3011'}/api/v1/contracts/${fx.contractId}/clauses/${fx.clauseIds[0]}/suggest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}` },
+    body: '{}',
+  })
+  const body = await res.json().catch(() => ({}))
+
+  check('the user-facing suggest route still responds', res.status === 200,
+    `status=${res.status} ${JSON.stringify(body).slice(0, 160)}`)
+  check('it still returns THREE variants, as the drawer renders',
+    Array.isArray(body.variants) && body.variants.length === 3,
+    `variants=${body.variants?.length} — the drawer maps over them and labels each by aggression`)
+  check('every variant still has the fields the drawer reads',
+    (body.variants ?? []).every(v => typeof v.aggression === 'string'
+      && typeof v.proposedText === 'string' && typeof v.rationale === 'string'),
+    JSON.stringify((body.variants ?? [])[0] ?? null).slice(0, 140))
+  check('hasPlaybook is still reported',
+    body.hasPlaybook === true,
+    `hasPlaybook=${body.hasPlaybook} — the drawer shows a "not playbook-approved" warning when false`)
+  // Bind the assertion to the variant that is contractually tied to the
+  // preferred position. "least" is SUPPOSED to preserve the counterparty's
+  // language, so requiring the playbook's figure across all three would fail
+  // on correct behaviour — the earlier version of this check did exactly that.
+  const aggressive = (body.variants ?? []).find(v => v.aggression === 'aggressive')
+  check(
+    'the "aggressive" variant carries the playbook figure',
+    !!aggressive && FIXTURES[0].quantum.test(aggressive.proposedText ?? ''),
+    `got: ${(aggressive?.proposedText ?? '(none)').slice(0, 150)}`,
+  )
+  check(
+    'no variant contains a fill-in-the-blank placeholder',
+    !(body.variants ?? []).some(v =>
+      /\[[A-Z0-9][A-Z0-9 _/&.,'-]{2,}\]|_{3,}|\bTBD\b/.test(v.proposedText ?? '')),
+    'an unfilled blank reads as finished, which is worse than an obvious gap',
   )
 }
 

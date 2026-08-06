@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from typing import Any, Literal
 import asyncio
 import json
+import re
 from ..jsonish import loads_lenient
 import os
 
@@ -489,6 +490,18 @@ Typical use: standard negotiation.
 Typical use: high-value deal or we have leverage.
 
 Rules:
+ • CARRY THE PLAYBOOK'S NUMBERS THROUGH EXACTLY. Where a position states a \
+figure — a multiplier, a cap, a notice period, a percentage, a duration — the \
+variant targeting that position MUST use that same figure. A cap of a \
+different size is not a softer version of the position, it is a DIFFERENT \
+position, and it will be applied to a real contract as though it were ours. \
+This binds "aggressive" to the preferred position's figures absolutely; \
+"moderate" should use them too unless it is deliberately landing on the \
+acceptable/fallback position, in which case use THAT position's figures.
+ • NEVER emit a placeholder. No "[AMOUNT]", "[MUTUALLY AGREED]", "[X]", \
+"[INSERT ...]", "TBD", or blank underscores — this text goes into a legal \
+document. If no figure is available, keep the original's formulation rather \
+than inventing a blank for someone to fill in.
  • changes[].before MUST be a verbatim substring of the original clause \
 text. If nothing clean to quote, skip that change entry.
  • proposedText must be a complete, self-contained rewrite (not a diff).
@@ -720,12 +733,40 @@ Rules:
  • Target the playbook position marked "preferred". If the original clause is \
 so far from it that a wholesale rewrite would read as a non-starter, target \
 "acceptable" or "fallback" instead and say which in the rationale.
+ • CARRY THE PLAYBOOK'S NUMBERS THROUGH EXACTLY. Where the position states a \
+figure — a multiplier, a cap, a notice period, a percentage, a duration — your \
+rewrite MUST use that same figure. Writing a cap of a different size is not a \
+softer version of the position, it is a DIFFERENT position, and it will be \
+applied to a real contract as though it were ours.
+ • NEVER emit a placeholder. No "[AMOUNT]", "[MUTUALLY AGREED]", "[X]", \
+"[INSERT ...]", "TBD", or blank underscores. This text goes into a legal \
+document. If the playbook gives you no figure and the original has none, keep \
+the original's formulation rather than inventing a blank to fill in.
  • changes[].before MUST be a verbatim substring of the original clause text. \
 Skip the entry rather than paraphrase.
  • proposedText is a complete self-contained clause, not a diff.
  • Never invent facts, figures, dates or party names. Carry over the ones in \
-the original unless a playbook rule explicitly requires otherwise.
+the original unless the playbook explicitly requires otherwise.
  • Stay in the register of the original clause."""
+
+
+# Bracketed ALL-CAPS spans and fill-in blanks — "[MUTUALLY AGREED AMOUNT]",
+# "[INSERT DATE]", "____". Deliberately case-sensitive on the bracket form so
+# ordinary citations like "[Exhibit A]" or "[Section 4]" are not caught: those
+# are references, not blanks.
+_PLACEHOLDER_RE = re.compile(
+    r"\[[A-Z0-9][A-Z0-9 _/&.,'-]{2,}\]"          # [MUTUALLY AGREED AMOUNT]
+    r"|\[\s*(?:insert|tbd|xxx+|amount|number|date|placeholder)\b[^\]]*\]"  # [insert ...]
+    r"|_{3,}"                                     # ____
+    r"|\bTBD\b",
+    re.IGNORECASE if False else 0,
+)
+
+
+def _find_placeholder(text: str) -> str | None:
+    """Return the first fill-in-the-blank found in a proposed clause, if any."""
+    m = _PLACEHOLDER_RE.search(text or "")
+    return m.group(0) if m else None
 
 
 def _clean_html(text: str) -> str:
@@ -835,6 +876,16 @@ Produce the rewrite now. JSON only."""
                     "clauseId": item.clauseId,
                     "clauseType": item.clauseType,
                     "error": "no_proposed_text",
+                }
+            # A prompt rule is a request; this is the guarantee. An unfilled
+            # blank spliced into a contract is worse than no rewrite at all, so
+            # refuse it rather than hand it to the reviewer looking finished.
+            blank = _find_placeholder(proposed)
+            if blank:
+                return {
+                    "clauseId": item.clauseId,
+                    "clauseType": item.clauseType,
+                    "error": f"placeholder_in_output: {blank[:40]}",
                 }
             return {
                 "clauseId":     item.clauseId,

@@ -209,8 +209,7 @@ Grounding must improve at the same time: pass **all** position types, not just
 `preferred`, so the model can aim at `acceptable` when `preferred` is
 unreachable — which is what a negotiator actually does.
 
-**Check:** `scripts/redline/p1-batch-propose.mjs`. **Result: 0/5 → 13/13**,
-stable across three consecutive runs.
+**Check:** `scripts/redline/p1-batch-propose.mjs`. **Result: 0/5 → 23/23.**
 
 Two clause types with deliberately distinct playbook positions (a 2x liability
 cap; Delaware governing law), so a batch that grounds every clause in one shared
@@ -240,6 +239,39 @@ would otherwise look completely plausible in the output.
 - The single-clause path now sends **all** position types too. It had only ever
   loaded `preferred`, so its "least aggressive" variant had nothing of ours to
   anchor on but the counterparty's text.
+
+#### A real quality defect, found by measuring rather than asserting
+
+The grounding assertion failed intermittently. Rather than widen it, the hit
+rate was measured — and the model was **substituting a different figure for the
+playbook's** in roughly 1 in 6 rewrites:
+
+| | Capped at all | Capped at **our 2x** |
+|---|---|---|
+| Before hardening | 12/12 | **10/12** |
+| After hardening | 16/16 | **16/16** |
+
+A cap at some other number is a perfectly good clause and a **wrong redline** —
+it quietly substitutes another position for the org's, and reads entirely
+convincingly while doing it. A reviewer skimming twelve clauses approves it.
+That is exactly the silent failure this feature exists to remove, and it would
+have shipped as "working".
+
+One run produced something worse: `SHALL BE LIMITED TO [MUTUALLY AGREED…` — an
+unfilled **placeholder** in contract text. It does not read as wrong; it reads
+as finished.
+
+Two fixes, because a prompt rule is a request and this needed a guarantee:
+
+- **Both** prompts (batch and single-clause) now state that carrying the
+  playbook's figures through exactly is non-negotiable, and say why: a cap of a
+  different size is a different position, applied to a real contract as though
+  it were ours.
+- A **deterministic guard** refuses any rewrite containing a fill-in-the-blank.
+  Verified it catches `[MUTUALLY AGREED AMOUNT]`, `[insert date here]`, `____`
+  and `TBD` while leaving legitimate citations like `[Exhibit A]` alone.
+
+Both are permanent assertions now, not one-off measurements.
 
 **A brittle assertion, caught and fixed.** The grounding check first demanded
 the literal token `2x` and failed on a run where the model wrote "two times"
