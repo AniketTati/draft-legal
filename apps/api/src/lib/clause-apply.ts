@@ -284,10 +284,22 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
     nextPlain = currentVersion.plainText + '\n\n[Amendment via redline_apply]\n' + args.proposedText
   }
 
-  const nextVersionNumber = currentVersion.versionNumber + 1
   const aggressionLabel = args.aggression ?? 'custom'
 
   const newVersion = await prisma.$transaction(async (tx) => {
+    // Derived INSIDE the transaction, from the contract's true high-water mark
+    // rather than from the version we happened to read earlier. Computing it
+    // outside meant two applies landing together both saw the same number and
+    // one died on @@unique([contractId, versionNumber]) — and Phase 2 applies
+    // several clauses at once, which makes that collision routine rather than
+    // rare. Max, not current+1: an apply can race an editor save that has
+    // already moved the contract on.
+    const highest = await tx.contractVersion.aggregate({
+      where: { contractId: contract.id },
+      _max:  { versionNumber: true },
+    })
+    const nextVersionNumber = (highest._max.versionNumber ?? currentVersion.versionNumber) + 1
+
     const v = await tx.contractVersion.create({
       data: {
         contractId:    contract.id,
@@ -324,6 +336,11 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
     })
     return v
   })
+
+  // Read back off the created row rather than the pre-transaction guess — the
+  // number is now decided inside the transaction, so this is the only value
+  // that is certainly the one on disk.
+  const nextVersionNumber = newVersion.versionNumber
 
   return {
     ok: true,
