@@ -22,8 +22,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..providers import build_llm
-from ..config import active_provider, active_model, smart_model, settings
+from ..router import resolve_llm
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +149,17 @@ Return ONLY valid JSON:
 
 async def step_understand(state: DraftState) -> DraftState:
     """Step 1: Parse user intent → contract type, parties, key terms."""
-    llm = build_llm(active_provider(), active_model())
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        trace_name="draft.understand",
+    )
 
     prompt = _UNDERSTAND_PROMPT.format(user_message=state["user_message"])
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a legal assistant. Extract structured information from contract requests."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
 
     try:
         parsed = loads_lenient(response.content)
@@ -246,7 +250,11 @@ async def step_select_template(state: DraftState) -> DraftState:
         return {**state, "selected_template_id": t["id"], "selected_template_name": t["name"]}
 
     # Otherwise ask LLM to choose
-    llm = build_llm(active_provider(), active_model())
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        trace_name="draft.select_template",
+    )
     templates_summary = [{"id": t["id"], "name": t["name"], "description": t.get("description", ""), "contractType": t.get("contractType")} for t in templates_data]
     prompt = _SELECT_TEMPLATE_PROMPT.format(
         intent_summary=state["intent_summary"],
@@ -254,10 +262,10 @@ async def step_select_template(state: DraftState) -> DraftState:
         templates_json=json.dumps(templates_summary, indent=2),
     )
 
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a legal template selection assistant."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
 
     try:
         parsed = loads_lenient(response.content)
@@ -288,7 +296,11 @@ async def step_fill_variables(state: DraftState) -> DraftState:
     if not variable_defs:
         return {**state, "variable_values": {}}
 
-    llm = build_llm(active_provider(), smart_model())
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=state.get("org_id"),
+        trace_name="draft.fill_variables",
+    )
     extracted_info = {
         "contract_type": state["contract_type"],
         "parties": state["parties"],
@@ -303,10 +315,10 @@ async def step_fill_variables(state: DraftState) -> DraftState:
         context_json=json.dumps(state.get("context", {}), indent=2),
     )
 
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a legal contract drafting assistant. Populate template variables with appropriate values."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
 
     try:
         variable_values = loads_lenient(response.content)
@@ -368,7 +380,11 @@ async def step_review(state: DraftState) -> DraftState:
     if not state.get("draft_html"):
         return {**state, "completeness_score": 0.0, "missing_fields": [], "review_notes": "Draft generation failed"}
 
-    llm = build_llm(active_provider(), active_model())
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        trace_name="draft.review",
+    )
     draft_preview = state["draft_html"][:3000]
 
     prompt = _REVIEW_PROMPT.format(
@@ -377,10 +393,10 @@ async def step_review(state: DraftState) -> DraftState:
         contract_type=state.get("contract_type", "UNKNOWN"),
     )
 
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a contract quality reviewer."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
 
     try:
         review = loads_lenient(response.content)

@@ -61,37 +61,58 @@ class ResolvedLlm:
 #   - Test harnesses that don't have a running Node server
 # Order matters: highest-quality first; first one with an env key wins.
 
+# OpenRouter is listed last in every LLM tier on purpose: it is a gateway, so
+# it only wins when no first-party key is configured. It MUST be present here.
+# config.active_provider() and providers.build_llm() both support openrouter,
+# so leaving it out made resolve_llm raise for every tier on an
+# OpenRouter-only deployment while the old build_llm fallbacks kept working —
+# which is exactly what made those fallbacks look like dead code when they
+# were in fact the only thing holding that deployment up.
 _PLATFORM_TIERS: dict[Tier, list[tuple[str, str]]] = {
-    "reasoning":  [("anthropic", "claude-opus-4-7"),
-                   ("openai",    "gpt-5"),
-                   ("openai",    "gpt-4.1"),
-                   ("google",    "gemini-2.5-pro")],
-    "default":    [("anthropic", "claude-sonnet-4-6"),
-                   ("openai",    "gpt-4.1"),
-                   ("google",    "gemini-2.5-pro")],
-    "fast":       [("anthropic", "claude-haiku-4-5"),
-                   ("openai",    "gpt-4.1-mini"),
-                   ("google",    "gemini-2.5-flash")],
-    "embed":      [("openai",    "text-embedding-3-large"),
-                   ("google",    "gemini-embedding-001")],
-    "rerank":     [("openai",    "gpt-4.1-mini")],
-    "vision_ocr": [("openai",    "gpt-4.1"),
-                   ("google",    "gemini-2.5-pro")],
+    "reasoning":  [("anthropic",  "claude-opus-4-7"),
+                   ("openai",     "gpt-5"),
+                   ("openai",     "gpt-4.1"),
+                   ("google",     "gemini-2.5-pro"),
+                   ("openrouter", "openai/gpt-4.1")],
+    "default":    [("anthropic",  "claude-sonnet-4-6"),
+                   ("openai",     "gpt-4.1"),
+                   ("google",     "gemini-2.5-pro"),
+                   ("openrouter", "openai/gpt-4.1")],
+    "fast":       [("anthropic",  "claude-haiku-4-5"),
+                   ("openai",     "gpt-4.1-mini"),
+                   ("google",     "gemini-2.5-flash"),
+                   ("openrouter", "google/gemini-2.5-flash")],
+    # embed/rerank/vision are not routed through OpenRouter — the registry has
+    # no gateway entry for those model classes.
+    "embed":      [("openai",     "text-embedding-3-large"),
+                   ("google",     "gemini-embedding-001")],
+    "rerank":     [("openai",     "gpt-4.1-mini")],
+    "vision_ocr": [("openai",     "gpt-4.1"),
+                   ("google",     "gemini-2.5-pro")],
 }
 
 _ENV_KEY = {
-    "openai":    "openai_api_key",
-    "anthropic": "anthropic_api_key",
-    "google":    "google_api_key",
+    "openai":     "openai_api_key",
+    "anthropic":  "anthropic_api_key",
+    "google":     "google_api_key",
+    "openrouter": "openrouter_api_key",
     # voyage/cohere/mistral added when those tiers light up
 }
+
+# Values that appear in unconfigured .env files and Secret Manager stubs. Treated
+# as absent: a placeholder that counts as a key resolves the tier to a provider
+# that then 401s at call time, instead of falling through to one that works.
+_PLACEHOLDER_KEYS = {'placeholder', 'todo', 'unset', 'changeme', 'none', 'null', ''}
 
 
 def _platform_key(provider: str) -> str | None:
     attr = _ENV_KEY.get(provider)
     if not attr:
         return None
-    return getattr(settings, attr, None) or None
+    key = getattr(settings, attr, None) or None
+    if key and key.strip().lower() in _PLACEHOLDER_KEYS:
+        return None
+    return key
 
 
 def _platform_resolve(tier: Tier) -> tuple[str, str, str] | None:
@@ -101,6 +122,62 @@ def _platform_resolve(tier: Tier) -> tuple[str, str, str] | None:
         if key:
             return provider, model, key
     return None
+
+
+def _tier_model_for(provider: str, tier: Tier) -> str | None:
+    """The platform default model listed for `provider` at `tier` (None if unlisted)."""
+    for p, m in _PLATFORM_TIERS[tier]:
+        if p == provider:
+            return m
+    return None
+
+
+# ─── Caller-pinned provider/model override ───────────────────────────────────
+
+class ModelOverrideUnavailable(RuntimeError):
+    """A caller-pinned provider has no model we can build for the tier."""
+
+
+def _apply_override(
+    *,
+    provider: str,
+    model: str,
+    api_key: str | None,
+    source: Source,
+    tier: Tier,
+    provider_override: str | None,
+    model_override: str | None,
+) -> tuple[str, str, str | None, Source]:
+    """Substitute a caller-pinned provider/model onto an already-resolved tuple.
+
+    Key resolution is deliberately left alone when the override only pins a
+    model, or pins the same provider we already resolved: the org's BYOK key
+    is still the correct key for that provider, so BYOK + Langfuse tracing
+    behave exactly as they do on the default path.
+
+    When the override names a DIFFERENT provider we must swap the key too.
+    BYOK keys are stored per provider (`getByokKey(orgId, provider)` in
+    apps/api/src/lib/aiRouter.ts) and Node's POST /api/internal/ai/resolve
+    accepts only (orgId, tier) — there is no way to ask it for the org's key
+    for an arbitrary provider. Sending the resolved key would hand provider A's
+    secret to provider B, so instead we fall back to the platform key for the
+    overridden provider and report source="platform" honestly.
+    """
+    if not provider_override and not model_override:
+        return provider, model, api_key, source
+
+    if provider_override and provider_override != provider:
+        new_model = model_override or _tier_model_for(provider_override, tier)
+        if not new_model:
+            raise ModelOverrideUnavailable(
+                f"provider_override={provider_override!r} has no platform default model "
+                f"for tier={tier}; pass model_override as well."
+            )
+        # `_platform_key` may return None for providers with no tier entry
+        # (e.g. openrouter) — build_llm then falls back to its own env key.
+        return provider_override, new_model, _platform_key(provider_override), "platform"
+
+    return provider, (model_override or model), api_key, source
 
 
 # ─── Public resolver ─────────────────────────────────────────────────────────
@@ -115,6 +192,8 @@ async def resolve_llm(
     thread_id: str | None = None,
     tool_name: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> ResolvedLlm:
     """
     Resolve a LangChain LLM for the given tier.
@@ -129,8 +208,28 @@ async def resolve_llm(
         r = await resolve_llm("default", org_id=..., trace_name="review.analyze")
         await r.llm.ainvoke(messages, config={"callbacks": r.callbacks})
 
+    `provider_override` / `model_override` let a caller pin a specific
+    provider and/or model (e.g. a request that carries an explicit
+    provider/model_id) WITHOUT dropping out of the router: BYOK key
+    resolution and the Langfuse callbacks are unchanged — only which
+    provider/model gets built is substituted. See _apply_override for the
+    one case where the key has to change (a different provider).
+
     Raises RuntimeError if no provider has a key for the tier.
     """
+    # A caller that supplies an org expects that org's configuration to be
+    # consulted. If we can't reach Node to do that, we silently serve the
+    # platform key — which is precisely the BYOK bypass, wearing a different
+    # hat. Missing config is a deployment mistake that would otherwise be
+    # invisible, so say so rather than degrading quietly.
+    if org_id and not (settings.api_url and settings.internal_service_secret):
+        import logging
+        logging.getLogger(__name__).warning(
+            "[router] org_id=%s was supplied but API_URL/INTERNAL_SERVICE_SECRET are not "
+            "configured — per-org BYOK keys and tier overrides CANNOT be applied, and this "
+            "request will bill the platform key.", org_id,
+        )
+
     if org_id and settings.api_url and settings.internal_service_secret:
         try:
             return await _resolve_via_node(
@@ -138,7 +237,13 @@ async def resolve_llm(
                 trace_name=trace_name, user_id=user_id,
                 thread_id=thread_id, tool_name=tool_name,
                 extra_metadata=extra_metadata,
+                provider_override=provider_override,
+                model_override=model_override,
             )
+        except ModelOverrideUnavailable:
+            # A bad caller-pinned override is a caller bug, not flaky infra —
+            # don't mask it behind the platform fallback.
+            raise
         except Exception as e:
             # Node unreachable / bad secret / 503 — fall back to platform env
             # so the agent doesn't hard-fail on transient infra. Logged loud
@@ -158,6 +263,7 @@ async def resolve_llm(
         trace_name=trace_name, org_id=org_id, user_id=user_id,
         thread_id=thread_id, tool_name=tool_name,
         extra_metadata=extra_metadata,
+        provider_override=provider_override, model_override=model_override,
     )
 
 
@@ -169,6 +275,8 @@ async def _resolve_via_node(
     thread_id: str | None,
     tool_name: str | None,
     extra_metadata: dict[str, Any] | None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> ResolvedLlm:
     """Internal — call Node's POST /api/internal/ai/resolve."""
     url = f"{settings.api_url.rstrip('/')}/api/internal/ai/resolve"
@@ -185,12 +293,13 @@ async def _resolve_via_node(
         trace_name=trace_name, org_id=org_id, user_id=user_id,
         thread_id=thread_id, tool_name=tool_name,
         extra_metadata=extra_metadata,
+        provider_override=provider_override, model_override=model_override,
     )
 
 
 def _build_resolved(
     *,
-    provider: str, model: str, api_key: str, source: Source,
+    provider: str, model: str, api_key: str | None, source: Source,
     tier: Tier, streaming: bool,
     trace_name: str,
     org_id: str | None,
@@ -198,8 +307,14 @@ def _build_resolved(
     thread_id: str | None,
     tool_name: str | None,
     extra_metadata: dict[str, Any] | None,
+    provider_override: str | None = None,
+    model_override: str | None = None,
 ) -> ResolvedLlm:
     """Shared construction path for both platform and Node resolution."""
+    provider, model, api_key, source = _apply_override(
+        provider=provider, model=model, api_key=api_key, source=source, tier=tier,
+        provider_override=provider_override, model_override=model_override,
+    )
     llm = build_llm(provider, model, streaming=streaming, api_key=api_key)
     handler = get_callback(
         trace_name=trace_name,
@@ -223,30 +338,11 @@ def _build_resolved(
     )
 
 
-# ─── Sync wrapper for old-style callers ──────────────────────────────────────
-# Some of the existing 7 agents are not async-friendly at the top level (they
-# call build_llm() inline in a state-graph node). For those we expose a sync
-# tier→llm helper that bypasses the Node call entirely. New code should
-# always use the async resolve_llm() above.
-
-def resolve_llm_platform_sync(
-    tier: Tier,
-    streaming: bool = True,
-    *,
-    trace_name: str = "llm.invoke",
-    extra_metadata: dict[str, Any] | None = None,
-) -> ResolvedLlm:
-    pick = _platform_resolve(tier)
-    if not pick:
-        raise RuntimeError(f"No provider configured for tier={tier}.")
-    provider, model, key = pick
-    return _build_resolved(
-        provider=provider, model=model, api_key=key,
-        source="platform", tier=tier, streaming=streaming,
-        trace_name=trace_name, org_id=None, user_id=None,
-        thread_id=None, tool_name=None,
-        extra_metadata=extra_metadata,
-    )
+# NOTE: `resolve_llm_platform_sync()` used to live here as a sync tier→llm
+# helper that deliberately skipped the Node call (and therefore per-org BYOK).
+# It was removed in Wave 3.5 — every remaining caller now awaits resolve_llm(),
+# which resolves per-org when an org_id is given and falls back to the same
+# platform env path when it isn't.
 
 
 # ─── Startup configuration check ─────────────────────────────────────────────

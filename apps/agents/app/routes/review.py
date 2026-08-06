@@ -55,6 +55,7 @@ async def _process_and_update(
         plain_text,
         contract_type=contract_type,
         custom_fields=custom_fields,
+        org_id=org_id,
     )
 
     if not result:

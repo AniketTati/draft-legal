@@ -12,7 +12,7 @@
  */
 import { prisma } from './prisma.js'
 import { applyPiiPolicy } from './pii-policy.js'
-import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError } from './costCap.js'
+import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from './costCap.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 
@@ -142,7 +142,13 @@ export async function runComplianceCheck({
   }
 
   // Best-effort cost tracking.
-  recordCost(orgId, estimateCostUsd(text.length)).catch(() => {})
+  recordUsage(orgId, estimateCostUsd(text.length), {
+    provider: String((parsed as Record<string, unknown>).provider ?? 'unknown'),
+    model:    String((parsed as Record<string, unknown>).model ?? 'unknown'),
+    tier:     'default',
+    toolName: 'check_compliance',
+    inputChars: text.length,
+  }).catch(() => {})
 
   if (parsed.error) {
     return { ok: false, report: null, error: parsed.error }

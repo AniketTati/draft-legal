@@ -21,8 +21,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..config import active_provider, active_model
-from ..providers import build_llm
+from ..router import ResolvedLlm, resolve_llm
 
 # ─── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -77,12 +76,30 @@ def _format_clauses(clause_matches: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _resolved_api_key(resolved: ResolvedLlm) -> str | None:
+    """Pull the API key resolve_llm decided on back off the built LangChain model.
+
+    ResolvedLlm exposes provider/model/source but not the raw key, and the
+    citations path needs it for the bare anthropic SDK client. ChatAnthropic
+    stores it as `anthropic_api_key` (a pydantic SecretStr), so read it from
+    there rather than from os.getenv — that's what keeps the org's BYOK key in
+    play instead of silently falling back to the platform key.
+    """
+    secret = getattr(resolved.llm, "anthropic_api_key", None)
+    if secret is None:
+        return None
+    getter = getattr(secret, "get_secret_value", None)
+    value = getter() if callable(getter) else secret
+    return str(value) or None
+
+
 # ─── Public interface ─────────────────────────────────────────────────────────
 
 async def run_ask(
     question: str,
     clause_matches: list[dict],
     contract_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, Any]:
     if not clause_matches:
         return {
@@ -90,9 +107,18 @@ async def run_ask(
             "citations": [],
         }
 
-    provider = active_provider()
+    # Single resolution point: the org's BYOK key + per-org model override +
+    # Langfuse callbacks. Both the citations path and the prompt path below
+    # use this same resolved tuple — neither reads env keys directly.
+    resolved = await resolve_llm(
+        "default",
+        org_id=org_id,
+        streaming=True,
+        trace_name="ask.answer",
+    )
+
     use_anthropic_citations = (
-        provider == "anthropic"
+        resolved.provider == "anthropic"
         and os.getenv("ANTHROPIC_CITATIONS_ENABLED", "1") != "0"
     )
 
@@ -100,10 +126,10 @@ async def run_ask(
         # P7.7.2 — native Citations API path. We talk to the SDK
         # directly because LangChain's wrapper doesn't yet expose the
         # citation-block deltas from Claude's response.
-        return await _ask_anthropic_with_citations(question, clause_matches, contract_id)
+        return await _ask_anthropic_with_citations(question, clause_matches, contract_id, resolved)
 
     # Fallback: prompt-based [Clause N] citations via LangChain.
-    llm = build_llm(provider=provider, model_id=active_model())
+    llm = resolved.llm
 
     context = _format_clauses(clause_matches)
     scope = f"Contract ID: {contract_id}" if contract_id else "Portfolio-wide query"
@@ -112,7 +138,7 @@ async def run_ask(
         resp = await llm.ainvoke([
             SystemMessage(content=_ASK_SYSTEM),
             HumanMessage(content=f"Scope: {scope}\n\nClauses:\n{context}\n\nQuestion: {question}"),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         answer = resp.content
     except Exception as e:
         answer = f"Could not generate answer: {e}"
@@ -141,12 +167,17 @@ async def _ask_anthropic_with_citations(
     question: str,
     clause_matches: list[dict],
     contract_id: str | None,
+    resolved: ResolvedLlm,
 ) -> dict[str, Any]:
     """
     Native Citations API path. Each clause is wrapped as a `document`
     content block with `citations: { enabled: true }`. Claude returns
     structured citation deltas tagging the exact span it relied on.
     We map those spans back to clauseIds for the frontend.
+
+    The raw anthropic SDK is used here (LangChain doesn't surface citation
+    deltas yet), but the key and model still come from `resolved` — i.e.
+    the org's BYOK key when they have one, never the platform env key.
 
     Reference: https://docs.anthropic.com/en/docs/build-with-claude/citations
     """
@@ -161,12 +192,12 @@ async def _ask_anthropic_with_citations(
             "mode": "fallback",
         }
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = _resolved_api_key(resolved)
     if not api_key:
         return {"answer": "ANTHROPIC_API_KEY not set", "citations": [], "mode": "error"}
 
     client = AsyncAnthropic(api_key=api_key)
-    model = active_model() or "claude-sonnet-4-5-20250929"
+    model = resolved.model or "claude-sonnet-4-5-20250929"
 
     # Build document blocks. We use plain-text type since clauses are
     # already extracted plain English — no PDF round-trip needed.
@@ -191,6 +222,18 @@ async def _ask_anthropic_with_citations(
         {"type": "text", "text": f"Question: {question}"},
     ]
 
+    # No Langfuse trace on this call. `resolved.callbacks` holds a LangChain
+    # CallbackHandler, and `client.messages.create` is the raw Anthropic SDK —
+    # it has no `callbacks`/`config` parameter to hand them to. Tracing this
+    # path needs a Langfuse-native span (langfuse v4 `start_as_current_
+    # generation` / `@observe`) rather than the LangChain callback the rest of
+    # the codebase uses.
+    #
+    # NOTE: as of this writing that is moot — app/tracing.py imports
+    # `langfuse.callback`, which does not exist in the installed langfuse
+    # 4.6.1 (it moved to `langfuse.langchain`), so `get_callback()` returns
+    # None and `resolved.callbacks` is `[]` for EVERY call site, not just this
+    # one. Langfuse is silently off platform-wide; fix tracing.py first.
     try:
         resp = await client.messages.create(
             model=model,

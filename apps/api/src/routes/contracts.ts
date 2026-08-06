@@ -15,7 +15,7 @@ import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { applyPiiPolicy } from '../lib/pii-policy.js'
-import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError } from '../lib/costCap.js'
+import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
@@ -837,10 +837,11 @@ export async function contractRoutes(app: FastifyInstance) {
     const { id, clauseId } = req.params as { id: string; clauseId: string }
     const { orgId, sub: userId } = req.user
     const body = (req.body ?? {}) as {
-      proposedText?: string
-      aggression?:   string
-      rationale?:    string
-      changes?:      Array<{ before: string; after: string; reason?: string }>
+      proposedText?:        string
+      aggression?:          string
+      rationale?:           string
+      changes?:             Array<{ before: string; after: string; reason?: string }>
+      allowAppendFallback?: boolean
     }
     // This writes into the contract body, so validate rather than trust the
     // cast. Bounds mirror RedlineApplySchema on the internal route — both paths
@@ -880,8 +881,13 @@ export async function contractRoutes(app: FastifyInstance) {
       aggression: body.aggression,
       rationale:  body.rationale,
       changes,
+      allowAppendFallback: body.allowAppendFallback === true,
     })
-    if (!result.ok) return reply.status(result.status).send({ detail: result.detail })
+    // Forward the machine-readable code so the client can tell "the clause
+    // moved, offer to append" apart from a generic failure.
+    if (!result.ok) {
+      return reply.status(result.status).send({ detail: result.detail, code: result.code })
+    }
 
     // Best-effort: the version is already written and currentVersionId flipped,
     // so a failed audit write must not turn a successful apply into a 500.
@@ -2340,9 +2346,16 @@ export async function contractRoutes(app: FastifyInstance) {
     }
     const parsed = await pyRes.json() as Record<string, unknown>
 
-    // P7.5.2 — record estimated cost.
-    recordCost(orgId, estimateCostUsd(text.length)).catch((e) => {
-      req.log.warn({ err: e }, '[costCap] recordCost(renewal_advice) failed')
+    // Record estimated cost against the cap, and the call against the admin
+    // usage panel. provider/model are what the agents service actually ran.
+    recordUsage(orgId, estimateCostUsd(text.length), {
+      provider: String(parsed.provider ?? 'unknown'),
+      model:    String(parsed.model ?? 'unknown'),
+      tier:     'default',
+      toolName: 'renewal_advice',
+      inputChars: text.length,
+    }).catch((e) => {
+      req.log.warn({ err: e }, '[costCap] recordUsage(renewal_advice) failed')
     })
 
     const nextMeta: Record<string, unknown> = {

@@ -98,6 +98,53 @@ export async function applyPiiPolicy(
   return { text: result.text, mode, counts: result.counts, total: result.total }
 }
 
+/**
+ * Redact a batch of excerpts under one policy read and ONE audit event.
+ *
+ * The search and comparison tools return many excerpts per call — a portfolio
+ * search over 20 contracts, a 10x10 comparison matrix. Calling applyPiiPolicy
+ * per excerpt would read the policy 20 times and write 20 `PII_REDACTED` audit
+ * rows for what is, from the user's point of view, a single action. That buries
+ * the audit trail it exists to provide.
+ *
+ * Returns the redacted texts in input order, plus the combined counts.
+ */
+export async function applyPiiPolicyBatch(
+  orgId: string,
+  texts: string[],
+  opts: ApplyOptions,
+): Promise<{ texts: string[]; mode: PiiMode; counts: Partial<Record<PiiKind, number>>; total: number }> {
+  const mode: PiiMode = opts.override ?? await getOrgPiiMode(orgId)
+  if (mode === 'off' || texts.length === 0) {
+    return { texts, mode, counts: {}, total: 0 }
+  }
+
+  const counts: Partial<Record<PiiKind, number>> = {}
+  let total = 0
+  const out = texts.map(t => {
+    const r = redactPii(t ?? '', mode)
+    for (const [kind, n] of Object.entries(r.counts)) {
+      counts[kind as PiiKind] = (counts[kind as PiiKind] ?? 0) + (n ?? 0)
+    }
+    total += r.total
+    return r.text
+  })
+
+  if (total > 0) {
+    createAuditEvent({
+      orgId,
+      userId: opts.userId,
+      action: AuditAction.PII_REDACTED,
+      resourceType: opts.contractId ? 'contract' : 'request',
+      resourceId: opts.contractId ?? 'system',
+      metadata: { surface: opts.surface, mode, counts, total, excerpts: texts.length },
+    }).catch((err: unknown) => {
+      console.error('[pii-policy] failed to write audit event:', err)
+    })
+  }
+  return { texts: out, mode, counts, total }
+}
+
 /** Test/admin helper: clear the cache when an org's setting changes. */
 export function clearOrgPiiModeCache(orgId?: string): void {
   if (orgId) orgModeCache.delete(orgId)

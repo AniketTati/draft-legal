@@ -36,6 +36,10 @@ class PlaybookReviewRequest(BaseModel):
     clauses: list[Clause] = []
     playbookPositions: list[dict] = []
     contractType: Optional[str] = None
+    # Optional (not required) so an older worker build that doesn't yet send
+    # orgId keeps working during a rolling deploy — it just resolves against
+    # the platform key instead of the org's BYOK key.
+    orgId: Optional[str] = None
 
 
 @router.post("/playbook-review")
@@ -49,6 +53,7 @@ async def playbook_review(body: PlaybookReviewRequest):
             clauses=[c.model_dump() for c in body.clauses],
             playbook_positions=body.playbookPositions,
             contract_type=body.contractType or "general commercial",
+            org_id=body.orgId,
         )
     except Exception as e:
         logger.error("[playbook-review] FAILED contractId=%s: %s", body.contractId, e)

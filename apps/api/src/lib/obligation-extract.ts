@@ -12,7 +12,7 @@
  */
 import { prisma } from './prisma.js'
 import { applyPiiPolicy } from './pii-policy.js'
-import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError } from './costCap.js'
+import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from './costCap.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 
@@ -114,8 +114,14 @@ export async function extractObligationsForContract({
     error?: string
   }
 
-  // Best-effort cost tracking.
-  recordCost(orgId, estimateCostUsd(text.length)).catch(() => {})
+  // Best-effort cost + usage tracking.
+  recordUsage(orgId, estimateCostUsd(text.length), {
+    provider: String((parsed as Record<string, unknown>).provider ?? 'unknown'),
+    model:    String((parsed as Record<string, unknown>).model ?? 'unknown'),
+    tier:     'default',
+    toolName: 'extract_obligations',
+    inputChars: text.length,
+  }).catch(() => {})
 
   // Replace OPEN/OVERDUE rows; preserve COMPLETED.
   const incoming = (parsed.obligations ?? []) as Array<Record<string, unknown>>

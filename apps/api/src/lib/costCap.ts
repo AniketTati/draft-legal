@@ -121,6 +121,77 @@ export async function recordCost(orgId: string, costUsd: number): Promise<number
   return newInternal / USD_TO_INTERNAL
 }
 
+/**
+ * What an AI call was, for the admin usage dashboard.
+ *
+ * `provider` and `model` come back from the agents service in its response
+ * body, so callers pass what actually ran rather than what was configured.
+ */
+export interface UsageDetail {
+  provider:      string
+  model:         string
+  tier:          string
+  /** null for raw completions that aren't a named agent tool. */
+  toolName?:     string | null
+  inputChars?:   number
+  outputChars?:  number
+  /** BYOK calls are the org's own spend and don't count toward the platform cap. */
+  isByok?:       boolean
+}
+
+/**
+ * Record an AI call: increment the daily cap counter AND persist a row for the
+ * admin usage dashboard.
+ *
+ * `GET /admin/ai/usage` aggregates OrgUsageDaily, but nothing ever wrote to it,
+ * so the panel reported $0.00 / 0 tokens forever regardless of real traffic —
+ * silently wrong, which is worse than empty. This is the writer.
+ *
+ * Fire-and-forget by design: it runs after the response has been streamed, so a
+ * database hiccup must never turn a served request into an error. Both halves
+ * swallow their own failures.
+ */
+export async function recordUsage(
+  orgId: string,
+  costUsd: number,
+  detail: UsageDetail,
+): Promise<void> {
+  const isByok = detail.isByok ?? false
+  // BYOK spend is the org's own; it must not consume the platform cap.
+  if (!isByok) {
+    await recordCost(orgId, costUsd).catch(() => {})
+  }
+
+  const inputTokens  = Math.ceil((detail.inputChars ?? 0) / 4)
+  const outputTokens = Math.ceil((detail.outputChars ?? 0) / 4)
+  const date = new Date().toISOString().slice(0, 10)
+
+  // toolName is part of the unique key, and Postgres treats NULLs as distinct
+  // in a unique index — so a null would create a new row on every call instead
+  // of accumulating. Use a sentinel for "not a named tool".
+  const toolName = detail.toolName ?? '-'
+
+  await prisma.orgUsageDaily.upsert({
+    where: {
+      orgId_date_provider_model_tier_toolName_isByok: {
+        orgId, date, provider: detail.provider, model: detail.model,
+        tier: detail.tier, toolName, isByok,
+      },
+    },
+    update: {
+      inputTokens:  { increment: inputTokens },
+      outputTokens: { increment: outputTokens },
+      costUsd:      { increment: costUsd },
+      callCount:    { increment: 1 },
+    },
+    create: {
+      orgId, date, provider: detail.provider, model: detail.model,
+      tier: detail.tier, toolName, isByok,
+      inputTokens, outputTokens, costUsd, callCount: 1,
+    },
+  }).catch(() => { /* usage reporting must never break a served request */ })
+}
+
 /** Read-only: USD spent today by the org (platform-paid only). */
 export async function getDailyCost(orgId: string): Promise<number> {
   const raw = await redis.get(bucketKey(orgId))

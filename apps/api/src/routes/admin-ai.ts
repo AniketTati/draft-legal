@@ -351,6 +351,10 @@ export async function adminAiRoutes(app: FastifyInstance) {
     return reply.send({
       windowDays: 30,
       since: sinceStr,
+      // These are derived from a characters-to-tokens heuristic at the call
+      // site, not from provider billing. Flagged so the UI can label them as
+      // estimates rather than presenting them as measured spend.
+      estimated: true,
       totals: { ...totals, costUsd: Number(totals.costUsd.toFixed(6)) },
       byDay: Object.values(byDay),
       byProvider: Object.values(byProvider),

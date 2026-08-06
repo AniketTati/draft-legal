@@ -19,10 +19,11 @@
  * capture is a future hardening when we turn threads into a "never lose a
  * conversation" guarantee.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/auth.js'
+import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 
@@ -32,11 +33,53 @@ const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
 // D.3.2 — registry of write tools the ActionPreview can execute. Each entry
 // is a thin pass-through to the matching /internal/ai/tools/:name endpoint.
 // Adding a new write tool here + in internal-ai.ts is the full path.
-const WRITE_TOOLS = new Set([
-  'comment_add', 'request_create', 'contract_update',
-  'approval_route', 'contract_create_from_template',
-  'redline_apply',
+//
+// W0-1 — the value is the permission the tool's REST twin already enforces.
+// This is the ONLY layer where the caller's role can be checked: the internal
+// endpoints downstream authenticate the *service*, and requireAuth maps a
+// valid internal secret to roles:['ADMIN']. Without this map, any authenticated
+// user — VIEWER, FINANCE — could perform writes their own REST routes reject.
+const WRITE_TOOLS = new Map<string, [action: string, resource: string]>([
+  ['comment_add',                   ['edit',   'contract']], // comments.ts:52
+  ['request_create',                ['create', 'request']],  // requests.ts:82
+  ['contract_update',               ['edit',   'contract']], // contracts.ts:1001
+  ['approval_route',                ['edit',   'contract']], // contracts.ts:1907
+  ['contract_create_from_template', ['create', 'contract']], // contracts.ts:306
+  ['redline_apply',                 ['edit',   'contract']], // contracts.ts:625
 ])
+
+/**
+ * Evaluate the permission a write tool requires for the calling user.
+ *
+ * `requirePermission` can't be used as a preHandler here because the required
+ * permission depends on the request body (apply) or on a database row (undo),
+ * neither of which is known at route-registration time — so we call the same
+ * underlying pair it does.
+ */
+async function checkToolPermission(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  toolName: string,
+): Promise<boolean> {
+  const mapped = WRITE_TOOLS.get(toolName)
+  if (!mapped) {
+    reply.status(400).send({ detail: `Tool "${toolName}" is not a registered write tool` })
+    return false
+  }
+  const [action, resource] = mapped
+  const { orgId, roles } = req.user
+  const permissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, roles)
+  if (!evaluatePermission(permissions, action, resource).granted) {
+    reply.status(403).send({
+      type:   'https://httpstatuses.com/403',
+      title:  'Forbidden',
+      status: 403,
+      detail: `Missing permission: ${action}:${resource}`,
+    })
+    return false
+  }
+  return true
+}
 
 // D.5.5 — contract_update actions that are reversible (we snapshot the
 // before-value in the tool-call output + an undo handler restores it).
@@ -304,9 +347,9 @@ export async function agentThreadRoutes(app: FastifyInstance) {
     const { orgId, sub: userId } = req.user
     const { id: threadId } = req.params as { id: string }
 
-    if (!WRITE_TOOLS.has(body.toolName)) {
-      return reply.status(400).send({ detail: `Tool "${body.toolName}" is not a registered write tool` })
-    }
+    // W0-1 — allowlist *and* per-tool permission. Both replies are sent by the
+    // helper, so an early return here is a completed response.
+    if (!await checkToolPermission(req, reply, body.toolName)) return
 
     const thread = await prisma.agentThread.findFirst({
       where: { id: threadId, orgId, userId },
@@ -455,6 +498,12 @@ export async function agentThreadRoutes(app: FastifyInstance) {
       where: { id: toolCallId, threadId },
     })
     if (!toolCall) return reply.status(404).send({ detail: 'Tool call not found' })
+
+    // W0-1 — undoing a write is itself a write: it needs the same permission
+    // the original tool did. The tool name is only knowable from the row, which
+    // is why this check lives here rather than in a preHandler.
+    if (!await checkToolPermission(req, reply, toolCall.toolName)) return
+
     if (!toolCall.reversible) {
       return reply.status(400).send({ detail: 'This action is not reversible' })
     }

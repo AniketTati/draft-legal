@@ -25,8 +25,8 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..jsonish import loads_lenient
-from ..providers import build_llm
-from ..config import active_provider, smart_model
+from ..router import resolve_llm
+from ..untrusted import sanitize_untrusted, wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ async def run_playbook_review(
     clauses: list[dict],
     playbook_positions: list[dict],
     contract_type: str,
+    org_id: str | None = None,
 ) -> dict:
     """
     Returns:
@@ -112,27 +113,44 @@ async def run_playbook_review(
             "playbookPositions": 0,
         }
 
+    # Clause bodies are verbatim counterparty text. Truncate FIRST (so framing is
+    # never what gets cut), then sanitize each body while it still has real line
+    # breaks — json.dumps escapes newlines to "\n", which would hide a forged
+    # leading "[chip]:" marker from the line-anchored sanitizer.
     trimmed = [
         {
             "id": c.get("id"),
             "clauseType": c.get("clauseType"),
             "sectionRef": c.get("sectionRef"),
-            "content": (c.get("content") or "")[:_MAX_CLAUSE_CHARS],
+            "content": sanitize_untrusted((c.get("content") or "")[:_MAX_CLAUSE_CHARS]),
         }
         for c in clauses[:_MAX_CLAUSES]
     ]
 
-    llm = build_llm(active_provider(), smart_model())
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=org_id,
+        streaming=True,
+        trace_name="playbook_review.score_clauses",
+    )
     prompt = _REVIEW_PROMPT.format(
+        # Our playbook positions are authored by the customer's own legal team,
+        # not the counterparty — they are trusted instructions-adjacent content
+        # and are deliberately NOT framed as untrusted.
         playbook_json=json.dumps(playbook_positions, indent=2)[:60_000],
         contract_type=contract_type or "general commercial",
-        clauses_json=json.dumps(trimmed, indent=2),
+        # The clause payload is counterparty text. Framed once for the whole
+        # block (~120 tokens) rather than per clause.
+        clauses_json=wrap_untrusted_document(
+            json.dumps(trimmed, indent=2),
+            source="counterparty contract clause text",
+        ),
     )
 
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
     findings = _parse_json(response.content)
     if not isinstance(findings, list):
         logger.warning("[playbook-review] model did not return a JSON array — treating as no findings")

@@ -97,6 +97,7 @@ export async function proposeClauseAlternatives(args: {
       rules:            preferred?.rules ?? null,
       contractType:     contract.type,
       instructions,
+      orgId,                       // per-org BYOK key + Langfuse tracing
     }),
   })
   if (!pyRes.ok) {

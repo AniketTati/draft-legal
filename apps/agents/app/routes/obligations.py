@@ -24,8 +24,6 @@ import os
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
-from app.providers import build_llm
-from app.config import active_provider, smart_model
 from app.router import resolve_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -88,24 +86,22 @@ async def extract_obligations(
     if not text:
         return {"obligations": [], "summary": "Empty contract text — nothing to extract."}
 
-    # P7.5.3 — go through resolve_llm so Langfuse callbacks attach.
-    # Falls back to build_llm if router/keys aren't configured for tracing.
-    try:
-        resolved = await resolve_llm(
-            "default",
-            org_id=req.orgId,
-            streaming=False,
-            trace_name="obligations.extract",
-        )
-        llm = resolved.llm
-        callbacks = resolved.callbacks
-        provider = getattr(resolved, "provider", active_provider())
-        model = getattr(resolved, "model", smart_model())
-    except Exception:
-        provider = active_provider()
-        model = smart_model()
-        llm = build_llm(provider, model, streaming=False)
-        callbacks = []
+    # Resolve through the router so the org's own key (BYOK), its tier
+    # override, and Langfuse callbacks all apply. There is deliberately no
+    # build_llm fallback: resolve_llm already falls back to platform env
+    # internally, so a fallback here could only fire when NO provider has a key
+    # at all — at which point build_llm has nothing to build with either, and
+    # its only real effect was to keep a platform-key path alive in the source.
+    resolved = await resolve_llm(
+        "default",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="obligations.extract",
+    )
+    llm = resolved.llm
+    callbacks = resolved.callbacks
+    provider = resolved.provider
+    model = resolved.model
 
     anchor = f"\nEffective date: {req.effectiveDate}" if req.effectiveDate else ""
     user = f"""Contract type: {req.contractType}{anchor}

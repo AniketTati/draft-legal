@@ -39,8 +39,6 @@ import os
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 
-from app.providers import build_llm
-from app.config import active_provider, smart_model
 from app.router import resolve_llm
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -112,16 +110,22 @@ async def renewal_advice(
             "timeline":          "",
         }
 
-    # P7.5.3 — Langfuse tracing via resolve_llm.
-    try:
-        resolved = await resolve_llm("default", org_id=req.orgId, streaming=False, trace_name="renewal.advice")
-        llm = resolved.llm
-        callbacks = resolved.callbacks
-    except Exception:
-        provider = active_provider()
-        model = smart_model()
-        llm = build_llm(provider, model, streaming=False)
-        callbacks = []
+    # Resolve through the router so the org's own key (BYOK), its tier
+    # override, and Langfuse callbacks all apply. No build_llm fallback — see
+    # the note in obligations.py: resolve_llm already falls back to platform
+    # env internally, so the outer fallback could never do anything useful.
+    #
+    # provider/model MUST be bound here, not only in a failure branch: they are
+    # read unconditionally by the success return below. They previously lived
+    # in an except: block, so every SUCCESSFUL resolve raised UnboundLocalError
+    # at the return, which the broad except swallowed into the degraded
+    # "pause / low confidence" payload — this endpoint only produced real
+    # advice when the router failed.
+    resolved = await resolve_llm("default", org_id=req.orgId, streaming=False, trace_name="renewal.advice")
+    llm = resolved.llm
+    callbacks = resolved.callbacks
+    provider = resolved.provider
+    model = resolved.model
 
     ob_blob = ""
     if req.obligations:

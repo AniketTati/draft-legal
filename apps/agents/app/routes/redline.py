@@ -85,6 +85,7 @@ async def _process_redline(
                 diff_html=diff_html,
                 contract_type=contract_type or "general commercial",
                 playbook_positions=playbook_positions,
+                org_id=org_id,
             )
         except Exception as e:
             logger.error("[redline] Pipeline failed: %s", e)

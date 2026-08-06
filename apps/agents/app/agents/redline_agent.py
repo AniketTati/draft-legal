@@ -19,8 +19,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..providers import build_llm
-from ..config import active_provider, active_model, smart_model
+from ..router import resolve_llm
+from ..untrusted import wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # ─── State ────────────────────────────────────────────────────────────────────
 
 class RedlineState(TypedDict):
+    org_id:            str | None
     diff_html:         str
     contract_type:     str
     playbook_positions: list[dict]
@@ -122,14 +123,27 @@ def _parse_json(text: str) -> Any:
 
 async def step_extract_changes(state: RedlineState) -> RedlineState:
     """Step 1: Parse ins/del HTML into structured ChangeItem list."""
-    llm = build_llm(active_provider(), active_model())
-    prompt = _EXTRACT_PROMPT.format(diff_html=state["diff_html"][:80_000])
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        streaming=True,
+        trace_name="redline.extract_changes",
+    )
+    # The diff is counterparty-authored. Truncate the RAW html FIRST, then wrap —
+    # slicing after wrapping could sever the closing sentinel and leave the model
+    # with an unterminated data block.
+    prompt = _EXTRACT_PROMPT.format(
+        diff_html=wrap_untrusted_document(
+            state["diff_html"][:80_000],
+            source="contract diff HTML (counterparty tracked changes)",
+        )
+    )
 
     try:
-        response = await llm.ainvoke([
+        response = await resolved.llm.ainvoke([
             SystemMessage(content="You extract structured changes from HTML diffs. Return only valid JSON."),
             HumanMessage(content=prompt),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         changes = _parse_json(response.content)
         if not isinstance(changes, list):
             changes = []
@@ -145,9 +159,21 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
     if not state["changes"]:
         return {**state, "scored_changes": [], "requires_human_gate": False, "confidence": 1.0}
 
-    llm = build_llm(active_provider(), smart_model())
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=state.get("org_id"),
+        streaming=True,
+        trace_name="redline.score_changes",
+    )
+    # playbook_json is OUR position library — trusted, left unwrapped.
+    # changes_json carries verbatim counterparty language (ourText/theirText/
+    # context) lifted straight out of the diff, so it stays untrusted on this
+    # second pass. This is the call that sets requires_human_gate.
     playbook_json = json.dumps(state["playbook_positions"], indent=2)
-    changes_json = json.dumps(state["changes"], indent=2)
+    changes_json = wrap_untrusted_document(
+        json.dumps(state["changes"], indent=2),
+        source="changes extracted verbatim from the counterparty redline",
+    )
     prompt = _SCORE_PROMPT.format(
         playbook_json=playbook_json,
         contract_type=state["contract_type"],
@@ -155,10 +181,10 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
     )
 
     try:
-        response = await llm.ainvoke([
+        response = await resolved.llm.ainvoke([
             SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),
             HumanMessage(content=prompt),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         scored = _parse_json(response.content)
         if not isinstance(scored, list):
             scored = state["changes"]
@@ -191,9 +217,19 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
     final_changes = list(state["scored_changes"])  # copy
 
     if counter_changes:
-        llm = build_llm(active_provider(), smart_model())
+        resolved = await resolve_llm(
+            "reasoning",
+            org_id=state.get("org_id"),
+            streaming=True,
+            trace_name="redline.generate_counters",
+        )
         playbook_json = json.dumps(state["playbook_positions"], indent=2)
-        counter_json = json.dumps(counter_changes, indent=2)
+        # Same verbatim counterparty language as step 2, narrowed to the
+        # changes we intend to counter.
+        counter_json = wrap_untrusted_document(
+            json.dumps(counter_changes, indent=2),
+            source="changes extracted verbatim from the counterparty redline",
+        )
         prompt = _COUNTER_PROMPT.format(
             contract_type=state["contract_type"],
             playbook_json=playbook_json,
@@ -201,10 +237,10 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
         )
 
         try:
-            response = await llm.ainvoke([
+            response = await resolved.llm.ainvoke([
                 SystemMessage(content="You draft contract counter-proposals. Return only valid JSON."),
                 HumanMessage(content=prompt),
-            ])
+            ], config={"callbacks": resolved.callbacks})
             countered = _parse_json(response.content)
             if isinstance(countered, list):
                 # Merge counter proposals back into final_changes by changeId
@@ -263,9 +299,11 @@ async def run_redline(
     diff_html: str,
     contract_type: str = "general commercial",
     playbook_positions: list[dict] | None = None,
+    org_id: str | None = None,
 ) -> dict:
     """Run the 3-step redline analysis pipeline."""
     initial: RedlineState = {
+        "org_id":             org_id,
         "diff_html":          diff_html,
         "contract_type":      contract_type,
         "playbook_positions": playbook_positions or [],

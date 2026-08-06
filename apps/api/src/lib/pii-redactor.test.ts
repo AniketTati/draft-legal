@@ -65,30 +65,75 @@ describe('redactPii', () => {
     })
   })
 
-  describe('Email', () => {
+  // Email and phone are opt-in — see CONTRACT_TEXT_EXEMPT. In a contract, a
+  // notice-clause email is an operative term, not incidental personal data, so
+  // redacting it by default breaks the answer to "where do I send notice?".
+  // These tests pin that the detection still works when a caller asks for it.
+  describe('Email (opt-in)', () => {
     it('redacts a standard email', () => {
-      const r = redactPii('Contact me at jane@example.com', 'redact')
+      const r = redactPii('Contact me at jane@example.com', 'redact', { kinds: ['EMAIL'] })
       expect(r.text).toBe('Contact me at [REDACTED:EMAIL]')
       expect(r.counts.EMAIL).toBe(1)
     })
     it('handles plus-addressing', () => {
-      const r = redactPii('Email: alice+work@example.com', 'redact')
+      const r = redactPii('Email: alice+work@example.com', 'redact', { kinds: ['EMAIL'] })
       expect(r.text).toContain('[REDACTED:EMAIL]')
+    })
+    it('is NOT redacted by default, so notice clauses survive', () => {
+      const notice = 'All notices shall be sent to legal@acmecorp.com.'
+      expect(redactPii(notice, 'redact').text).toBe(notice)
     })
   })
 
-  describe('Phone', () => {
+  describe('Phone (opt-in)', () => {
     it('redacts a US phone with parentheses', () => {
-      const r = redactPii('Call (415) 555-0142', 'redact')
+      const r = redactPii('Call (415) 555-0142', 'redact', { kinds: ['PHONE'] })
       expect(r.text).toContain('[REDACTED:PHONE]')
     })
+    it('replaces the WHOLE parenthesised number, leaving no orphan bracket', () => {
+      // The old pattern put \b before the optional '(', where a word boundary
+      // can never match, so it matched from the digits on and left '(' behind —
+      // corrupting the sentence it was meant to protect.
+      const r = redactPii('Phone: (415) 555-0142.', 'redact', { kinds: ['PHONE'] })
+      expect(r.text).toBe('Phone: [REDACTED:PHONE].')
+    })
     it('redacts an E.164 number', () => {
-      const r = redactPii('Reach out: +1 415 555 0142', 'redact')
+      const r = redactPii('Reach out: +1 415 555 0142', 'redact', { kinds: ['PHONE'] })
       expect(r.text).toContain('[REDACTED:PHONE]')
     })
     it('redacts a dashed US phone', () => {
-      const r = redactPii('Phone 555-123-4567', 'redact')
+      const r = redactPii('Phone 555-123-4567', 'redact', { kinds: ['PHONE'] })
       expect(r.text).toContain('[REDACTED:PHONE]')
+    })
+    it('is NOT redacted by default, so signature blocks survive', () => {
+      const sig = 'By: Jane Doe, General Counsel. Phone: (415) 555-0142.'
+      expect(redactPii(sig, 'redact').text).toBe(sig)
+    })
+  })
+
+  // Long digit runs and uppercase reference codes are everywhere in contracts.
+  // Luhn is only a 1-in-10 filter, so without a context anchor roughly one in
+  // ten agreement/invoice numbers was being rewritten as a card number.
+  describe('false positives on ordinary contract language', () => {
+    it('leaves a Luhn-passing agreement reference alone', () => {
+      const ref = 'This Agreement (Ref. No. 4532015112830366) supersedes all prior agreements.'
+      expect(redactPii(ref, 'redact').text).toBe(ref)
+    })
+    it('still redacts a card number when the context says card', () => {
+      const r = redactPii('Charge the corporate credit card 4532015112830366 monthly.', 'redact')
+      expect(r.text).toContain('[REDACTED:CC]')
+    })
+    it('leaves an uppercase invoice code alone', () => {
+      const inv = 'Invoice AB1234567890123456 is payable within 30 days.'
+      expect(redactPii(inv, 'redact').text).toBe(inv)
+    })
+    it('still redacts an IBAN when the context says wire/IBAN', () => {
+      const r = redactPii('Wire to IBAN GB29NWBK60161331926819 at Barclays.', 'redact')
+      expect(r.text).toContain('[REDACTED:IBAN]')
+    })
+    it('leaves section numbers and money amounts alone', () => {
+      const t = 'See Sections 5.2, 9.1 and Exhibit A for the cap of $1,500,000.'
+      expect(redactPii(t, 'redact').text).toBe(t)
     })
   })
 
@@ -145,13 +190,13 @@ describe('redactPii', () => {
 
   describe('mode: tokenize', () => {
     it('emits stable pseudonyms for the same value', () => {
-      const r = redactPii('Email a@b.com today, then a@b.com tomorrow.', 'tokenize')
+      const r = redactPii('Email a@b.com today, then a@b.com tomorrow.', 'tokenize', { kinds: ['EMAIL'] })
       const matches = r.text.match(/\[PII:EMAIL:([0-9a-f]+)\]/g)
       expect(matches?.length).toBe(2)
       expect(matches?.[0]).toBe(matches?.[1])
     })
     it('emits different pseudonyms for different values', () => {
-      const r = redactPii('Two emails: foo@a.com and bar@a.com', 'tokenize')
+      const r = redactPii('Two emails: foo@a.com and bar@a.com', 'tokenize', { kinds: ['EMAIL'] })
       const matches = r.text.match(/\[PII:EMAIL:([0-9a-f]+)\]/g)
       expect(matches?.length).toBe(2)
       expect(matches?.[0]).not.toBe(matches?.[1])
@@ -160,11 +205,19 @@ describe('redactPii', () => {
 
   describe('counts.total', () => {
     it('aggregates counts across kinds', () => {
-      const r = redactPii('Email a@b.com, SSN 555-12-3456, IP 10.0.0.1', 'redact')
+      const r = redactPii('Email a@b.com, SSN 555-12-3456, IP 10.0.0.1', 'redact',
+        { kinds: ['EMAIL', 'SSN', 'IP'] })
       expect(r.total).toBe(3)
       expect(r.counts.EMAIL).toBe(1)
       expect(r.counts.SSN).toBe(1)
       expect(r.counts.IP).toBe(1)
+    })
+
+    it('counts only the kinds enabled by default', () => {
+      // Same input, default kinds: the email is left alone, so the total drops.
+      const r = redactPii('Email a@b.com, SSN 555-12-3456, IP 10.0.0.1', 'redact')
+      expect(r.total).toBe(2)
+      expect(r.counts.EMAIL).toBeUndefined()
     })
   })
 

@@ -22,7 +22,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..providers import build_llm
+from ..router import resolve_llm
+from ..untrusted import wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,7 @@ class ReviewState(TypedDict):
     plain_text:       str
     contract_type:    str | None    # user-corrected type — injected into extract prompt
     custom_fields:    list[dict]    # org-defined fields to extract
+    org_id:           str | None    # routes LLM calls through the org's BYOK / overrides
     # Step 1 output
     clause_segments:  list[dict]
     raw_fields:       dict
@@ -561,19 +563,21 @@ Each entry: { "key": "<snake_case_name>", "label": "<human readable>", "value": 
 
 async def _extract(state: ReviewState) -> ReviewState:
     """Step 1: extraction with source quotes. Chunked for long docs."""
-    from ..config import active_provider, active_model
-    provider = active_provider()
-    model    = active_model()
-
     text   = state["plain_text"]
     chunks = _chunk_text(text)
 
     extra_prompt = _build_custom_fields_prompt(state["custom_fields"], state["contract_type"])
 
-    logger.info("[extract] provider=%s model=%s total_chars=%d chunks=%d",
-                provider, model, len(text), len(chunks))
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        streaming=True,
+        trace_name="review.extract",
+    )
+    llm = resolved.llm
 
-    llm = build_llm(provider=provider, model_id=model)
+    logger.info("[extract] provider=%s model=%s total_chars=%d chunks=%d",
+                resolved.provider, resolved.model, len(text), len(chunks))
 
     all_segments:  list[dict] = []
     merged_fields: dict       = {}
@@ -585,10 +589,18 @@ async def _extract(state: ReviewState) -> ReviewState:
     for i, chunk in enumerate(chunks):
         logger.info("[extract] chunk %d/%d chars=%d", i + 1, len(chunks), len(chunk))
         try:
-            resp = await llm.ainvoke([
-                SystemMessage(content=_EXTRACT_PROMPT + extra_prompt),
-                HumanMessage(content=chunk),
-            ])
+            resp = await llm.ainvoke(
+                [
+                    SystemMessage(content=_EXTRACT_PROMPT + extra_prompt),
+                    # The chunk is counterparty-authored text. Frame it as data
+                    # so instructions inside the contract cannot steer extraction.
+                    HumanMessage(content=wrap_untrusted_document(
+                        chunk,
+                        source=f"counterparty contract body (chunk {i + 1} of {len(chunks)})",
+                    )),
+                ],
+                config={"callbacks": resolved.callbacks},
+            )
             data = _parse_json(resp.content)
             # LLM-variance hardening (2026-06-10 review): models sometimes
             # wrap the object in a one-element array, or emit a LIST for a
@@ -671,10 +683,21 @@ async def _extract(state: ReviewState) -> ReviewState:
                 "fabricate. Return ONLY valid JSON, no markdown."
             )
             slice_for_recall = text[: min(len(text), _CHUNK_SIZE)]
-            resp2 = await llm.ainvoke([
-                SystemMessage(content=second_prompt),
-                HumanMessage(content=slice_for_recall),
-            ])
+            # Reuses the extract-node resolution (same tier, same org, same
+            # trace name) — no second resolve, so this recovery pass adds no
+            # new failure mode to the path that triggers it.
+            resp2 = await llm.ainvoke(
+                [
+                    SystemMessage(content=second_prompt),
+                    # Slice is taken above from the raw text, then wrapped here,
+                    # so truncation can never cut a framing marker in half.
+                    HumanMessage(content=wrap_untrusted_document(
+                        slice_for_recall,
+                        source="counterparty contract body (missing-field recovery pass)",
+                    )),
+                ],
+                config={"callbacks": resolved.callbacks},
+            )
             recovered = _parse_json(resp2.content)
             for k in missing:
                 if k in recovered and recovered[k]:
@@ -695,20 +718,30 @@ async def _extract(state: ReviewState) -> ReviewState:
 
 async def _validate(state: ReviewState) -> ReviewState:
     """Step 2: cross-check values, normalise types, assign confidence (Sonnet)."""
-    from ..config import active_provider, smart_model
-    provider = active_provider()
-    model    = smart_model()
-
-    logger.info("[validate] provider=%s model=%s raw_fields=%d", provider, model, len(state["raw_fields"]))
-
-    payload = json.dumps(state["raw_fields"], indent=2)
+    # raw_fields carries verbatim `quote` strings lifted straight out of the
+    # counterparty document, so the payload is untrusted even though we built
+    # the JSON around it. Frame the whole payload once (one wrap per call).
+    payload = wrap_untrusted_document(
+        json.dumps(state["raw_fields"], indent=2),
+        source="fields extracted from the counterparty contract, with verbatim quotes",
+    )
 
     try:
-        llm  = build_llm(provider=provider, model_id=model)
-        resp = await llm.ainvoke([
-            SystemMessage(content=_VALIDATE_PROMPT + payload),
-            HumanMessage(content="Validate the fields above."),
-        ])
+        resolved = await resolve_llm(
+            "reasoning",
+            org_id=state.get("org_id"),
+            streaming=True,
+            trace_name="review.validate",
+        )
+        logger.info("[validate] provider=%s model=%s raw_fields=%d",
+                    resolved.provider, resolved.model, len(state["raw_fields"]))
+        resp = await resolved.llm.ainvoke(
+            [
+                SystemMessage(content=_VALIDATE_PROMPT + payload),
+                HumanMessage(content="Validate the fields above."),
+            ],
+            config={"callbacks": resolved.callbacks},
+        )
         data = _parse_json(resp.content)
         state["validated_fields"] = data.get("validatedFields", {})
         logger.info("[validate] OK: %d validated_fields", len(state["validated_fields"]))
@@ -726,12 +759,6 @@ async def _validate(state: ReviewState) -> ReviewState:
 
 async def _score(state: ReviewState) -> ReviewState:
     """Step 3: risk score, contract type, summary (Sonnet)."""
-    from ..config import active_provider, smart_model
-    provider = active_provider()
-    model    = smart_model()
-
-    logger.info("[score] provider=%s model=%s validated_fields=%d", provider, model, len(state["validated_fields"]))
-
     # P-fix #1 (2026-05-02). Pass actual clause content for the
     # score-and-summarize step, not just the extracted fields. The
     # previous payload had only `validatedFields` (party names, dates,
@@ -769,14 +796,31 @@ async def _score(state: ReviewState) -> ReviewState:
         # If user provided a contractType hint, pass it so scoring respects it
         **({"contractTypeHint": state["contract_type"]} if state["contract_type"] else {}),
     }
-    payload = json.dumps(context, indent=2)
+    # significantClauses is verbatim clause text and validatedFields still
+    # carries verbatim quotes, so the scoring payload is counterparty-authored
+    # content. One wrap around the assembled payload keeps the added framing to
+    # ~120 tokens for the call rather than per clause.
+    payload = wrap_untrusted_document(
+        json.dumps(context, indent=2),
+        source="extracted contract fields and verbatim clause text from the counterparty contract",
+    )
 
     try:
-        llm  = build_llm(provider=provider, model_id=model)
-        resp = await llm.ainvoke([
-            SystemMessage(content=_SCORE_PROMPT + payload),
-            HumanMessage(content="Produce the final analysis."),
-        ])
+        resolved = await resolve_llm(
+            "reasoning",
+            org_id=state.get("org_id"),
+            streaming=True,
+            trace_name="review.score",
+        )
+        logger.info("[score] provider=%s model=%s validated_fields=%d",
+                    resolved.provider, resolved.model, len(state["validated_fields"]))
+        resp = await resolved.llm.ainvoke(
+            [
+                SystemMessage(content=_SCORE_PROMPT + payload),
+                HumanMessage(content="Produce the final analysis."),
+            ],
+            config={"callbacks": resolved.callbacks},
+        )
         data = _parse_json(resp.content)
 
         ct = str(data.get("contractType", "OTHER")).upper().strip()
@@ -835,6 +879,7 @@ async def run_review(
     plain_text:    str,
     contract_type: str | None = None,
     custom_fields: list[dict] | None = None,
+    org_id:        str | None = None,
 ) -> dict[str, Any]:
     """
     Run the 3-step review pipeline.
@@ -850,6 +895,7 @@ async def run_review(
         "plain_text":        plain_text,
         "contract_type":     contract_type,
         "custom_fields":     custom_fields or [],
+        "org_id":            org_id,
         "clause_segments":   [],
         "raw_fields":        {},
         "clause_flags":      {},

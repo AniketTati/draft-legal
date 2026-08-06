@@ -26,4 +26,10 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 # D.0.7 — LLM observability. CallbackHandler integrates with LangChain 0.3
 # and captures prompts, tool calls, token counts, latency, cost per trace.
-langfuse>=2.55.0
+# Pin the major: the LangChain CallbackHandler moved from langfuse.callback
+# (v2) to langfuse.langchain (v3+), and the unbounded >=2.55.0 range silently
+# resolved to v4 — which disabled tracing everywhere. app/tracing.py handles
+# both layouts, but the pin keeps the resolution predictable.
+langfuse>=3.0.0,<5.0
+# Required by langfuse.langchain (the split langchain-* packages are not enough).
+langchain>=1.0,<2.0
