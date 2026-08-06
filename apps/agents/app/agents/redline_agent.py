@@ -19,8 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..providers import build_llm
-from ..config import active_provider, active_model, smart_model
+from ..router import resolve_llm
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ─── State ────────────────────────────────────────────────────────────────────
 
 class RedlineState(TypedDict):
+    org_id:            str | None
     diff_html:         str
     contract_type:     str
     playbook_positions: list[dict]
@@ -122,14 +122,19 @@ def _parse_json(text: str) -> Any:
 
 async def step_extract_changes(state: RedlineState) -> RedlineState:
     """Step 1: Parse ins/del HTML into structured ChangeItem list."""
-    llm = build_llm(active_provider(), active_model())
+    resolved = await resolve_llm(
+        "default",
+        org_id=state.get("org_id"),
+        streaming=True,
+        trace_name="redline.extract_changes",
+    )
     prompt = _EXTRACT_PROMPT.format(diff_html=state["diff_html"][:80_000])
 
     try:
-        response = await llm.ainvoke([
+        response = await resolved.llm.ainvoke([
             SystemMessage(content="You extract structured changes from HTML diffs. Return only valid JSON."),
             HumanMessage(content=prompt),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         changes = _parse_json(response.content)
         if not isinstance(changes, list):
             changes = []
@@ -145,7 +150,12 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
     if not state["changes"]:
         return {**state, "scored_changes": [], "requires_human_gate": False, "confidence": 1.0}
 
-    llm = build_llm(active_provider(), smart_model())
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=state.get("org_id"),
+        streaming=True,
+        trace_name="redline.score_changes",
+    )
     playbook_json = json.dumps(state["playbook_positions"], indent=2)
     changes_json = json.dumps(state["changes"], indent=2)
     prompt = _SCORE_PROMPT.format(
@@ -155,10 +165,10 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
     )
 
     try:
-        response = await llm.ainvoke([
+        response = await resolved.llm.ainvoke([
             SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),
             HumanMessage(content=prompt),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         scored = _parse_json(response.content)
         if not isinstance(scored, list):
             scored = state["changes"]
@@ -191,7 +201,12 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
     final_changes = list(state["scored_changes"])  # copy
 
     if counter_changes:
-        llm = build_llm(active_provider(), smart_model())
+        resolved = await resolve_llm(
+            "reasoning",
+            org_id=state.get("org_id"),
+            streaming=True,
+            trace_name="redline.generate_counters",
+        )
         playbook_json = json.dumps(state["playbook_positions"], indent=2)
         counter_json = json.dumps(counter_changes, indent=2)
         prompt = _COUNTER_PROMPT.format(
@@ -201,10 +216,10 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
         )
 
         try:
-            response = await llm.ainvoke([
+            response = await resolved.llm.ainvoke([
                 SystemMessage(content="You draft contract counter-proposals. Return only valid JSON."),
                 HumanMessage(content=prompt),
-            ])
+            ], config={"callbacks": resolved.callbacks})
             countered = _parse_json(response.content)
             if isinstance(countered, list):
                 # Merge counter proposals back into final_changes by changeId
@@ -263,9 +278,11 @@ async def run_redline(
     diff_html: str,
     contract_type: str = "general commercial",
     playbook_positions: list[dict] | None = None,
+    org_id: str | None = None,
 ) -> dict:
     """Run the 3-step redline analysis pipeline."""
     initial: RedlineState = {
+        "org_id":             org_id,
         "diff_html":          diff_html,
         "contract_type":      contract_type,
         "playbook_positions": playbook_positions or [],

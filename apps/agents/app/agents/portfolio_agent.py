@@ -19,8 +19,8 @@ from typing import Any
 import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..config import settings, active_provider, active_model
-from ..providers import build_llm
+from ..config import settings
+from ..router import resolve_llm
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
 
@@ -85,14 +85,19 @@ def _clean_filters(raw: dict) -> dict:
 
 async def run_portfolio_query(question: str, org_id: str) -> dict[str, Any]:
     from datetime import date
-    llm = build_llm(provider=active_provider(), model_id=active_model())
+    parse_llm = await resolve_llm(
+        "default",
+        org_id=org_id,
+        streaming=True,
+        trace_name="portfolio.parse_query",
+    )
 
     # Step 1: Parse question → structured filters
     try:
-        resp = await llm.ainvoke([
+        resp = await parse_llm.llm.ainvoke([
             SystemMessage(content=_PARSE_PROMPT.format(today=date.today().isoformat())),
             HumanMessage(content=question),
-        ])
+        ], config={"callbacks": parse_llm.callbacks})
         raw_filters = _parse_json(resp.content)
         intent = raw_filters.get("intent", "list")
     except Exception as e:
@@ -143,15 +148,21 @@ async def run_portfolio_query(question: str, org_id: str) -> dict[str, Any]:
         if len(contracts) <= 5:
             answer += "\n\n" + "\n".join(contract_summaries)
     else:
+        answer_llm = await resolve_llm(
+            "default",
+            org_id=org_id,
+            streaming=True,
+            trace_name="portfolio.answer",
+        )
         try:
-            ans_resp = await llm.ainvoke([
+            ans_resp = await answer_llm.llm.ainvoke([
                 SystemMessage(content=_ANSWER_PROMPT.format(
                     question=question,
                     count=len(contracts),
                     contracts="\n".join(contract_summaries),
                 )),
                 HumanMessage(content="Provide the answer."),
-            ])
+            ], config={"callbacks": answer_llm.callbacks})
             answer = ans_resp.content
         except Exception:
             answer = f"Found {len(contracts)} contracts. " + "; ".join(

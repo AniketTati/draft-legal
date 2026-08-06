@@ -1739,6 +1739,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
               clauseText: ck.excerpt,
               positionType: 'preferred',
               rules: pos.rules,
+              orgId: body.orgId,   // per-org BYOK key + Langfuse tracing
             }),
           })
           if (!judgeRes.ok) return ck

@@ -92,6 +92,7 @@ async def _process_approval_summary(
             key_terms=key_terms,
             risk_factors=risk_factors,
             risk_score=contract.get("riskScore"),
+            org_id=org_id,
         )
 
         if result.get("error"):

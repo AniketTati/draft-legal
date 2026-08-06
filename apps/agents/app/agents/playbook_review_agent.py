@@ -25,8 +25,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..jsonish import loads_lenient
-from ..providers import build_llm
-from ..config import active_provider, smart_model
+from ..router import resolve_llm
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +84,7 @@ async def run_playbook_review(
     clauses: list[dict],
     playbook_positions: list[dict],
     contract_type: str,
+    org_id: str | None = None,
 ) -> dict:
     """
     Returns:
@@ -122,17 +122,22 @@ async def run_playbook_review(
         for c in clauses[:_MAX_CLAUSES]
     ]
 
-    llm = build_llm(active_provider(), smart_model())
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=org_id,
+        streaming=True,
+        trace_name="playbook_review.score_clauses",
+    )
     prompt = _REVIEW_PROMPT.format(
         playbook_json=json.dumps(playbook_positions, indent=2)[:60_000],
         contract_type=contract_type or "general commercial",
         clauses_json=json.dumps(trimmed, indent=2),
     )
 
-    response = await llm.ainvoke([
+    response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),
         HumanMessage(content=prompt),
-    ])
+    ], config={"callbacks": resolved.callbacks})
     findings = _parse_json(response.content)
     if not isinstance(findings, list):
         logger.warning("[playbook-review] model did not return a JSON array — treating as no findings")

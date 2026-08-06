@@ -16,8 +16,20 @@ import { PrismaClient } from '../../../apps/api/node_modules/@prisma/client/inde
 
 export const API = process.env.API_BASE ?? 'http://localhost:3001'
 export const AGENTS = process.env.AGENTS_BASE ?? 'http://localhost:8002'
+
+/** Read one key out of the repo-root .env — these scripts run ad hoc, not through tsx --env-file. */
+function envValue(key) {
+  try {
+    const raw = fs.readFileSync(fileURLToPath(new URL('../../../.env', import.meta.url)), 'utf8')
+    return raw.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1].trim().replace(/^["']|["']$/g, '')
+  } catch { return undefined }
+}
+
+// Must match the running services, so read the real value rather than
+// defaulting to the documented dev string — a mismatch shows up as a confusing
+// 401 from the agents service that looks like the code under test failing.
 export const INTERNAL_SECRET =
-  process.env.INTERNAL_SERVICE_SECRET ?? 'clm-internal-dev-secret-2026'
+  process.env.INTERNAL_SERVICE_SECRET ?? envValue('INTERNAL_SERVICE_SECRET') ?? ''
 
 /** Seeded admin — full permissions, used as the control in RBAC checks. */
 export const ADMIN = { email: 'admin@demo.com', password: 'password123' }
@@ -34,12 +46,9 @@ export function db() {
 }
 
 function readDbUrl() {
-  // The dev stack keeps DATABASE_URL in the repo-root .env; scripts are run
-  // ad hoc (not through tsx --env-file), so read it directly.
-  const raw = fs.readFileSync(fileURLToPath(new URL('../../../.env', import.meta.url)), 'utf8')
-  const m = raw.match(/^DATABASE_URL=(.*)$/m)
-  if (!m) throw new Error('DATABASE_URL not found in .env')
-  return m[1].trim().replace(/^["']|["']$/g, '')
+  const url = envValue('DATABASE_URL')
+  if (!url) throw new Error('DATABASE_URL not found in .env')
+  return url
 }
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────

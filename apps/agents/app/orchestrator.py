@@ -17,11 +17,10 @@ import asyncio
 import json
 import re
 import logging
-from typing import AsyncIterator, TypedDict
+from typing import Any, AsyncIterator, NotRequired, TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from app.memory import get_session_history, append_to_session
-from app.providers import build_llm
 from app.router import resolve_llm
 from app.config import active_provider, active_model
 from app.tools import get_read_tools
@@ -101,6 +100,12 @@ class AgentState(TypedDict):
     response: str
     intent: str  # "draft" | "ask" | "general"
     draft_result: dict | None
+    # Wave 3.5 — the per-request resolved LLM + tracing callbacks. Carried in
+    # state (NOT captured in the graph closure) because the compiled graph is
+    # cached process-wide by (provider, model) and would otherwise pin one
+    # org's BYOK-resolved client for every org that follows.
+    llm: NotRequired[Any]
+    callbacks: NotRequired[list]
 
 
 def _detect_draft_intent(message: str) -> bool:
@@ -108,8 +113,24 @@ def _detect_draft_intent(message: str) -> bool:
     return bool(_DRAFT_KEYWORDS.search(message))
 
 
+def _tier_for_model(model_id: str | None) -> str:
+    """Map a requested model id onto a router tier. Mirrors the mapping the
+    streaming agent path uses so both chat paths land on the same tier."""
+    _m = (model_id or "").lower()
+    if any(k in _m for k in ("opus", "gpt-5", "reason", "-o1", "-o3")):
+        return "reasoning"
+    if any(k in _m for k in ("mini", "haiku", "flash", "fast", "nano")):
+        return "fast"
+    return "default"
+
+
 def build_graph(provider: str, model_id: str) -> StateGraph:
-    llm = build_llm(provider, model_id, streaming=False)
+    # NOTE: no LLM is constructed here. The compiled graph is cached per
+    # (provider, model_id) for the life of the process, so anything built at
+    # this point is shared across every org that hits the cache entry — which
+    # is exactly how the BYOK bypass happened. `run_chat` resolves per request
+    # and hands the client to the node through AgentState; `provider`/`model_id`
+    # survive only as the last-resort platform fallback below.
 
     def classify_intent(state: AgentState) -> AgentState:
         """Classify message intent to route to the right agent."""
@@ -166,7 +187,22 @@ def build_graph(provider: str, model_id: str) -> StateGraph:
                 messages.append(AIMessage(content=msg["content"]))
         messages.append(HumanMessage(content=state["user_message"]))
 
-        result = llm.invoke(messages)
+        # The per-request client is resolved by run_chat (org BYOK key + tier
+        # override + Langfuse callbacks) and handed in through graph state.
+        # There is no build_llm fallback here on purpose: it would quietly put
+        # this node back on the platform key, which is the bypass this whole
+        # path was fixed to remove. resolve_llm already falls back to platform
+        # env internally, so reaching here without a client means no provider
+        # has a key at all — which build_llm could not have helped with either.
+        llm = state.get("llm")
+        callbacks = state.get("callbacks") or []
+        if llm is None:
+            raise RuntimeError(
+                "chat: no LLM was resolved for this request — check that a provider "
+                "key is configured (or that the org's BYOK key is valid)."
+            )
+
+        result = llm.invoke(messages, config={"callbacks": callbacks})
         state["response"] = result.content
         return state
 
@@ -211,6 +247,22 @@ async def run_chat(
     history = await get_session_history(session_id)
     graph = get_graph(provider, model_id)
 
+    # Wave 3.5 — resolve the LLM per request, same shape as the streaming
+    # agent path (run_agent_chat_stream). Previously this path built its
+    # client from active_provider()/active_model() with the platform env key,
+    # so an org's own BYOK key was ignored and nothing was traced. Resolution
+    # happens HERE rather than in build_graph because compiled graphs are
+    # cached per (provider, model) across all orgs. resolve_llm already falls
+    # back to platform env when Node is unreachable, so it raises only when no
+    # provider has a key at all — let that surface rather than catching it into
+    # a platform-key fallback.
+    resolved = await resolve_llm(
+        _tier_for_model(model_id), org_id=org_id, streaming=False,
+        trace_name="chat.legacy", user_id=user_id, thread_id=session_id,
+    )
+    resolved_llm = resolved.llm
+    resolved_callbacks: list = resolved.callbacks
+
     result = graph.invoke({
         "session_id": session_id,
         "org_id": org_id,
@@ -220,6 +272,8 @@ async def run_chat(
         "provider": provider,
         "model_id": model_id,
         "response": "",
+        "llm": resolved_llm,
+        "callbacks": resolved_callbacks,
     })
 
     response = result["response"]
@@ -558,10 +612,13 @@ async def run_agent_chat_stream(
     # actually apply. Previously build_llm used the platform env key directly, so
     # a customer's own API key was silently ignored (their spend went on our
     # key). We map the requested model to a tier; the org's Node-side AI config
-    # picks the concrete provider/model + key (BYOK when configured). resolve_llm
-    # already falls back to platform env if Node is unreachable; the outer
-    # try/except covers the "no platform key for this tier" RuntimeError so a
-    # transient/misconfig never hard-fails chat.
+    # picks the concrete provider/model + key (BYOK when configured).
+    #
+    # resolve_llm already falls back to platform env if Node is unreachable, so
+    # there is deliberately no build_llm fallback around it: the only way it
+    # raises is when no provider has a key for the tier at all, and build_llm
+    # could not have built anything in that case either. Catching it here would
+    # only put chat back on the platform key while looking like resilience.
     _m = (model_id or "").lower()
     if any(k in _m for k in ("opus", "gpt-5", "reason", "-o1", "-o3")):
         _tier = "reasoning"
@@ -569,17 +626,12 @@ async def run_agent_chat_stream(
         _tier = "fast"
     else:
         _tier = "default"
-    chat_callbacks: list = []
-    try:
-        resolved = await resolve_llm(
-            _tier, org_id=org_id, streaming=False,
-            trace_name="agent.chat", user_id=user_id, thread_id=session_id,
-        )
-        llm = resolved.llm.bind_tools(tools)
-        chat_callbacks = resolved.callbacks
-    except Exception as e:
-        logger.warning("[agent-chat] resolve_llm failed (org=%s) — platform fallback: %s", org_id, e)
-        llm = build_llm(provider, model_id, streaming=False).bind_tools(tools)
+    resolved = await resolve_llm(
+        _tier, org_id=org_id, streaming=False,
+        trace_name="agent.chat", user_id=user_id, thread_id=session_id,
+    )
+    llm = resolved.llm.bind_tools(tools)
+    chat_callbacks: list = resolved.callbacks
 
     # Build the conversation. The page context gets prepended to the human
     # message so the model knows which contractId to feed into contract_get.

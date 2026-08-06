@@ -2,9 +2,9 @@
 D.0.7 Python-side smoke — verify Langfuse tracing wiring is correct:
 
   (A) With LANGFUSE_* keys unset, tracing_enabled() is False, get_callback()
-      returns None, and resolve_llm_platform_sync().callbacks is [].
+      returns None, and resolve_llm().callbacks is [].
   (B) With all three keys set, tracing_enabled() is True, get_callback()
-      returns a real CallbackHandler, and resolve_llm_platform_sync()
+      returns a real CallbackHandler, and resolve_llm()
       carries it through .callbacks.
   (C) The handler was built with the expected session_id, tags, and metadata
       so Langfuse UI filtering ("show me all openai/gpt-4.1 calls from org X")
@@ -14,6 +14,7 @@ D.0.7 Python-side smoke — verify Langfuse tracing wiring is correct:
 We stay off-network: no real Langfuse account is hit. We just verify the
 handler object was constructed with the right constructor args.
 """
+import asyncio
 import os
 import sys
 
@@ -21,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app import tracing  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.router import resolve_llm_platform_sync, ResolvedLlm  # noqa: E402
+from app.router import resolve_llm, ResolvedLlm  # noqa: E402
 
 fail = 0
 
@@ -59,8 +60,8 @@ def main() -> None:
         handler = tracing.get_callback(trace_name="test.A")
         check(handler is None, "(A) get_callback returns None when keys unset")
 
-        r = resolve_llm_platform_sync("default", trace_name="test.A")
-        check(isinstance(r, ResolvedLlm), "(A) resolve_llm_platform_sync returns ResolvedLlm")
+        r = asyncio.run(resolve_llm("default", trace_name="test.A"))
+        check(isinstance(r, ResolvedLlm), "(A) resolve_llm returns ResolvedLlm")
         check(r.callbacks == [], f"(A) callbacks is empty list (got {r.callbacks!r})")
 
         # ── B — on state: keys set → real CallbackHandler ───────────────────
@@ -113,11 +114,11 @@ def main() -> None:
             check(tname == "test.B",         f"(C) trace_name = test.B (got {tname!r})")
 
         # Resolver attaches handler to .callbacks
-        r2 = resolve_llm_platform_sync(
+        r2 = asyncio.run(resolve_llm(
             "default",
             trace_name="test.B.resolver",
             extra_metadata={"resolver_test": True},
-        )
+        ))
         check(len(r2.callbacks) == 1, f"(B) resolver returns 1 callback when tracing on (got {len(r2.callbacks)})")
         if r2.callbacks:
             check(

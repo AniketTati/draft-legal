@@ -12,15 +12,8 @@ from ..jsonish import loads_lenient
 import os
 
 from app.agents.assist_agent import run_assist, AssistAction
-from app.providers import build_llm
-from app.config import active_provider, smart_model
+from app.router import resolve_llm
 from langchain_core.messages import HumanMessage, SystemMessage
-
-_FAST_MODEL: dict[str, str] = {
-    "anthropic": "claude-haiku-4-5-20251001",
-    "openai":    "gpt-4o-mini",
-    "google":    "gemini-2.5-flash",  # was gemini-1.5-flash — not enabled on current GCP project / v1beta
-}
 
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
@@ -33,11 +26,13 @@ class AssistRequest(BaseModel):
     governing_law: str = "Delaware"
     provider: str = ""
     model_id: str = ""
+    orgId: str | None = None  # enables per-org BYOK key + Langfuse tracing
 
 
 class CompareRequest(BaseModel):
     clauseText: str
     positions: list[dict[str, Any]]
+    orgId: str | None = None  # enables per-org BYOK key + Langfuse tracing
 
 
 # P1.3 — two-stage compare. Accepts a clause + the structured rules from
@@ -52,6 +47,7 @@ class PlaybookJudgeRequest(BaseModel):
     rules:          dict[str, Any]     # PlaybookRules shape from docs/28 C.2.1
     provider:       str = ""
     model_id:       str = ""
+    orgId:          str | None = None  # enables per-org BYOK key + Langfuse tracing
 
 
 # P1.4 — redline_propose. Three aggression variants in one call to keep
@@ -68,6 +64,7 @@ class RedlineProposeRequest(BaseModel):
     instructions:       str | None = None   # user-supplied direction
     provider:           str = ""
     model_id:           str = ""
+    orgId:              str | None = None   # enables per-org BYOK key + Langfuse tracing
 
 
 # P6.2 — Background clause classifier. For each visible paragraph in
@@ -79,6 +76,7 @@ class ClassifyClauseRequest(BaseModel):
     clauseText:   str
     contractType: str = "general commercial"
     sectionHint:  str | None = None    # optional — "Section 9.2" or the nearest H2 heading
+    orgId:        str | None = None    # enables per-org BYOK key + Langfuse tracing
 
 
 _CLASSIFY_SYSTEM = """You are a senior contracts lawyer triaging clauses as \
@@ -114,9 +112,6 @@ async def classify_clause(req: ClassifyClauseRequest, x_internal_secret: str = H
     if len(text) < 30:
         return {"category": "skip", "position": "skip", "reasoning": "", "keyTerm": ""}
 
-    provider = active_provider()
-    model = _FAST_MODEL.get(provider, smart_model())
-
     hint = f"\nSection: {req.sectionHint}" if req.sectionHint else ""
     user = f"""Contract type: {req.contractType}{hint}
 
@@ -128,11 +123,19 @@ Paragraph:
 Classify now. JSON only."""
 
     try:
-        llm = build_llm(provider, model, streaming=False)
+        resolved = await resolve_llm(
+            "fast",
+            org_id=req.orgId,
+            streaming=False,
+            trace_name="assist.classify_clause",
+        )
+        llm = resolved.llm
+        provider = resolved.provider
+        model = resolved.model
         response = await llm.ainvoke([
             SystemMessage(content=_CLASSIFY_SYSTEM),
             HumanMessage(content=user),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
         raw = raw.strip()
         if raw.startswith("```"):
@@ -165,6 +168,7 @@ class CompleteRequest(BaseModel):
     contextAfter:   str = ""                # up to ~100 chars after cursor (for style cue)
     contractType:   str = "general commercial"
     maxChars:       int = 160
+    orgId:          str | None = None       # enables per-org BYOK key + Langfuse tracing
 
 
 @router.post("/complete")
@@ -175,10 +179,6 @@ async def complete(req: CompleteRequest, x_internal_secret: str = Header(default
     ctx = (req.contextBefore or "").rstrip()
     if len(ctx) < 10:
         return {"completion": "", "reason": "too_short"}
-
-    provider = active_provider()
-    # Fast tier — ghost-text must return in <1s; the user feels keystrokes.
-    model = _FAST_MODEL.get(provider, smart_model())
 
     system = (
         "You are a contracts drafting copilot. Continue the text from "
@@ -199,11 +199,20 @@ async def complete(req: CompleteRequest, x_internal_secret: str = Header(default
         user += f"\nText that follows the cursor (don't duplicate or contradict):\n\"\"\"\n{req.contextAfter[:400]}\n\"\"\"\n"
 
     try:
-        llm = build_llm(provider, model, streaming=False)
+        # Fast tier — ghost-text must return in <1s; the user feels keystrokes.
+        resolved = await resolve_llm(
+            "fast",
+            org_id=req.orgId,
+            streaming=False,
+            trace_name="assist.complete",
+        )
+        llm = resolved.llm
+        provider = resolved.provider
+        model = resolved.model
         response = await llm.ainvoke([
             SystemMessage(content=system),
             HumanMessage(content=user),
-        ])
+        ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
         out = raw.strip()
         # Strip accidental quote wrappers + markdown fences
@@ -244,6 +253,7 @@ async def assist(req: AssistRequest, x_internal_secret: str = Header(default="")
         governing_law=req.governing_law,
         provider=req.provider or None,
         model_id=req.model_id or None,
+        org_id=req.orgId,
     )
 
     return result
@@ -279,8 +289,13 @@ async def compare_to_playbook(req: CompareRequest, x_internal_secret: str = Head
     if not req.positions:
         raise HTTPException(status_code=400, detail="positions are required")
 
-    provider = active_provider()
-    llm = build_llm(provider, _FAST_MODEL[provider], streaming=False)
+    resolved = await resolve_llm(
+        "fast",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="assist.compare",
+    )
+    llm = resolved.llm
 
     positions_summary = [
         {
@@ -302,7 +317,7 @@ Analyze how well the submitted clause matches each position."""
     response = await llm.ainvoke([
         SystemMessage(content=_COMPARE_SYSTEM),
         HumanMessage(content=user_content),
-    ])
+    ], config={"callbacks": resolved.callbacks})
 
     try:
         result = loads_lenient(response.content)
@@ -351,9 +366,18 @@ async def playbook_judge(req: PlaybookJudgeRequest, x_internal_secret: str = Hea
     if not req.clauseText.strip():
         raise HTTPException(status_code=400, detail="clauseText is required")
 
-    provider = req.provider or active_provider()
-    model_id = req.model_id or _FAST_MODEL.get(provider, "gpt-4o-mini")
-    llm = build_llm(provider, model_id, streaming=False)
+    # A caller-pinned provider/model rides through the router too — it keeps
+    # the org's BYOK key + Langfuse tracing and only swaps which model is built.
+    resolved = await resolve_llm(
+        "fast",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="assist.playbook_judge",
+        provider_override=req.provider or None,
+        model_override=req.model_id or None,
+    )
+    llm = resolved.llm
+    callbacks = resolved.callbacks
 
     # Trim rule payload — only send what the judge needs. Strip `content`
     # from positions; the judge operates on rules + the clause only.
@@ -376,7 +400,7 @@ Judge this clause against the rules and return the JSON now."""
         response = await llm.ainvoke([
             SystemMessage(content=_JUDGE_SYSTEM),
             HumanMessage(content=user_content),
-        ])
+        ], config={"callbacks": callbacks})
         content = response.content if isinstance(response.content, str) else str(response.content)
         # Strip accidental markdown fences
         content = content.strip()
@@ -444,10 +468,21 @@ async def redline_propose(req: RedlineProposeRequest, x_internal_secret: str = H
     if not req.clauseText.strip():
         raise HTTPException(status_code=400, detail="clauseText is required")
 
-    provider = req.provider or active_provider()
     # Use the smart model tier — redlines are the quality-critical path.
-    model_id = req.model_id or smart_model()
-    llm = build_llm(provider, model_id, streaming=False)
+    # A caller-pinned provider/model rides through the router too — it keeps
+    # the org's BYOK key + Langfuse tracing and only swaps which model is built.
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="assist.redline_propose",
+        provider_override=req.provider or None,
+        model_override=req.model_id or None,
+    )
+    llm = resolved.llm
+    callbacks = resolved.callbacks
+    provider = resolved.provider
+    model_id = resolved.model
 
     rules_block = ""
     if req.rules:
@@ -483,7 +518,7 @@ Produce the three-variant redline now."""
         response = await llm.ainvoke([
             SystemMessage(content=_REDLINE_SYSTEM),
             HumanMessage(content=user_content),
-        ])
+        ], config={"callbacks": callbacks})
         content = response.content if isinstance(response.content, str) else str(response.content)
         content = content.strip()
         if content.startswith("```"):
@@ -542,6 +577,7 @@ class StreamAssistRequest(BaseModel):
     governing_law: str = "Delaware"
     provider:      str = ""
     model_id:      str = ""
+    orgId:         str | None = None  # enables per-org BYOK key + Langfuse tracing
 
 
 # Prompt tuned for short plain-text output — the bubble popover doesn't
@@ -573,9 +609,6 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
     if not text:
         raise HTTPException(status_code=400, detail="selected_text is required")
 
-    provider = req.provider or active_provider()
-    # Fast tier — streaming must feel instant.
-    model = req.model_id or _FAST_MODEL.get(provider, smart_model())
     instruction = _ACTION_INSTRUCTIONS.get(req.action, _ACTION_INSTRUCTIONS["rewrite"])
 
     user = (
@@ -588,13 +621,27 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
     async def gen():
         # NDJSON stream — one JSON object per line.
         try:
-            llm = build_llm(provider, model, streaming=True)
+            # Fast tier — streaming must feel instant. A caller-pinned
+            # provider/model rides through the router too — it keeps the org's
+            # BYOK key + Langfuse tracing and only swaps which model is built.
+            resolved = await resolve_llm(
+                "fast",
+                org_id=req.orgId,
+                streaming=True,
+                trace_name="assist.stream",
+                provider_override=req.provider or None,
+                model_override=req.model_id or None,
+            )
+            llm = resolved.llm
+            callbacks = resolved.callbacks
+            provider = resolved.provider
+            model = resolved.model
             # yield a start event so the client can show "typing…"
             yield json.dumps({"type": "start", "action": req.action, "model": model, "provider": provider}) + "\n"
             async for chunk in llm.astream([
                 SystemMessage(content=_STREAM_SYSTEM),
                 HumanMessage(content=user),
-            ]):
+            ], config={"callbacks": callbacks}):
                 piece = chunk.content if isinstance(chunk.content, str) else (
                     "".join(getattr(b, "text", "") for b in (chunk.content or [])) if chunk.content else ""
                 )

@@ -355,6 +355,7 @@ export async function agentRoutes(app: FastifyInstance) {
         action:        body.action ?? 'rewrite',
         contract_type: body.contractType ?? 'general commercial',
         governing_law: body.governingLaw ?? 'Delaware',
+        orgId:         req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
     }).catch(() => null)
     if (!upstream || !upstream.ok || !upstream.body) {
@@ -457,6 +458,7 @@ export async function agentRoutes(app: FastifyInstance) {
         governing_law: body.governingLaw,
         provider: body.provider,
         model_id: body.modelId,
+        orgId: req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
     }).catch(() => null)
 

@@ -223,7 +223,7 @@ button — which is the only way `allowAppendFallback` is ever set.
 
 ## W0-3 — Customer BYOK keys are ignored by every specialist agent
 
-**Severity: High** · Status: ☐ Not started
+**Severity: High** · Status: ✅ **Fixed and verified** (2026-08-06)
 
 All specialist agents obtain their LLM via
 `build_llm(active_provider(), active_model()/smart_model())` — never through
@@ -253,6 +253,65 @@ call chain, thread it from the FastAPI route.
    the org key was actually used.
 3. Then set a *valid* org key → pipeline succeeds and the call is traced.
 4. Regression: an org with **no** BYOK key still works on the platform key.
+
+**Result: 7/7.** The behavioural half is the one that matters, and it is
+two-sided:
+
+- With the org's BYOK key set to an invalid sentinel, the playbook-review
+  pipeline now returns `502 … 400 API key not valid … API_KEY_INVALID …
+  googleapis.com` — the org's own key genuinely went on the wire. Before the
+  fix this returned `200` with real findings, because the platform key was
+  used.
+- With the BYOK row removed, the same call returns `200` with findings, so the
+  platform path still works.
+
+The structural half is the regression guard: no file under `app/agents/` or
+`app/routes/` may call `build_llm` or read a platform key, every `resolve_llm`
+call must name an `org_id`, and every resolved `ainvoke` must forward its
+callbacks.
+
+**Scope grew — the original finding understated this.** It named 7 agents; the
+real count was **26 call sites across 12 files**, including three live FastAPI
+routers (`intake`, `classify`, `detect_binder`) that built raw provider SDK
+clients from platform settings, the legacy `run_chat` orchestrator path, and
+the assist surface's caller-pinned override branches. All are now routed.
+
+### Four further defects found while fixing this
+
+1. **`renewal_advice` was inverted — it only worked when the router failed.**
+   `provider` and `model` were bound *only* inside the `except` branch but read
+   unconditionally in the success return, so every **successful** resolve raised
+   `UnboundLocalError`, which the broad `except (json.JSONDecodeError,
+   Exception)` swallowed into the degraded `{"recommendation": "pause",
+   "confidence": "low"}` payload. Proven by reproducing the control flow in
+   isolation: resolve-succeeds → `pause/low`; resolve-fails → real advice.
+
+2. **Langfuse tracing was dead platform-wide.** `tracing.py` imported
+   `langfuse.callback` (the v2 layout) while `requirements.txt` pinned
+   `langfuse>=2.55.0` with no upper bound, resolving to v4 where the handler
+   lives at `langfuse.langchain`. The `ImportError` was caught and logged at
+   `INFO`, so `get_callback()` returned `None` and **every** agent ran
+   untraced. Now tries both layouts, warns loudly if neither loads, and the
+   requirement is pinned (`langfuse>=3.0.0,<5.0` plus the `langchain`
+   meta-package the v4 integration needs).
+
+3. **The router didn't know about OpenRouter.** `config.py` and `providers.py`
+   both support it; `router.py`'s tier tables did not. On an OpenRouter-only
+   deployment `resolve_llm` raised for every tier while the old `build_llm`
+   fallbacks kept working — which is why those fallbacks *looked* like dead
+   BYOK-bypass code but were actually load-bearing. Added OpenRouter to every
+   LLM tier, after which the fallbacks were genuinely unreachable and were
+   removed. (An agent asked to delete them correctly refused and explained
+   why — the fix was the missing table entry, not the fallback.)
+
+4. **A missing `API_URL` silently disabled BYOK with no log.** `resolve_llm`
+   only calls Node when `api_url` *and* `internal_service_secret` are set;
+   otherwise it fell through to the platform key without a word. It now warns
+   when an `org_id` was supplied but the config to honour it is absent.
+
+Also: placeholder secrets (`placeholder`, `TODO`, `unset`) counted as real keys
+in `_platform_key`, resolving a tier to a provider that then 401s at call time
+instead of falling through to one that works. Now treated as absent.
 
 ---
 
@@ -364,3 +423,4 @@ turn write starts 400ing.
 | 2026-08-06 | — | Branched `fix/agent-week-zero` from `main` @ `14d9a11`; applied the pending `share_link_invited_email` migration locally; built `scripts/week-zero/lib/harness.mjs`. | harness self-test 4/4 |
 | 2026-08-06 | W0-1 | `WRITE_TOOLS` Set → Map of tool→[action,resource]; new `checkToolPermission()` enforced on both the apply and undo routes in `agent-threads.ts`. Added 4 regression tests to `rbac.integration.test.ts`; fixed the agent-thread FK leak in `cleanupAll()`. | `w0-1-agent-rbac.mjs` 5/9 → **9/9**; integration suite 15/15 |
 | 2026-08-06 | W0-2 | Three match tiers (exact → escaped → normalized) with an ambiguity refusal in `clause-apply.ts`; refuse with `CLAUSE_TEXT_NOT_FOUND` instead of appending; `allowAppendFallback` opt-in threaded through both callers + `RedlineApplySchema`; escape every insertion; index-splice instead of `String.replace`; `spliced` now requires both bodies. Review drawer surfaces the refusal. | `w0-2-clause-apply.mjs` 9/17 → **17/17**; 11 new unit tests; API unit suite 135/135 |
+| 2026-08-06 | W0-3 | Routed 26 LLM call sites across 12 files through `resolve_llm(tier, org_id=…)`; added OpenRouter to the router tier tables + placeholder-key rejection; removed the now-dead `build_llm` fallbacks; fixed `renewal_advice`'s UnboundLocalError; repaired Langfuse imports + pins; warn when `API_URL` is missing. | `w0-3-byok.mjs` **7/7** (incl. live invalid-BYOK probe); unit 135/135; integration 15/15 |

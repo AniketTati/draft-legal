@@ -42,18 +42,38 @@ _import_checked: bool = False
 
 
 def _load_handler_factory() -> Any | None:
-    """Import CallbackHandler once; cache failure so we don't retry every call."""
+    """
+    Import CallbackHandler once; cache failure so we don't retry every call.
+
+    The handler moved between major versions: `langfuse.callback` in v2,
+    `langfuse.langchain` in v3+. requirements.txt pins `langfuse>=2.55.0` with
+    no upper bound, so a fresh install resolves to v4 and the v2-only import
+    fails — which used to be logged at INFO and swallowed, silently disabling
+    tracing across every agent while `resolve_llm` kept cheerfully returning an
+    empty callback list. Try both layouts, and if neither loads say so loudly:
+    "no traces anywhere" should never be a quiet condition.
+    """
     global _handler_factory, _import_checked
     if _import_checked:
         return _handler_factory
     _import_checked = True
-    try:
-        from langfuse.callback import CallbackHandler  # type: ignore
-        _handler_factory = CallbackHandler
-        return _handler_factory
-    except ImportError as e:
-        log.info("[tracing] langfuse SDK not installed — LLM traces disabled (%s)", e)
-        return None
+
+    attempts: list[str] = []
+    for module, attr in (('langfuse.langchain', 'CallbackHandler'),
+                         ('langfuse.callback',  'CallbackHandler')):
+        try:
+            mod = __import__(module, fromlist=[attr])
+            _handler_factory = getattr(mod, attr)
+            return _handler_factory
+        except Exception as e:  # ImportError, or a transitive dep failing to load
+            attempts.append(f'{module}: {type(e).__name__}: {e}')
+
+    log.warning(
+        '[tracing] Langfuse keys are set but no CallbackHandler could be imported — '
+        'LLM traces are DISABLED for every agent. Tried %s',
+        ' | '.join(attempts),
+    )
+    return None
 
 
 def tracing_enabled() -> bool:

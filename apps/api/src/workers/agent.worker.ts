@@ -57,7 +57,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
   const res = await fetch(`${AGENTS_URL}/detect-binder`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
-    body:    JSON.stringify({ plainText: version.plainText }),
+    body:    JSON.stringify({ plainText: version.plainText, orgId }),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -194,7 +194,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
   const res = await fetch(`${AGENTS_URL}/classify`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
-    body:    JSON.stringify({ plainText: version.plainText }),
+    body:    JSON.stringify({ plainText: version.plainText, orgId }),
   })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -296,7 +296,7 @@ async function handleExtractAi(data: ExtractAiJob): Promise<void> {
 // ─── classify-request ────────────────────────────────────────────────────────
 
 async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
-  const { requestId } = data
+  const { requestId, orgId } = data
   console.info('[agent-worker] classify-request start requestId=%s', requestId)
 
   const request = await prisma.contractRequest.findUnique({
@@ -312,6 +312,7 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
       title:           request.title,
       description:     request.description,
       counterpartyName: request.counterpartyName ?? undefined,
+      orgId,
     }),
   })
   if (!res.ok) {
@@ -426,6 +427,7 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({
       contractId,
+      orgId,
       clauses,
       playbookPositions: relevant.map(p => ({
         clauseType:   p.clauseCategory?.name ?? 'other',

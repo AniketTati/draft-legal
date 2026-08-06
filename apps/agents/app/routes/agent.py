@@ -36,5 +36,5 @@ async def portfolio_query(body: PortfolioQueryRequest):
 
 @router.post("/agent/ask")
 async def ask_contract(body: AskRequest):
-    result = await run_ask(body.question, body.clauseMatches, body.contractId)
+    result = await run_ask(body.question, body.clauseMatches, body.contractId, org_id=body.orgId)
     return result

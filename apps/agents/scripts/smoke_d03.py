@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from app.router import (  # noqa: E402
     resolve_llm,
-    resolve_llm_platform_sync,
     assert_router_configured,
     ResolvedLlm,
 )
@@ -33,9 +32,9 @@ def check(cond: bool, msg: str) -> None:
 
 
 async def main() -> None:
-    # ── A — sync platform-only resolve (legacy path; no Node, no DB) ─────
-    r = resolve_llm_platform_sync("default")
-    check(isinstance(r, ResolvedLlm), "(A) sync platform resolve returns ResolvedLlm")
+    # ── A — platform-only resolve (no org_id → no Node call, no DB) ─────
+    r = await resolve_llm("default")
+    check(isinstance(r, ResolvedLlm), "(A) platform resolve returns ResolvedLlm")
     check(r.provider == "openai", f"(A) default tier → openai (got {r.provider})")
     check(r.source == "platform", f"(A) source=platform")
     check(r.llm is not None, "(A) llm built (LangChain BaseChatModel)")

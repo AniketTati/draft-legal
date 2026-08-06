@@ -19,8 +19,7 @@ from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from ..providers import build_llm
-from ..config import active_provider, smart_model
+from ..router import resolve_llm
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +132,7 @@ async def run_assist(
     governing_law: str = "Delaware",
     provider: str | None = None,
     model_id: str | None = None,
+    org_id: str | None = None,
 ) -> dict[str, str]:
     """Run the assist pipeline and return revised text + explanation."""
     if not selected_text.strip():
@@ -142,9 +142,18 @@ async def run_assist(
             "action": action,
         }
 
-    _provider = provider or active_provider()
-    _model    = model_id  or smart_model()
-    llm = build_llm(_provider, _model)
+    # A caller-pinned provider/model rides through the router too — it keeps
+    # the org's BYOK key + Langfuse tracing and only swaps which model is built.
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=org_id,
+        streaming=True,
+        trace_name=f"assist.{action}",
+        provider_override=provider or None,
+        model_override=model_id or None,
+    )
+    llm = resolved.llm
+    callbacks = resolved.callbacks
 
     action_prompt = _ACTION_PROMPTS.get(action, _ACTION_PROMPTS["rewrite"])
     user_content = action_prompt.format(
@@ -159,7 +168,7 @@ async def run_assist(
         response = await llm.ainvoke([
             SystemMessage(content=system_content),
             HumanMessage(content=user_content),
-        ])
+        ], config={"callbacks": callbacks})
         raw = response.content.strip()
         revised_html = _strip_markdown_fences(raw)
         logger.info("[assist] %s — returned %d HTML chars", action, len(revised_html))
@@ -175,7 +184,7 @@ async def run_assist(
     response = await llm.ainvoke([
         SystemMessage(content=system_content),
         HumanMessage(content=user_content),
-    ])
+    ], config={"callbacks": callbacks})
 
     raw = _strip_markdown_fences(response.content.strip())
 

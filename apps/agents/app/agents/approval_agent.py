@@ -18,8 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..providers import build_llm
-from ..config import active_provider, active_model, smart_model
+from ..router import resolve_llm
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,7 @@ logger = logging.getLogger(__name__)
 # ─── State ────────────────────────────────────────────────────────────────────
 
 class ApprovalState(TypedDict):
+    org_id:               str | None
     contract_plain_text:  str
     contract_type:        str
     contract_value:       float | None
@@ -137,10 +137,14 @@ def _safe_json(text: str) -> Any:
 
 # ─── Graph nodes ──────────────────────────────────────────────────────────────
 
-def step_summarize(state: ApprovalState) -> dict:
+async def step_summarize(state: ApprovalState) -> dict:
     """Step 1: generate plain-language executive summary (fast model)."""
     try:
-        llm = build_llm(active_provider(), active_model())
+        resolved = await resolve_llm(
+            'default',
+            org_id=state.get('org_id'),
+            trace_name='approval.summarize',
+        )
         value_str = f"${state['contract_value']:,.2f}" if state['contract_value'] else "Not specified"
         prompt = _SUMMARIZE_PROMPT.format(
             title=state['contract_title'],
@@ -150,7 +154,10 @@ def step_summarize(state: ApprovalState) -> dict:
             key_terms_json=json.dumps(state['key_terms'], indent=2)[:2000],
             text_excerpt=state['contract_plain_text'][:8000],
         )
-        response = llm.invoke([SystemMessage(content="You are a legal analyst."), HumanMessage(content=prompt)])
+        response = await resolved.llm.ainvoke(
+            [SystemMessage(content="You are a legal analyst."), HumanMessage(content=prompt)],
+            config={"callbacks": resolved.callbacks},
+        )
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         return {'executive_summary': summary, 'error': None}
     except Exception as e:
@@ -158,12 +165,16 @@ def step_summarize(state: ApprovalState) -> dict:
         return {'executive_summary': f'Summary unavailable ({type(e).__name__})', 'error': str(e)}
 
 
-def step_flag_risks(state: ApprovalState) -> dict:
+async def step_flag_risks(state: ApprovalState) -> dict:
     """Step 2: identify non-standard and unfavorable terms (smart model)."""
     if state.get('error') and not state.get('executive_summary'):
         return {'key_risks': [], 'non_standard_terms': []}
     try:
-        llm = build_llm(active_provider(), smart_model())
+        resolved = await resolve_llm(
+            'reasoning',
+            org_id=state.get('org_id'),
+            trace_name='approval.flag_risks',
+        )
         # Only send unfavorable/unusual clauses to keep prompt concise
         risky_clauses = [c for c in state['clauses'] if c.get('riskRating') in ('unfavorable', 'unusual', 'high')]
         all_clauses = risky_clauses if risky_clauses else state['clauses'][:10]
@@ -174,7 +185,10 @@ def step_flag_risks(state: ApprovalState) -> dict:
             risk_factors_json=json.dumps(state['risk_factors'][:10]),
             clauses_json=json.dumps(all_clauses[:10], indent=2)[:4000],
         )
-        response = llm.invoke([SystemMessage(content="You are a contract risk analyst."), HumanMessage(content=prompt)])
+        response = await resolved.llm.ainvoke(
+            [SystemMessage(content="You are a contract risk analyst."), HumanMessage(content=prompt)],
+            config={"callbacks": resolved.callbacks},
+        )
         raw = response.content if hasattr(response, 'content') else str(response)
         parsed = _safe_json(raw)
         if parsed and isinstance(parsed, dict):
@@ -188,10 +202,14 @@ def step_flag_risks(state: ApprovalState) -> dict:
         return {'key_risks': [], 'non_standard_terms': [], 'error': str(e)}
 
 
-def step_recommend(state: ApprovalState) -> dict:
+async def step_recommend(state: ApprovalState) -> dict:
     """Step 3: produce approval recommendation (smart model)."""
     try:
-        llm = build_llm(active_provider(), smart_model())
+        resolved = await resolve_llm(
+            'reasoning',
+            org_id=state.get('org_id'),
+            trace_name='approval.recommend',
+        )
         value_str = f"${state['contract_value']:,.2f}" if state['contract_value'] else "Not specified"
         prompt = _RECOMMEND_PROMPT.format(
             contract_type=state['contract_type'],
@@ -200,7 +218,10 @@ def step_recommend(state: ApprovalState) -> dict:
             key_risks_json=json.dumps(state['key_risks'][:5], indent=2),
             executive_summary=state['executive_summary'],
         )
-        response = llm.invoke([SystemMessage(content="You are a contract approval advisor."), HumanMessage(content=prompt)])
+        response = await resolved.llm.ainvoke(
+            [SystemMessage(content="You are a contract approval advisor."), HumanMessage(content=prompt)],
+            config={"callbacks": resolved.callbacks},
+        )
         raw = response.content if hasattr(response, 'content') else str(response)
         parsed = _safe_json(raw)
         if parsed and isinstance(parsed, dict):
@@ -244,9 +265,11 @@ async def run_approval_summary(
     key_terms:        dict,
     risk_factors:     list[str],
     risk_score:       float | None,
+    org_id:           str | None = None,
 ) -> dict:
     """Run the 3-step approval summary pipeline. Returns structured result dict."""
     initial_state: ApprovalState = {
+        'org_id':               org_id,
         'contract_plain_text':  plain_text,
         'contract_type':        contract_type,
         'contract_value':       contract_value,
