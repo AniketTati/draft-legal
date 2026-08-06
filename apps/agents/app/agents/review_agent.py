@@ -23,6 +23,7 @@ from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
 from ..router import resolve_llm
+from ..untrusted import wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
 
@@ -591,7 +592,12 @@ async def _extract(state: ReviewState) -> ReviewState:
             resp = await llm.ainvoke(
                 [
                     SystemMessage(content=_EXTRACT_PROMPT + extra_prompt),
-                    HumanMessage(content=chunk),
+                    # The chunk is counterparty-authored text. Frame it as data
+                    # so instructions inside the contract cannot steer extraction.
+                    HumanMessage(content=wrap_untrusted_document(
+                        chunk,
+                        source=f"counterparty contract body (chunk {i + 1} of {len(chunks)})",
+                    )),
                 ],
                 config={"callbacks": resolved.callbacks},
             )
@@ -683,7 +689,12 @@ async def _extract(state: ReviewState) -> ReviewState:
             resp2 = await llm.ainvoke(
                 [
                     SystemMessage(content=second_prompt),
-                    HumanMessage(content=slice_for_recall),
+                    # Slice is taken above from the raw text, then wrapped here,
+                    # so truncation can never cut a framing marker in half.
+                    HumanMessage(content=wrap_untrusted_document(
+                        slice_for_recall,
+                        source="counterparty contract body (missing-field recovery pass)",
+                    )),
                 ],
                 config={"callbacks": resolved.callbacks},
             )
@@ -707,7 +718,13 @@ async def _extract(state: ReviewState) -> ReviewState:
 
 async def _validate(state: ReviewState) -> ReviewState:
     """Step 2: cross-check values, normalise types, assign confidence (Sonnet)."""
-    payload = json.dumps(state["raw_fields"], indent=2)
+    # raw_fields carries verbatim `quote` strings lifted straight out of the
+    # counterparty document, so the payload is untrusted even though we built
+    # the JSON around it. Frame the whole payload once (one wrap per call).
+    payload = wrap_untrusted_document(
+        json.dumps(state["raw_fields"], indent=2),
+        source="fields extracted from the counterparty contract, with verbatim quotes",
+    )
 
     try:
         resolved = await resolve_llm(
@@ -779,7 +796,14 @@ async def _score(state: ReviewState) -> ReviewState:
         # If user provided a contractType hint, pass it so scoring respects it
         **({"contractTypeHint": state["contract_type"]} if state["contract_type"] else {}),
     }
-    payload = json.dumps(context, indent=2)
+    # significantClauses is verbatim clause text and validatedFields still
+    # carries verbatim quotes, so the scoring payload is counterparty-authored
+    # content. One wrap around the assembled payload keeps the added framing to
+    # ~120 tokens for the call rather than per clause.
+    payload = wrap_untrusted_document(
+        json.dumps(context, indent=2),
+        source="extracted contract fields and verbatim clause text from the counterparty contract",
+    )
 
     try:
         resolved = await resolve_llm(

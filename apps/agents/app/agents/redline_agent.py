@@ -20,6 +20,7 @@ from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
 from ..router import resolve_llm
+from ..untrusted import wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,15 @@ async def step_extract_changes(state: RedlineState) -> RedlineState:
         streaming=True,
         trace_name="redline.extract_changes",
     )
-    prompt = _EXTRACT_PROMPT.format(diff_html=state["diff_html"][:80_000])
+    # The diff is counterparty-authored. Truncate the RAW html FIRST, then wrap —
+    # slicing after wrapping could sever the closing sentinel and leave the model
+    # with an unterminated data block.
+    prompt = _EXTRACT_PROMPT.format(
+        diff_html=wrap_untrusted_document(
+            state["diff_html"][:80_000],
+            source="contract diff HTML (counterparty tracked changes)",
+        )
+    )
 
     try:
         response = await resolved.llm.ainvoke([
@@ -156,8 +165,15 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
         streaming=True,
         trace_name="redline.score_changes",
     )
+    # playbook_json is OUR position library — trusted, left unwrapped.
+    # changes_json carries verbatim counterparty language (ourText/theirText/
+    # context) lifted straight out of the diff, so it stays untrusted on this
+    # second pass. This is the call that sets requires_human_gate.
     playbook_json = json.dumps(state["playbook_positions"], indent=2)
-    changes_json = json.dumps(state["changes"], indent=2)
+    changes_json = wrap_untrusted_document(
+        json.dumps(state["changes"], indent=2),
+        source="changes extracted verbatim from the counterparty redline",
+    )
     prompt = _SCORE_PROMPT.format(
         playbook_json=playbook_json,
         contract_type=state["contract_type"],
@@ -208,7 +224,12 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
             trace_name="redline.generate_counters",
         )
         playbook_json = json.dumps(state["playbook_positions"], indent=2)
-        counter_json = json.dumps(counter_changes, indent=2)
+        # Same verbatim counterparty language as step 2, narrowed to the
+        # changes we intend to counter.
+        counter_json = wrap_untrusted_document(
+            json.dumps(counter_changes, indent=2),
+            source="changes extracted verbatim from the counterparty redline",
+        )
         prompt = _COUNTER_PROMPT.format(
             contract_type=state["contract_type"],
             playbook_json=playbook_json,
