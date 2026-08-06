@@ -30,18 +30,32 @@ describe('isEmailConfigured', () => {
   })
 })
 
+/**
+ * What mailer.ts actually passes to fetch. Typing the mock to this rather than
+ * the general `RequestInit` is what lets the assertions below read `headers`
+ * and `body` directly — under `RequestInit` those are union types (`HeadersInit`,
+ * `BodyInit | null`) that no amount of casting makes pleasant, and the cast that
+ * used to be here (`as [string, any]`) did not compile at all because the mock
+ * declared no parameters, so `mock.calls[0]` inferred as `[]`.
+ */
+interface SentRequest {
+  method:  string
+  headers: Record<string, string>
+  body:    string
+}
+
 describe('sendEmail — SendGrid HTTPS path', () => {
   it('POSTs the correct SendGrid v3 payload and returns via=sendgrid on 202', async () => {
     process.env.SENDGRID_API_KEY = 'SG.testkey'
     process.env.SMTP_FROM = 'noreply@example.com'
-    const fetchMock = vi.fn(async () => new Response('', { status: 202 }))
+    const fetchMock = vi.fn(async (_url: string, _init: SentRequest) => new Response('', { status: 202 }))
     vi.stubGlobal('fetch', fetchMock)
 
     const r = await sendEmail({ to: 'user@example.com', subject: 'Hi', text: 'plain', html: '<b>hi</b>' })
     expect(r).toEqual({ sent: true, via: 'sendgrid' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, opts] = fetchMock.mock.calls[0] as [string, any]
+    const [url, opts] = fetchMock.mock.calls[0]
     expect(url).toBe('https://api.sendgrid.com/v3/mail/send')
     expect(opts.method).toBe('POST')
     expect(opts.headers.authorization).toBe('Bearer SG.testkey')
@@ -68,10 +82,10 @@ describe('sendEmail — SendGrid HTTPS path', () => {
 
   it('omits the html part when not provided', async () => {
     process.env.SENDGRID_API_KEY = 'SG.k'
-    const fetchMock = vi.fn(async () => new Response('', { status: 202 }))
+    const fetchMock = vi.fn(async (_url: string, _init: SentRequest) => new Response('', { status: 202 }))
     vi.stubGlobal('fetch', fetchMock)
     await sendEmail({ to: 'u@e.com', subject: 's', text: 'only text' })
-    const body = JSON.parse((fetchMock.mock.calls[0] as any)[1].body)
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body))
     expect(body.content).toHaveLength(1)
     expect(body.content[0].type).toBe('text/plain')
   })
