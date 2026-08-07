@@ -10,11 +10,16 @@ import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob } from '../lib/queue.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob } from '../lib/queue.js'
+import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+// playbook_check lives on THIS service's internal-ai plugin, not on the Python
+// agents service. Same self-call shape agent-threads.ts uses.
+const API_INTERNAL_URL = process.env.API_URL ?? 'http://localhost:3001'
+const INTERNAL_SECRET  = process.env.INTERNAL_SERVICE_SECRET ?? ''
 
 // ─── detect-binder ────────────────────────────────────────────────────────────
 
@@ -380,6 +385,134 @@ async function handleRedlineAnalysis(data: RedlineAnalysisJob): Promise<void> {
 // pipeline only produced generic per-clause risk ratings and never loaded a
 // playbook position at all.
 
+/**
+ * Phase 3 — whole-document redline against the playbook.
+ *
+ * check -> batch propose -> STAGE. Deliberately does not apply: the markup is
+ * a proposal for a lawyer to review, and writing it into the contract first
+ * would make it an unreviewed edit rather than a redline.
+ *
+ * Progress lands in `contract.metadata._playbookRedlineStatus` because that is
+ * how every other long AI job in this codebase reports, and the detail page
+ * already polls it at 4s. Holding it in memory would lose the run the moment
+ * the user navigated away, and these take minutes.
+ */
+async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
+  const { contractId, orgId, userId, versionId, aggression } = data
+
+  const setMeta = async (patch: Record<string, unknown>) => {
+    // Re-read before merging: other workers write sibling keys on the same
+    // JSON column, and a stale spread would drop theirs.
+    const row = await prisma.contract.findUnique({
+      where: { id: contractId }, select: { metadata: true },
+    })
+    if (!row) return
+    await prisma.contract.update({
+      where: { id: contractId },
+      data:  { metadata: { ...(row.metadata as object ?? {}), ...patch } as never },
+    })
+  }
+
+  try {
+    await setMeta({ _playbookRedlineStatus: 'RUNNING' })
+
+    // 1. Which clauses deviate. Ask for the WHOLE document — Phase 0 raised the
+    //    cap for exactly this caller.
+    const checkRes = await fetch(`${API_INTERNAL_URL}/api/internal/ai/tools/playbook_check`, {
+      method:  'POST',
+      headers: { 'content-type': 'application/json', 'x-internal-secret': INTERNAL_SECRET },
+      body: JSON.stringify({ orgId, contractId, maxClauses: 500 }),
+    })
+    if (!checkRes.ok) {
+      throw new Error(`playbook_check ${checkRes.status}: ${(await checkRes.text()).slice(0, 200)}`)
+    }
+    const checked = await checkRes.json() as {
+      summary?: { deviationCount?: number; worstSeverity?: string | null; truncated?: boolean; uncoveredClauses?: number }
+      checks?: Array<{ clauseId: string; clauseType: string; passed: boolean; failedCount: number; worstSeverity: string | null; excerpt?: string }>
+    }
+
+    const deviating = (checked.checks ?? []).filter(c => c.failedCount > 0)
+    if (deviating.length === 0) {
+      await setMeta({
+        _playbookRedlineStatus: 'DONE',
+        _playbookRedline: {
+          versionId, aggression, proposals: [], deviationCount: 0,
+          worstSeverity: checked.summary?.worstSeverity ?? null,
+          truncated: checked.summary?.truncated ?? false,
+          uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+          stagedAt: new Date().toISOString(),
+          note: 'No clause deviated from the playbook.',
+        },
+      })
+      return
+    }
+
+    // 2. One batched rewrite for all of them.
+    const proposed = await proposeClauseBatch({
+      orgId, contractId,
+      clauseIds: deviating.map(c => c.clauseId),
+      aggression,
+    })
+    if (!proposed.ok) {
+      throw new Error(`${proposed.detail}${proposed.upstream ? `: ${proposed.upstream}` : ''}`)
+    }
+
+    // 3. Stage. Carry the ORIGINAL text alongside each rewrite so the reviewer
+    //    sees both sides without another round-trip, and so the apply step can
+    //    verify it is replacing what the reviewer actually saw.
+    const clauses = await prisma.contractClause.findMany({
+      where:  { id: { in: deviating.map(c => c.clauseId) } },
+      select: { id: true, content: true, sectionRef: true },
+    })
+    const contentById = new Map(clauses.map(c => [c.id, c]))
+    const bySeverity = new Map(deviating.map(c => [c.clauseId, c.worstSeverity]))
+
+    const proposals = proposed.data.proposals.map(p => ({
+      clauseId:     p.clauseId,
+      clauseType:   p.clauseType,
+      sectionRef:   contentById.get(p.clauseId)?.sectionRef ?? null,
+      originalText: contentById.get(p.clauseId)?.content ?? '',
+      proposedText: p.proposedText,
+      rationale:    p.rationale,
+      severity:     bySeverity.get(p.clauseId) ?? null,
+      // Present instead of proposedText when this clause could not be
+      // rewritten. Reported rather than omitted: an omitted clause reads as
+      // "no change needed", which is the miss this feature exists to remove.
+      error:        p.error,
+    }))
+
+    await setMeta({
+      _playbookRedlineStatus: 'DONE',
+      _playbookRedline: {
+        versionId, aggression, proposals,
+        deviationCount:   deviating.length,
+        proposedCount:    proposals.filter(p => p.proposedText).length,
+        failedCount:      proposals.filter(p => p.error).length,
+        worstSeverity:    checked.summary?.worstSeverity ?? null,
+        truncated:        checked.summary?.truncated ?? false,
+        uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+        stagedAt:         new Date().toISOString(),
+      },
+    })
+
+    createAuditEvent({
+      orgId, userId,
+      action:       AuditAction.AGENT_TOOL_APPLIED,
+      resourceType: 'contract',
+      resourceId:   contractId,
+      metadata: { via: 'playbook-redline', deviationCount: deviating.length, proposed: proposals.filter(p => p.proposedText).length },
+    }).catch(() => {})
+  } catch (err) {
+    // Surface the reason. A run that fails silently looks identical to one
+    // still working, and these take minutes.
+    console.error('[agent-worker] playbook-redline failed contractId=%s: %s', contractId, (err as Error).message)
+    await setMeta({
+      _playbookRedlineStatus: 'FAILED',
+      _playbookRedlineError:  (err as Error).message.slice(0, 300),
+    }).catch(() => {})
+  }
+}
+
 async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
   const { contractId, orgId, versionId } = data
 
@@ -588,6 +721,8 @@ export const agentWorker = new Worker(
       await handleClassifyRequest(job.data as ClassifyRequestJob)
     } else if (job.name === 'redline-analysis') {
       await handleRedlineAnalysis(job.data as RedlineAnalysisJob)
+    } else if (job.name === 'playbook-redline') {
+      await handlePlaybookRedline(job.data as PlaybookRedlineJob)
     } else if (job.name === 'playbook-review') {
       await handlePlaybookReview(job.data as PlaybookReviewJob)
     } else if (job.name === 'approval-summary') {

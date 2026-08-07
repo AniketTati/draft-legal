@@ -30,6 +30,7 @@ import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
 import { ComplianceRailSection } from '@/components/contracts/ComplianceRailSection'
+import { PlaybookRedlineRailSection } from '@/components/contracts/PlaybookRedlineRailSection'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
@@ -569,8 +570,18 @@ export function ContractDetailPage() {
     // Poll every 4s while any pipeline step is in progress or redline is analyzing
     refetchInterval: (q) => {
       const s = q.state.data?.analysisStatus
-      const rm = (q.state.data?.metadata as any)?._redlineStatus
-      return ((s && IN_PROGRESS_STATUSES.includes(s)) || rm === 'ANALYZING') ? 4000 : false
+      const meta = q.state.data?.metadata as Record<string, unknown> | undefined
+      const rm = meta?._redlineStatus
+      // Every long-running job that reports through contract.metadata has to be
+      // listed here, or the page fetches once and then stops: the rail sits on
+      // "working…" forever and only a manual refresh reveals the result. The
+      // playbook redline takes minutes, so it is exactly the case that suffers.
+      const pr = meta?._playbookRedlineStatus
+      const inFlight =
+        (s && IN_PROGRESS_STATUSES.includes(s)) ||
+        rm === 'ANALYZING' ||
+        pr === 'QUEUED' || pr === 'RUNNING'
+      return inFlight ? 4000 : false
     },
   })
 
@@ -3134,6 +3145,20 @@ export function ContractDetailPage() {
             qc.invalidateQueries({ queryKey: ['contract', id] })
           }}
         />
+
+        {/* Phase 3 — whole-document playbook redline. Stages a first-pass
+            markup the reviewer accepts change by change; nothing reaches the
+            document until they do. Status lives in contract.metadata, which is
+            what the 4s poll above is already watching. */}
+        {id && (
+          <PlaybookRedlineRailSection
+            contractId={id}
+            status={((contract?.metadata as Record<string, unknown> | undefined)
+              ?._playbookRedlineStatus as 'IDLE' | 'QUEUED' | 'RUNNING' | 'DONE' | 'APPLIED' | 'FAILED') ?? 'IDLE'}
+            staged={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedline as never}
+            error={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedlineError as string | null}
+          />
+        )}
 
         {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
             checks with per-framework status, grounded quotes, and

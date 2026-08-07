@@ -20,7 +20,8 @@ import { indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
-import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract } from '../lib/queue.js'
+import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
+import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import {
   CreateContractSchema,
@@ -1887,6 +1888,153 @@ export async function contractRoutes(app: FastifyInstance) {
 
 
   // ── Redline analysis trigger ───────────────────────────────────────────────
+  // ── POST /:id/redline-against-playbook (Phase 3) ──────────────────────────
+  // Kicks off a whole-document redline: check -> batch propose -> STAGE.
+  // 202 + a status key in contract.metadata, which is how every long AI job
+  // here reports and what the detail page already polls at 4s.
+  //
+  // It stages rather than applies on purpose. Writing the markup into the
+  // contract before a lawyer has seen it is an unreviewed edit, not a redline.
+  app.post('/:id/redline-against-playbook', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { id: contractId } = req.params as { id: string }
+    const body = (req.body ?? {}) as { aggression?: string }
+
+    const AGGRESSION = ['least', 'moderate', 'aggressive'] as const
+    const aggression = (AGGRESSION as readonly string[]).includes(body.aggression ?? '')
+      ? body.aggression as typeof AGGRESSION[number]
+      : 'moderate'
+
+    const contract = await prisma.contract.findFirst({
+      where:  { id: contractId, orgId, deletedAt: null },
+      select: { id: true, currentVersionId: true, metadata: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    if (!contract.currentVersionId) {
+      return reply.status(400).send({ detail: 'Contract has no current version to redline' })
+    }
+
+    const meta = (contract.metadata as Record<string, unknown> | null) ?? {}
+    if (meta._playbookRedlineStatus === 'RUNNING' || meta._playbookRedlineStatus === 'QUEUED') {
+      return reply.status(409).send({ detail: 'A redline is already running for this contract' })
+    }
+
+    // Mark QUEUED before enqueuing so a poll landing between the two sees a
+    // run in progress rather than a stale DONE from a previous pass.
+    await prisma.contract.update({
+      where: { id: contractId },
+      data:  {
+        metadata: {
+          ...meta,
+          _playbookRedlineStatus: 'QUEUED',
+          _playbookRedlineError:  null,
+        } as never,
+      },
+    })
+
+    queuePlaybookRedline({
+      contractId, orgId, userId,
+      versionId: contract.currentVersionId,
+      aggression,
+    })
+
+    return reply.status(202).send({ status: 'QUEUED', contractId, aggression })
+  })
+
+  // ── POST /:id/redline-against-playbook/apply ──────────────────────────────
+  // Applies the subset the reviewer accepted, as ONE version (Phase 2).
+  // Anything not named here is not applied — a change the reviewer did not
+  // accept must never reach the document.
+  app.post('/:id/redline-against-playbook/apply', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { id: contractId } = req.params as { id: string }
+    const body = (req.body ?? {}) as { acceptedClauseIds?: unknown }
+
+    const accepted = Array.isArray(body.acceptedClauseIds)
+      ? body.acceptedClauseIds.filter((x): x is string => typeof x === 'string')
+      : []
+    if (accepted.length === 0) {
+      return reply.status(400).send({ detail: 'acceptedClauseIds is required' })
+    }
+
+    const contract = await prisma.contract.findFirst({
+      where:  { id: contractId, orgId, deletedAt: null },
+      select: { id: true, metadata: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    const meta = (contract.metadata as Record<string, unknown> | null) ?? {}
+    const staged = meta._playbookRedline as
+      { proposals?: Array<{ clauseId: string; proposedText?: string; rationale?: string }> } | undefined
+    if (!staged?.proposals?.length) {
+      return reply.status(409).send({ detail: 'No staged redline to apply', code: 'NO_STAGED_REDLINE' })
+    }
+
+    // Only ever apply text that was actually staged. Taking proposedText from
+    // the request would let a client apply language nobody reviewed.
+    const byId = new Map(staged.proposals.filter(p => p.proposedText).map(p => [p.clauseId, p]))
+    const changes = accepted
+      .map(id => byId.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+      .map(p => ({ clauseId: p.clauseId, proposedText: p.proposedText!, rationale: p.rationale }))
+
+    if (changes.length === 0) {
+      return reply.status(409).send({
+        detail: 'None of the accepted clauses are in the staged redline',
+        code:   'NOT_STAGED',
+      })
+    }
+
+    const result = await applyClauseBatch({
+      orgId, userId, contractId, changes,
+      rationale: 'accepted from playbook redline',
+    })
+    if (!result.ok) {
+      return reply.status(result.status).send({ detail: result.detail, code: result.code })
+    }
+
+    // Record which ones the reviewer took, so a second visit does not re-offer
+    // changes already in the document.
+    await prisma.contract.update({
+      where: { id: contractId },
+      data:  {
+        metadata: {
+          ...meta,
+          _playbookRedlineStatus: 'APPLIED',
+          _playbookRedline: {
+            ...(staged as object),
+            acceptedClauseIds: accepted,
+            appliedAt: new Date().toISOString(),
+          },
+        } as never,
+      },
+    })
+
+    return reply.send(result.data)
+  })
+
+  // ── GET /:id/playbook-review ──────────────────────────────────────────────
+  // The automatic review from the parse pipeline has been written to
+  // contract.metadata._playbookReview since it shipped, and nothing ever read
+  // it — a repo-wide grep found the write and no reader. Exposing it means the
+  // redline surface can show what the org already paid to compute.
+  app.get('/:id/playbook-review', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id: contractId } = req.params as { id: string }
+
+    const contract = await prisma.contract.findFirst({
+      where:  { id: contractId, orgId, deletedAt: null },
+      select: { metadata: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview
+    if (!review) {
+      return reply.status(404).send({ detail: 'No playbook review has been run for this contract' })
+    }
+    return reply.send(review)
+  })
+
   app.post('/:id/redline', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
     const { id: contractId } = req.params as { id: string }
