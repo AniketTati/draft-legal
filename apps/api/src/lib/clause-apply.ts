@@ -494,6 +494,41 @@ export async function applyClauseBatch(args: {
   })
   const clauseById = new Map(clauses.map(c => [c.id, c]))
 
+  // Resilience to version churn — the same problem applyClauseProposal solves,
+  // and the batch is MORE exposed to it: staging happens minutes before the
+  // reviewer accepts, and the editor's autosave creates versions WITHOUT
+  // re-running clause extraction. So by the time they press apply, the clause
+  // ids they were shown can belong to an older version and the current one can
+  // have no clause rows at all. Without this the whole batch 409s with "none of
+  // the requested clauses could be located", which is both wrong and baffling —
+  // the clauses are right there in the document.
+  const unresolved = changes.map(c => c.clauseId).filter(id => !clauseById.has(id))
+  if (unresolved.length > 0) {
+    const priors = await prisma.contractClause.findMany({
+      // Scoped to THIS contract: a clause id is globally unique but not
+      // globally private, and an unscoped lookup would let a caller name
+      // another org's clause and splice its text into their document.
+      where:  { id: { in: unresolved }, version: { contractId: contract.id } },
+      select: { id: true, clauseType: true, content: true, sectionRef: true },
+    })
+    for (const prior of priors) {
+      const byType = await prisma.contractClause.findFirst({
+        where: {
+          versionId:  currentVersion.id,
+          isSubChunk: false,
+          clauseType: prior.clauseType,
+          ...(prior.sectionRef ? { sectionRef: prior.sectionRef } : {}),
+        },
+        orderBy: { sortOrder: 'asc' },
+        select:  { id: true, clauseType: true, content: true, sectionRef: true },
+      })
+      // Prefer the current version's row; otherwise the prior clause's own
+      // text, which still has to survive locateSpan against the current body —
+      // so a clause genuinely edited away is still reported, not force-applied.
+      clauseById.set(prior.id, byType ?? prior)
+    }
+  }
+
   // Locate every span against the ORIGINAL body — never against a partially
   // rewritten one. This is the whole point of the batch.
   interface Planned {

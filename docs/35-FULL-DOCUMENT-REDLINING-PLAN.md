@@ -7,7 +7,7 @@ counterparty can open in Word with real tracked changes.
 This is gap #1 from the agent audit — the capability every serious competitor
 ships and the one in-house teams name first. Estimated 4–6 weeks.
 
-**Status:** Phases 0, 1 and 2 complete and verified. Phases 3–4 not started.
+**Status:** Phases 0–3 complete and verified. Phase 4 (tracked-changes DOCX) not started.
 
 ---
 
@@ -336,7 +336,7 @@ OOXML serializer able to reconstruct just one change in twelve.
 
 Clauses that cannot be located are reported and skipped; the rest still land.
 
-### Phase 3 — The pipeline + review UI (~1 week)
+### Phase 3 — The pipeline + review UI ✅ **done** (2026-08-07)
 
 `POST /contracts/:id/redline-against-playbook` → `202` + `_playbookRedlineStatus`,
 following the established polling pattern. Worker: check → batch propose →
@@ -348,11 +348,66 @@ decision→HTML resolution. Feed staged proposals into that shape rather than
 inventing a second review surface. And **finally read `_playbookReview`** —
 today it is written and rendered nowhere.
 
-**Check:** `p3-pipeline.mjs` — end-to-end on a seeded contract with known
-playbook deviations. Assert status transitions, that the staged set matches the
-deviations found, that accepting a subset applies exactly that subset, and that
-a page reload mid-run recovers the state. Plus Playwright over the review
-screen.
+**Check:** `scripts/redline/p3-pipeline.mjs` (**0/1 → 22/22**) and
+`scripts/redline/p3-ui-verify.mjs` (**12/12**).
+
+`POST /contracts/:id/redline-against-playbook` → `202` + `_playbookRedlineStatus`
+in contract metadata, which the detail page polls at 4s. The worker chains
+check → batch propose → **stage**. Accepting a subset applies exactly that
+subset as one version (Phase 2).
+
+The API check's control is a **compliant** clause: a pipeline that stages all
+three is rewriting everything rather than reading the checker.
+
+#### The UI test earned its place — two bugs the API layer could not see
+
+**1. The page stopped polling.** `ContractDetailPage`'s `refetchInterval`
+enumerates which in-flight conditions keep it fetching, and
+`_playbookRedlineStatus` was not among them. It fetched once, returned `false`,
+and stopped — so the rail sat on "Reviewing every clause…" forever on a job
+that had already finished, with nothing telling the user to refresh. Worse, the
+rail carried a comment asserting the opposite; both are fixed.
+
+**2. Opening the contract made accepting impossible.** Loading the page
+triggers the editor's autosave, which creates versions **without re-running
+clause extraction**:
+
+```
+v1  clauses=2
+v2  clauses=0   note="Edited in-place"
+v3  clauses=0   note="Edited in-place"   <- CURRENT
+```
+
+The staged proposals referenced clause ids on v1, so by the time the reviewer
+pressed Apply the batch looked on v3, found nothing, and returned *"None of the
+requested clauses could be located in the current version"* — while those
+clauses were visibly on screen. **Any reviewer who opened the document could
+not accept anything**, which is everyone.
+
+`applyClauseProposal` already solved this and documents it (P1.6). Phase 2 wrote
+`applyClauseBatch` fresh and did not carry it over — and the batch is *more*
+exposed, since staging happens minutes before the accept. It now resolves by
+`(clauseType, sectionRef)` on the current version, falling back to the prior
+clause's text, scoped to the contract. It still runs through `locateSpan`, so a
+clause genuinely edited away is reported rather than force-applied.
+
+Both are permanent assertions now: section 6 of the API check creates an
+autosave-shaped version directly, and asserts not just that the apply returns
+200 but that **the clause actually changed** — resolving it is not enough if the
+splice does not land.
+
+#### Also: a dead write finally has a reader
+
+`metadata._playbookReview` had been written by the auto-review worker since
+`647e3e7` and read nowhere. Now exposed at `GET /contracts/:id/playbook-review`.
+
+#### What the rail says out loud
+
+Coverage honesty, carried through from Phase 0: clauses with **no playbook
+position** are surfaced as *"not reviewed, not approved"*, truncated runs say
+so, and clauses the rewriter failed on are named individually. An omitted clause
+reads as "no change needed", which is the silent miss this feature exists to
+remove.
 
 ### Phase 4 — Tracked-changes DOCX (~2 weeks)
 

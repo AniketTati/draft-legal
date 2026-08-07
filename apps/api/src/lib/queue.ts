@@ -240,6 +240,35 @@ export function queuePlaybookReview(payload: PlaybookReviewJob): void {
   }).catch(err => console.warn('[queue] failed to enqueue playbook-review:', err.message))
 }
 
+/**
+ * Phase 3 — whole-document redline against the org's playbook.
+ *
+ * Chains playbook_check -> batch propose -> STAGE. It deliberately does not
+ * apply: the markup is a proposal a lawyer reviews, and writing it into the
+ * contract first would make it an unreviewed edit.
+ */
+export interface PlaybookRedlineJob {
+  contractId: string
+  orgId:      string
+  userId:     string
+  versionId:  string
+  aggression: 'least' | 'moderate' | 'aggressive'
+}
+export function queuePlaybookRedline(payload: PlaybookRedlineJob): void {
+  agentQueue.add('playbook-redline', payload, {
+    // One attempt. A retry re-runs every LLM call in the batch, and the job is
+    // user-initiated — they can see it failed and press the button again.
+    attempts: 1,
+    // Version-scoped like playbook-review, so a re-run against the SAME version
+    // is a no-op but the counterparty's next version gets its own run. Note
+    // BullMQ returns the existing job rather than throwing on a duplicate id,
+    // so the .catch below would never see that case.
+    jobId: `playbook-redline-${payload.contractId}-${payload.versionId}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue playbook-redline:', err.message))
+}
+
 /** Approval AI summary — fetches contract, runs 3-step LangGraph pipeline, patches result back. */
 export function queueApprovalSummary(payload: ApprovalSummaryJob): void {
   agentQueue.add('approval-summary', payload, {
