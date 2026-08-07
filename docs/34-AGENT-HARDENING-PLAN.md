@@ -552,6 +552,86 @@ just-streamed conversation is lost.
 
 ---
 
+## W0-7 — The agents image could not be built at all
+
+Found on 2026-08-07, when GitHub Actions started producing runs again after a
+five-day gap and the backlog finally reported. `Test Agents (Python)` was red,
+and so was every production deploy: `pip install -r requirements.txt` ended in
+`ResolutionImpossible`.
+
+The cause was a pair of constraints that cannot both hold:
+
+```
+langchain-core>=0.3.0,<1.0     # line 12, from the original 0.3 pin
+langchain>=1.0,<2.0            # added 2026-08-06 for langfuse.langchain
+```
+
+`langchain` requires `langchain-core>=1.0` from its 1.0 release onward. Adding
+the second line without relaxing the first made the file unsatisfiable. The
+commit that added it was verified by running the service locally, where nothing
+re-resolves `requirements.txt` — an already-populated venv keeps working no
+matter what the file says.
+
+**Why this outranked a red check.** `scripts/deploy.sh` builds the agents
+service with `gcloud run deploy --source apps/agents`, so Cloud Build runs the
+same `pip install` against the same file. The agents image had not been
+buildable since 2026-08-06; production was serving the last image that built,
+and Week 0 plus redlining Phases 0–3 were merged to `main` but not deployed.
+The CI failure and the deploy failure were one bug wearing two hats.
+
+**A second defect, found only by asking the question properly.** The obvious fix
+was "move everything to 1.x, since that's what runs locally." Checking rather
+than assuming showed the local venv is not a valid install either:
+
+```
+langchain-openai 0.3.35 has requirement langchain-core<1.0.0,>=0.3.78,
+  but you have langchain-core 1.5.3.
+langchain-anthropic 0.3.22 has requirement langchain-core<1.0.0,>=0.3.78,
+  but you have langchain-core 1.5.3.
+```
+
+`pip check` had never been run. Every local verification in this repo — Week 0's
+checks and all four redlining phases — ran against a dependency set pip
+considers broken. It worked, but "it works locally" was never evidence the pins
+were sound, and that is precisely the assumption that shipped the break.
+
+**Fix.** Hold the whole stack on the 0.3 / langgraph 0.6 line by pinning
+`langchain>=0.3,<1.0`, and raise the provider-adapter floors from `>=0.2` to
+`>=0.3` so the resolver cannot wander into 0.2-era adapters that need
+`langchain-core<0.3` — reachable, they cost minutes of backtracking before
+failing.
+
+Both lines were built and tested before choosing. The 1.x line resolves, passes
+`pip check`, imports all 20 routes, and loads the langfuse handler — it is a
+genuine option, not a blocked one. It was rejected because production has run
+the 0.3 line continuously and the 1.x set moves `langchain-core` 0.3→1.5, both
+chat adapters 0.3→1.x, and `langchain-google-genai` 2→3 in one step, with no
+behavioural testing behind it. Restoring a buildable image and upgrading the LLM
+framework are two changes and deserve two decisions.
+
+### How we check it
+
+`scripts/agents/deps-check.mjs` resolves `requirements.txt` inside
+`python:3.11-slim` — the exact base `apps/agents/Dockerfile` builds from and the
+Python version CI pins — and asserts on what comes out:
+
+- the file resolves, **and does so within five minutes**. An unsatisfiable file
+  does not fail fast; the broken one backtracked for over ten minutes locally
+  before giving up. A resolve that cannot finish is a broken file.
+- every langchain package lands on its expected series. Both lines import
+  cleanly, so nothing else would notice production quietly changing line.
+- `pip check` passes — the one thing that catches the mixed set above.
+- `main.py` imports, loading all 20 route modules.
+- `from langfuse.langchain import CallbackHandler` works, which is the only
+  reason `langchain` is a dependency at all.
+
+Running it on the host would prove nothing: the host venv already contains the
+versions under test. CI gained the same two guards inline (`pip check` and an
+import step), since its `pytest tests/` step runs against a directory that does
+not exist and reports nothing.
+
+---
+
 ## Change log
 
 | Date | Item | What changed | Verified by |
@@ -563,6 +643,7 @@ just-streamed conversation is lost.
 | 2026-08-06 | W0-4 | Extracted the injection helpers to `app/untrusted.py`; framed 8 whole-document ingestion points across review/redline/playbook-review; taught the forged-marker regex about JSON-escaped newlines. | `w0-4-injection.mjs` **15/15**, incl. a live injected-override probe that did not flip the verdict |
 | 2026-08-06 | W0-6 | `recordUsage()` writes `OrgUsageDaily` alongside the Redis cap counter, wired into the four AI call sites; BYOK excluded from the cap; null `toolName` coalesced so rows accumulate; response flagged `estimated`. | `w0-6-usage.mjs` **13/13**; unit 135/135; integration 15/15 |
 | 2026-08-06 | W0-5 | Retuned the redactor (EMAIL/PHONE opt-in, CC/IBAN context-anchored, phone bracket bug fixed); added `applyPiiPolicyBatch` + `redactExcerpts`; wired all nine excerpt-emitting handlers. | `w0-5-pii.mjs` **25/25**; redactor tests 35/35; unit 144/144; integration 15/15 |
+| 2026-08-07 | W0-7 | Held `langchain` at `>=0.3,<1.0` so it stops contradicting the `langchain-core<1.0` pin, and raised the provider-adapter floors to `>=0.3` so pip cannot backtrack through 0.2-era adapters. Added `scripts/agents/deps-check.mjs`, which resolves the file inside `python:3.11-slim` and asserts the resolved series, `pip check`, the app import, and the langfuse handler. CI gained `pip check` + an import step, its `pytest tests/` step having always run against a directory that does not exist. | `deps-check.mjs` **11/11** (0/11 before), incl. `pip check` and a 20-route import inside the real base image |
 | 2026-08-06 | UI | Playwright pass over every surface the Week-0 changes touched: contracts list, agent home, admin AI config + usage panel, and the review drawer's new refusal branch. Dismisses the first-run onboarding modal, which otherwise swallows clicks on every page. | `w0-ui-verify.mjs` **16/16**; screenshots in `scripts/week-zero/screenshots/` |
 
 ---
