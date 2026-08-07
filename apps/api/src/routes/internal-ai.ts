@@ -25,7 +25,7 @@ import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
-import { applyClauseProposal } from '../lib/clause-apply.js'
+import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
 
@@ -557,6 +557,26 @@ const RedlineApplySchema = z.object({
 // Phase 1 — batch rewrite for whole-document redlining. One aggression for the
 // document rather than three variants per clause: the pipeline keeps one
 // rewrite, so asking for three triples the cost of output it discards.
+// Phase 2 — apply many clause rewrites as ONE version. Looping the
+// single-clause route is not equivalent: it creates a version per clause, and
+// each rewrite changes what the next one matches against.
+const RedlineApplyBatchSchema = z.object({
+  orgId:      z.string().min(1),
+  userId:     z.string().min(1),
+  contractId: z.string().min(1),
+  changes: z.array(z.object({
+    clauseId:     z.string().min(1),
+    proposedText: z.string().min(1).max(20_000),
+    rationale:    z.string().max(2_000).optional(),
+    changes:      z.array(z.object({
+      before: z.string().max(5_000),
+      after:  z.string().max(5_000),
+      reason: z.string().max(500).optional(),
+    })).max(40).optional(),
+  })).min(1).max(200),
+  rationale: z.string().max(2_000).optional(),
+})
+
 const RedlineProposeBatchSchema = z.object({
   orgId:        z.string().min(1),
   contractId:   z.string().min(1),
@@ -2880,6 +2900,94 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
     })
     return reply.send({ ok: true, undone: true, currentVersionId: body.data.previousVersionId })
+  })
+
+
+  // ── POST /internal/ai/tools/redline_apply_batch (Phase 2) ─────────────────
+  // Applies N clause rewrites as ONE new version. Spans are located against a
+  // single immutable snapshot and spliced back-to-front, so an earlier
+  // replacement cannot change what a later one matches — see the note on
+  // applyClauseBatch for the wrong-clause edit that motivated it.
+  app.post('/tools/redline_apply_batch', async (req, reply) => {
+    let body
+    try { body = RedlineApplyBatchSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+    const result = await applyClauseBatch({
+      orgId:      body.orgId,
+      userId:     body.userId,
+      contractId: body.contractId,
+      changes:    body.changes,
+      rationale:  body.rationale,
+    })
+    if (!result.ok) {
+      return reply.status(result.status).send({ detail: result.detail, code: result.code })
+    }
+    return reply.send(result.data)
+  })
+
+  // ── POST /internal/ai/tools/redline_apply_batch/undo ──────────────────────
+  // One step back to the pre-batch version. The batch is a single version, so
+  // there is no chain to unwind — which is most of why it is a single version.
+  app.post('/tools/redline_apply_batch/undo', async (req, reply) => {
+    const parsed = z.object({
+      orgId:      z.string().min(1),
+      userId:     z.string().min(1),
+      contractId: z.string().min(1),
+      /** The batch version to revert. Its own metadata names what to go back to. */
+      versionId:  z.string().min(1),
+    }).safeParse(req.body)
+    if (!parsed.success) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: parsed.error.issues })
+    }
+    const { orgId, contractId, versionId } = parsed.data
+
+    const contract = await prisma.contract.findFirst({
+      where:  { id: contractId, orgId, deletedAt: null },
+      select: { id: true, currentVersionId: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    const version = await prisma.contractVersion.findFirst({
+      where:  { id: versionId, contractId },
+      select: { id: true, versionNumber: true, changeNote: true },
+    })
+    if (!version) return reply.status(404).send({ detail: 'Version not found' })
+
+    // Revert to the version immediately below this one. Derived rather than
+    // taken from the caller so a stale client cannot point the contract at an
+    // arbitrary version.
+    const previous = await prisma.contractVersion.findFirst({
+      where:   { contractId, versionNumber: { lt: version.versionNumber } },
+      orderBy: { versionNumber: 'desc' },
+      select:  { id: true, versionNumber: true },
+    })
+    if (!previous) return reply.status(409).send({ detail: 'No earlier version to revert to' })
+    if (contract.currentVersionId === previous.id) {
+      return reply.status(409).send({ detail: 'Already reverted' })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.contract.update({
+        where: { id: contract.id },
+        data:  { currentVersionId: previous.id },
+      })
+      // Annotate rather than delete — the reverted version stays as the record
+      // of what was proposed and withdrawn.
+      await tx.contractVersion.update({
+        where: { id: version.id },
+        data:  { changeNote: `${version.changeNote ?? ''} (reverted via undo)`.trim() },
+      })
+    })
+
+    return reply.send({
+      ok: true,
+      contractId,
+      revertedVersionId: version.id,
+      currentVersionId:  previous.id,
+      currentVersionNumber: previous.versionNumber,
+    })
   })
 
   // ── POST /internal/ai/tools/contract_create_from_template (P1.1) ───────────

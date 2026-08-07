@@ -7,7 +7,7 @@ counterparty can open in Word with real tracked changes.
 This is gap #1 from the agent audit — the capability every serious competitor
 ships and the one in-house teams name first. Estimated 4–6 weeks.
 
-**Status:** Phases 0 and 1 complete and verified. Phases 2–4 not started.
+**Status:** Phases 0, 1 and 2 complete and verified. Phases 3–4 not started.
 
 ---
 
@@ -281,7 +281,7 @@ phrasing of the same position while still catching a rewrite that ignored it
 entirely. Asserting on exact model wording tests the model's vocabulary, not the
 code.
 
-### Phase 2 — Multi-clause apply in ONE version (~1 week)
+### Phase 2 — Multi-clause apply in ONE version ✅ **done** (2026-08-07)
 
 The scout was explicit that looping `applyClauseProposal` is unsafe: each call
 creates a version, and `findNormalizedSpan` **refuses on ambiguity** — if
@@ -292,11 +292,49 @@ So: compute **all** spans against one immutable in-memory body **before** any
 mutation, then apply **back-to-front by offset**. One new version, one audit
 event, one undo target. `metadata.redline` becomes an array.
 
-**Check:** `p2-batch-apply.mjs` — apply 8 clauses at once. Assert exactly one
-new version (not 8), every clause replaced, html and plainText agree, undo
-returns to the single pre-batch version, and the deliberate ambiguity case
-(clause B's text appearing inside clause A's replacement) still refuses rather
-than splicing the wrong span.
+**Check:** `scripts/redline/p2-batch-apply.mjs`. **Result: 0/5 → 16/16.**
+
+#### The ambiguity trap was real, and worse than the plan assumed
+
+The plan predicted sequential apply would *refuse* on the second clause. It was
+verified before building, and what it actually does is worse — it **edits the
+wrong clause and reports success**:
+
+```
+apply A -> 200 spliced
+apply B -> 200 spliced  matchMode=exact
+
+FINAL BODY:
+  Liability is capped at 2x fees. This Agreement shall be governed by
+  the laws of the State of Delaware.          <- clause A, corrupted
+  This Agreement shall be governed by the laws of the State of New York
+  without regard to conflicts.                <- clause B, unchanged
+```
+
+The user accepted "change governing law to Delaware". They got a liability
+clause with a governing-law sentence spliced into it, and a governing-law clause
+still saying New York — reported as `spliced: true, matchMode: 'exact'`.
+
+**Root cause:** the ambiguity guard existed only on the *normalized* tier.
+`exact` and `escaped` took the first `indexOf` hit blindly. Clauses quote each
+other routinely, so once A's replacement contained B's wording, B's text
+appeared twice and the splice took the copy inside A.
+
+That is a live defect in the **single-clause** path, not just a batch concern —
+so the guard now covers every tier. A duplicated clause refuses with the same
+`409 CLAUSE_TEXT_NOT_FOUND` the review drawer already renders, with its
+"add as an amendment instead" escape hatch (Week 0).
+
+#### What shipped
+
+`applyClauseBatch` locates every span against **one immutable snapshot** of the
+body, then splices **back-to-front by offset** so later edits cannot disturb
+earlier ones. Eight clauses land as **one** version with one undo target, and
+`metadata.redline` became an array so a batch version records every clause it
+changed — a single object could only record one, which would have left a future
+OOXML serializer able to reconstruct just one change in twelve.
+
+Clauses that cannot be located are reported and skipped; the rest still land.
 
 ### Phase 3 — The pipeline + review UI (~1 week)
 

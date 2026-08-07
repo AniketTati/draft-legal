@@ -163,32 +163,79 @@ function findNormalizedSpan(haystack: string, needle: string): [number, number] 
  * and `` $` `` in the REPLACEMENT are still substitution patterns, so proposed
  * language containing those sequences would corrupt the document.
  */
+/** Where a clause was found, or why it wasn't. */
+export type LocateResult =
+  | { mode: 'exact' | 'escaped' | 'normalized'; start: number; end: number }
+  | { mode: 'none' }
+  | { mode: 'ambiguous'; occurrences: number }
+
+/**
+ * Find the span of `before` in `body`, refusing when it appears more than once.
+ *
+ * The ambiguity guard used to exist only on the normalized tier; `exact` and
+ * `escaped` took the first `indexOf` hit blindly. That is how applying two
+ * clauses in sequence could edit the WRONG one: if clause A's replacement text
+ * quotes clause B verbatim — entirely normal, clauses cross-reference each
+ * other — then after A is applied, B's wording appears twice. Splicing B then
+ * hit the copy inside A and reported `spliced: true, matchMode: 'exact'`.
+ * Observed: a governing-law change landed inside the liability clause while
+ * the governing-law clause kept its old text, reported as a clean success.
+ *
+ * Refusing is the only safe answer. A miss is recoverable and visible; the
+ * wrong edit to a contract is neither.
+ */
+function locateSpan(
+  body: string,
+  before: string,
+  escape: (s: string) => string,
+): LocateResult {
+  const countOf = (needle: string) => {
+    let n = 0
+    for (let i = body.indexOf(needle); i !== -1; i = body.indexOf(needle, i + 1)) n++
+    return n
+  }
+
+  const exactCount = countOf(before)
+  if (exactCount === 1) {
+    const at = body.indexOf(before)
+    return { mode: 'exact', start: at, end: at + before.length }
+  }
+  if (exactCount > 1) return { mode: 'ambiguous', occurrences: exactCount }
+
+  const escapedBefore = escape(before)
+  if (escapedBefore !== before) {
+    const escCount = countOf(escapedBefore)
+    if (escCount === 1) {
+      const at = body.indexOf(escapedBefore)
+      return { mode: 'escaped', start: at, end: at + escapedBefore.length }
+    }
+    if (escCount > 1) return { mode: 'ambiguous', occurrences: escCount }
+  }
+
+  const span = findNormalizedSpan(body, before)
+  if (span) return { mode: 'normalized', start: span[0], end: span[1] }
+
+  return { mode: 'none' }
+}
+
 function spliceInto(
   body: string,
   before: string,
   proposed: string,
   escape: (s: string) => string,
 ): { text: string; mode: MatchMode } {
-  const cut = (at: number, len: number) =>
-    body.slice(0, at) + escape(proposed) + body.slice(at + len)
-
-  const exact = body.indexOf(before)
-  if (exact !== -1) return { text: cut(exact, before.length), mode: 'exact' }
-
-  const escapedBefore = escape(before)
-  if (escapedBefore !== before) {
-    const esc = body.indexOf(escapedBefore)
-    if (esc !== -1) return { text: cut(esc, escapedBefore.length), mode: 'escaped' }
+  const found = locateSpan(body, before, escape)
+  if (found.mode === 'none' || found.mode === 'ambiguous') {
+    return { text: body, mode: 'none' }
   }
-
-  const span = findNormalizedSpan(body, before)
-  if (span) return { text: cut(span[0], span[1] - span[0]), mode: 'normalized' }
-
-  return { text: body, mode: 'none' }
+  return {
+    text: body.slice(0, found.start) + escape(proposed) + body.slice(found.end),
+    mode: found.mode,
+  }
 }
 
 /** Pure matching helpers, exported for unit tests only. */
-export const __testing = { spliceInto, findNormalizedSpan, normalizeWithMap }
+export const __testing = { spliceInto, findNormalizedSpan, normalizeWithMap, locateSpan }
 
 export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyClauseResult> {
   const contract = await prisma.contract.findFirst({
@@ -358,6 +405,221 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
         { field: 'currentVersionId', before: currentVersion.id, after: newVersion.id },
         { field: 'versionNumber',    before: currentVersion.versionNumber, after: nextVersionNumber },
       ],
+    },
+  }
+}
+
+// ─── Multi-clause apply ──────────────────────────────────────────────────────
+
+export interface BatchChange {
+  clauseId:     string
+  proposedText: string
+  rationale?:   string
+  changes?:     Array<{ before: string; after: string; reason?: string }>
+}
+
+export interface AppliedChange {
+  clauseId:   string
+  clauseType: string | null
+  spliced:    boolean
+  matchMode:  MatchMode | 'ambiguous'
+  /** Present when this clause could not be applied. */
+  error?:     string
+}
+
+export interface ApplyBatchPayload {
+  ok:                true
+  reversible:        true
+  contractId:        string
+  previousVersionId: string
+  newVersionId:      string
+  newVersionNumber:  number
+  applied:           AppliedChange[]
+  appliedCount:      number
+  skippedCount:      number
+}
+
+export type ApplyBatchResult =
+  | { ok: true;  data: ApplyBatchPayload }
+  | { ok: false; status: number; detail: string; code?: string }
+
+/**
+ * Apply many clause rewrites as ONE new version.
+ *
+ * Looping `applyClauseProposal` is not equivalent, for two reasons:
+ *
+ *   1. It creates a version per clause. Twelve deviations would mean twelve
+ *      rows, twelve `currentVersionId` flips, twelve audit events, and an undo
+ *      that has to unwind a chain in the right order.
+ *   2. Each apply rewrites the document, so an earlier replacement can change
+ *      what a later one matches against. Clauses quote each other routinely —
+ *      once clause A's new text contains clause B's wording, locating B is
+ *      ambiguous, and before the guard above it silently spliced into A.
+ *
+ * So every span is located against ONE immutable snapshot of the body, and the
+ * splices are applied back-to-front by offset — later edits cannot disturb the
+ * offsets of earlier ones. A clause that cannot be located is reported and
+ * skipped; the rest still land.
+ */
+export async function applyClauseBatch(args: {
+  orgId:      string
+  userId:     string
+  contractId: string
+  changes:    BatchChange[]
+  rationale?: string
+}): Promise<ApplyBatchResult> {
+  const { orgId, userId, contractId, changes } = args
+  if (changes.length === 0) {
+    return { ok: false, status: 400, detail: 'changes is required' }
+  }
+
+  const contract = await prisma.contract.findFirst({
+    where:  { id: contractId, orgId, deletedAt: null },
+    select: { id: true, currentVersionId: true },
+  })
+  if (!contract) return { ok: false, status: 404, detail: 'Contract not found' }
+  if (!contract.currentVersionId) {
+    return { ok: false, status: 400, detail: 'Contract has no current version' }
+  }
+
+  const currentVersion = await prisma.contractVersion.findUnique({
+    where:  { id: contract.currentVersionId },
+    select: { id: true, versionNumber: true, htmlContent: true, plainText: true },
+  })
+  if (!currentVersion) return { ok: false, status: 404, detail: 'Current version missing' }
+
+  const clauses = await prisma.contractClause.findMany({
+    where:  { id: { in: changes.map(c => c.clauseId) }, versionId: currentVersion.id },
+    select: { id: true, clauseType: true, content: true, sectionRef: true },
+  })
+  const clauseById = new Map(clauses.map(c => [c.id, c]))
+
+  // Locate every span against the ORIGINAL body — never against a partially
+  // rewritten one. This is the whole point of the batch.
+  interface Planned {
+    change: BatchChange
+    clause: NonNullable<ReturnType<typeof clauseById.get>>
+    html:   Extract<LocateResult, { start: number }>
+    plain:  Extract<LocateResult, { start: number }>
+  }
+  const planned: Planned[] = []
+  const applied: AppliedChange[] = []
+
+  for (const change of changes) {
+    const clause = clauseById.get(change.clauseId)
+    if (!clause) {
+      applied.push({
+        clauseId: change.clauseId, clauseType: null,
+        spliced: false, matchMode: 'none', error: 'clause_not_on_current_version',
+      })
+      continue
+    }
+    const html  = locateSpan(currentVersion.htmlContent, clause.content, escapeHtml)
+    const plain = locateSpan(currentVersion.plainText,   clause.content, s => s)
+
+    // Both bodies or neither: they are two views of one document, and letting
+    // them diverge means the contract's HTML and its indexed text describe
+    // different agreements.
+    if (html.mode === 'ambiguous' || plain.mode === 'ambiguous') {
+      applied.push({
+        clauseId: clause.id, clauseType: clause.clauseType,
+        spliced: false, matchMode: 'ambiguous',
+        error: 'clause_text_ambiguous',
+      })
+      continue
+    }
+    if (html.mode === 'none' || plain.mode === 'none') {
+      applied.push({
+        clauseId: clause.id, clauseType: clause.clauseType,
+        spliced: false, matchMode: 'none', error: 'clause_text_not_found',
+      })
+      continue
+    }
+    planned.push({ change, clause, html, plain })
+  }
+
+  if (planned.length === 0) {
+    return {
+      ok: false, status: 409, code: 'NO_CLAUSE_APPLICABLE',
+      detail: 'None of the requested clauses could be located in the current version.',
+    }
+  }
+
+  // Apply back-to-front so each splice leaves earlier offsets untouched.
+  const spliceAll = (body: string, pick: (p: Planned) => { start: number; end: number }, escape: (s: string) => string) =>
+    [...planned]
+      .sort((a, b) => pick(b).start - pick(a).start)
+      .reduce((acc, p) => {
+        const { start, end } = pick(p)
+        return acc.slice(0, start) + escape(p.change.proposedText) + acc.slice(end)
+      }, body)
+
+  const nextHtml  = spliceAll(currentVersion.htmlContent, p => p.html,  escapeHtml)
+  const nextPlain = spliceAll(currentVersion.plainText,   p => p.plain, s => s)
+
+  for (const p of planned) {
+    applied.push({
+      clauseId: p.clause.id, clauseType: p.clause.clauseType,
+      spliced: true, matchMode: p.html.mode,
+    })
+  }
+
+  const newVersion = await prisma.$transaction(async (tx) => {
+    const highest = await tx.contractVersion.aggregate({
+      where: { contractId: contract.id },
+      _max:  { versionNumber: true },
+    })
+    const nextVersionNumber = (highest._max.versionNumber ?? currentVersion.versionNumber) + 1
+
+    const v = await tx.contractVersion.create({
+      data: {
+        contractId:    contract.id,
+        versionNumber: nextVersionNumber,
+        htmlContent:   nextHtml,
+        plainText:     nextPlain,
+        changeNote: args.rationale
+          ? `redline_apply_batch (${planned.length} clauses): ${args.rationale}`
+          : `redline_apply_batch — ${planned.length} clause${planned.length === 1 ? '' : 's'} revised`,
+        createdById: userId,
+        metadata: {
+          // An ARRAY, unlike the single-clause path's one object: a batch
+          // version has to record every clause it changed, or a later OOXML
+          // serializer can only reconstruct one of them.
+          redline: planned.map(p => ({
+            sourceClauseId: p.clause.id,
+            clauseType:     p.clause.clauseType,
+            sectionRef:     p.clause.sectionRef,
+            originalText:   p.clause.content,
+            proposedText:   p.change.proposedText,
+            rationale:      p.change.rationale,
+            changes:        p.change.changes ?? [],
+            matchMode:      p.html.mode,
+          })),
+          redlineBatch: {
+            appliedCount: planned.length,
+            skippedCount: applied.filter(a => a.error).length,
+            generatedBy:  'redline_apply_batch',
+            appliedAt:    new Date().toISOString(),
+          },
+        },
+      },
+    })
+    await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id } })
+    return v
+  })
+
+  return {
+    ok: true,
+    data: {
+      ok: true,
+      reversible: true,
+      contractId:        contract.id,
+      previousVersionId: currentVersion.id,
+      newVersionId:      newVersion.id,
+      newVersionNumber:  newVersion.versionNumber,
+      applied,
+      appliedCount: planned.length,
+      skippedCount: applied.filter(a => a.error).length,
     },
   }
 }
