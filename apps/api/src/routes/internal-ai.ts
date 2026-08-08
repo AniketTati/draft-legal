@@ -25,6 +25,8 @@ import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { AuditAction } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
@@ -3918,6 +3920,20 @@ export async function internalAiRoutes(app: FastifyInstance) {
       tags:             created.contract.tags,
       createdAt:        created.contract.createdAt.toISOString(),
     }).catch(() => { /* swallow */ })
+
+    // An agent-drafted contract is a real contract. This path creates one
+    // mid-stream with no ActionPreview, so `checkToolPermission` — the only
+    // layer that sees the caller's role — never runs, and until now nothing
+    // recorded that it happened either: a contract appeared in the org with no
+    // trace of who caused it. The manual REST create has always audited.
+    createAuditEvent({
+      orgId:        body.orgId,
+      userId:       body.userId,
+      action:       AuditAction.CONTRACT_CREATED,
+      resourceType: 'contract',
+      resourceId:   created.contract.id,
+      metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
+    }).catch(err => req.log.warn({ err }, '[contract_draft] audit failed'))
 
     return reply.send({
       // Fields consumed by artifact-from-tool.ts (Doc artifact)

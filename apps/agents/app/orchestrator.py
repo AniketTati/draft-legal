@@ -543,6 +543,7 @@ async def run_agent_chat_stream(
     skill_slug: str | None = None,
     skill_system_prompt: str | None = None,
     skill_allowed_tools: list[str] | None = None,
+    denied_tools: list[str] | None = None,
     # P4.3 — structured entity mentions the user inserted via the rail
     # composer's @-picker. Prepended as a hint so the agent calls the
     # right tool with the right id immediately.
@@ -578,6 +579,16 @@ async def run_agent_chat_stream(
             tools = all_tools
     else:
         tools = all_tools
+
+    # Authorization, applied AFTER any skill allowlist so a skill cannot
+    # re-admit a tool the caller is not permitted to use. A tool the model is
+    # never given is a tool it cannot narrate having used.
+    if denied_tools:
+        denied = set(denied_tools)
+        before = len(tools)
+        tools = [t for t in tools if t.name not in denied]
+        if len(tools) != before:
+            logger.info("denied %d tool(s) for this caller: %s", before - len(tools), sorted(denied))
     tools_by_name = {t.name: t for t in tools}
 
     # Anthropic / OpenAI tool-binding both work via `bind_tools` on the
