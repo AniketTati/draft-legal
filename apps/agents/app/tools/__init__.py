@@ -56,6 +56,7 @@ from .comment_add        import build_comment_add
 from .contract_update    import build_contract_update
 from .request_create     import build_request_create
 from .approval_route     import build_approval_route
+from .redline_apply      import build_redline_apply
 from .compliance_get     import build_compliance_get
 
 
@@ -105,6 +106,7 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         build_contract_update(org_id, user_id),
         build_request_create(org_id, user_id),
         build_approval_route(org_id, user_id),
+        build_redline_apply(org_id, user_id),
     ]
 
 

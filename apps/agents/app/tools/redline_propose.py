@@ -108,8 +108,9 @@ def build_redline_propose(org_id: str) -> StructuredTool:
             "in the org's playbook position for that clause category + "
             "any structured rules. Use when the user says 'redline this', "
             "'propose changes to §X', or 'how would you rewrite this "
-            "liability cap'. Read-only — use redline_apply to turn a "
-            "chosen variant into a new ContractVersion."
+            "liability cap'. Read-only: it proposes, it does not write. "
+            "Pass one of its variants to redline_apply to turn it into a new "
+            "ContractVersion, or let the user pick from the redline card."
         ),
         args_schema=RedlineProposeArgs,
     )
