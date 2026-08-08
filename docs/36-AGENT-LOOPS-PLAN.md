@@ -1283,12 +1283,13 @@ so the platform fallback can no longer pay for a call the cap just declined.
 That also closes the BYOK bypass, since any `/resolve` failure used to hand back
 the platform key.
 
-**NOT fixed, and still true:** `agent.worker.ts` has zero references to
-`costCap` / `recordUsage`. All nine background job types call the agents service
-directly with no pre-check and no post-record, so their spend never reaches
-`OrgUsageDaily` and the admin usage panel under-reports by the entire background
-pipeline. The assertion for it is deliberately left RED rather than softened —
-it is a real gap and should stay visible.
+**Also fixed (2026-08-08, same branch):** the worker half. All eight agents-service
+call sites in `agent.worker.ts` now go through a `callAgents()` wrapper that
+checks the cap **before** spending and records usage after — a cap that only
+notices once the tokens are gone is a report, not a cap. The check asserts the
+invariant rather than the identifier: **zero** raw
+`fetch(\`${AGENTS_URL}…\`)` call sites remain outside the wrapper, so a new job
+type cannot quietly reintroduce an unaccounted one. `l11-cost-cap.mjs` 0/9 → 9/9.
 
 A four-hop chain, all verified:
 

@@ -14,8 +14,55 @@ import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyReques
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+
+/**
+ * Every call from this worker into the agents service.
+ *
+ * Before this existed, agent.worker.ts had ZERO references to costCap or
+ * recordUsage: all nine background job types called the agents service
+ * directly with no pre-check and no post-record. So background spend was
+ * invisible to the daily cap AND absent from OrgUsageDaily, which means the
+ * admin usage panel under-reported by the entire background pipeline -- the
+ * one W0-6 fixed to stop reporting $0.00 forever.
+ *
+ * The cap is checked BEFORE the call, because a cap that only notices after
+ * the tokens are spent is a report, not a cap. A breach throws
+ * CostCapExceededError, which callers let propagate: BullMQ marks the job
+ * failed, which is the honest outcome -- the work did not happen.
+ */
+async function callAgents(
+  path: string,
+  init: RequestInit,
+  meta: { orgId: string; toolName: string },
+): Promise<Response> {
+  await assertCostCapNotExceeded(meta.orgId)
+
+  const res = await fetch(`${AGENTS_URL}${path}`, init)
+
+  // Size-based estimate, the same heuristic the chat path uses. Recorded even
+  // on a non-2xx: a failed generation still burned tokens upstream.
+  //
+  // recordUsage writes OrgUsageDaily AND the cap counter (skipping the counter
+  // for BYOK), so it is the single call -- adding recordCost alongside it would
+  // double-count.
+  const inputChars  = typeof init.body === 'string' ? init.body.length : 0
+  const outputChars = (await res.clone().text().catch(() => '')).length
+  const usd = estimateCostUsd(inputChars + outputChars)
+  recordUsage(meta.orgId, usd, {
+    provider: 'agents-service',
+    model:    'background-job',
+    tier:     'default',
+    toolName: meta.toolName,
+    inputChars,
+    outputChars,
+  }).catch(() => { /* accounting must never fail a job */ })
+
+  return res
+}
+
 // playbook_check lives on THIS service's internal-ai plugin, not on the Python
 // agents service. Same self-call shape agent-threads.ts uses.
 const API_INTERNAL_URL = process.env.API_URL ?? 'http://localhost:3001'
@@ -59,11 +106,11 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     return
   }
 
-  const res = await fetch(`${AGENTS_URL}/detect-binder`, {
+  const res = await callAgents('/detect-binder', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  })
+  }, { orgId, toolName: 'detect_binder' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /detect-binder returned ${res.status}: ${text.slice(0, 200)}`)
@@ -196,11 +243,11 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
     return
   }
 
-  const res = await fetch(`${AGENTS_URL}/classify`, {
+  const res = await callAgents('/classify', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  })
+  }, { orgId, toolName: 'classify_document' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -284,11 +331,11 @@ async function handleExtractAi(data: ExtractAiJob): Promise<void> {
     plainText: version.plainText,
   }
 
-  const res = await fetch(`${AGENTS_URL}/review`, {
+  const res = await callAgents('/review', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body: JSON.stringify(body),
-  })
+  }, { orgId, toolName: 'redline_analysis' })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -310,7 +357,7 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
   })
   if (!request) throw new Error(`Request not found: ${requestId}`)
 
-  const res = await fetch(`${AGENTS_URL}/intake-classify`, {
+  const res = await callAgents('/intake-classify', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({
@@ -319,7 +366,7 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
       counterpartyName: request.counterpartyName ?? undefined,
       orgId,
     }),
-  })
+  }, { orgId, toolName: 'classify_request' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /intake-classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -356,11 +403,11 @@ async function handleRedlineAnalysis(data: RedlineAnalysisJob): Promise<void> {
   const { contractId, v1Id, v2Id, orgId, userId, contractType } = data
   console.info('[agent-worker] redline-analysis start contractId=%s v1=%s v2=%s', contractId, v1Id, v2Id)
 
-  const res = await fetch(`${AGENTS_URL}/redline`, {
+  const res = await callAgents('/redline', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ contractId, v1Id, v2Id, orgId, userId, contractType }),
-  })
+  }, { orgId, toolName: 'redline' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /redline returned ${res.status}: ${text.slice(0, 200)}`)
@@ -555,7 +602,7 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     return
   }
 
-  const res = await fetch(`${AGENTS_URL}/playbook-review`, {
+  const res = await callAgents('/playbook-review', {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({
@@ -570,7 +617,7 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
       })),
       contractType: contract.type,
     }),
-  })
+  }, { orgId, toolName: 'playbook_review' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /playbook-review returned ${res.status}: ${text.slice(0, 200)}`)
@@ -616,14 +663,14 @@ async function handleApprovalSummary(data: ApprovalSummaryJob): Promise<void> {
   const { instanceId, contractId, versionId, orgId, approverIds } = data
   console.info('[agent-worker] approval-summary start instanceId=%s contractId=%s', instanceId, contractId)
 
-  const res = await fetch(`${AGENTS_URL}/approval-summary`, {
+  const res = await callAgents('/approval-summary', {
     method:  'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
     },
     body: JSON.stringify({ instanceId, contractId, versionId, orgId, approverIds }),
-  })
+  }, { orgId, toolName: 'approval_summary' })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /approval-summary returned ${res.status}: ${text.slice(0, 200)}`)
@@ -653,7 +700,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
   if (counterpartyName) context.counterpartyName = counterpartyName
   if (estimatedValue) context.estimatedValue = estimatedValue
 
-  const res = await fetch(`${AGENTS_URL}/draft`, {
+  const res = await callAgents('/draft', {
     method:  'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -665,7 +712,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
       user_id: userId,
       context,
     }),
-  })
+  }, { orgId, toolName: 'draft_contract' })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')

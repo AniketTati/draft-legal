@@ -125,9 +125,23 @@ section('4. Worker spend reaches the usage rollup')
   // Nine job types call the agents service directly. Their spend never reaches
   // OrgUsageDaily, so the admin usage panel W0-6 fixed under-reports by the
   // entire background pipeline.
-  const accounted = /recordUsage|recordCost|assertCostCapNotExceeded/.test(workerTs)
-  check('agent.worker.ts participates in cost accounting', accounted,
-    accounted ? 'referenced' : 'zero references to costCap/recordUsage — every background AI job is invisible to the cap AND to the usage panel')
+  // Grepping for the identifier only proves someone imported it. Assert the
+  // invariant: EVERY call into the agents service goes through the wrapper, so
+  // a new job type cannot quietly reintroduce an unaccounted call site.
+  // Exclude the wrapper's own call -- `fetch(`${AGENTS_URL}${path}`)` inside
+  // callAgents is the ONE legitimate raw call, and the first version of this
+  // assertion counted it as a bypass.
+  const rawCalls = [...workerTs.matchAll(/fetch\(`\$\{AGENTS_URL\}(?!\$\{path\})/g)].length
+  check('no worker call bypasses the accounting wrapper', rawCalls === 0,
+    rawCalls ? `${rawCalls} raw fetch(\`\${AGENTS_URL}...\`) call site(s) left` : 'all routed through callAgents()')
+
+  check('the wrapper checks the cap BEFORE spending',
+    /async function callAgents[\s\S]{0,600}?assertCostCapNotExceeded/.test(workerTs),
+    'a cap that only notices after the tokens are spent is a report, not a cap')
+
+  check('the wrapper records usage against the org',
+    /async function callAgents[\s\S]{0,1600}?recordUsage\(/.test(workerTs),
+    'without it OrgUsageDaily omits the entire background pipeline and the admin panel under-reports')
 }
 
 await prisma.$disconnect()
