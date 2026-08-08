@@ -117,7 +117,11 @@ async def chat(req: ChatRequest):
                 model_id=req.model_id,
             )
         except Exception as e:
-            error_data = json.dumps({"error": str(e)})
+            # `type` is required, not decorative: the web clients dispatch on
+            # it, so this envelope — the only one of five that lacked a type —
+            # was dropped by AgentHomePage without even matching its error
+            # branch. Same shape as the agentMode emitters above.
+            error_data = json.dumps({"type": "error", "error": str(e)})
             yield f"data: {error_data}\n\n"
             yield "data: [DONE]\n\n"
             return

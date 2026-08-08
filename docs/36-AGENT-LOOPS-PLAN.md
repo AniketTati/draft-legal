@@ -172,7 +172,36 @@ node scripts/agent-loops/l13-dead-names.mjs       # static
 
 ## L1 — Every successful write proposal kills the thread that made it
 
-**Severity: Blocker**
+**Severity: Blocker → corrected to High. ✅ FIXED 2026-08-08.**
+
+**The unpaired persistence is real; the thread-killing is not.** The mechanism
+below is exactly right — the awaiting-confirmation branch `continue`s before
+`turn_tool_results.append(...)`, and the session stores a `tool_call` with no
+matching `tool_result`. `scripts/agent-loops/l1-thread-poisoning.mjs` reproduced
+it on the first run: `unanswered: comment_add(34a598d1-…)`.
+
+But the predicted consequence did not occur. A second turn in the same thread
+answered normally — clean frames, no error — including when the check pinned
+`provider: 'openai'` and `modelId: 'gpt-4.1-mini'`, exactly what both web
+clients send. Whatever the strict reading of the tool-calling contract says, the
+provider in use tolerates an assistant message carrying an unanswered
+`tool_call_id`. So this is **not** "one write per thread, then the thread is
+dead," and Wave A was not blocked on it.
+
+It is still wrong and still worth the three lines: the model loses any record
+that it proposed the write, so on the next turn it cannot refer to what it just
+staged, and the session is one unanswered id away from breaking on a stricter
+provider or a model upgrade. Fixed by recording a result mirroring the synthetic
+in-turn `ToolMessage`. Check **4/5 → 5/5**.
+
+Two notes for whoever runs that check. It asserts the invariant across the whole
+session rather than one turn, because which turn the model proposes on is not
+controllable — an earlier version asserted on turn 1 and went red when the model
+answered in prose first. And the agents service runs under uvicorn **without
+`--reload`**, so a Python change is not live until it is restarted; the check
+passed against stale code once before that was noticed.
+
+The original finding follows.
 
 `turn_tool_calls.append({...})` runs at `orchestrator.py:765` for *every* tool
 call, before the tool executes. The awaiting-confirmation branch at `:812`

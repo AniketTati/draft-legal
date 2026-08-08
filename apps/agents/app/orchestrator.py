@@ -830,6 +830,30 @@ async def run_agent_chat_stream(
                         }),
                         tool_call_id=tc_id,
                     ))
+                    # P64 — record a result for this call as well. Everything
+                    # below `continue` is skipped, including the
+                    # turn_tool_results.append(...) that pairs the entry
+                    # turn_tool_calls already holds. Without this the session
+                    # persists a tool_call with no matching tool_result, and
+                    # the next turn's restore rebuilds an AIMessage whose
+                    # tool_call_id nothing answers.
+                    #
+                    # Measured: the current provider tolerates that, so it is
+                    # not the thread-killer it looks like. It is still wrong —
+                    # the model loses any record that it proposed the write, so
+                    # on the next turn it cannot refer to what it just staged —
+                    # and it is one unanswered id away from breaking on a
+                    # stricter provider. The stored result mirrors the
+                    # synthetic ToolMessage above so restore replays the same
+                    # thing the model saw in-turn.
+                    turn_tool_results.append({
+                        "id": tc_id, "name": tc_name,
+                        "result": json.dumps({
+                            "status": "awaiting_user_confirmation",
+                            "summary": (result_payload.get("preview") or {}).get("summary", ""),
+                        }),
+                        "truncated": False,
+                    })
                     # Continue inner loop — let the LLM synthesize. The outer
                     # iteration will detect no more tool_calls and emit prose.
                     continue
