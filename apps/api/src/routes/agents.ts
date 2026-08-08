@@ -5,7 +5,9 @@ import { requireAuth } from '../middleware/auth.js'
 // public-API key (or a non-contract principal) can't burn the org's LLM
 // budget. Per-turn cost enforcement is tightened separately in Wave 3.
 import { requirePermission } from '../middleware/permissions.js'
-import { ChatMessageSchema } from '@clm/types'
+import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
@@ -69,6 +71,18 @@ export async function agentRoutes(app: FastifyInstance) {
     // Lookup priority: org's own skill first, then built-in (orgId=null).
     // This lets an admin override a built-in slug (e.g. customise
     // `@review-nda`) without us having to fork the record.
+    // Permission-derived tool denials, evaluated once per turn.
+    // `contract_create_from_template` executes inline rather than proposing an
+    // ActionPreview, so it never reaches checkToolPermission — the layer
+    // agent-threads.ts documents as the only one that can see the caller's
+    // role. Deny it up front for anyone who could not create a contract
+    // through the REST route.
+    const callerPermissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, req.user.roles)
+    const deniedTools: string[] = []
+    if (!evaluatePermission(callerPermissions, 'create', 'contract').granted) {
+      deniedTools.push('contract_create_from_template')
+    }
+
     let skillPromptOverride: string | undefined
     let skillAllowedTools: string[] | undefined
     if (body.skillSlug) {
@@ -129,6 +143,14 @@ export async function agentRoutes(app: FastifyInstance) {
         // falls back to the default system prompt + full read-tool catalog.
         skill_system_prompt: skillPromptOverride ?? null,
         skill_allowed_tools: skillAllowedTools ?? null,
+        // Tools this caller may not use. The agent's write tools normally stop
+        // at an ActionPreview, where checkToolPermission evaluates the caller's
+        // role — but contract drafting executes inline, so that layer never
+        // runs and a VIEWER could create contracts by asking, which
+        // POST /api/v1/contracts refuses outright. Withholding the tool is the
+        // honest fix: a tool the model was never given is one it cannot call
+        // and cannot claim to have called.
+        denied_tools: deniedTools.length ? deniedTools : null,
         skill_slug: body.skillSlug ?? null,
         // P4.3 — structured entity mentions flow through to the
         // orchestrator; it prepends them as a hint to the user turn
@@ -236,6 +258,26 @@ export async function agentRoutes(app: FastifyInstance) {
     // Checked here, before the agent call, so a request that will be refused
     // does not also cost a paid LLM run. 404 rather than 403: a caller outside
     // the org should not learn whether the id exists.
+    // Saving is a WRITE, and this route is gated only on `view:contract`
+    // because drafting without saving is a read-shaped operation. Evaluate the
+    // write permission here rather than tightening the preHandler, which would
+    // also block a viewer from previewing a draft they never persist.
+    //
+    // Without this a VIEWER — who POST /api/v1/contracts refuses outright —
+    // could create contracts through this route. Reproduced: 200, row created.
+    if (body.saveAs?.contractId || body.saveAs?.title) {
+      const permissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, req.user.roles)
+      const action = body.saveAs.contractId ? 'edit' : 'create'
+      if (!evaluatePermission(permissions, action, 'contract').granted) {
+        return reply.status(403).send({
+          type:   'https://httpstatuses.com/403',
+          title:  'Forbidden',
+          status: 403,
+          detail: `Missing permission: ${action}:contract`,
+        })
+      }
+    }
+
     if (body.saveAs?.contractId) {
       const target = await prisma.contract.findFirst({
         where:  { id: body.saveAs.contractId, orgId, deletedAt: null },
@@ -308,8 +350,14 @@ export async function agentRoutes(app: FastifyInstance) {
           })
           result.versionId = version.id
         } else if (title) {
-          // Create a new contract with this draft
-          const owner = await prisma.user.findFirst({ where: { orgId } })
+          // Create a new contract with this draft.
+          //
+          // Owned by the CALLER. This used to be
+          // prisma.user.findFirst({ where: { orgId } }) -- whichever user the
+          // org happened to list first -- so an agent-drafted contract showed
+          // up in a stranger's 'my contracts' and the person who asked for it
+          // could not find their own draft.
+          const owner = { id: userId }
           if (owner) {
             const plainText = result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
             const contract = await prisma.contract.create({
@@ -334,6 +382,18 @@ export async function agentRoutes(app: FastifyInstance) {
               include: { versions: true },
             })
             result.contractId = contract.id
+            // An AI-drafted contract is a real contract and must be traceable
+            // to whoever asked for it. The manual REST create audits
+            // (contracts.ts); this path did not, so an agent-created contract
+            // appeared in the org with no record of who caused it.
+            createAuditEvent({
+              orgId,
+              userId,
+              action:       AuditAction.CONTRACT_CREATED,
+              resourceType: 'contract',
+              resourceId:   contract.id,
+              metadata:     { source: 'agent_draft', template: result.usedTemplateName ?? null },
+            }).catch(err => app.log.warn({ err }, 'audit on agent draft create failed'))
             // Wave 3.2 — index so the AI-drafted contract is searchable. We have
             // the real plainText here, so index it directly (a later classify →
             // chunk-and-index will refresh it). Fire-and-forget.

@@ -37,6 +37,11 @@ class ChatRequest(BaseModel):
     skill_slug: str | None = None
     skill_system_prompt: str | None = None
     skill_allowed_tools: list[str] | None = None
+    # Tools the CALLER may not use, computed from their permissions by the API
+    # proxy. Distinct from skill_allowed_tools, which is a product choice about
+    # what a skill focuses on; this is an authorization boundary. Denials are
+    # applied last so a skill allowlist can never re-admit a denied tool.
+    denied_tools: list[str] | None = None
     # P4.3 — structured entity mentions from the rail composer.
     # Prepended to the human message as a hint so the agent calls
     # contract_get / counterparty_get with the right id instead of
@@ -91,6 +96,7 @@ async def chat(req: ChatRequest):
                     skill_slug=req.skill_slug,
                     skill_system_prompt=req.skill_system_prompt,
                     skill_allowed_tools=req.skill_allowed_tools,
+                    denied_tools=req.denied_tools,
                     # P4.3 — entity mentions surface to the orchestrator
                     # which prepends them as a hint to the user turn.
                     mentions=req.mentions,

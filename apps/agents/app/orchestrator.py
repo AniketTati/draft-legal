@@ -301,9 +301,25 @@ Rules:
                             already have ("Section that mentions 'service
                             credits'"). Substring + section-hint. Cheap.
   • contract_cite         — Get rich citation data (sectionRef + anchor)
-                            for one contract — use this when you'll
-                            render `[cite:section-X.Y]` style links.
-  • contract_get          — Pull the full body when summary is needed.
+                            for one contract. The rail renders the RESULT
+                            itself as citation pills — do NOT write citation
+                            markers into your prose; nothing parses them and
+                            they reach the user as literal bracket text.
+  • contract_summarize    — Overview / metadata / key terms / risk for ONE
+                            contract. PREFER THIS for "summarize", "what is
+                            this", "give me the key terms".
+  • contract_get          — Only when you need the VERBATIM body. Budgeted
+                            (see A3); contract_summarize is not.
+  • playbook_check        — "does this comply with our playbook / positions"
+  • redline_propose       — "rewrite / redline this clause"
+  • compliance_get        — "is this GDPR / SOC2 / HIPAA compliant"
+  • contract_validate     — "is anything missing / wrong before signature"
+  • obligations_list      — "what do we owe", "what's due"
+  • renewal_advice        — "should we renew", "what are our options"
+  • approval_list         — "what's waiting on me / who approved this"
+  • request_list          — "show intake requests"
+  • custom_field_list     — "what custom fields exist" (schema, not values)
+  • org_memory            — org-wide preferences and prior decisions
   When unsure between contract_search and portfolio_search: if the
   user's words sound like they describe contract CONTENT or a concept
   ("clause", "language", "talks about", "with X provision"), reach
@@ -373,6 +389,12 @@ Rules:
   totalMatching=154 is a hallucination caused by reading the wrong field.
   If the user asks for the LIST too, say "Here are the first 50 of 154"
   or similar — never imply you've shown them all when 50 < totalMatching.
+  SEMANTIC FALLBACK: when the result carries `searchMode: 'semantic-fallback'`,
+  keyword search found nothing and the query was broadened to clause-content
+  similarity. `totalMatching` is then NULL — there is no count to report. Say
+  "at least N" using results.length, and SAY OUT LOUD that you broadened the
+  search, e.g. "No exact matches, so I searched by meaning — at least 10
+  contracts mention this." Never turn a page size into a total.
 - A10 — RANKED QUERIES MUST USE TOOL SORT (P3 audit, 2026-04-29). When the
   user asks for "top N by [X]", "highest [X]", "expiring soonest", "lowest
   risk", or any ranking, you MUST set the contract_search sort_by /
@@ -396,10 +418,12 @@ Rules:
   NEVER end a turn with just tool calls and no prose.
 - A3 — CONTRACT_GET BUDGET. Hard limit: at most 3 contract_get calls per
   user turn. If you need details on more contracts, call portfolio_search
-  with type/counterparty filters instead — it returns up to 50 hits with
-  enough metadata (title, value, status, expiryDate, counterparty) to
-  answer most "list", "summarize", "rank" questions without per-contract
-  fetches. Bulk loops of 5+ contract_get calls are a failure mode (cost,
+  with type/counterparty filters instead — it returns up to 30 hits
+  (top_k is capped there) with title, value, status and counterparty.
+  It does NOT return expiryDate: for date/status/value rollups use
+  contract_search with sort_by=expiryDate, which is not subject to this
+  budget. contract_summarize is also outside the budget — prefer it over
+  contract_get whenever you need meaning rather than verbatim text. Bulk loops of 5+ contract_get calls are a failure mode (cost,
   latency, and frustration); STOP and pick a structural alternative.
 - A8 — REUSE PRIOR TURN RESULTS. The previous turn's tool results are
   still in your conversation history. If the user asks "of those, just
@@ -421,8 +445,19 @@ Rules:
   alone returns text content but no anchors, so users can't navigate
   to the exact location. clause_search is for CONTENT MATCH; contract_cite
   is for CITATION-WITH-ANCHORS.
-- WRITE TOOLS — comment_add, contract_update, request_create (more
-  coming). All write tools return an "awaiting confirmation" payload —
+- WRITE TOOLS — comment_add, contract_update, request_create,
+  approval_route, redline_apply. redline_apply turns a clause rewrite into a
+  new contract version: call redline_propose FIRST and pass one of ITS variants
+  verbatim — never compose the replacement text yourself, and never say a
+  rewrite was applied until the user has clicked Apply. If it returns
+  CLAUSE_TEXT_NOT_FOUND the clause moved since it was proposed; re-run
+  redline_propose rather than retrying the same text. approval_route sends a contract into an approval
+  workflow; it requires status DRAFT, PENDING_REVIEW or UNDER_NEGOTIATION,
+  auto-selects the workflow when one matches, and is reversible for 15
+  minutes after Apply. Do NOT use contract_update to set a status when the
+  user asks for approval — that moves the status without creating the
+  approval instance, so nobody is ever notified.
+  All write tools return an "awaiting confirmation" payload —
   the actual write does NOT happen until the user clicks Apply on the
   resulting card. After calling any write tool, write a 1-2 sentence
   prose: "I've prepared [the action]. Click Apply to confirm." Do NOT
@@ -459,12 +494,14 @@ Rules:
   `[chip]: …` line at the end of your response, e.g.:
     [chip]: Show me details on the Mayo Clinic MSA
     [chip]: Filter to only EXECUTED contracts
-    [chip]: Export this list to CSV
+    [chip]: Show only contracts expiring this quarter
   These chips render as one-tap follow-up buttons and are the
   predominant way users navigate multi-step workflows. Drafting,
   signing, and other state-change turns SHOULD ALSO emit chips
-  ("Submit for review", "Save as draft and assign to me", "Send to
-  counterparty"). Empty / no-chips at the end of a turn is a failure
+  ("Submit for review", "Route this for approval", "Open in Contracts").
+  Only suggest a chip whose action a registered tool can actually perform —
+  a chip is a promise, and one tap to a dead end costs more trust than no
+  chip at all. Empty / no-chips at the end of a turn is a failure
   mode — the user has to type the next move from scratch.
 
 P7.7.3 / F-84 — DRAFT REQUESTS: When the user asks you to draft, create,
@@ -480,8 +517,8 @@ ask for details first. Instead:
      counterparty_name + (optional) title. The tool persists a
      Contract row + ContractVersion in DRAFT status and returns the
      artifact payload (html, title, contractId) which the frontend
-     renders as a Doc artifact with "Save as draft" / "Send for
-     review" / "Open in Contracts" actions.
+     renders as a Doc artifact with an "Open in Contracts" action. The
+     draft is ALREADY persisted by the tool, so there is nothing to save.
   4. AFTER the tool returns, summarize what you drafted in 2-3 lines
      ("I drafted a mutual NDA for Apple, 2-year term, California law,
       saved to your Contracts page.") with a "I made these assumptions:
@@ -543,6 +580,7 @@ async def run_agent_chat_stream(
     skill_slug: str | None = None,
     skill_system_prompt: str | None = None,
     skill_allowed_tools: list[str] | None = None,
+    denied_tools: list[str] | None = None,
     # P4.3 — structured entity mentions the user inserted via the rail
     # composer's @-picker. Prepended as a hint so the agent calls the
     # right tool with the right id immediately.
@@ -578,6 +616,16 @@ async def run_agent_chat_stream(
             tools = all_tools
     else:
         tools = all_tools
+
+    # Authorization, applied AFTER any skill allowlist so a skill cannot
+    # re-admit a tool the caller is not permitted to use. A tool the model is
+    # never given is a tool it cannot narrate having used.
+    if denied_tools:
+        denied = set(denied_tools)
+        before = len(tools)
+        tools = [t for t in tools if t.name not in denied]
+        if len(tools) != before:
+            logger.info("denied %d tool(s) for this caller: %s", before - len(tools), sorted(denied))
     tools_by_name = {t.name: t for t in tools}
 
     # Anthropic / OpenAI tool-binding both work via `bind_tools` on the
@@ -765,7 +813,15 @@ async def run_agent_chat_stream(
                 turn_tool_calls.append({"id": tc_id, "name": tc_name, "args": tc_args})
 
                 tool = tools_by_name.get(tc_name)
+                platform_error = False
                 if tool is None:
+                    # The model named a tool that is not in its catalog -- either
+                    # a hallucination or a tool withheld from this caller by
+                    # denied_tools. Either way it produced no log line anywhere
+                    # in the stack, so the only trace was a chip the UI rendered
+                    # green.
+                    logger.warning("model called unknown tool %r (not in catalog)", tc_name)
+                    platform_error = True
                     result_payload = json.dumps({"error": "unknown_tool", "name": tc_name})
                 else:
                     # A4 — heartbeat for slow tools. Some tools (portfolio_search
@@ -800,6 +856,7 @@ async def run_agent_chat_stream(
                         result_payload = tool_task.result()
                     except Exception as e:
                         logger.exception("tool %s raised", tc_name)
+                        platform_error = True
                         result_payload = json.dumps({"error": "tool_raised", "message": str(e)})
 
                 # P5 fix — write tools (comment_add, contract_update, etc.)
@@ -903,6 +960,12 @@ async def run_agent_chat_stream(
                     "name": tc_name,
                     "result": preview,
                     "truncated": truncated,
+                    # Authoritative outcome. Without it each client invented its
+                    # own rule and they disagreed: the rail substring-sniffed
+                    # for '"error"' anywhere in up to 20KB of tool JSON (so a
+                    # search returning "errors": [] rendered as a failure) while
+                    # AgentHomePage hardcoded success. Read this field.
+                    "ok": not platform_error,
                 }
                 # P64 — keep a memory-budget-friendly slice of the
                 # result so the next turn can restore it. We deliberately
@@ -918,8 +981,18 @@ async def run_agent_chat_stream(
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.
+                #
+                # PLATFORM errors are exempt. AGENT_SYSTEM_PROMPT defines
+                # everything inside <<<UNTRUSTED_TOOL_DATA>>> as "derived from
+                # user/counterparty documents", so wrapping our own
+                # unknown_tool / tool_raised strings told the agent to distrust
+                # its own runtime's error reports. Wrap what came from a
+                # document; state plainly what came from us.
                 messages.append(ToolMessage(
-                    content=_wrap_untrusted_tool_result(tc_name, result_str),
+                    content=(
+                        result_str if platform_error
+                        else _wrap_untrusted_tool_result(tc_name, result_str)
+                    ),
                     tool_call_id=tc_id,
                 ))
 

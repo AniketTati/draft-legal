@@ -432,7 +432,11 @@ branch. Until it is fixed, the pass/fail signal for L1 and L2 in a browser is
 Two independent routes create contracts outside the rails. They share a fix
 direction and are one work item.
 
-### (a) The agent tool — no gate, no RBAC, no audit, no undo
+### (a) The agent tool — no gate, no RBAC, no audit, no undo ✅ FIXED 2026-08-08
+
+`l4-draft-gate.mjs` 5/8 → 8/8. Permission, attribution and audit closed; the
+confirmation-card question deliberately left to the founder. The original
+finding follows.
 
 `build_contract_create_from_template` is registered in the **read-tool** block
 (`tools/__init__.py:101`, above the `# Write tools` comment at `:102`). Its
@@ -610,7 +614,16 @@ commit ahead of everything else in this document.
 
 ## L5 — The agent cannot reach the redlining feature that shipped last week
 
-**Severity: High**
+**Severity: High.** ✅ PARTIALLY FIXED 2026-08-08 — `l5-redline-reach.mjs` 3/11 → 13/13.
+
+`redline_apply` now exists as a confirm-gated write tool, the dangling
+description is corrected, and the prompt covers it. The check generalises the
+bug into an invariant: no tool description may name an unregistered tool.
+
+**Still open, and not claimed:** batch propose/apply and the tracked-changes
+DOCX have no Python tool. The DOCX one is blocked structurally — `contract_get`
+returns `version: {number, createdAt}` with NO id and no internal-ai handler
+lists versions, so the agent cannot obtain the ids that endpoint needs.
 
 This repo just spent five phases building full-document playbook redlining with
 a tracked-changes Word export (`docs/35`, in production 2026-08-08). None of it
@@ -848,7 +861,7 @@ Asserting that a click did not throw is what let all fourteen ship.
 
 ## L7 — The system prompt describes a product that changed under it
 
-**Severity: Medium** · *cheapest high-value edit in this document*
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l7-prompt-truth.mjs` 5/12 → 14/14.
 
 `AGENT_SYSTEM_PROMPT` (`orchestrator.py:264-503`) has no test and no reviewer,
 so nothing forces it to be edited alongside the behaviour it describes. Ten of
@@ -989,7 +1002,14 @@ afternoon and carry the highest value-per-hour in this document.
 
 ## L8 — The rail misreports what the agent did
 
-**Severity: Medium**
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l8-chip-truth.mjs` 3/11 → 11/11.
+
+Fixed as prescribed, plus one thing the plan implied but did not spell out: the
+root cause of (a) and (b) is that the envelope carried no outcome at all, so
+each client invented its own rule and they disagreed. `tool_call_result` now
+carries `ok`, both clients read it, and the rail's `'awaiting'` chip renders as
+a pause rather than a spinner — a write proposal is waiting on the USER, which
+is neither work in progress nor success.
 
 Three separate misreports, all in the same envelope.
 

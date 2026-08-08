@@ -30,7 +30,7 @@
  * the user's last choice.
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, ChevronLeft, ChevronDown, Send, Sparkles, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react'
+import { ChevronRight, ChevronLeft, ChevronDown, Send, Sparkles, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useAgentContext } from '@/hooks/useAgentContext'
 import { useAuthStore } from '@/store/auth'
@@ -70,7 +70,9 @@ export interface RailToolCall {
   id: string
   name: string
   args: Record<string, unknown>
-  status: 'running' | 'ok' | 'error'
+  // 'awaiting' = the tool proposed a write and is waiting on the user,
+  // which is a pause, not work in progress.
+  status: 'running' | 'ok' | 'error' | 'awaiting'
   resultPreview?: string
   truncated?: boolean
   // P1.6 — when name='redline_propose' and status='ok', we parse the
@@ -622,7 +624,20 @@ export function SideAgentRail() {
                 }
                 setMessages(prev => prev.map(m =>
                   m.id === assistantId
-                    ? { ...m, pendingActions: [...(m.pendingActions ?? []), action] }
+                    ? {
+                        ...m,
+                        pendingActions: [...(m.pendingActions ?? []), action],
+                        // Close out the chip this tool call opened. No
+                        // tool_call_result ever arrives for a write proposal --
+                        // the orchestrator emits this event and continues -- so
+                        // the chip stayed 'running' for the life of the thread,
+                        // spinning next to a card that is waiting on the USER.
+                        // That directly undercuts the affordance the card
+                        // exists to present.
+                        toolCalls: (m.toolCalls ?? []).map(tc =>
+                          tc.id === tcId ? { ...tc, status: 'awaiting' as const } : tc,
+                        ),
+                      }
                     : m
                 ))
               } else if (kind === 'tool_call_result') {
@@ -634,7 +649,12 @@ export function SideAgentRail() {
                     toolCalls: (m.toolCalls ?? []).map(tc => {
                       if (tc.id !== tcId) return tc
                       const resultStr = typeof parsed.result === 'string' ? parsed.result : JSON.stringify(parsed.result)
-                      const status: 'ok' | 'error' = parsed.result && !(typeof parsed.result === 'string' && parsed.result.includes('"error"')) ? 'ok' : 'error'
+                      // Read the envelope's own verdict. This used to
+                      // substring-sniff for '"error"' anywhere in up to 20KB of
+                      // tool JSON, so a search returning "errors": [] -- or a
+                      // contract that simply uses the word -- rendered as a
+                      // failed tool.
+                      const status: 'ok' | 'error' = parsed.ok === false ? 'error' : 'ok'
                       // P1.6 — when the agent called redline_propose and
                       // it succeeded, parse the result JSON so
                       // MessageBubble can render the rich RedlinePreview.
@@ -1983,9 +2003,14 @@ function ToolCallChip({ call }: { call: RailToolCall }) {
     ? 'text-blue-600 bg-blue-50 border-blue-100'
     : call.status === 'error'
       ? 'text-red-700 bg-red-50 border-red-100'
-      : 'text-emerald-700 bg-emerald-50 border-emerald-100'
+      // 'awaiting' is a pause, not a success and not work in progress —
+      // amber, paused, and never spinning.
+      : call.status === 'awaiting'
+        ? 'text-amber-700 bg-amber-50 border-amber-100'
+        : 'text-emerald-700 bg-emerald-50 border-emerald-100'
   const StatusIcon = call.status === 'running' ? Loader2
     : call.status === 'error' ? AlertTriangle
+    : call.status === 'awaiting' ? PauseCircle
     : CheckCircle2
   const iconSpin = call.status === 'running' ? ' animate-spin' : ''
 
