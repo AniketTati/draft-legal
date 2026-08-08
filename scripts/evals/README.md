@@ -51,6 +51,20 @@ a replayed turn still hits the real database. Only the model is replaced.
 
 A missing fixture is a loud error, never a silent live call.
 
+## Before you push
+
+```bash
+node scripts/evals/preflight.mjs              # committed state
+node scripts/evals/preflight.mjs --worktree   # include uncommitted edits
+```
+
+`git archive HEAD` into a temp dir and runs the suite there: tracked files only,
+no `node_modules`, no `.venv`, a different absolute path. **A local pass does not
+predict CI**, because your machine has all of those. This suite's first two CI
+runs were red for exactly three reasons a local run cannot surface — a static
+Prisma import in the shared harness, thirteen checks hardcoding
+`/Users/<someone>/…`, and a "tier 1" check shelling out to the Python venv.
+
 ## Adding a check
 
 1. Write it in `scripts/agent-loops/` using the shared harness (`check`,
