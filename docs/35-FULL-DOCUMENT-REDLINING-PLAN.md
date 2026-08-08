@@ -11,13 +11,25 @@ ships and the one in-house teams name first. Estimated 4–6 weeks.
 production (2026-08-08 — the first successful deploy since 2026-08-02, unblocked
 by W0-7 in `docs/34`). Phase 4 is on `feat/redline-phase4`.
 
-**The one check nobody has run:** opening the generated `.docx` in Microsoft Word
-and in Google Docs and driving Accept All / Reject All by hand. Neither
-application exists on the development machine, so every Phase 4 assertion is
-structural — XML validity, byte-level checks, and simulated resolution. That is a
-proxy for the question that actually decides whether this feature works. It is
-~20 minutes on a machine with Word and it should happen before a generated file
-goes to a real counterparty.
+**Opened in Google Docs on 2026-08-08 — and it found a bug no assertion had.**
+The document was structurally valid, all 24 checks passed, Accept All and Reject
+All both reproduced their versions exactly, and **the table rendered as a
+vertical sliver wrapping "Tier" one character per line.** Cause: docx defaults
+`<w:gridCol>` to 100 twips (0.07in) when no column widths are supplied, and
+`WidthType.PERCENTAGE` serialises as the string `"100%"` where Word writes
+fiftieths of a percent as an integer. Both had been written down as suspects
+here and neither was reachable by any check that does not render. Fixed, with
+three new assertions (`p4-docx` 24/24 → 27/27).
+
+Everything else held: no repair prompt, `w:author` resolved to "Counterparty"
+through the `portal:` ladder, the table-row deletion registered as
+*Delete row: "Standard 12x"*, and the `<pre>` block kept its separate lines.
+
+**Still unrun: Microsoft Word.** Google Docs is a genuinely independent
+implementation and worth what it caught, but Word is what counsel uses and is
+stricter — notably about `w:rPr`/`w:pPr` child order. Neither Word nor
+LibreOffice exists on the development machine. Open one there before a generated
+file goes to a real counterparty.
 
 ---
 
