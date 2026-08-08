@@ -134,6 +134,15 @@ def _tier_model_for(provider: str, tier: Tier) -> str | None:
 
 # ─── Caller-pinned provider/model override ───────────────────────────────────
 
+class CostCapExceeded(RuntimeError):
+    """The org has spent past its daily cap and the policy is `block`.
+
+    Raised, never swallowed: the whole point of a cap is that the call does not
+    happen. Distinct from transport failure so the platform fallback below
+    cannot quietly pay for it.
+    """
+
+
 class ModelOverrideUnavailable(RuntimeError):
     """A caller-pinned provider has no model we can build for the tier."""
 
@@ -244,6 +253,13 @@ async def resolve_llm(
             # A bad caller-pinned override is a caller bug, not flaky infra —
             # don't mask it behind the platform fallback.
             raise
+        except CostCapExceeded:
+            # The org is over its daily budget. This is a DECISION, not flaky
+            # infra, and falling through to _platform_resolve() would bill the
+            # platform key for a call the platform just refused — one turn is up
+            # to seven LLM calls, so the Node proxy's per-request gate does not
+            # cover it.
+            raise
         except Exception as e:
             # Node unreachable / bad secret / 503 — fall back to platform env
             # so the agent doesn't hard-fail on transient infra. Logged loud
@@ -284,6 +300,17 @@ async def _resolve_via_node(
     body = {"orgId": org_id, "tier": tier}
     async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
         r = await client.post(url, json=body, headers=headers)
+        # 429 is a refusal, not a transport failure. raise_for_status() would
+        # turn it into a generic HTTPStatusError that the caller's blanket
+        # `except Exception` treats as flaky infra -- and the platform fallback
+        # would then pay for the very call the cap just declined.
+        if r.status_code == 429:
+            detail = ""
+            try:
+                detail = r.json().get("detail", "")
+            except Exception:
+                detail = r.text[:200]
+            raise CostCapExceeded(detail or "daily AI spend cap reached for this organization")
         r.raise_for_status()
         data = r.json()
     return _build_resolved(

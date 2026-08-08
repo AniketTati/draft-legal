@@ -1257,7 +1257,21 @@ mojibake is the whole defect.) Forward `X-Accel-Buffering: no`.
 
 ## L11 — The daily cost cap fails open on every Python-side LLM call
 
-**Severity: High (cost)**
+**Severity: High (cost).** ⚠️ PARTIALLY FIXED 2026-08-08 — `l11-cost-cap.mjs` 0/7 → 6/7.
+
+**Fixed:** the fail-open itself. `/resolve` now returns **429** for a cap breach
+instead of letting it fall into the generic 500, and `router.py` raises a
+dedicated `CostCapExceeded` that its blanket `except Exception` cannot swallow —
+so the platform fallback can no longer pay for a call the cap just declined.
+That also closes the BYOK bypass, since any `/resolve` failure used to hand back
+the platform key.
+
+**NOT fixed, and still true:** `agent.worker.ts` has zero references to
+`costCap` / `recordUsage`. All nine background job types call the agents service
+directly with no pre-check and no post-record, so their spend never reaches
+`OrgUsageDaily` and the admin usage panel under-reports by the entire background
+pipeline. The assertion for it is deliberately left RED rather than softened —
+it is a real gap and should stay visible.
 
 A four-hop chain, all verified:
 
