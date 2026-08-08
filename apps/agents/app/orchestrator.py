@@ -813,7 +813,15 @@ async def run_agent_chat_stream(
                 turn_tool_calls.append({"id": tc_id, "name": tc_name, "args": tc_args})
 
                 tool = tools_by_name.get(tc_name)
+                platform_error = False
                 if tool is None:
+                    # The model named a tool that is not in its catalog -- either
+                    # a hallucination or a tool withheld from this caller by
+                    # denied_tools. Either way it produced no log line anywhere
+                    # in the stack, so the only trace was a chip the UI rendered
+                    # green.
+                    logger.warning("model called unknown tool %r (not in catalog)", tc_name)
+                    platform_error = True
                     result_payload = json.dumps({"error": "unknown_tool", "name": tc_name})
                 else:
                     # A4 — heartbeat for slow tools. Some tools (portfolio_search
@@ -848,6 +856,7 @@ async def run_agent_chat_stream(
                         result_payload = tool_task.result()
                     except Exception as e:
                         logger.exception("tool %s raised", tc_name)
+                        platform_error = True
                         result_payload = json.dumps({"error": "tool_raised", "message": str(e)})
 
                 # P5 fix — write tools (comment_add, contract_update, etc.)
@@ -951,6 +960,12 @@ async def run_agent_chat_stream(
                     "name": tc_name,
                     "result": preview,
                     "truncated": truncated,
+                    # Authoritative outcome. Without it each client invented its
+                    # own rule and they disagreed: the rail substring-sniffed
+                    # for '"error"' anywhere in up to 20KB of tool JSON (so a
+                    # search returning "errors": [] rendered as a failure) while
+                    # AgentHomePage hardcoded success. Read this field.
+                    "ok": not platform_error,
                 }
                 # P64 — keep a memory-budget-friendly slice of the
                 # result so the next turn can restore it. We deliberately
@@ -966,8 +981,18 @@ async def run_agent_chat_stream(
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.
+                #
+                # PLATFORM errors are exempt. AGENT_SYSTEM_PROMPT defines
+                # everything inside <<<UNTRUSTED_TOOL_DATA>>> as "derived from
+                # user/counterparty documents", so wrapping our own
+                # unknown_tool / tool_raised strings told the agent to distrust
+                # its own runtime's error reports. Wrap what came from a
+                # document; state plainly what came from us.
                 messages.append(ToolMessage(
-                    content=_wrap_untrusted_tool_result(tc_name, result_str),
+                    content=(
+                        result_str if platform_error
+                        else _wrap_untrusted_tool_result(tc_name, result_str)
+                    ),
                     tool_call_id=tc_id,
                 ))
 

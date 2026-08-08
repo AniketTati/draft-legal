@@ -522,7 +522,9 @@ export function AgentHomePage() {
                   ? {
                       ...m,
                       toolCalls: (m.toolCalls ?? []).map(tc =>
-                        tc.name === toolName && tc.status === 'running' ? { ...tc, status: 'ok' as const } : tc,
+                        tc.name === toolName && tc.status === 'running'
+                          ? { ...tc, status: evt.ok === false ? ('error' as const) : ('ok' as const) }
+                          : tc,
                       ),
                       pendingActions: [...(m.pendingActions ?? []), action],
                     }
@@ -565,7 +567,10 @@ export function AgentHomePage() {
                       ...m,
                       toolCalls: (m.toolCalls ?? []).map(tc =>
                         tc.name === evt.name && tc.status === 'running'
-                          ? { ...tc, status: 'ok', ...(entityTitle ? { entityTitle } : {}) }
+                          // Read the envelope. This was hardcoded, so a tool
+                          // that crashed or did not exist rendered the same
+                          // green chip as one that worked.
+                          ? { ...tc, status: evt.ok === false ? 'error' : 'ok', ...(entityTitle ? { entityTitle } : {}) }
                           : tc,
                       ),
                     }
