@@ -151,4 +151,30 @@ section('6. No check is orphaned')
     tiered.length ? `bad tier: ${tiered.map(t => t.id).join(', ')}` : '')
 }
 
+// ─── 7. Tier 1 really needs nothing ─────────────────────────────────────────
+//
+// This claim was FALSE when first made, and CI caught it on the gate's first
+// real run: every check imports the shared harness, which statically imported
+// PrismaClient from apps/api/node_modules, so all five tier-1 checks died on a
+// module-resolution error on a clean checkout. "No services, no database, $0"
+// has to be enforced, not asserted in a comment.
+
+section('7. Tier 1 pulls in no database client')
+{
+  const harness = fs.readFileSync(`${REPO}/scripts/week-zero/lib/harness.mjs`, 'utf8')
+  const code = harness.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  check('the harness does not import Prisma at module load',
+    !/^import\s+\{?\s*PrismaClient/m.test(code),
+    'a static import makes every check need `pnpm install` and a generated client, even ones that never touch the database')
+  check('it requires Prisma lazily, inside db()',
+    /export function db\(\)[\s\S]{0,400}(createRequire|await import)/.test(code),
+    'db() is synchronous and many callers rely on that, so createRequire rather than a dynamic import')
+
+  const { CHECKS } = await import(`${REPO}/scripts/evals/manifest.mjs`)
+  const t1 = CHECKS.filter(c => c.tier === 't1')
+  check('every tier-1 check declares no preconditions',
+    t1.length > 0 && t1.every(c => (c.needs ?? []).length === 0),
+    t1.map(c => `${c.id}:[${(c.needs ?? []).join(',')}]`).join(' '))
+}
+
 report('E1 eval gate bites')

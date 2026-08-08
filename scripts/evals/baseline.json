@@ -5,7 +5,7 @@
   "checks": {
     "e1-gate-bites": {
       "status": "pass",
-      "total": 13
+      "total": 16
     },
     "l5-redline-reach": {
       "status": "pass",
