@@ -277,7 +277,7 @@ genuinely varies. Support list indexing in field paths.
 
 ---
 
-## E7 — Two harnesses ✅ DECIDED — see ADR-01 below
+## E7 — Two harnesses ✅ DONE 2026-08-08 — Python `evals/` retired
 
 **Resolved 2026-08-08.** JS harness survives; Python `evals/` is retired. The
 comparison that led there is kept for the record.
@@ -309,7 +309,12 @@ Full reasoning in ADR-01.
 
 ## E8 — An eval run has no identity, and would spend real money
 
-**Severity: Critical for anything that makes real model calls.**
+**Severity: Critical.** ✅ DONE 2026-08-08 — `e8-eval-identity.mjs` 9/9.
+`scripts/evals/seed-eval-org.mjs` creates a dedicated org with an explicit
+cap, `capPolicy: 'warn'` (block would kill the suite mid-run and misattribute
+every later case), and — the invariant that matters — **no `OrgAiKey`**, so it
+can never reach a customer's provider account. The nightly workflow refuses to
+start without `EVAL_ORG_ID`.
 
 Confirmed against `router.py`, `costCap.ts` and `internal-ai.ts`:
 
@@ -709,11 +714,14 @@ frame, E3 the discarded persona pin, E10 cost + thresholds.
 observability, E3 the discarded persona pin, **E12 the replay seam** (ADR-01),
 E10 cost + thresholds.
 
-**Wave C — consolidate (3 days).** Absorb `agent-loops` and `persona-tests` under
-one runner, one YAML case format, one baseline. Retire Python `evals/`.
+**Wave C — consolidate ✅ DONE.** `agent-loops` and both `persona-tests` suites
+run under one runner and one baseline; Python `evals/` is deleted along with
+`p75-5-verify.mjs`, `scripts/eval.py` and `smoke_d09.py`. Cases stayed as
+executable checks rather than becoming YAML — the runner only needs a summary
+line, and rewriting 17 working checks into a schema would have been churn for
+no assertion gained.
 
-**Wave D — make real runs safe (1 day).** E8 eval identity, E9 nightly split.
-**Nothing hits a real model before this.**
+**Wave D — make real runs safe ✅ DONE.** E8 eval identity, E9 nightly split.
 
 **Wave E — coverage.** The cases: T2 contract cases against replayed fixtures for
 the A1–A13 rules and the write-tool gate; T3 behavioural cases from the persona

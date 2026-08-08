@@ -177,3 +177,10 @@ jobs:
       # Deleting an inconvenient check must not be a way to go green.
       - name: Run tier 1
         run: node scripts/evals/run.mjs --tier t1 --check-baseline
+
+      # Tier 2 needs Postgres + the API + replay fixtures, and still no model
+      # key. It is not wired here yet: standing those services up in this job
+      # is a follow-up (test-api already does it, at ci.yml:63-83, so the
+      # pattern exists). Listed rather than silently omitted -- an eval tier
+      # nobody runs is the exact failure this suite was built to end.
+      #   TODO(docs/37): add services + `--tier t1,t2 --strict`

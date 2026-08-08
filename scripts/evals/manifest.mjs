@@ -47,6 +47,8 @@ export const CHECKS = [
     what: 'the nine remaining dead controls do what their labels say' },
   { id: 'l7-prompt-truth',    tier: 't2', needs: ['db', 'api'],
     what: 'the system prompt describes the product that exists' },
+  { id: 'e8-eval-identity',   tier: 't2', needs: ['db', 'api'],
+    what: 'a tier-3 run cannot spend a customer\'s BYOK budget or be halted by the cap' },
   { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],
     what: 'a recorded turn replays deterministically with no model and no key' },
   { id: 'l3-error-surface',   tier: 't2', needs: ['db', 'api', 'web'],
@@ -76,6 +78,25 @@ export const CHECKS = [
     what: 'session memory is bounded and listings survive into the next turn' },
   { id: 'l6b-ui-verify',       tier: 't3', needs: ['db', 'api', 'web', 'agents', 'model', 'playwright'],
     what: 'the nine UI fixes, driven through a real browser' },
+]
+
+/**
+ * Suites that live outside scripts/agent-loops and run as a whole rather than
+ * as one check. The persona conversations are the existing behavioural corpus
+ * -- 66 multi-turn cases against an 800-contract seeded fixture -- and belong
+ * to tier 3: they make real model calls and are graded loosely on purpose.
+ *
+ * They are listed here so `--tier t3` runs them and the baseline can see them.
+ * ADR-01 called for absorbing these rather than rewriting them; the runner
+ * treats a suite exactly like a check because both report the same summary line.
+ */
+export const SUITES = [
+  { id: 'persona-conversations', tier: 't3', dir: 'scripts/persona-tests', entry: 'run.mjs',
+    needs: ['db', 'api', 'agents', 'model', 'personas'],
+    what: '66 multi-turn persona conversations against the seeded corpus' },
+  { id: 'persona-sanity', tier: 't3', dir: 'scripts/persona-tests', entry: 'sanity.mjs',
+    needs: ['db', 'api', 'agents', 'model', 'personas'],
+    what: '18 single-turn sanity checks' },
 ]
 
 /** Directory each check id lives in, relative to the repo root. */

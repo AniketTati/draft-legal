@@ -36,7 +36,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { CHECKS as MANIFEST_CHECKS, CHECK_DIR as DEFAULT_CHECK_DIR, TIERS } from './manifest.mjs'
+import { CHECKS as MANIFEST_CHECKS, SUITES as MANIFEST_SUITES, CHECK_DIR as DEFAULT_CHECK_DIR, TIERS } from './manifest.mjs'
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url))
 
@@ -84,6 +84,17 @@ function replayReady() {
   try { return JSON.parse(r.stdout || '{}').replayMode === 'replay' } catch { return false }
 }
 
+/** Are the persona fixtures seeded? The persona suites log in as their own
+ *  users, so without `pnpm seed:personas` they fail with "Invalid email or
+ *  password" -- an environment gap that reads exactly like a product defect. */
+function personasSeeded() {
+  const r = spawnSync('curl', ['-s', '-m', '5', '-o', '/dev/null', '-w', '%{http_code}',
+    '-X', 'POST', `${process.env.API_BASE ?? 'http://localhost:3001'}/api/v1/auth/login`,
+    '-H', 'content-type: application/json',
+    '-d', JSON.stringify({ email: 'maya@vertex.test', password: 'password123' })], { encoding: 'utf8' })
+  return r.stdout === '200'
+}
+
 function probe() {
   const env = fs.existsSync(path.join(REPO, '.env'))
     ? fs.readFileSync(path.join(REPO, '.env'), 'utf8') : ''
@@ -96,6 +107,7 @@ function probe() {
     model: modelKeys.some(k => process.env[k] || new RegExp(`^${k}=.+`, 'm').test(env)),
     playwright: fs.existsSync(path.join(REPO, 'node_modules/playwright')),
     replay: replayReady(),
+    personas: personasSeeded(),
   }
 }
 
@@ -112,10 +124,15 @@ function parseSummary(out) {
 }
 
 function runCheck(check) {
-  const file = path.join(REPO, CHECK_DIR, `${check.id}.mjs`)
+  // A suite lives elsewhere and names its own entry point; otherwise a check is
+  // <CHECK_DIR>/<id>.mjs. Both report the same summary line, so the rest of the
+  // runner does not care which it got.
+  const file = check.dir
+    ? path.join(REPO, check.dir, check.entry)
+    : path.join(REPO, CHECK_DIR, `${check.id}.mjs`)
   if (!fs.existsSync(file)) {
     return { ...check, status: 'missing', passed: 0, total: 0,
-             detail: `${CHECK_DIR}/${check.id}.mjs does not exist` }
+             detail: `${path.relative(REPO, file)} does not exist` }
   }
   const started = Date.now()
   const r = spawnSync('node', [file], {
@@ -148,7 +165,8 @@ function runCheck(check) {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 const env = probe()
-const selected = CHECKS.filter(c => tiers.includes(c.tier))
+const SUITES = manifestPath ? [] : MANIFEST_SUITES
+const selected = [...CHECKS, ...SUITES].filter(c => tiers.includes(c.tier))
 
 // Any check file not in the manifest is an error: an unlisted check is one
 // nothing runs, which is the whole failure mode this suite exists to end.
