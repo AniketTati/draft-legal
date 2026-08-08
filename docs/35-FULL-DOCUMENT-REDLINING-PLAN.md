@@ -434,6 +434,167 @@ numeric (Word silently drops duplicates), `w:date` ISO-8601 with `Z`, and
 in Word and in Google Docs** and confirm Accept/Reject All behaves. A DOCX that
 validates but renders wrong is still a failure.
 
+#### Library decision (2026-08-08) — `docx` + `parse5`, decided by spike
+
+The plan said "decide by spike, not by preference." Both approaches were built
+for real: each produced an actual `.docx` containing `w:ins`/`w:del`, was
+unzipped, and had its `word/document.xml` read. Three judges then weighed
+correctness, maintenance cost and repo fit independently. **3–0 for `docx`.**
+
+Both work. This was a genuine choice, not a forced one.
+
+**The deciding argument is about what cannot be tested here.** The largest risk
+on this feature is "does Word accept the file," and there is no Word and no
+LibreOffice on this machine — everything so far is structural proxy (well-
+formedness, python-docx, mammoth, hand-written accept/reject simulators). Word
+is strict about `w:rPr`/`w:pPr` child order in a way that none of those proxies
+are. The hand-rolled spike derived that order from the ECMA-376 `CT_RPr`
+sequence and **got it wrong twice** — `w:rStyle` emitted last where the schema
+requires it first, and `w:shd` before `w:u` where the order is `u, effect, bdr,
+shd`. Both paths are reachable here (StarterKit v3 ships Link with autolink;
+the editor emits `<mark>`), the author had named rPr ordering as his own top
+residual risk, and **all twelve of his assertions still passed green**, because
+the fixture happened to contain neither a hyperlink nor a mark. `docx` gets that
+sequence right by construction, and its ordering has been debugged by other
+people's users. When the deciding risk is untestable locally, prefer the option
+where someone else already paid for it.
+
+Supporting evidence: on an identical fixture, Accept All through `docx` yielded
+four correct blocks, while the hand-rolled output left a stray empty paragraph
+where a deleted `<li>` had been — an orphan bullet that shifts list numbering in
+the accepted contract. The hand-rolled mapper also never emitted a single
+`trPr/w:del` row revision; the code path exists but never fires.
+
+The one criterion hand-rolling wins is dependency weight, and it is immaterial:
+`jszip` is already in the lockfile via `mammoth`, and `apps/api` already sets
+`skipLibCheck`.
+
+**This is not unconditional.** The correctness judge stated it would switch given
+a revised hand-rolled spike that fixes the two `CT_RPr` violations, replaces the
+regex-based `<th>` bold, adds paragraph-mark/row inference, and actually emits
+`trPr/w:del`. Nobody should read this as "libraries always win."
+
+#### The htmldiff defect is real but narrow — measured, not assumed
+
+The correctness judge called this the critical path: `node-htmldiff` emits
+mis-nested HTML when block structure changes, `parse5` error-recovers it into
+*structurally valid* OOXML, and so **"Reject All does not restore v1 whenever
+block structure changes"** — ~2–3 days, gating the mapper.
+
+That claim was written into this document and then measured. **It is wrong as
+stated**, and the correction matters enough to record.
+
+The property that actually matters is not "is the HTML well nested" — that is a
+proxy. It is: *Accept All must reproduce v2, Reject All must reproduce v1.*
+Resolving both ways on the parse5 tree and comparing block-text sequences gives
+a direct answer.
+
+Against **69 consecutive changed version pairs** in the dev corpus (184 versions
+with HTML):
+
+| | Accept All wrong | Reject All wrong |
+|---|---|---|
+| All 69 real pairs | **0** | **1** |
+| Excluding the `W0-2 escape` test fixture | **0** | **0** |
+
+The single failure is a Week 0 fixture built specifically to carry unescaped
+markup. On genuine contract data the round trip is clean 68/68.
+
+Block structure changing is *not* sufficient to trigger it. Paragraph removed,
+list item removed, table row removed, and heading-renumbered-plus-paragraph-added
+all round-trip faithfully. The spike's fixture fails because htmldiff aligns
+`Item beta **is** removed.` with `…paragraph **is** added.` across the
+`</li></ul>` boundary — it needs a block structural change *and* token
+similarity spanning the boundary. That did not occur once in 69 real pairs.
+
+Two earlier detector results were also false positives, worth noting so nobody
+re-derives them: comparing block text without stripping whitespace flagged two
+real SOWs, whose only difference was inter-tag whitespace that htmldiff
+normalises away — same block count, same rendered text, no damage.
+
+**So this does not gate the mapper.** Keep the block-boundary case as a
+permanent regression assertion, fix it when it is cheap, and do not spend 2–3
+days ahead of the deliverable on a defect with zero observed incidence.
+
+One genuine finding does come out of it. Unescaped `<` or `&` in `htmlContent`
+is tokenised by htmldiff as *markup*, so it passes through the diff wrapped in
+neither `<ins>` nor `<del>`: Accept All happens to look right, while **Reject All
+leaves fragments of the rejected text in the document**. Reject the
+counterparty's figures and `< $50,000 & costs >` stays in your contract. Only
+1 of 184 versions carries unescaped markup and it is that test fixture — but the
+DOCX check should assert on it, because the failure is silent and lands in the
+executable document.
+
+#### Three defects found by scouting, each verified by hand
+
+1. **DOCX export already ships PDF bytes.** `contracts.ts:1811` (`format=docx`)
+   and `portal.ts:173` both POST HTML to Gotenberg's
+   `/forms/libreoffice/convert` and label the response
+   `application/vnd.openxmlformats-…wordprocessingml.document`. That route
+   outputs **PDF** — this repo's own `gotenberg.ts` uses the chromium route and
+   treats the result as `application/pdf`. Users get PDF bytes in a `.docx` file
+   Word refuses to open. The portal one hands broken files to **counterparties**.
+   There is no working behaviour to preserve; Phase 4 should fix or delete both.
+   Adjacent: `contracts.ts:1777` defaults `GOTENBERG_URL` to port 3001 — the
+   API's own port — while `gotenberg.ts` and `portal.ts` both use 3002.
+
+2. **`apps/web/src/lib/redline.ts` cannot be reused server-side.** Its `parse()`
+   returns `null` when `typeof window === 'undefined'`, so `extractChanges()`
+   returns `[]` and `resolveDiff()` returns its input **unchanged, with no
+   error**. Importing it into `apps/api` would ship a DOCX with zero tracked
+   changes that looks like a successful export. Re-diff with `htmldiff` instead.
+
+3. **`ContractVersion.createdById` is a bare `String` with no relation** — the
+   model has only `contract` and `clauses` relations, so `include: { createdBy }`
+   will not compile. Worse, it is not always a user id: `portal.ts` writes
+   `portal:<id>` and `inbound-email.ts` writes `email:<addr>`. A naive
+   `user.findUnique` returns null for exactly the counterparty-authored versions
+   a redline is most about. `w:author` needs a resolution ladder.
+
+**Effort:** ~7–10 engineer-days, of which 2–3 is the htmldiff fix — work that is
+identical under either approach, which is why this choice buys almost nothing on
+the delivery date and everything on year-two cost.
+
+**Unretired, in priority order:** open the generated file in real Word and Google
+Docs and drive Accept/Reject by hand (~20 minutes on a machine that has Word, and
+the only observation that can invert the pick); run it through a real ECMA-376
+XSD, since nothing has validated beyond well-formedness; confirm `docx` can anchor
+a comment range across a `w:ins` if `rationale` is v1 scope.
+
+#### Two claims from the spike that did not survive contact
+
+Both were written into this document as fact and are corrected here.
+
+**`docx` does not emit a bogus `<w:externalHyperlink/>`.** The spike reported
+that nesting a hyperlink inside an inserted run silently emits a non-existent
+element and drops the link text, and called it "confirmed by all three judges."
+Reproduced against docx 9.7.1 by deliberately inverting the nesting: no such
+element appears. The damage is real but different — the *deletion* is dropped,
+so the old link target never makes it into the file and rejecting the change
+cannot restore it.
+
+This mattered practically. The check first asserted `!includes('externalHyperlink')`,
+which **passed while the bug was present** — a dead assertion giving false
+confidence. It now asserts that both link targets survive and that the replaced
+one sits inside a `w:del`; deliberately re-introducing the inversion turns three
+assertions red. Test the test, or it is decoration.
+
+**htmldiff is blind to link text.** Measured across four shapes:
+
+| edit | tracked |
+|---|---|
+| link **text** changed, same href | **no — silent** |
+| link href changed | yes |
+| link added | yes |
+| bold text changed | yes |
+
+Changing the visible label of an existing hyperlink produces a diff containing no
+change markers at all. This is upstream of the exporter and equally invisible in
+`DiffViewer` and `CompareMode`, which consume the same diff — so it is a
+pre-existing review gap, not something the DOCX work introduced. The check's link
+fixture deliberately changes the *href*, because a text-change fixture would
+assert nothing and pass forever.
+
 ---
 
 ## How this is verified

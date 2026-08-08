@@ -10,6 +10,7 @@ import { renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
+import { generateRedlineDocx } from '../lib/docx-export.js'
 import { runComplianceCheck, COMPLIANCE_FRAMEWORKS } from '../lib/compliance-check.js'
 import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
@@ -1884,6 +1885,42 @@ export async function contractRoutes(app: FastifyInstance) {
     await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats } })
 
     return reply.send({ diffHtml, stats, v1Id, v2Id })
+  })
+
+
+  // ── GET /:id/versions/:v1Id/redline-docx/:v2Id (Phase 4) ──────────────────
+  // A Word document with native tracked changes between two versions, so the
+  // markup can be reviewed with Word's own Accept/Reject and sent on to the
+  // counterparty.
+  //
+  // 'view' rather than 'export': PermissionAction.EXPORT exists but no route
+  // in this codebase enforces it, so using it here would narrow access for
+  // view-but-not-export roles and require a system-role permission refresh.
+  app.get('/:id/versions/:v1Id/redline-docx/:v2Id', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id: contractId, v1Id, v2Id } = req.params as { id: string; v1Id: string; v2Id: string }
+    try {
+      const { bytes, title } = await generateRedlineDocx({ contractId, orgId, v1Id, v2Id })
+      const safeTitle = title.replace(/[^\w.\-]+/g, '_').slice(0, 100) || 'contract'
+      return reply
+        .header('content-type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        .header('content-disposition', `attachment; filename="redline-${safeTitle}-${new Date().toISOString().slice(0, 10)}.docx"`)
+        .send(Buffer.from(bytes))
+    } catch (err) {
+      const msg = (err as Error).message
+      if (msg === 'contract_not_found') return reply.status(404).send({ detail: 'Contract not found' })
+      if (msg === 'version_not_found')  return reply.status(404).send({ detail: 'Version not found' })
+      // Mirrors the diff route: a version still being extracted is a retry,
+      // not an error, and an empty DOCX would be worse than saying so.
+      if (msg === 'version_pending') {
+        return reply.status(409).send({
+          error:  'Version still processing',
+          detail: 'This version is still being extracted. The redline will be available once processing finishes.',
+        })
+      }
+      req.log.error({ err }, '[redline-docx] failed')
+      return reply.status(500).send({ detail: 'Redline export failed', error: msg.slice(0, 200) })
+    }
   })
 
 
