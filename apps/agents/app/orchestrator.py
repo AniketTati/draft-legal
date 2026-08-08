@@ -573,6 +573,28 @@ TOTAL_TOOLS_PER_TURN = 25
 # message, so this is the number that drives thread cost.
 PERSIST_RESULT_CHARS = 2_000
 
+# A8 tells the model the FULL prior listing is still in history, so a follow-up
+# like "quote the second match" is answerable without re-running the search.
+# That promise is only as good as the slice persisted here — and it used to hold
+# for exactly the three tools A8 names, by accident: all three sit in the 20K
+# streaming allowlist below, and the persisted slice was taken from the already
+# truncated `preview`. Every tool off that allowlist streams at 800, so its
+# persisted slice could never exceed 800 either, whatever this cap said.
+#
+# These are the listing tools a following turn is expected to reference by
+# ordinal. A default clause_search is 5 x 400-char windows plus JSON — roughly
+# 3 KB — so 800 chars cut it mid-token on a routine call and the next turn
+# either quoted a fragment or silently re-ran the search and returned a
+# different match. Raised, not unbounded: memory.py's byte ceiling is the
+# backstop that keeps a long thread from growing without limit.
+PERSIST_RESULT_CHARS_LISTING = 8_000
+A8_LISTING_TOOLS = {
+    # Named in A8.
+    "contract_search", "portfolio_search", "counterparty_list",
+    # Not named in A8, and therefore the ones that were being truncated.
+    "clause_search", "contract_validate", "request_list", "custom_field_list",
+}
+
 
 async def run_agent_chat_stream(
     session_id: str,
@@ -989,16 +1011,26 @@ async def run_agent_chat_stream(
                 # per-message cost multiplier for the rest of the thread.
                 #
                 # Streamed preview stays generous (the rail renders it once);
-                # the PERSISTED slice is capped separately and much tighter,
-                # because ids and primary fields are all the next turn needs.
-                persisted = preview[:PERSIST_RESULT_CHARS]
+                # the PERSISTED slice is capped separately, because ids and
+                # primary fields are all the next turn usually needs.
+                #
+                # Slice `result_str`, NOT `preview`. Bandwidth and replay are
+                # different concerns with different right answers, and deriving
+                # one from the other silently applied whichever cap was smaller
+                # — which is how the tools off the 20K allowlist ended up
+                # persisting 800 chars while this constant read as 2 000.
+                persist_cap = (
+                    PERSIST_RESULT_CHARS_LISTING if tc_name in A8_LISTING_TOOLS
+                    else PERSIST_RESULT_CHARS
+                )
+                persisted = result_str[:persist_cap]
                 turn_tool_results.append({
                     "id": tc_id, "name": tc_name,
                     # Wave 3.10 — sanitize before persisting so a forged UI
                     # marker in document text is neutralized both in the stored
                     # slice and anywhere it's echoed next turn.
                     "result": _sanitize_untrusted(persisted),
-                    "truncated": truncated or len(preview) > PERSIST_RESULT_CHARS,
+                    "truncated": len(result_str) > persist_cap,
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.

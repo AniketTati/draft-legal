@@ -1401,20 +1401,36 @@ higher concurrency so long redlines cannot starve ingest; and
 
 ## L12 — Session memory grows without bound, and truncates the wrong tools
 
-**Severity: Medium.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 6/6.
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 17/17.
 
-**Fixed:** the unbounded growth. `memory.py` now trims oldest-first against a
-256 KB serialized ceiling as well as the 50-message count, and the PERSISTED
-slice is capped separately at 2 000 chars — replayed bytes are re-sent on every
-subsequent turn, so that number drives thread cost, while the streamed preview
-stays generous because the rail renders it once. Measured: 60 turns of 20 KB
-results now settle at 242 KB / 12 messages instead of climbing past 1.2 MB.
+**Fixed (growth):** `memory.py` now trims oldest-first against a 256 KB
+serialized ceiling as well as the 50-message count, and the PERSISTED slice is
+capped separately — replayed bytes are re-sent on every subsequent turn, so that
+number drives thread cost, while the streamed preview stays generous because the
+rail renders it once. Measured: 60 turns of 20 KB results now settle at 242 KB /
+12 messages instead of climbing past 1.2 MB.
 
-**NOT fixed:** the mirror defect — A8 promises the whole prior listing is in
-history, which holds for the three tools it names but not for `clause_search`,
-`contract_validate`, `request_list` and `custom_field_list`, which persist at
-800 chars. `clause_search` defaults to 5 × 400 chars, so 800 cuts it mid-token
-routinely.
+**Fixed (the mirror defect).** The mechanism turned out to be one line:
+`persisted = preview[:PERSIST_RESULT_CHARS]` sliced the *already truncated*
+stream payload, so the two caps multiplied instead of the tighter one winning.
+Any tool off the 20 K streaming allowlist streams at 800, and could therefore
+never persist more than 800 either — whatever the 2 000-char constant claimed.
+That the three tools A8 names were unaffected was an accident of their all being
+on the allowlist for unrelated UI reasons.
+
+The fix slices `result_str` instead, decoupling replay budget from stream
+budget, and adds `PERSIST_RESULT_CHARS_LISTING = 8_000` for the seven listing
+tools a following turn is expected to reference by ordinal — the three A8 names
+plus `clause_search`, `contract_validate`, `request_list`, `custom_field_list`.
+Not unbounded: the 256 KB byte ceiling above is the backstop.
+
+Verified end to end, not just statically. A contract carrying five `Service
+Credit` matches, each wrapped in its own sentinel inside the 400-char window,
+driven through a real `clause_search` turn, then read back out of Redis the way
+the next turn's restore loop reads it: **1/5 sentinels and invalid JSON before,
+5/5 and well-formed after.** The reverted run shows the persisted slice ending
+mid-token at `"...clause text pad1"`, which is precisely what the model was being
+handed when it was asked to quote the second match.
 
 `memory.py:52-54` trims to the last **50 messages**. What each message carries is
 `preview`, capped at `20_000` chars for 18 of the 26 tools
