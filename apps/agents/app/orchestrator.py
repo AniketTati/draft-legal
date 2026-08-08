@@ -745,6 +745,20 @@ async def run_agent_chat_stream(
     resolved = await resolve_llm(
         _tier, org_id=org_id, streaming=True,
         trace_name="agent.chat", user_id=user_id, thread_id=session_id,
+        # docs/37 E13 — honour an explicit per-request pin.
+        #
+        # resolve_llm has accepted these since it was written, and this module's
+        # own docstring says "Provider + model are passed per-request so the
+        # user can switch live". The call site simply never passed them, so the
+        # model was always whatever the org's tier config chose and the product's
+        # stated model-switching feature did nothing. Absent a pin these are
+        # None and org config still decides, so the default is unchanged.
+        #
+        # Cost is not the reason to withhold this: the daily cap is the cost
+        # control, and since docs/36 L11 it fails closed. Locking the model
+        # would be a second, weaker control over the same risk.
+        provider_override=provider or None,
+        model_override=model_id or None,
     )
     llm = resolved.llm.bind_tools(tools)
     chat_callbacks: list = resolved.callbacks

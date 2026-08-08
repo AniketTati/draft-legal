@@ -626,7 +626,23 @@ bug and is fixed:
    does not belong to the resolved provider. Verified: `gemini-2.5-flash` used
    to echo back as `gemini-2.5-pro`; it now echoes correctly.
 
-2. **OPEN — the platform tier table, not the caller, chooses the final model.**
+2. **DECIDED AND FIXED 2026-08-08 — pins are honoured.**
+   `resolve_llm` has accepted `provider_override`/`model_override` since it was
+   written, and `orchestrator.py`'s own docstring says *"Provider + model are
+   passed per-request so the user can switch live."* The call site never passed
+   them, so the product's stated model-switching feature did nothing at all.
+   Now wired. Verified: `gemini-2.5-flash` → flash, `gemini-2.5-pro` → pro, no
+   pin → config default.
+
+   **Why honour rather than lock.** The obvious objection is cost — any caller
+   could select the most expensive model. But the daily cost cap is already the
+   control for that, and since `docs/36` L11 it fails closed. Locking the model
+   would be a second, weaker control over the same risk, at the price of
+   killing model comparison — which is this gap's stated motivation. If
+   per-role model restrictions are ever wanted, that belongs in the permission
+   layer, not in a silent override.
+
+   Superseded description of the old behaviour:
    With the pin now arriving intact, both `gemini-2.5-pro` and
    `gemini-2.5-flash` still resolve to `gemini-2.5-flash` at tier `fast`, on an
    org with **no `OrgAiSettings` row at all** — so this is the platform tier
@@ -698,6 +714,34 @@ gate is what found it.
 
 **Measured:** tier 1 — 5 checks, 54 assertions, sub-second, keyless.
 tier 2 — 5 checks, 75 assertions, ~35 s, keyless.
+
+---
+
+## Decision — when tier 2 joins CI
+
+**Call: yes, and it is the highest-value infrastructure item left — but it is a
+job to build properly, not a line to add.**
+
+The value is not theoretical. Tier 2 contains `l4-draft-tenancy`, which guards
+the cross-tenant write that was **live in production** (status 200, victim
+contract mutated from 1 to 2 versions). Today that runs only when someone runs
+it. It should gate every pull request. `l6b-dead-controls` and `l7-prompt-truth`
+are in the same tier and are not covered by `test-api`.
+
+What it needs, which is why it is not a one-liner: Postgres and Redis (already
+proven in the `test-api` job at `ci.yml:63-83`), **plus the API booted and
+healthy**, **plus the agents service running with `AGENT_REPLAY_MODE=replay`**,
+plus the replay fixtures. That is a real job with real failure modes — a flaky
+gate is worse than an honest TODO, because people learn to re-run it rather
+than read it.
+
+**Sequence it after the first tier-3 → tier-2 promotion** (Wave E), for one
+reason: that promotion is what makes the fixtures load-bearing. Building the CI
+job first means debugging service orchestration against checks that mostly do
+not need it yet.
+
+Marked as a TODO in `ci.yml` at the eval job rather than omitted, so it stays
+visible.
 
 ---
 

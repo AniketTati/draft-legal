@@ -180,17 +180,29 @@ section('4. A pin valid for the resolved provider is not overwritten')
     `provider=${provider} — extend CANDIDATES if this is a new provider`)
 
   if (pair) {
-    // The regression that matters: a pin VALID for the resolved provider must
-    // reach the service intact. chat.py's fallback used to overwrite it
-    // unconditionally, and since DEFAULT_PROVIDER is anthropic, a single-key
-    // deployment took that branch on EVERY request — so no pin anywhere in the
-    // product survived.
+    // DECIDED 2026-08-08: pins are HONOURED. resolve_llm had accepted
+    // provider_override/model_override since it was written, and this module's
+    // docstring says "Provider + model are passed per-request so the user can
+    // switch live" — the orchestrator simply never passed them, so the
+    // product's stated model-switching feature did nothing. Cost is not a
+    // reason to withhold it: the daily cap is the cost control and since
+    // docs/36 L11 it fails closed, so locking the model would be a second,
+    // weaker control over the same risk.
+    const seen = []
     for (const model of pair) {
       const r = await turn({ message: 'Say OK.', sessionId: `e13-${model}-${Date.now()}`, provider, modelId: model })
-      check(`a pin of ${model} reaches the service intact`,
-        r.done?.model_id === model,
-        `sent ${model}, service echoed ${r.done?.model_id} — the fallback branch rewrote a pin that was valid for the provider actually in use`)
+      seen.push(r.done?.model)
+      check(`a pin of ${model} is honoured`, r.done?.model === model,
+        `requested ${model}, answered by ${r.done?.model} — a pin the server ignores is worse than no pin, because the report then lies about which model was measured`)
     }
+    check('two different pins produce two different models', seen[0] !== seen[1],
+      `${seen.join(' vs ')} — model comparison is the audit's stated motivation for this suite; without this it is impossible`)
+
+    // And with no pin, org/platform config still decides. Honouring a pin must
+    // not mean the default moved.
+    const unpinned = await turn({ message: 'Say OK.', sessionId: `e13-default-${Date.now()}` })
+    check('with no pin, config still chooses', typeof unpinned.done?.model === 'string' && unpinned.done.model.length > 0,
+      `default resolved to ${unpinned.done?.model}`)
   }
 }
 
