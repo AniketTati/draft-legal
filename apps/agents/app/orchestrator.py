@@ -239,7 +239,13 @@ async def run_chat(
     resolved_llm = resolved.llm
     resolved_callbacks: list = resolved.callbacks
 
-    result = graph.invoke({
+    # `graph.invoke` is SYNCHRONOUS. Awaiting it directly from `async def
+    # run_chat` stalled the whole uvicorn worker for the full model round-trip
+    # -- 5-30s during which every concurrent chat, tool callback and health
+    # check behind it was blocked. Latent only because both web surfaces send
+    # agentMode: true, while agents.ts defaults agent_mode to FALSE, so any
+    # direct caller, probe or eval script omitting the flag takes this path.
+    result = await asyncio.to_thread(graph.invoke, {
         "session_id": session_id,
         "org_id": org_id,
         "user_id": user_id,
@@ -552,7 +558,6 @@ MAX_TOOL_ITERATIONS = 6
 #   contract_get        — 3 (matches A3 prompt rule; agent should
 #                            broaden via portfolio_search instead)
 #   counterparty_get    — 3 (same reasoning)
-#   matter_get          — 3
 # Per-turn total cap:
 #   ALL_TOOLS           — 25 (room for legit research turns: 1
 #                            search + 5 gets + 4 cites + …; well above
@@ -560,7 +565,6 @@ MAX_TOOL_ITERATIONS = 6
 PER_TOOL_BUDGET: dict[str, int] = {
     "contract_get":     3,
     "counterparty_get": 3,
-    "matter_get":       3,
 }
 TOTAL_TOOLS_PER_TURN = 25
 
@@ -931,7 +935,7 @@ async def run_agent_chat_stream(
                 # The truncation only affects the SSE-stream payload — the
                 # LLM still gets the full result via ToolMessage below.
                 # A2/U5 — single-entity get tools (contract_get, counterparty_get,
-                # matter_get) MUST stream the full JSON so the rail's chip can
+                # their summarize/memory siblings) MUST stream the full JSON so the rail's chip can
                 # extract `title`/`name` for human-readable labels. Truncation at
                 # 800 chars cut JSON mid-string, JSON.parse failed, and chips
                 # fell back to "cmogr4…" cuid-prefix display. Adding these to

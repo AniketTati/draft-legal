@@ -541,14 +541,13 @@ export function AgentHomePage() {
               // A2/U5 — extract entity title from the tool result so the chip
               // shows "contract_get · Mayo Clinic — MSA" instead of "contract_get".
               // Single-entity tools only (contract_get / counterparty_get /
-              // matter_get + their summarize/memory siblings).
+              // their summarize/memory siblings).
               let entityTitle: string | undefined
               const looksLikeSingleEntity =
                 evt.name === 'contract_get' ||
                 evt.name === 'contract_summarize' ||
                 evt.name === 'counterparty_get' ||
-                evt.name === 'counterparty_memory' ||
-                evt.name === 'matter_get'
+                evt.name === 'counterparty_memory'
               if (looksLikeSingleEntity && evt.result) {
                 try {
                   const json = typeof evt.result === 'string' ? JSON.parse(evt.result) : evt.result

@@ -304,7 +304,11 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
   }
 
   // ── Doc artifacts ───────────────────────────────────────────────
-  if (call.name === 'contract_create_from_template' || call.name === 'draft_clause') {
+  // `draft_clause` was removed 2026-08-08: it was phantom -- no tool file, no
+  // registry entry, no endpoint -- and reading as a supported capability is how
+  // the next engineer assumes this path is already wired. Same class as the
+  // save_draft / send_for_review buttons dropped above.
+  if (call.name === 'contract_create_from_template') {
     const html = String(r.html ?? r.content ?? '')
     if (!html) return null
     // Hash the first 200 chars of the html so two regenerations with

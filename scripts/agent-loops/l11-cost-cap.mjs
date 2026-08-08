@@ -82,40 +82,51 @@ section('3. Over-cap actually refuses')
   // The cap lives on OrgAiSettings (dailyCostCapUsd / capPolicy), read through
   // a 30s Redis cache — an earlier version of this probe guessed fields on
   // Organization, found nothing, and soft-passed while asserting nothing.
-  const prev = await prisma.orgAiSettings.findUnique({
+  //
+  // RESTORE IS IN A FINALLY, and refuses to persist a zero cap. An earlier
+  // version restored only on the happy path; one interrupted run left
+  // dailyCostCapUsd at 0 with policy `block`, which refuses EVERY LLM call in
+  // the workspace, and the next run then captured that 0 as "previous" and
+  // would have restored it forever. A fixture that can poison the environment
+  // permanently is worse than no fixture.
+  const prevRaw = await prisma.orgAiSettings.findUnique({
     where: { orgId }, select: { dailyCostCapUsd: true, capPolicy: true },
   })
+  const prev = Number(prevRaw?.dailyCostCapUsd ?? 0) > 0 ? prevRaw : null
 
-  // A cap of zero under `block` puts the org over budget immediately, with no
-  // tokens spent.
-  await prisma.orgAiSettings.upsert({
-    where:  { orgId },
-    update: { dailyCostCapUsd: 0, capPolicy: 'block' },
-    create: { orgId, dailyCostCapUsd: 0, capPolicy: 'block' },
-  })
-  // resolveCap caches for 30s; clear it so the probe sees the new value.
-  try {
-    execFileSync('docker', ['exec', 'clm_redis', 'redis-cli', 'DEL', `cost-cap-config:${orgId}`],
-      { stdio: 'ignore', timeout: 8000 })
-  } catch { /* best effort; the upsert still lands within 30s */ }
-
-  const res = await internal('/resolve', { orgId, tier: 'default' }, orgId)
-  check('over-cap resolve is refused with 429', res.status === 429,
-    `status ${res.status} — a 500 is what makes the Python router treat this as flaky infra and fall back to the platform key`)
-
-  // Restore.
-  if (prev) {
-    await prisma.orgAiSettings.update({
-      where: { orgId },
-      data: { dailyCostCapUsd: prev.dailyCostCapUsd, capPolicy: prev.capPolicy },
-    })
-  } else {
-    await prisma.orgAiSettings.delete({ where: { orgId } }).catch(() => {})
+  const clearCache = () => {
+    try {
+      execFileSync('docker', ['exec', 'clm_redis', 'redis-cli', 'DEL', `cost-cap-config:${orgId}`],
+        { stdio: 'ignore', timeout: 8000 })
+    } catch { /* best effort; the 30s TTL still expires it */ }
   }
+
   try {
-    execFileSync('docker', ['exec', 'clm_redis', 'redis-cli', 'DEL', `cost-cap-config:${orgId}`],
-      { stdio: 'ignore', timeout: 8000 })
-  } catch { /* */ }
+    // A cap of zero under `block` puts the org over budget immediately, with no
+    // tokens spent.
+    await prisma.orgAiSettings.upsert({
+      where:  { orgId },
+      update: { dailyCostCapUsd: 0, capPolicy: 'block' },
+      create: { orgId, dailyCostCapUsd: 0, capPolicy: 'block' },
+    })
+    clearCache()
+
+    const res = await internal('/resolve', { orgId, tier: 'default' }, orgId)
+    check('over-cap resolve is refused with 429', res.status === 429,
+      `status ${res.status} — a 500 is what makes the Python router treat this as flaky infra and fall back to the platform key`)
+  } finally {
+    if (prev) {
+      await prisma.orgAiSettings.update({
+        where: { orgId },
+        data: { dailyCostCapUsd: prev.dailyCostCapUsd, capPolicy: prev.capPolicy },
+      }).catch(() => {})
+    } else {
+      // No sane prior value: delete so resolveCap falls back to the platform
+      // default rather than leaving a zero cap behind.
+      await prisma.orgAiSettings.delete({ where: { orgId } }).catch(() => {})
+    }
+    clearCache()
+  }
 }
 
 // ─── 4. The background pipeline is accounted for at all ────────────────────

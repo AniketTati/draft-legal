@@ -1471,7 +1471,13 @@ and correct the comment at `:883-887`, which is the reason nobody caught this.
 
 ## L13 — Dead names and one dead code path
 
-**Severity: Low** · *stale-code cleanup, no runtime consequence*
+**Severity: Low → the blocking path is not low.** ✅ FIXED 2026-08-08 — `l13-dead-names.mjs` 3/8 → 8/8.
+
+Phantoms removed from all four sites. The `run_chat` blocking call is now on a
+thread: it was described here as "no runtime consequence", but a synchronous
+`graph.invoke` awaited from an async handler stalls the entire uvicorn worker
+for the whole model round-trip, and `agents.ts` defaults `agent_mode` to FALSE,
+so any direct caller reaches it.
 
 **`matter_get` is phantom in three independent places.**
 `PER_TOOL_BUDGET` has `"matter_get": 3` (`orchestrator.py:526`, documented at
