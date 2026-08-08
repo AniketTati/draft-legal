@@ -179,6 +179,31 @@ if (res.status === 200 && res.buf.length) {
       authors.length ? `e.g. "${authors[0]}"` : 'no w:author found')
   }
 
+  // ─── 3b. The table is actually readable ───────────────────────────────────
+  //
+  // Everything below is structurally valid whether or not it holds, which is
+  // why it went unnoticed until a generated file was opened in Google Docs:
+  // the table rendered as a sliver a few points wide, wrapping "Tier" one
+  // character per line. docx defaults <w:gridCol> to 100 twips (~0.07in) when
+  // no column widths are given.
+
+  section('3b. Tables are laid out, not collapsed')
+  {
+    const grid = [...xml.matchAll(/<w:gridCol w:w="(\d+)"/g)].map(m => Number(m[1]))
+    check('the table declares a column grid', grid.length > 0, `${grid.length} <w:gridCol>`)
+    // 1000 twips is ~0.7in — comfortably above the 100 that broke it, and
+    // below anything a real column would be.
+    check('each column is a usable width, not a sliver',
+      grid.length > 0 && grid.every(w => w >= 1000),
+      grid.length ? `widths: ${grid.join(', ')} twips` : 'no grid emitted')
+
+    const tblW = /<w:tblW[^>]*w:w="([^"]+)"[^>]*w:type="([^"]+)"|<w:tblW[^>]*w:type="([^"]+)"[^>]*w:w="([^"]+)"/.exec(xml)
+    const raw = tblW ? (tblW[1] ?? tblW[4] ?? '') : ''
+    // Word writes fiftieths of a percent as an integer, never a "%" string.
+    check('the table width is an integer measurement, not a "%" string',
+      !!raw && !raw.includes('%'), `w:tblW w:w="${raw || '(absent)'}"`)
+  }
+
   // ─── 4. Accept and reject reproduce the two versions ──────────────────────
 
   section('4. Accept All gives v2, Reject All gives v1')

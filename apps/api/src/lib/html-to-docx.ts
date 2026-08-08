@@ -31,9 +31,16 @@
  */
 import {
   Paragraph, TextRun, InsertedTextRun, DeletedTextRun, ExternalHyperlink,
-  Table, TableRow, TableCell, HeadingLevel, WidthType, AlignmentType,
+  Table, TableRow, TableCell, HeadingLevel, WidthType, AlignmentType, TableLayoutType,
 } from 'docx'
 import { parseFragment } from 'parse5'
+
+/**
+ * Usable text width in twips: US Letter (12240) less docx's default one-inch
+ * margins (1440 each). Tables are laid out against this, because a table with
+ * no explicit grid collapses to almost nothing.
+ */
+const USABLE_PAGE_TWIPS = 12240 - 1440 * 2
 
 export interface RevisionMeta {
   author: string
@@ -203,11 +210,14 @@ export class DocxMapper {
 
   private table(n: Node, rev: Rev): Table {
     const rows: TableRow[] = []
+    /** Widest row, in grid columns — a colspan occupies several. */
+    let columns = 0
     const collectRows = (node: Node) => {
       for (const c of node.childNodes ?? []) {
         if (c.nodeName === 'tr') {
           const rowRev = blockRev(c) ?? rev
           const cells: TableCell[] = []
+          let span = 0
           for (const cell of c.childNodes ?? []) {
             if (cell.nodeName !== 'td' && cell.nodeName !== 'th') continue
             const cellRev = blockRev(cell) ?? rowRev
@@ -215,13 +225,16 @@ export class DocxMapper {
             // Header emphasis belongs on the RUNS. Setting bold on the
             // paragraph mark alone (a tempting shortcut) bolds nothing visible.
             const kids = this.inline(cell.childNodes ?? [], cellRev, isHeader ? { bold: true } : {})
+            const colspan = Math.max(1, Number(attr(cell, 'colspan') ?? 1) || 1)
+            span += colspan
             cells.push(new TableCell({
               children: [new Paragraph({ children: kids })],
-              ...(Number(attr(cell, 'colspan') ?? 1) > 1 ? { columnSpan: Number(attr(cell, 'colspan')) } : {}),
+              ...(colspan > 1 ? { columnSpan: colspan } : {}),
               ...(Number(attr(cell, 'rowspan') ?? 1) > 1 ? { rowSpan: Number(attr(cell, 'rowspan')) } : {}),
             }))
           }
           if (cells.length) {
+            columns = Math.max(columns, span)
             rows.push(new TableRow({
               children: cells,
               ...(rowRev === 'ins' ? { insertion: this.stamp() } : {}),
@@ -234,7 +247,23 @@ export class DocxMapper {
       }
     }
     collectRows(n)
-    return new Table({ rows, width: { size: 100, type: WidthType.PERCENTAGE } })
+
+    // The column grid must be supplied explicitly. Without it docx emits
+    // <w:gridCol w:w="100"/> — 100 TWIPS, about 0.07 inch — and the table
+    // collapses to a sliver that wraps one character per line. Found by opening
+    // a generated file in Google Docs; "Tier" rendered vertically as T/i/e/r.
+    //
+    // Width in DXA rather than the percentage form for the same reason: docx
+    // serialises `WidthType.PERCENTAGE` as w:w="100%", where Word's own files
+    // use fiftieths of a percent as an integer (w:w="5000").
+    const cols = Math.max(columns, 1)
+    const each = Math.floor(USABLE_PAGE_TWIPS / cols)
+    return new Table({
+      rows,
+      columnWidths: Array.from({ length: cols }, () => each),
+      width: { size: each * cols, type: WidthType.DXA },
+      layout: TableLayoutType.FIXED,
+    })
   }
 
   /** Map one block-level node into zero or more docx blocks. */
