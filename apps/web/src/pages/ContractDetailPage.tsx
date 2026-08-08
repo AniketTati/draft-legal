@@ -339,6 +339,8 @@ export function ContractDetailPage() {
   // this same canvas via isEditing (see B.5.3).
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [pdfError, setPdfError] = useState<string | null>(null)
+  // L6 #7 — Download had no error state at all; a 404 closed the menu silently.
+  const [downloadError, setDownloadError] = useState<string | null>(null)
   const [showAllFlags, setShowAllFlags] = useState(false)
   const [editingType, setEditingType] = useState(false)
   const [showFindings, setShowFindings] = useState(false)
@@ -825,11 +827,26 @@ export function ContractDetailPage() {
   // U.4.4 moved that flow to the rail composer; both are now dead.
   // Refer to git history for the original implementation.
 
+  // L6 #7 — this had no try/catch and no error state, while the sibling
+  // handleViewPdf immediately below has both. On an agent-drafted or
+  // pasted-HTML contract there is no original file, contracts.ts 404s, and the
+  // dropdown just closed — the user saw a menu item that did nothing.
   const handleDownload = async (versionId?: string) => {
-    const res = await api.get(`/contracts/${id}/download`, {
-      params: versionId ? { versionId } : undefined,
-    })
-    window.open(res.data.url, '_blank')
+    setDownloadError(null)
+    try {
+      const res = await api.get(`/contracts/${id}/download`, {
+        params: versionId ? { versionId } : undefined,
+      })
+      window.open(res.data.url, '_blank')
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      setDownloadError(
+        status === 404
+          ? 'This contract has no original file to download. It was drafted or pasted in, rather than uploaded.'
+          : (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+            ?? 'Could not download this contract.',
+      )
+    }
   }
 
   const handleViewPdf = async () => {
@@ -1363,6 +1380,23 @@ export function ContractDetailPage() {
             </DropdownMenu>
           </div>
         </div>
+
+        {downloadError && (
+          <div
+            role="alert"
+            data-testid="contract-download-error"
+            className="mt-2 flex items-start justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+          >
+            <span className="min-w-0 break-words">{downloadError}</span>
+            <button
+              type="button"
+              onClick={() => setDownloadError(null)}
+              className="shrink-0 font-medium text-red-700 hover:text-red-900"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Row 2 — full-width metadata strip. Indented `pl-11` so the
             pills line up with the title text (back-button + gap). At all

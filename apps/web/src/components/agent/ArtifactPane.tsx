@@ -36,6 +36,14 @@ export interface ArtifactAction {
   tool?: string
   /** When set, clicking opens this URL in the same tab (doesn't run a tool). */
   href?: string
+  /**
+   * L6 #6 — a purely client-side action, needing neither a URL nor a tool.
+   * The three export actions were declared with neither, so every click threw
+   * "This action has nothing to apply" and flashed an unlabeled red icon for
+   * 2.5s — beside a Download icon that made them look wired. No backend is
+   * needed: the rows and columns are already in the browser.
+   */
+  clientAction?: 'csv' | 'memo'
   /** Free-form payload passed to the tool handler. */
   args?: Record<string, unknown>
 }
@@ -417,6 +425,11 @@ function ActionButton({
   large?: boolean
 }) {
   const [state, setState] = useState<'idle' | 'pending' | 'ok' | 'error'>('idle')
+  // L6 #6 — keep the thrown message. The catch used to discard it and flash an
+  // unlabeled red icon for 2.5s, so a user who clicked a broken action learned
+  // only that *something* went wrong, with no way to tell a permissions
+  // problem from a stale artifact from an unwired button.
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const click = async () => {
     if (state === 'pending') return
     if (action.href) {
@@ -424,12 +437,16 @@ function ActionButton({
       return
     }
     setState('pending')
+    setErrorMessage(null)
     try {
       await onAction(action)
       setState('ok')
       setTimeout(() => setState('idle'), 1200)
-    } catch {
+    } catch (err) {
+      setErrorMessage((err as Error)?.message ?? 'Something went wrong.')
       setState('error')
+      // No auto-clear on the message: an error the user did not manage to read
+      // is the same as no error at all. The icon still settles back to idle.
       setTimeout(() => setState('idle'), 2500)
     }
   }
@@ -438,24 +455,35 @@ function ActionButton({
     action.variant === 'danger'   ? 'bg-red-600 hover:bg-red-700 text-white' :
                                     'bg-white border border-gray-200 hover:bg-gray-50 text-gray-700'
   return (
-    <button
-      type="button"
-      onClick={click}
-      disabled={state === 'pending'}
-      data-testid={`artifact-action-${action.id}`}
-      data-state={state}
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-lg font-medium text-[13px] transition-colors disabled:opacity-60',
-        large ? 'px-5 py-2.5' : 'px-4 py-2',
-        variantCls,
+    <span className="inline-flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={click}
+        disabled={state === 'pending'}
+        data-testid={`artifact-action-${action.id}`}
+        data-state={state}
+        className={cn(
+          'inline-flex items-center gap-1.5 rounded-lg font-medium text-[13px] transition-colors disabled:opacity-60',
+          large ? 'px-5 py-2.5' : 'px-4 py-2',
+          variantCls,
+        )}
+      >
+        {state === 'pending' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        {state === 'ok'      && <Check    className="h-3.5 w-3.5" />}
+        {state === 'error'   && <AlertCircle className="h-3.5 w-3.5" />}
+        {state === 'idle' && action.id === 'export' && <Download className="h-3.5 w-3.5" />}
+        <span>{action.label}</span>
+        {action.id === 'send' && state === 'idle' && <ChevronDown className="h-3 w-3" />}
+      </button>
+      {errorMessage && (
+        <span
+          role="alert"
+          data-testid={`artifact-action-error-${action.id}`}
+          className="text-[12px] text-red-600 max-w-[22rem] break-words"
+        >
+          {errorMessage}
+        </span>
       )}
-    >
-      {state === 'pending' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-      {state === 'ok'      && <Check    className="h-3.5 w-3.5" />}
-      {state === 'error'   && <AlertCircle className="h-3.5 w-3.5" />}
-      {state === 'idle' && action.id === 'export' && <Download className="h-3.5 w-3.5" />}
-      <span>{action.label}</span>
-      {action.id === 'send' && state === 'idle' && <ChevronDown className="h-3 w-3" />}
-    </button>
+    </span>
   )
 }

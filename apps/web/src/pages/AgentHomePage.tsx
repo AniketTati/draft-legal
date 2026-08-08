@@ -116,6 +116,63 @@ interface ChatMessage {
  *   - anything else → JSON.stringify so we still render *something*
  *     instead of crashing the whole page.
  */
+/**
+ * L6 #6 — client-side artifact export.
+ *
+ * The three export actions (two "Export CSV", one "Export memo") were declared
+ * with neither `href` nor `tool`, so clicking one threw "This action has
+ * nothing to apply" and ArtifactPane flashed an unlabeled red icon for 2.5s —
+ * while still rendering a Download icon that made them look wired. The same
+ * file records deleting the save_draft / send_for_review pseudo-tools on
+ * 2026-06-10 for exactly this reason; these three survived that cleanup.
+ *
+ * No backend is required: the artifact already holds its rows and columns.
+ */
+function toCsvCell(value: unknown): string {
+  if (value == null) return ''
+  const s = typeof value === 'object' ? JSON.stringify(value) : String(value)
+  // Quote if the value contains a delimiter, a quote or a newline; double any
+  // embedded quotes. A title containing a comma is the common case and would
+  // otherwise shift every later column by one.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+function downloadBlob(name: string, mime: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function downloadArtifact(artifact: Artifact, kind: 'csv' | 'memo') {
+  const slug = (artifact.title ?? 'export').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+  if (kind === 'csv') {
+    if (artifact.kind !== 'table') throw new Error('This artifact has no table to export.')
+    const cols = artifact.columns ?? []
+    if (cols.length === 0) throw new Error('This table has no columns to export.')
+    const lines = [
+      cols.map(c => toCsvCell(c.label)).join(','),
+      ...(artifact.rows ?? []).map(row => cols.map(c => toCsvCell(row[c.key])).join(',')),
+    ]
+    // Prepend a BOM so Excel opens UTF-8 correctly rather than mangling
+    // accented counterparty names. Escaped rather than literal — a raw U+FEFF
+    // in source is invisible and lint rejects it.
+    downloadBlob(`${slug || 'export'}.csv`, 'text/csv;charset=utf-8', `\uFEFF${lines.join('\r\n')}`)
+    return
+  }
+
+  const parts: string[] = [artifact.title ?? 'Memo']
+  if ('subtitle' in artifact && artifact.subtitle) parts.push(String(artifact.subtitle))
+  if ('headline' in artifact && artifact.headline) parts.push('', String(artifact.headline))
+  if ('details' in artifact && Array.isArray(artifact.details) && artifact.details.length) {
+    parts.push('', ...artifact.details.map(d => `- ${String(d)}`))
+  }
+  downloadBlob(`${slug || 'memo'}.md`, 'text/markdown;charset=utf-8', `${parts.join('\n')}\n`)
+}
+
 function normalizeMessageContent(raw: unknown): string {
   if (raw == null) return ''
   if (typeof raw === 'string') return raw
@@ -1147,6 +1204,14 @@ export function AgentHomePage() {
             onAction={async (action) => {
               if (action.href) {
                 navigate(action.href)
+                return
+              }
+              // L6 #6 — client-side exports. The table's rows and columns are
+              // already in the browser, so these need no backend at all; they
+              // were simply declared with neither href nor tool and threw on
+              // every click.
+              if (action.clientAction) {
+                downloadArtifact(open, action.clientAction)
                 return
               }
               // Wave 2.5 — non-href artifact actions carry a write tool; fire it

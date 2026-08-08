@@ -35,6 +35,34 @@ from app.untrusted import sanitize_untrusted as _sanitize_untrusted
 from app.untrusted import wrap_untrusted_document
 
 
+def _chunk_text(chunk) -> str:
+    """Pull the text out of one streamed message chunk.
+
+    Providers disagree on the shape. OpenAI and Google give `content` as a
+    plain str; Anthropic gives a list of content blocks, and a tool-calling
+    turn interleaves text blocks with tool_use blocks that carry no text at
+    all. Blocks arrive as dicts over the wire but as objects when a callback
+    has already deserialized them, so both are handled — missing one shape
+    yields empty deltas and silently reinstates the dead-air this replaced.
+
+    routes/assist.py:702-712 has the same extraction for its own stream.
+    """
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                out.append(block)
+            elif isinstance(block, dict):
+                out.append(block.get("text") or "")
+            else:
+                out.append(getattr(block, "text", "") or "")
+        return "".join(out)
+    return ""
+
+
 def _wrap_untrusted_tool_result(name: str, payload: str) -> str:
     """Frame a tool result as clearly-labeled DATA that must never be treated as
     instructions. Sanitizes forged markers first."""
@@ -326,6 +354,14 @@ Rules:
   • request_list          — "show intake requests"
   • custom_field_list     — "what custom fields exist" (schema, not values)
   • org_memory            — org-wide preferences and prior decisions
+  • template_list         — "what can I draft from", "do we have an NDA
+                            template". Metadata only, no template body. To
+                            actually draft, use contract_create_from_template
+                            and describe what is needed in plain language.
+  • user_search           — turn a PERSON'S NAME into a user id. Call this
+                            whenever the user names a colleague and a tool
+                            needs an id: assigning an owner, delegating an
+                            approval. See A13.
   When unsure between contract_search and portfolio_search: if the
   user's words sound like they describe contract CONTENT or a concept
   ("clause", "language", "talks about", "with X provision"), reach
@@ -442,6 +478,19 @@ Rules:
   when the user is asking about an already-listed item — that's a
   red flag you didn't read history. Re-fetching is a cost + latency hit
   and risks contradicting your previous answer.
+- A13 — NAMES ARE NOT IDS. Tools that act on a person take a user CUID:
+  contract_update's assign_owner needs payload.ownerId, approval_decide's
+  delegate_to needs a user id. When the user names a colleague ("assign
+  this to Alice", "delegate to Priya"), call user_search FIRST and use
+  the id it returns. Never pass a name where an id is expected — the
+  endpoint rejects it — and never ask the user to paste a CUID; that is
+  what this tool is for.
+  If the result carries "ambiguous": true, MORE THAN ONE person matched.
+  Do NOT pick one. List the candidates with their emails and ask which
+  they mean. Guessing here silently assigns the wrong person and then
+  reports success, which is worse than not resolving the name at all.
+  If nothing matches, say so and offer to list the team rather than
+  inventing an id.
 - A7 — CITE WHEN ASKED. When the user says "quote the exact clause",
   "show me the section", "where in the contract", "cite", or asks
   for a verbatim excerpt, ALWAYS call contract_cite (not just
@@ -452,7 +501,7 @@ Rules:
   to the exact location. clause_search is for CONTENT MATCH; contract_cite
   is for CITATION-WITH-ANCHORS.
 - WRITE TOOLS — comment_add, contract_update, request_create,
-  approval_route, redline_apply. redline_apply turns a clause rewrite into a
+  approval_route, redline_apply, approval_decide. redline_apply turns a clause rewrite into a
   new contract version: call redline_propose FIRST and pass one of ITS variants
   verbatim — never compose the replacement text yourself, and never say a
   rewrite was applied until the user has clicked Apply. If it returns
@@ -481,6 +530,17 @@ Rules:
     ("renew the Salesforce MSA", "draft a new NDA with Acme", "send
     this to legal for review"). Pick a clear title + correct type +
     quote the user's description. Reversible for 15 min after Apply.
+  • approval_decide — user asks to approve / reject / delegate an approval
+    step that is assigned to THEM ("approve it", "reject this, the cap is
+    too high", "delegate this to Priya"). Get stepId and instanceId from
+    approval_list first — never guess them. A rejection MUST carry a
+    comment explaining why; ask for one if the user did not give a reason.
+    To delegate, resolve the person's name with user_search first.
+    NOT REVERSIBLE: applying it advances the workflow and notifies
+    immediately, so there is no undo window. Say so before the user
+    confirms. You can only decide steps assigned to the current user —
+    if the step belongs to someone else the action is refused, and the
+    right answer is to tell the user who it is waiting on.
   ASK-DON'T-ACT GUARD: if the user is asking for advice ("should I mark
   this executed?", "do I need a request for this?"), answer in prose
   first. Only call a write tool when the user has clearly decided.
@@ -573,6 +633,28 @@ TOTAL_TOOLS_PER_TURN = 25
 # message, so this is the number that drives thread cost.
 PERSIST_RESULT_CHARS = 2_000
 
+# A8 tells the model the FULL prior listing is still in history, so a follow-up
+# like "quote the second match" is answerable without re-running the search.
+# That promise is only as good as the slice persisted here — and it used to hold
+# for exactly the three tools A8 names, by accident: all three sit in the 20K
+# streaming allowlist below, and the persisted slice was taken from the already
+# truncated `preview`. Every tool off that allowlist streams at 800, so its
+# persisted slice could never exceed 800 either, whatever this cap said.
+#
+# These are the listing tools a following turn is expected to reference by
+# ordinal. A default clause_search is 5 x 400-char windows plus JSON — roughly
+# 3 KB — so 800 chars cut it mid-token on a routine call and the next turn
+# either quoted a fragment or silently re-ran the search and returned a
+# different match. Raised, not unbounded: memory.py's byte ceiling is the
+# backstop that keeps a long thread from growing without limit.
+PERSIST_RESULT_CHARS_LISTING = 8_000
+A8_LISTING_TOOLS = {
+    # Named in A8.
+    "contract_search", "portfolio_search", "counterparty_list",
+    # Not named in A8, and therefore the ones that were being truncated.
+    "clause_search", "contract_validate", "request_list", "custom_field_list",
+}
+
 
 async def run_agent_chat_stream(
     session_id: str,
@@ -660,7 +742,7 @@ async def run_agent_chat_stream(
     else:
         _tier = "default"
     resolved = await resolve_llm(
-        _tier, org_id=org_id, streaming=False,
+        _tier, org_id=org_id, streaming=True,
         trace_name="agent.chat", user_id=user_id, thread_id=session_id,
     )
     llm = resolved.llm.bind_tools(tools)
@@ -754,20 +836,45 @@ async def run_agent_chat_stream(
     # either re-searches (wrong contract) or hallucinates ids.
     turn_tool_calls: list = []
     turn_tool_results: list = []
+    # L10 — everything the user was shown this turn, in order, accumulated
+    # across iterations. This is also what gets persisted, so what the user
+    # saw and what the next turn replays cannot drift apart.
+    streamed_parts: list[str] = []
     try:
         for iteration in range(MAX_TOOL_ITERATIONS):
-            ai: AIMessage = await llm.ainvoke(messages, config={"callbacks": chat_callbacks})
+            # L10 — real token streaming. This used to be `await llm.ainvoke`,
+            # which blocked for the whole model round-trip and then split the
+            # finished string on ' ' and yielded one frame per word with no
+            # sleep between yields — so the "typewriter" was a single burst
+            # arriving after multi-second silence, and bought nothing at all
+            # over sending one frame. Measured before this change: first token
+            # at 1735 ms, last at 1743 ms, of a 1747 ms turn.
+            #
+            # Chunks are accumulated as well as streamed because the tool-call
+            # iterations need the assembled message: tool_call fragments arrive
+            # split across chunks and only the merged AIMessageChunk carries a
+            # usable .tool_calls.
+            ai = None
+            async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
+                ai = chunk if ai is None else ai + chunk
+                piece = _chunk_text(chunk)
+                if piece:
+                    streamed_parts.append(piece)
+                    yield {"type": "token", "delta": piece}
+            if ai is None:
+                # The provider yielded nothing at all. Treat as an empty turn
+                # and let the synthesis safety net below handle it.
+                break
+
             tool_calls = getattr(ai, "tool_calls", None) or []
 
-            # Terminal branch: no more tool calls → stream the answer.
+            # Terminal branch: no more tool calls. The answer has already been
+            # streamed above as it was generated.
             if not tool_calls:
-                final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
-                # Word-by-word "stream" to match the existing UX. Real token
-                # streaming lands when we add .astream_events() in a follow-up.
-                words = final_text.split(" ")
-                for i, word in enumerate(words):
-                    chunk = word + (" " if i < len(words) - 1 else "")
-                    yield {"type": "token", "delta": chunk}
+                final_text = "".join(streamed_parts)
+                if not final_text:
+                    # Some providers deliver content only on the aggregate.
+                    final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
                 break
 
             # Tool-call branch: emit start + execute + emit result for each
@@ -989,16 +1096,26 @@ async def run_agent_chat_stream(
                 # per-message cost multiplier for the rest of the thread.
                 #
                 # Streamed preview stays generous (the rail renders it once);
-                # the PERSISTED slice is capped separately and much tighter,
-                # because ids and primary fields are all the next turn needs.
-                persisted = preview[:PERSIST_RESULT_CHARS]
+                # the PERSISTED slice is capped separately, because ids and
+                # primary fields are all the next turn usually needs.
+                #
+                # Slice `result_str`, NOT `preview`. Bandwidth and replay are
+                # different concerns with different right answers, and deriving
+                # one from the other silently applied whichever cap was smaller
+                # — which is how the tools off the 20K allowlist ended up
+                # persisting 800 chars while this constant read as 2 000.
+                persist_cap = (
+                    PERSIST_RESULT_CHARS_LISTING if tc_name in A8_LISTING_TOOLS
+                    else PERSIST_RESULT_CHARS
+                )
+                persisted = result_str[:persist_cap]
                 turn_tool_results.append({
                     "id": tc_id, "name": tc_name,
                     # Wave 3.10 — sanitize before persisting so a forged UI
                     # marker in document text is neutralized both in the stored
                     # slice and anywhere it's echoed next turn.
                     "result": _sanitize_untrusted(persisted),
-                    "truncated": truncated or len(preview) > PERSIST_RESULT_CHARS,
+                    "truncated": len(result_str) > persist_cap,
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.
@@ -1030,14 +1147,18 @@ async def run_agent_chat_stream(
                 "concrete next step."
             )))
             try:
-                synth: AIMessage = await llm.ainvoke(messages, config={"callbacks": chat_callbacks})
-                final_text = synth.content if isinstance(synth.content, str) else str(synth.content)
-                if final_text.strip():
-                    words = final_text.split(" ")
-                    for i, word in enumerate(words):
-                        chunk = word + (" " if i < len(words) - 1 else "")
-                        yield {"type": "token", "delta": chunk}
-                else:
+                # L10 — streamed for the same reason as the main branch. This
+                # is the path a long research turn ends on, so it is the one
+                # where dead air is longest.
+                synth_parts: list[str] = []
+                async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
+                    piece = _chunk_text(chunk)
+                    if piece:
+                        synth_parts.append(piece)
+                        streamed_parts.append(piece)
+                        yield {"type": "token", "delta": piece}
+                final_text = "".join(synth_parts)
+                if not final_text.strip():
                     yield {"type": "error", "error": f"Agent stopped after {MAX_TOOL_ITERATIONS} tool iterations without producing a final answer."}
                     return
             except Exception as e:

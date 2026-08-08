@@ -1,0 +1,13 @@
+The assistant has problems. It cannot call action APIs, for example, to send a record for signature or approve the record, and all other actions that a user can take in CLM. The assistant should be able to do that.
+Second problem is that the send for signature workflow is still not working.
+Third problem is that the assistant should be able to do a comparison of clauses in the contracts with clauses in the standard clause library. For example, a user can ask to find contracts that have a non-standard termination clause, and the assistant should be able to find out all the terms where the termination clause is different than the standard termination clause.
+Fourth problem is: right now, the user can only ask clause-level queries in the assistant. For example, the assistant asks the user to filter down the contracts by specifying a specific clause, but in the real world, the user can ask portfolio-level queries. For example, let's scan the entire repository and find all the contracts that have unlimited liability. Here, the user is not filtering by a clause name, but rather the user wants to do a portfolio-level sort.
+There is no guidance on how a user can invoke a skill in the assistant.
+The comparison between two contracts on a specific clause: the output is very low-level. It's not an enriched output that the user would like to see on the comparison result. For example, the user would like to see:
+- what the common things are between the two contracts
+- what the differences are in both summaries, as well as in a table format That is not there
+When the obligation is extracted, the due date column is empty. Can you check?
+Can you explain, when the template is created, how the merge fields can be added in that template and how an alternate clause language can be added in the template? This is specifically used for redline where alternative clause language can be used
+In the redline process, ideally the playbooks are the set of rules that the user can create. For example, in North America, the playbook can have certain clauses that are valid in the North America region for a specific company versus for the same company. In subsidiaries in Europe, the playbook will differ a little bit. How can we configure this use case using the playbook over here?Can you look at the GC AI Redline feature and draw inspiration from there?
+As a user, when I'm creating a skill, how can I provide context using my organization files to AI?
+What is the difference between the Decide and Open button in the Renewal tab?

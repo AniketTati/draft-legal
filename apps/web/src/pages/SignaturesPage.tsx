@@ -72,10 +72,23 @@ export function SignaturesPage() {
   })
 
   const items = data?.data ?? []
-  const counts = items.reduce<Record<string, number>>((acc, i) => {
+
+  // L6 #12 — badge counts must come from an UNFILTERED query. They used to be
+  // reduced over `items`, which is the CURRENT tab's response, so selecting any
+  // tab zeroed every other badge; and the ALL badge was `items.length`, the
+  // page length, while the query's own `total` was never read. Cached under its
+  // own key, so switching tabs does not refetch it.
+  const { data: allData } = useQuery<{ data: ApiSignatureRequest[]; total: number }>({
+    queryKey: ['signatures', 'ALL'],
+    queryFn: () => api.get('/signature-requests').then(r => r.data),
+    refetchInterval: 30_000,
+  })
+  const allItems = allData?.data ?? []
+  const counts = allItems.reduce<Record<string, number>>((acc, i) => {
     acc[i.status] = (acc[i.status] ?? 0) + 1
     return acc
   }, {})
+  const totalAll = allData?.total ?? allItems.length
 
   return (
     <div className="px-6 py-6 max-w-6xl mx-auto" data-testid="signatures-page">
@@ -91,7 +104,7 @@ export function SignaturesPage() {
       <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
         {STATUS_FILTERS.map(f => {
           const isActive = filter === f.key
-          const count = f.key === 'ALL' ? items.length : counts[f.key] ?? 0
+          const count = f.key === 'ALL' ? totalAll : counts[f.key] ?? 0
           return (
             <button
               key={f.key}

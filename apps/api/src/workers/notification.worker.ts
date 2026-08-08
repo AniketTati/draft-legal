@@ -16,34 +16,18 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { sendSigningEmailForSigner } from '../lib/signing-email.js'
 import { sendEmail, isEmailConfigured } from '../lib/mailer.js'
+// L6 #3 — the delivery path. Lives in lib/ rather than here because importing
+// this file constructs a BullMQ Worker as a side effect, so nothing could
+// import it to check whether the preference gate is actually honoured.
+import { deliverNotification } from '../lib/notification-delivery.js'
 
 // ─── notify ───────────────────────────────────────────────────────────────────
+// The body lives in lib/notification-delivery.ts so it can be imported and
+// exercised without constructing this file's BullMQ Worker. See that module
+// for why that mattered.
 
 async function handleNotify(data: NotificationJob): Promise<void> {
-  // 1. Write Notification row
-  await prisma.notification.create({
-    data: {
-      orgId:        data.orgId,
-      userId:       data.userId,
-      type:         data.type,
-      title:        data.title,
-      body:         data.body,
-      resourceType: data.resourceType,
-      resourceId:   data.resourceId,
-    },
-  })
-
-  // 2. Optional email — only if a provider is configured; failure does NOT
-  // fail the job (the DB notification is authoritative).
-  if (data.email && isEmailConfigured()) {
-    sendEmail({ to: data.email, subject: data.title, text: data.body })
-      .then((r) => {
-        if (!r.sent) console.warn('[notify] email failed for userId=%s: %s', data.userId, r.reason)
-      })
-      .catch((err) => console.warn('[notify] email error for userId=%s: %s', data.userId, err.message))
-  } else {
-    console.info('[notify] no email provider configured — notification written to DB for userId=%s type=%s', data.userId, data.type)
-  }
+  await deliverNotification(data)
 }
 
 // ─── escalate ─────────────────────────────────────────────────────────────────

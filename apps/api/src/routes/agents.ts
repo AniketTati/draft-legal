@@ -169,6 +169,11 @@ export async function agentRoutes(app: FastifyInstance) {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      // L10 — Python sets this and the proxy used to drop it. Behind nginx or
+      // an ALB the whole SSE response can otherwise be buffered into a single
+      // write, at which point the tool chips and the answer land together and
+      // real token streaming is invisible to the user.
+      'X-Accel-Buffering': 'no',
     })
     // Stop Fastify from also sending its own response — the SSE stream
     // is being driven through reply.raw directly.
@@ -177,7 +182,6 @@ export async function agentRoutes(app: FastifyInstance) {
     const reader = upstream.body?.getReader()
     if (!reader) { try { reply.raw.end() } catch { /* */ } return }
 
-    const decoder = new TextDecoder()
     // P-runtime audit (2026-05-02). The previous loop crashed the
     // entire API process with ERR_HTTP_HEADERS_SENT when the client
     // closed the stream early (Body Timeout, browser unload, probe
@@ -187,6 +191,11 @@ export async function agentRoutes(app: FastifyInstance) {
     // Wave 3.6 — track response size so we can record spend against the daily
     // cap. Includes SSE/JSON framing, so this biases the estimate slightly HIGH
     // — the safe direction for a budget guard.
+    //
+    // L10 — counted in BYTES now that the hop forwards bytes. For multi-byte
+    // text this reads slightly higher than the old char count, which is the
+    // same direction the framing already biases, and the estimate is
+    // deliberately high-biased for exactly this kind of slack.
     let streamedChars = 0
     reply.raw.on('close', () => {
       clientGone = true
@@ -197,10 +206,19 @@ export async function agentRoutes(app: FastifyInstance) {
         if (clientGone) break
         const { done, value } = await reader.read()
         if (done) break
-        const text = decoder.decode(value)
-        streamedChars += text.length
+        // L10 — forward the raw bytes. This used to be
+        // `decoder.decode(value)` with no { stream: true }, which decodes each
+        // chunk in isolation: any multi-byte sequence straddling a chunk
+        // boundary became U+FFFD. With 20 000-char tool payloads, frames
+        // routinely span TCP segments, and contract text is dense with
+        // em-dashes, curly quotes, ellipses, bullets and currency symbols.
+        // The result looked like a model quality problem rather than a proxy
+        // bug because it was load-dependent. This hop only forwards bytes, so
+        // not decoding at all is both correct and cheaper than decoding
+        // correctly.
+        streamedChars += value.byteLength
         if (!reply.raw.writableEnded) {
-          try { reply.raw.write(text) } catch { break }
+          try { reply.raw.write(Buffer.from(value)) } catch { break }
         }
       }
     } catch (err) {

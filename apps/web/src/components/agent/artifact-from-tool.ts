@@ -58,7 +58,7 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
       rows: items,
       rowHref: '/contracts/:contractId',
       actions: [
-        { id: 'export', label: 'Export CSV', variant: 'secondary' },
+        { id: 'export', label: 'Export CSV', variant: 'secondary', clientAction: 'csv' },
       ],
     }
     return a
@@ -80,7 +80,7 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
         { key: 'severity',    label: 'Severity',   align: 'left' },
       ],
       rows: items,
-      actions: [{ id: 'export', label: 'Export CSV', variant: 'secondary' }],
+      actions: [{ id: 'export', label: 'Export CSV', variant: 'secondary', clientAction: 'csv' }],
     }
     return a
   }
@@ -243,7 +243,7 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
         actions: [
           { id: 'open',   label: 'Open contract', variant: 'primary',
             href: typeof r.contractId === 'string' ? `/contracts/${r.contractId}` : undefined },
-          { id: 'export', label: 'Export memo', variant: 'secondary' },
+          { id: 'export', label: 'Export memo', variant: 'secondary', clientAction: 'memo' },
         ],
       }
       return a

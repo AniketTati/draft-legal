@@ -282,6 +282,9 @@ export function ContractEditor({
   const [showFindReplace, setShowFindReplace] = useState(false)
   const [assistLoading, setAssistLoading] = useState(false)
   const [assistResult, setAssistResult] = useState<{ revisedText: string; explanation: string } | null>(null)
+  // L6 #1 — a failed export has to be visible. `if (!resp?.ok) return` is what
+  // made six buttons look like they did nothing at all.
+  const [exportError, setExportError] = useState<string | null>(null)
   const [assistOriginalText, setAssistOriginalText] = useState<string | null>(null)
   const [assistError, setAssistError] = useState<string | null>(null)
   // Store the exact selection range when the AI call was made so Apply always replaces the right text
@@ -439,11 +442,39 @@ export function ContractEditor({
     assistSelectionRef.current = null
   }, [editor, assistResult])
 
+  // L6 #8 — Replace All over the DOCUMENT, not over its serialization.
+  //
+  // This used to run `editor.getHTML().replaceAll(find, replace)` and then
+  // setContent the result, which is wrong in both directions. Replacing "p"
+  // with "q" rewrote every <p> tag in the document, and searching for
+  // "Smith & Co" never matched anything because the serialized HTML holds
+  // "Smith &amp; Co". It silently corrupted the markup of any document it was
+  // used on, and setContent also discarded the undo history.
+  //
+  // Walking text nodes means tag names and entities are simply not in scope.
+  // Positions are collected first and applied back-to-front in ONE chained
+  // transaction: replacing forwards shifts every later position by the length
+  // delta, and one dispatch per match would make ctrl-Z undo them one at a
+  // time.
   const handleFindReplace = useCallback((find: string, replace: string) => {
     if (!editor || !find) return
-    const html = editor.getHTML()
-    const updated = html.replaceAll(find, replace)
-    editor.commands.setContent(updated)
+
+    const hits: { from: number; to: number }[] = []
+    editor.state.doc.descendants((node, pos) => {
+      if (!node.isText || !node.text) return
+      let idx = node.text.indexOf(find)
+      while (idx !== -1) {
+        hits.push({ from: pos + idx, to: pos + idx + find.length })
+        idx = node.text.indexOf(find, idx + find.length)
+      }
+    })
+    if (hits.length === 0) return
+
+    const chain = editor.chain().focus()
+    for (const hit of hits.reverse()) {
+      chain.insertContentAt({ from: hit.from, to: hit.to }, replace)
+    }
+    chain.run()
   }, [editor])
 
   const handleExport = useCallback(async (format: 'pdf' | 'docx') => {
@@ -452,22 +483,37 @@ export function ContractEditor({
       onExport(format)
       return
     }
-    // Default: download via Gotenberg
-    const html = editor.getHTML()
-    const body = JSON.stringify({ html, format })
-    const resp = await fetch('/api/v1/contracts/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-    }).catch(() => null)
-    if (!resp?.ok) return
-    const blob = await resp.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `contract.${format}`
-    a.click()
-    URL.revokeObjectURL(url)
+    // L6 #1 — six dead buttons across three pages (Templates, Playbook,
+    // Clauses), because `onExport` is optional and no mount site passes it, so
+    // every click landed here.
+    //
+    // The bare `fetch` was the defect: middleware/auth.ts accepts only
+    // `Authorization: Bearer`, there is no cookie fallback, and only the axios
+    // client attaches the token — so this 401'd every single time. Then
+    // `if (!resp?.ok) return` swallowed it, which is why the buttons appeared
+    // to do nothing at all rather than to fail. CompareMode.tsx is the correct
+    // pattern and its own comment already named this file as the anti-pattern.
+    setExportError(null)
+    try {
+      const res = await api.post(
+        '/contracts/export',
+        { html: editor.getHTML(), format },
+        { responseType: 'blob' },
+      )
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `contract.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      // Surface it. A silent return is indistinguishable from a broken app.
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        (err as Error)?.message ??
+        'Export failed'
+      setExportError(`Could not export as ${format.toUpperCase()}: ${detail}`)
+    }
   }, [editor, onExport])
 
   if (!editor) return null
@@ -476,6 +522,22 @@ export function ContractEditor({
 
   return (
     <div className="relative flex flex-col h-full bg-white border border-gray-200 rounded-lg overflow-hidden">
+      {exportError && (
+        <div
+          role="alert"
+          data-testid="editor-export-error"
+          className="flex items-start justify-between gap-3 px-3 py-2 text-sm bg-red-50 border-b border-red-200 text-red-800"
+        >
+          <span className="min-w-0 break-words">{exportError}</span>
+          <button
+            type="button"
+            onClick={() => setExportError(null)}
+            className="shrink-0 text-red-700 hover:text-red-900 font-medium"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {/* ── Toolbar ── */}
       <div className="flex items-center flex-wrap gap-0.5 px-2 py-1.5 border-b border-gray-200 bg-gray-50">
         {/* History */}

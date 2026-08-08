@@ -110,10 +110,30 @@ export function SignatureStatus({
 
   // Phase 07 Step 8b — manual nudge. Re-emails any still-PENDING signers
   // (worker is idempotent on SR/Signer status).
+  //
+  // L6 #11 — this had no onError at all, while signatures.ts returns 409 both
+  // for a non-PENDING request and for one where everyone has already
+  // responded. The button simply stayed "Send reminder" and no email was sent,
+  // so the user pressed it again. Only voidMut.isError was rendered anywhere.
+  //
+  // State is keyed by signature-request id because ONE mutation object is
+  // shared across every row: reading remindMut.isSuccess directly made every
+  // row on the card claim "Reminder sent" as soon as any one of them succeeded.
+  const [remindState, setRemindState] = useState<Record<string, { ok: boolean; error?: string }>>({})
   const remindMut = useMutation({
     mutationFn: (srId: string) =>
       api.post(`/contracts/${contractId}/signature-requests/${srId}/remind`, {}).then(r => r.data),
-    onSuccess: () => refetch(),
+    onSuccess: (_data, srId) => {
+      setRemindState(s => ({ ...s, [srId]: { ok: true } }))
+      refetch()
+    },
+    onError: (err: unknown, srId) => {
+      const detail =
+        (err as { response?: { data?: { detail?: string; error?: string } } })?.response?.data?.detail ??
+        (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+        'Could not send the reminder.'
+      setRemindState(s => ({ ...s, [srId]: { ok: false, error: detail } }))
+    },
   })
 
   const requests = data?.data ?? []
@@ -187,14 +207,22 @@ export function SignatureStatus({
                   <button
                     type="button"
                     onClick={() => remindMut.mutate(sr.id)}
-                    disabled={remindMut.isPending}
+                    disabled={remindMut.isPending && remindMut.variables === sr.id}
                     className="text-xs text-gray-600 hover:text-blue-700 inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-200 hover:border-blue-300 bg-white whitespace-nowrap"
                     data-testid="remind-sr-btn"
                     title="Email a reminder to all still-pending signers"
                   >
                     <Mail className="h-3.5 w-3.5" />
-                    {remindMut.isSuccess ? 'Reminder sent' : 'Send reminder'}
+                    {remindState[sr.id]?.ok ? 'Reminder sent' : 'Send reminder'}
                   </button>
+                  {remindState[sr.id]?.error && (
+                    <span
+                      className="text-xs text-red-600 break-words"
+                      data-testid="remind-sr-error"
+                    >
+                      {remindState[sr.id]?.error}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => {

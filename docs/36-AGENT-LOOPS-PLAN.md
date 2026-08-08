@@ -752,7 +752,8 @@ most of the rest.
 
 ## L6 — Twenty-five controls in the app do nothing
 
-**Severity: High.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l6-dead-controls.mjs` 2/9 → 9/9.
+**Severity: High.** ✅ FIXED 2026-08-08 — `l6-dead-controls.mjs` 2/9 → 9/9 and
+`l6b-dead-controls.mjs` 6/22 → 27/27. All fourteen categories now closed.
 
 **Fixed (5 of 14 categories):** the catch-all route (#14), the notification bell's
 `approval_step` and its dead `/approvals/<id>` link (#2), the counterparty
@@ -764,12 +765,53 @@ The catch-all went first deliberately: it is the force multiplier. Every other
 dead link in this list rendered full chrome around an empty page, which reads as
 a broken app and cannot be diagnosed from a user's description.
 
-**NOT fixed:** #1's six editor export buttons, #3's eleven notification
-preferences that persist and are never read, #6 agent artifact exports, #7
-contract Download, #8 Replace All (which corrupts HTML), #10 bulk approve, #11
-send reminder, #12 signature filter badges, #13 telemetry posting to a route
-that does not exist. Each needs its own change; none is covered by this check,
-which is scoped to what was fixed.
+**Fixed in the second pass (the remaining 9 of 14)**, covered by
+`l6b-dead-controls.mjs`:
+
+- **#3 notification preferences** — the worst of them, because the user gets
+  positive confirmation that something happened. The decision now lives in
+  `lib/notification-prefs.ts` (its own module: importing the worker constructs
+  a BullMQ Worker as a side effect, so nothing could import it just to ask a
+  question), mapping type→toggle, honouring `digest:'off'` as suppress-all,
+  defaulting to SEND when a preference is absent, and failing OPEN on a lookup
+  error — a duplicate email is recoverable, a missed approval request is not.
+  Verified both directions: off suppresses, on still sends. A check that only
+  proved suppression would also pass for a worker that never emails anyone.
+- **#13 telemetry** — registered a real sink rather than deleting nine call
+  sites. Deliberately unauthenticated, because the client's primary transport
+  is `sendBeacon` on unload which cannot attach a header, and requiring auth
+  would reinstate the silent failure in a new form. Hard caps on batch size,
+  name length and property count, since it is open to the internet and writes
+  to logs.
+- **#8 Replace All** — the only one that destroyed data. Now walks
+  `state.doc.descendants` and applies hits back-to-front in one chained
+  transaction; forward application would shift every later position by the
+  length delta, and one dispatch per match would make ctrl-Z undo them
+  individually.
+- **#1 six editor exports** — through the axios client with `responseType:
+  'blob'`, and a dismissible error banner. `if (!resp?.ok) return` is why they
+  appeared to do nothing rather than to fail.
+- **#7 contract Download** — try/catch plus a rendered error, with a specific
+  message for the 404 case (drafted or pasted contracts have no original file).
+- **#10 bulk approve** — keeps the server's per-item detail, lists what failed,
+  offers Retry-failed, and no longer auto-closes over a failure.
+- **#11 send reminder** — `onError` plus per-row state keyed by request id; one
+  shared mutation object had every row claiming "Reminder sent" as soon as any
+  one succeeded.
+- **#12 signature badges** — counts come from an unfiltered query, and the ALL
+  badge reads `total` instead of the page length.
+- **#6 artifact exports** — done client-side via a new `clientAction` field;
+  the rows and columns are already in the browser. `ActionButton` now renders
+  the thrown message instead of a bare red icon.
+
+**Four of this check's own assertions passed against broken code before they
+were fixed**, all the same shape — matching text rather than behaviour: a regex
+that allowed only a backtick before `/api/v1` when the source used a single
+quote; a 600-char window after `handleDownload` that swallowed the *next*
+function's try/catch; `\btotal\b` matching a type declaration rather than the
+reduce it was meant to pin; and a wrong path for `SignatureStatus.tsx` that
+made the file read empty so every assertion against it passed trivially. The
+revert test is what surfaced them.
 
 Not agent work, but named in gap #2 and the highest-frequency defect class a
 user meets. Established by diffing all 268 registered API routes against all 266
@@ -1111,7 +1153,17 @@ the originating chip, not the separation.
 
 ## L9 — Three verbs the loops need and do not have
 
-**Severity: Medium**
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l9-new-verbs.mjs` 5/30 → 33/33.
+
+All three built. `approval_decide`'s authorization predicate was verified by
+reverting the single `approverId: body.userId` line: a user who is not the
+assigned approver then gets HTTP 200 and the step is genuinely marked APPROVED.
+That one line is the difference between a tool and an approval-forgery path.
+`user_search` returns `ambiguous: true` when more than one person matches, and
+prompt rule A13 forbids picking — a name resolver that guesses assigns the
+wrong person and reports success. End-to-end: "Assign the <title> contract to
+Bertrand" now runs `user_search` and proposes `contract_update` carrying the
+real CUID.
 
 Named directly in `docs/33` gap #2. Each is a thin wrapper; two need a small new
 internal endpoint.
@@ -1194,7 +1246,27 @@ page.
 
 ## L10 — The stream is fake, and the proxy corrupts what it carries
 
-**Severity: Medium**
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l10-streaming.mjs` 5/13 → 14/14.
+
+Measured before: **155 token frames arriving across 15 ms**, at the end of a
+3.9 s turn. After: 6 frames across 898 ms of a 4.1 s turn, with 1035 chars
+streamed and 1035 persisted (no dropped chunk).
+
+**One claim in this section did not survive measurement.** The mojibake is not
+happening. `chat.py` serialises every frame with `json.dumps`, whose
+`ensure_ascii` defaults to True, so an em-dash crosses the wire as the seven
+ASCII bytes `\u2014`. Measured on a response built from a contract packed with
+em-dashes, curly quotes, ellipses, bullets and currency symbols: 2 546 bytes,
+**zero above 0x7F**. The missing `{ stream: true }` was a latent trap, not an
+active defect — still worth removing, since forwarding bytes is cheaper than
+decoding them, but it was corrupting nothing. The check now pins the ASCII-ness
+itself, so if the wire format ever changes it reports that the trap has armed
+rather than continuing to assert something that no longer holds.
+
+Also not asserted: a time-to-first-token ratio. On a reasoning-tier model most
+of the wall clock is the model thinking before it emits anything, so a
+threshold there would measure the provider, not this code. The spread between
+first and last token is the property that is ours.
 
 `orchestrator.py:605-608` passes `streaming=False` to `resolve_llm`; `:702` is
 `ai: AIMessage = await llm.ainvoke(...)`; `:710-713` then splits the finished
@@ -1401,20 +1473,36 @@ higher concurrency so long redlines cannot starve ingest; and
 
 ## L12 — Session memory grows without bound, and truncates the wrong tools
 
-**Severity: Medium.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 6/6.
+**Severity: Medium.** ✅ FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 17/17.
 
-**Fixed:** the unbounded growth. `memory.py` now trims oldest-first against a
-256 KB serialized ceiling as well as the 50-message count, and the PERSISTED
-slice is capped separately at 2 000 chars — replayed bytes are re-sent on every
-subsequent turn, so that number drives thread cost, while the streamed preview
-stays generous because the rail renders it once. Measured: 60 turns of 20 KB
-results now settle at 242 KB / 12 messages instead of climbing past 1.2 MB.
+**Fixed (growth):** `memory.py` now trims oldest-first against a 256 KB
+serialized ceiling as well as the 50-message count, and the PERSISTED slice is
+capped separately — replayed bytes are re-sent on every subsequent turn, so that
+number drives thread cost, while the streamed preview stays generous because the
+rail renders it once. Measured: 60 turns of 20 KB results now settle at 242 KB /
+12 messages instead of climbing past 1.2 MB.
 
-**NOT fixed:** the mirror defect — A8 promises the whole prior listing is in
-history, which holds for the three tools it names but not for `clause_search`,
-`contract_validate`, `request_list` and `custom_field_list`, which persist at
-800 chars. `clause_search` defaults to 5 × 400 chars, so 800 cuts it mid-token
-routinely.
+**Fixed (the mirror defect).** The mechanism turned out to be one line:
+`persisted = preview[:PERSIST_RESULT_CHARS]` sliced the *already truncated*
+stream payload, so the two caps multiplied instead of the tighter one winning.
+Any tool off the 20 K streaming allowlist streams at 800, and could therefore
+never persist more than 800 either — whatever the 2 000-char constant claimed.
+That the three tools A8 names were unaffected was an accident of their all being
+on the allowlist for unrelated UI reasons.
+
+The fix slices `result_str` instead, decoupling replay budget from stream
+budget, and adds `PERSIST_RESULT_CHARS_LISTING = 8_000` for the seven listing
+tools a following turn is expected to reference by ordinal — the three A8 names
+plus `clause_search`, `contract_validate`, `request_list`, `custom_field_list`.
+Not unbounded: the 256 KB byte ceiling above is the backstop.
+
+Verified end to end, not just statically. A contract carrying five `Service
+Credit` matches, each wrapped in its own sentinel inside the 400-char window,
+driven through a real `clause_search` turn, then read back out of Redis the way
+the next turn's restore loop reads it: **1/5 sentinels and invalid JSON before,
+5/5 and well-formed after.** The reverted run shows the persisted slice ending
+mid-token at `"...clause text pad1"`, which is precisely what the model was being
+handed when it was asked to quote the second match.
 
 `memory.py:52-54` trims to the last **50 messages**. What each message carries is
 `preview`, capped at `20_000` chars for 18 of the 26 tools
