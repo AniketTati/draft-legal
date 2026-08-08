@@ -64,6 +64,58 @@ export async function resolveRevisionAuthor(
 }
 
 /**
+ * Batch form, for lists of versions.
+ *
+ * Same ladder, three queries instead of N. The version list needs this: the
+ * Compare view shows an author beside every version and displayed "Unknown"
+ * for all of them, because `GET /contracts/:id/versions` returned only the raw
+ * `createdById` while the UI read `createdByName ?? authorName`.
+ */
+export async function resolveRevisionAuthors(
+  createdByIds: readonly string[],
+  fallback = 'draftLegal',
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const ids = [...new Set(createdByIds.filter(Boolean))]
+  if (!ids.length) return out
+
+  const linkIds = ids.filter(i => i.startsWith('portal:')).map(i => i.slice('portal:'.length))
+  const userIds = ids.filter(i => !i.startsWith('portal:') && !i.startsWith('email:'))
+
+  const [links, users] = await Promise.all([
+    linkIds.length
+      ? prisma.contractShareLink.findMany({
+          where: { id: { in: linkIds } },
+          select: { id: true, label: true, invitedEmail: true },
+        })
+      : Promise.resolve([]),
+    userIds.length
+      ? prisma.user.findMany({
+          where: { id: { in: userIds } },
+          select: { id: true, name: true, email: true },
+        })
+      : Promise.resolve([]),
+  ])
+  const linkById = new Map(links.map(l => [l.id, l]))
+  const userById = new Map(users.map(u => [u.id, u]))
+
+  for (const id of ids) {
+    if (id.startsWith('portal:')) {
+      const l = linkById.get(id.slice('portal:'.length))
+      const name = l?.label?.trim() || l?.invitedEmail?.trim()
+      out.set(id, clean(name ? `${name} (counterparty)` : 'Counterparty'))
+    } else if (id.startsWith('email:')) {
+      const addr = id.slice('email:'.length).trim()
+      out.set(id, clean(addr ? `${addr} (counterparty)` : 'Counterparty'))
+    } else {
+      const u = userById.get(id)
+      out.set(id, clean(u?.name?.trim() || u?.email?.trim() || fallback))
+    }
+  }
+  return out
+}
+
+/**
  * `w:date` is an `xsd:dateTime`. Word tolerates milliseconds unevenly and some
  * readers reject them outright, so drop them and keep the trailing Z.
  */

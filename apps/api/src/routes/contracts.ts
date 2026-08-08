@@ -11,6 +11,7 @@ import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { generateRedlineDocx } from '../lib/docx-export.js'
+import { resolveRevisionAuthors } from '../lib/revision-author.js'
 import { runComplianceCheck, COMPLIANCE_FRAMEWORKS } from '../lib/compliance-check.js'
 import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
@@ -620,7 +621,16 @@ export async function contractRoutes(app: FastifyInstance) {
       },
     })
 
-    return reply.send({ data: versions })
+    // Resolve the author for display. Without this the Compare view shows
+    // "Unknown" against every version — it reads `createdByName ?? authorName`
+    // and nothing emitted either. `createdById` is not always a user id
+    // (`portal:<shareLinkId>`, `email:<addr>`), so this needs the same ladder
+    // the DOCX export uses for w:author, and both stay consistent by sharing it.
+    const authors = await resolveRevisionAuthors(versions.map(v => v.createdById))
+
+    return reply.send({
+      data: versions.map(v => ({ ...v, createdByName: authors.get(v.createdById) ?? null })),
+    })
   })
 
   // ── Upload new version ───────────────────────────────────────────────────
