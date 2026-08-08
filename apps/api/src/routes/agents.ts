@@ -226,6 +226,24 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'userMessage is required' })
     }
 
+    // `saveAs.contractId` arrives from an unvalidated request body and was used
+    // directly in `contractVersion.create` below with no ownership check, so any
+    // authenticated user could append an attacker-controlled version to ANY
+    // contract in ANY organisation. Every sibling write scopes by org —
+    // internal-ai.ts:2388 and clause-apply.ts:242,477 all filter
+    // `{ id, orgId, deletedAt: null }`; this route was the exception.
+    //
+    // Checked here, before the agent call, so a request that will be refused
+    // does not also cost a paid LLM run. 404 rather than 403: a caller outside
+    // the org should not learn whether the id exists.
+    if (body.saveAs?.contractId) {
+      const target = await prisma.contract.findFirst({
+        where:  { id: body.saveAs.contractId, orgId, deletedAt: null },
+        select: { id: true },
+      })
+      if (!target) return reply.status(404).send({ detail: 'Contract not found' })
+    }
+
     const ctx: Record<string, unknown> = { ...(body.context ?? {}) }
     if (body.templateId) ctx.template_id = body.templateId
 
