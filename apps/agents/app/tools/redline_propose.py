@@ -74,13 +74,19 @@ def build_redline_propose(org_id: str) -> StructuredTool:
             "x-internal-service": "agents",
             "content-type":      "application/json",
         }
-        payload = {
-            "orgId":       org_id,
-            "contractId":  contract_id,
-            "clauseType":  clause_type,
-            "clauseId":    clause_id,
-            "instructions": instructions,
-        }
+        # Zod's .optional() rejects explicit null — only send keys that are
+        # actually set so the Node endpoint's schema validates cleanly.
+        #
+        # This is not a style preference. clauseId and clauseType are documented
+        # below as ALTERNATIVES to each other, so the model correctly supplies
+        # one and leaves the other None; sending that None as JSON null made
+        # RedlineProposeSchema reject essentially every call the tool's own
+        # description told the model to make. Same convention as
+        # contract_search.py, which carries the same comment.
+        payload: dict = {"orgId": org_id, "contractId": contract_id}
+        if clause_type  is not None: payload["clauseType"]   = clause_type
+        if clause_id    is not None: payload["clauseId"]     = clause_id
+        if instructions is not None: payload["instructions"] = instructions
         async with httpx.AsyncClient(timeout=httpx.Timeout(45.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
