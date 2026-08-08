@@ -495,8 +495,22 @@ YAML natively.
 | **T2 — Contract** | the agent loop: tool selection, confirm-gating, error frames, memory reuse, budget caps | **replayed** | $0 | **blocking, every PR** |
 | **T3 — Behavioural** | is the answer *good*; model comparison; regression in quality | real | real | **nightly on `main`** |
 
-T1 exists already — it is the 16 `agent-loops` checks, plus the week-zero ones.
-They need a common runner and a gate, not a rewrite.
+**Correction to the above, made while writing this and worth keeping.** My first
+draft said "T1 exists already — it is the 16 `agent-loops` checks." That is too
+clean. Those checks are a *mix*: some are pure static file analysis and genuinely
+free (`l13-dead-names`, `l6-dead-controls`), while others drive real chat turns
+against a live stack and a real model (`l1`, `l2`, `l9`, `l10`, `l12`) — which
+makes them T3 by this plan's own definition, not T1. **Classifying each existing
+check into a tier is a Wave C task, not a given**, and a quick grep is not
+sufficient to do it: probing `login()`/`API}` misfiles the Playwright check as
+static and `l7-prompt-truth` as stack-dependent. Each has to be read.
+
+One genuine enabler, verified: **`ci.yml` already stands up Postgres
+(`pgvector/pgvector:pg16`) and Redis** as services for the `test-api` job
+(`ci.yml:63-83`), with `DATABASE_URL` and `REDIS_URL` wired. So the infrastructure
+for stack-dependent checks in CI is not net-new — it exists and is proven in this
+workflow. What is missing is the agents service and a model key, which is exactly
+the T2/T3 boundary: replayed fixtures need neither.
 
 ### Record/replay is the decision that makes this work
 
