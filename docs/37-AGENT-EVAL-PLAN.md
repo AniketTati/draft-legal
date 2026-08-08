@@ -745,7 +745,15 @@ alternative is free.
 The conversion per check is mechanical:
 
 1. Give the check a stable `sessionId` (`replay:<case>`) instead of
-   `${Date.now()}`. That is usually a one-line change.
+   `${Date.now()}`.
+
+   **This is a one-line change only when the check has ONE model-touching
+   path.** Verified against `l4-draft-gate` before writing this: it has three —
+   the chat turn at `:60`, plus sections 3-6 driving `POST /agent/draft`, which
+   reaches a model through a different route with its own session handling.
+   Check how many paths a candidate actually has before estimating it;
+   `l1-thread-poisoning` and `l11-cost-cap` are single-path and are the right
+   ones to convert first.
 2. Record once: `AGENT_REPLAY_MODE=record`, then commit the fixture.
 3. Move it to t2 in `manifest.mjs` with `needs: ['db', 'api', 'replay']`.
 4. **Verify it still fails.** Re-break the thing it guards — delete the
