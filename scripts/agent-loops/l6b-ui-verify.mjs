@@ -310,6 +310,154 @@ section('4. Download on a body-only contract explains itself')
   }
 }
 
+// ─── 5. Bulk approve reports what failed ────────────────────────────────────
+//
+// Seeded failure: my-queue filters on STEP status and step order, not on the
+// parent instance's status. So a PENDING step on an already-closed instance
+// shows up in the queue and then 409s on decide -- a real, server-generated
+// per-item failure, which is exactly what the bare `catch { failed++ }` used
+// to throw away.
+
+section('5. Bulk approve names the items that failed')
+{
+  const seed = await prisma.contract.findFirst({ select: { id: true, orgId: true, ownerId: true } })
+  const me = await prisma.user.findFirst({ where: { email: 'admin@demo.com' }, select: { id: true } })
+  let wfId = null, instId = null
+
+  if (seed && me) {
+    const wf = await prisma.workflowDefinition.create({
+      data: {
+        orgId: seed.orgId, name: 'l6bui probe workflow', createdById: me.id, isActive: true,
+        steps: [{ order: 1, name: 'l6bui review', approverRule: { type: 'user' } }],
+      }, select: { id: true },
+    }).catch(() => null)
+    wfId = wf?.id ?? null
+
+    if (wfId) {
+      const inst = await prisma.approvalInstance.create({
+        data: {
+          orgId: seed.orgId, contractId: seed.id, workflowDefinitionId: wfId,
+          // Closed on purpose: decide() 409s "Workflow is already closed".
+          status: 'APPROVED', currentStepOrder: 1, submittedById: me.id,
+          steps: { create: [
+            { orgId: seed.orgId, stepOrder: 1, stepName: 'l6bui review A', approverId: me.id, status: 'PENDING' },
+            { orgId: seed.orgId, stepOrder: 1, stepName: 'l6bui review B', approverId: me.id, status: 'PENDING' },
+          ] },
+        }, select: { id: true },
+      }).catch(() => null)
+      instId = inst?.id ?? null
+    }
+  }
+
+  check('two steps that will fail on decide were seeded', instId != null,
+    instId ?? 'could not seed — section skipped')
+
+  if (instId) {
+    await page.goto(`${WEB}/approvals`, { waitUntil: 'domcontentloaded' })
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await page.waitForTimeout(1500)
+
+    const bulkBtn = page.locator('button:has-text("Bulk"), button:has-text("Decide")').first()
+    const openable = await bulkBtn.count() > 0
+    check('the bulk decision dialog is reachable', openable,
+      openable ? 'found' : 'no bulk control on the approvals page')
+
+    if (openable) {
+      await bulkBtn.click()
+      await page.waitForTimeout(900)
+      const submit = page.locator('button:has-text("Approve"), button:has-text("Confirm")').last()
+      if (await submit.count()) { await submit.click(); await page.waitForTimeout(4000) }
+      await shot('bulk-approve-failures')
+
+      const failList = page.locator('[data-testid="bulk-failure-list"]').first()
+      const shown = await failList.count() > 0
+      check('the failed items are listed with the server reason', shown,
+        shown ? (await failList.innerText()).replace(/\s+/g, ' ').slice(0, 160)
+              : 'no failure list — the bare catch discarded the detail and the dialog closed itself over the failure')
+
+      const banner = page.locator('[data-testid="bulk-partial-failure"]').first()
+      check('the summary is not styled as success', await banner.count() > 0,
+        'the failure count used to render in emerald success green for 600 ms before the dialog closed')
+
+      const stillOpen = await page.locator('button:has-text("Retry")').count() > 0
+      check('the dialog stays open and offers a retry', stillOpen,
+        'an unconditional setTimeout(onDone, 600) closed it regardless of outcome')
+    }
+
+    await prisma.approvalStep.deleteMany({ where: { approvalInstanceId: instId } }).catch(() => {})
+    await prisma.approvalInstance.deleteMany({ where: { id: instId } }).catch(() => {})
+    if (wfId) await prisma.workflowDefinition.deleteMany({ where: { id: wfId } }).catch(() => {})
+  }
+}
+
+// ─── 6. Artifact Export CSV downloads a real CSV ────────────────────────────
+
+section('6. The agent artifact export produces a file')
+{
+  await page.goto(`${WEB}/agent`, { waitUntil: 'domcontentloaded' })
+  await page.waitForLoadState('networkidle').catch(() => {})
+  await page.waitForTimeout(1200)
+
+  const fresh = page.locator('button:has-text("New conversation")').first()
+  if (await fresh.count()) { await fresh.click().catch(() => {}); await page.waitForTimeout(800) }
+
+  const composer = page.locator('textarea').first()
+  const canType = await composer.count() > 0
+  check('the agent composer is available', canType)
+
+  let exportBtn = null
+  if (canType) {
+    // A table artifact is what carries an Export CSV action. Which tool the
+    // model picks is not deterministic, so retry rather than pass by default.
+    for (let attempt = 1; attempt <= 3 && !exportBtn; attempt++) {
+      await composer.fill('List every obligation we are tracking, as a table.')
+      await composer.press('Enter')
+      await page.waitForTimeout(22_000)
+      const candidate = page.locator('[data-testid="artifact-action-export"]').first()
+      if (await candidate.count()) { exportBtn = candidate; break }
+      // Open the artifact pane if a card is present but collapsed.
+      const card = page.locator('[data-testid^="artifact-card"], button:has-text("Open")').first()
+      if (await card.count()) { await card.click().catch(() => {}); await page.waitForTimeout(1500) }
+      if (await page.locator('[data-testid="artifact-action-export"]').count()) {
+        exportBtn = page.locator('[data-testid="artifact-action-export"]').first()
+      }
+    }
+  }
+  await shot('agent-artifact')
+
+  check('a table artifact with an Export action rendered', exportBtn != null,
+    exportBtn ? 'found' : 'the agent produced no table artifact in 3 attempts — export path not exercised')
+
+  if (exportBtn) {
+    const dlPromise = page.waitForEvent('download', { timeout: 15_000 }).catch(() => null)
+    await exportBtn.click()
+    const dl = await dlPromise
+    await page.waitForTimeout(800)
+
+    // BEFORE: the action had neither href nor tool, so the click threw
+    // "This action has nothing to apply" and flashed an unlabeled red icon.
+    check('clicking Export CSV downloads a file', dl != null,
+      dl ? `downloaded ${dl.suggestedFilename()}` : 'no download — the action threw instead')
+
+    if (dl) {
+      const path = await dl.path()
+      const body = path ? (await import('node:fs')).readFileSync(path, 'utf8') : ''
+      check('the file is a non-empty CSV with a header row',
+        /,/.test(body.split('\n')[0] ?? '') && body.split('\n').length > 1,
+        `${body.length} bytes, first line: ${JSON.stringify((body.split('\n')[0] ?? '').slice(0, 90))}`)
+      check('it is not an error page or JSON blob',
+        !body.trimStart().startsWith('{') && !body.trimStart().startsWith('<'),
+        `starts: ${JSON.stringify(body.slice(0, 40))}`)
+    }
+
+    const errLabel = page.locator('[data-testid^="artifact-action-error-"]').first()
+    if (await errLabel.count()) {
+      check('any failure is labelled rather than a bare icon', true,
+        (await errLabel.innerText()).slice(0, 120))
+    }
+  }
+}
+
 await browser.close()
 await prisma.$disconnect()
 report('L6b UI verification')
