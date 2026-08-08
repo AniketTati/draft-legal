@@ -752,7 +752,24 @@ most of the rest.
 
 ## L6 — Twenty-five controls in the app do nothing
 
-**Severity: High**
+**Severity: High.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l6-dead-controls.mjs` 2/9 → 9/9.
+
+**Fixed (5 of 14 categories):** the catch-all route (#14), the notification bell's
+`approval_step` and its dead `/approvals/<id>` link (#2), the counterparty
+"New contract" CTA (#5), the diligence CSV export (#4), and BOTH Gotenberg
+`.docx` liars (#9 and half of #1) — now produced by the real OOXML writer via a
+new `generatePlainDocx()`.
+
+The catch-all went first deliberately: it is the force multiplier. Every other
+dead link in this list rendered full chrome around an empty page, which reads as
+a broken app and cannot be diagnosed from a user's description.
+
+**NOT fixed:** #1's six editor export buttons, #3's eleven notification
+preferences that persist and are never read, #6 agent artifact exports, #7
+contract Download, #8 Replace All (which corrupts HTML), #10 bulk approve, #11
+send reminder, #12 signature filter badges, #13 telemetry posting to a route
+that does not exist. Each needs its own change; none is covered by this check,
+which is scoped to what was fixed.
 
 Not agent work, but named in gap #2 and the highest-frequency defect class a
 user meets. Established by diffing all 268 registered API routes against all 266
@@ -1257,7 +1274,22 @@ mojibake is the whole defect.) Forward `X-Accel-Buffering: no`.
 
 ## L11 — The daily cost cap fails open on every Python-side LLM call
 
-**Severity: High (cost)**
+**Severity: High (cost).** ⚠️ PARTIALLY FIXED 2026-08-08 — `l11-cost-cap.mjs` 0/7 → 6/7.
+
+**Fixed:** the fail-open itself. `/resolve` now returns **429** for a cap breach
+instead of letting it fall into the generic 500, and `router.py` raises a
+dedicated `CostCapExceeded` that its blanket `except Exception` cannot swallow —
+so the platform fallback can no longer pay for a call the cap just declined.
+That also closes the BYOK bypass, since any `/resolve` failure used to hand back
+the platform key.
+
+**Also fixed (2026-08-08, same branch):** the worker half. All eight agents-service
+call sites in `agent.worker.ts` now go through a `callAgents()` wrapper that
+checks the cap **before** spending and records usage after — a cap that only
+notices once the tokens are gone is a report, not a cap. The check asserts the
+invariant rather than the identifier: **zero** raw
+`fetch(\`${AGENTS_URL}…\`)` call sites remain outside the wrapper, so a new job
+type cannot quietly reintroduce an unaccounted one. `l11-cost-cap.mjs` 0/9 → 9/9.
 
 A four-hop chain, all verified:
 
@@ -1369,7 +1401,20 @@ higher concurrency so long redlines cannot starve ingest; and
 
 ## L12 — Session memory grows without bound, and truncates the wrong tools
 
-**Severity: Medium**
+**Severity: Medium.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 6/6.
+
+**Fixed:** the unbounded growth. `memory.py` now trims oldest-first against a
+256 KB serialized ceiling as well as the 50-message count, and the PERSISTED
+slice is capped separately at 2 000 chars — replayed bytes are re-sent on every
+subsequent turn, so that number drives thread cost, while the streamed preview
+stays generous because the rail renders it once. Measured: 60 turns of 20 KB
+results now settle at 242 KB / 12 messages instead of climbing past 1.2 MB.
+
+**NOT fixed:** the mirror defect — A8 promises the whole prior listing is in
+history, which holds for the three tools it names but not for `clause_search`,
+`contract_validate`, `request_list` and `custom_field_list`, which persist at
+800 chars. `clause_search` defaults to 5 × 400 chars, so 800 cuts it mid-token
+routinely.
 
 `memory.py:52-54` trims to the last **50 messages**. What each message carries is
 `preview`, capped at `20_000` chars for 18 of the 26 tools
@@ -1439,7 +1484,13 @@ and correct the comment at `:883-887`, which is the reason nobody caught this.
 
 ## L13 — Dead names and one dead code path
 
-**Severity: Low** · *stale-code cleanup, no runtime consequence*
+**Severity: Low → the blocking path is not low.** ✅ FIXED 2026-08-08 — `l13-dead-names.mjs` 3/8 → 8/8.
+
+Phantoms removed from all four sites. The `run_chat` blocking call is now on a
+thread: it was described here as "no runtime consequence", but a synchronous
+`graph.invoke` awaited from an async handler stalls the entire uvicorn worker
+for the whole model round-trip, and `agents.ts` defaults `agent_mode` to FALSE,
+so any direct caller reaches it.
 
 **`matter_get` is phantom in three independent places.**
 `PER_TOOL_BUDGET` has `"matter_get": 3` (`orchestrator.py:526`, documented at

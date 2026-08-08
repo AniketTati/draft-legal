@@ -130,8 +130,27 @@ export function DiligenceRoomDetailPage() {
     upload.mutate(arr)
   }
 
-  const handleExport = () => {
-    window.open(`/api/v1/diligence/${id}/export?format=csv`, '_blank')
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  const handleExport = async () => {
+    // window.open cannot carry the Bearer token -- middleware/auth.ts accepts
+    // only `Authorization: Bearer` and only the axios client attaches it -- so
+    // this opened a new tab containing 401 JSON. Same pattern as
+    // ObligationsPage.tsx, two files over.
+    try {
+      const r = await api.get(`/diligence/${id}/export?format=csv`, { responseType: 'blob' })
+      const url = URL.createObjectURL(new Blob([r.data], { type: 'text/csv' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `diligence-${room?.name?.replace(/[^\w.-]+/g, '_') ?? id}.csv`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      // A download that silently does nothing is indistinguishable from a
+      // broken app; say so.
+      setExportError('Could not export this room — try again.')
+      setTimeout(() => setExportError(null), 5000)
+    }
   }
 
   if (roomLoading) {
@@ -180,6 +199,10 @@ export function DiligenceRoomDetailPage() {
           Export CSV
         </Button>
       </div>
+
+      {exportError && (
+        <p className="text-[11px] text-red-600" data-testid="export-error">{exportError}</p>
+      )}
 
       {/* Progress strip */}
       <div className="grid grid-cols-3 gap-3 mt-5 mb-5">

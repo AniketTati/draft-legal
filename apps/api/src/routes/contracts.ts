@@ -10,7 +10,7 @@ import { renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
-import { generateRedlineDocx } from '../lib/docx-export.js'
+import { generateRedlineDocx, generatePlainDocx } from '../lib/docx-export.js'
 import { resolveRevisionAuthors } from '../lib/revision-author.js'
 import { runComplianceCheck, COMPLIANCE_FRAMEWORKS } from '../lib/compliance-check.js'
 import { generateCompliancePackage } from '../lib/compliance-export.js'
@@ -1820,25 +1820,19 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (format === 'docx') {
-      // Gotenberg LibreOffice route: convert HTML → DOCX
-      const formData = new FormData()
-      formData.append('files', new Blob([html], { type: 'text/html' }), 'index.html')
-
-      const upstream = await fetch(`${GOTENBERG_URL}/forms/libreoffice/convert`, {
-        method: 'POST',
-        body: formData,
-      }).catch(() => null)
-
-      if (!upstream?.ok) {
-        const errText = upstream ? await upstream.text() : 'Gotenberg unavailable'
-        app.log.error({ errText }, 'Gotenberg DOCX conversion failed')
+      // Was: POST the HTML to Gotenberg's /forms/libreoffice/convert -- a
+      // document-to-PDF route -- and label the PDF that came back as a Word
+      // document. Word refuses to open those. Now produced by the real OOXML
+      // writer added for the tracked-changes export.
+      try {
+        const bytes = await generatePlainDocx(html, { title: filename || 'Contract' })
+        reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+        reply.header('Content-Disposition', `attachment; filename="${filename}.docx"`)
+        return reply.send(Buffer.from(bytes))
+      } catch (err) {
+        app.log.error({ err }, 'DOCX generation failed')
         return reply.status(502).send({ detail: 'DOCX generation failed' })
       }
-
-      const docxBuffer = Buffer.from(await upstream.arrayBuffer())
-      reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-      reply.header('Content-Disposition', `attachment; filename="${filename}.docx"`)
-      return reply.send(docxBuffer)
     }
 
     return reply.status(400).send({ detail: 'format must be pdf or docx' })

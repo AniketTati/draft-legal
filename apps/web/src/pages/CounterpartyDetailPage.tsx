@@ -222,7 +222,7 @@ export function CounterpartyDetailPage() {
           </Button>
           <Button
             size="sm"
-            onClick={() => navigate(`/contracts/new?counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
+            onClick={() => navigate(`/contracts?new=1&counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
             data-testid="cp-new-contract-btn"
             className="gap-1 text-[12px]"
           >
@@ -286,7 +286,7 @@ export function CounterpartyDetailPage() {
               <Button
                 size="sm" variant="outline"
                 className="mt-3 gap-1 text-[12px]"
-                onClick={() => navigate(`/contracts/new?counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
+                onClick={() => navigate(`/contracts?new=1&counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
               >
                 <Plus className="h-3 w-3" /> Create first contract
               </Button>

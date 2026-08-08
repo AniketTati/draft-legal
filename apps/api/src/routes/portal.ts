@@ -16,6 +16,7 @@ import type { FastifyInstance } from 'fastify'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma.js'
 import { createAuditEvent } from '../lib/audit.js'
+import { generatePlainDocx } from '../lib/docx-export.js'
 import { verifyPortalToken } from './share.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
@@ -170,21 +171,23 @@ export async function portalRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'No content available to export' })
     }
 
-    const GOTENBERG_URL = process.env.GOTENBERG_URL ?? 'http://localhost:3002'
-    const formData = new FormData()
-    formData.append('files', new Blob([latest.htmlContent], { type: 'text/html' }), 'index.html')
-
-    const upstream = await fetch(`${GOTENBERG_URL}/forms/libreoffice/convert`, {
-      method: 'POST',
-      body:   formData,
-    }).catch(() => null)
-
-    if (!upstream?.ok) {
-      app.log.error({ status: upstream?.status }, 'Portal docx conversion failed')
+    // Was: POST the HTML to Gotenberg's /forms/libreoffice/convert -- a
+    // document-to-PDF route -- then stamp a .docx name and the wordprocessingml
+    // MIME type on the PDF that came back. Word refuses to open it, and the
+    // audience here is the COUNTERPARTY, whose whole job is to redline it and
+    // send it back.
+    let docxBuffer: Buffer
+    try {
+      const bytes = await generatePlainDocx(latest.htmlContent, {
+        title:  contract.title || 'Contract',
+        author: 'draftLegal',
+      })
+      docxBuffer = Buffer.from(bytes)
+    } catch (err) {
+      app.log.error({ err }, 'Portal docx generation failed')
       return reply.status(502).send({ error: 'DOCX generation failed — try again shortly' })
     }
 
-    const docxBuffer = Buffer.from(await upstream.arrayBuffer())
     const safeTitle = (contract.title || 'contract').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '').slice(0, 60)
     reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     reply.header('Content-Disposition', `attachment; filename="${safeTitle}-v${latest.versionNumber}.docx"`)

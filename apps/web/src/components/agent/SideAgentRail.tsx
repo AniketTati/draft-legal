@@ -84,7 +84,7 @@ export interface RailToolCall {
   citationBundle?: unknown
   // A2/U5 — entity title resolved from the tool result when the tool
   // returns a single primary entity (contract_get → contract title,
-  // counterparty_get → counterparty name, matter_get → matter name).
+  // counterparty_get → counterparty name).
   // The chip shows this instead of the truncated cuid.
   entityHint?: { kind: 'contract' | 'counterparty' | 'matter'; title: string }
   // A4 — slow-tool heartbeat. Server emits tool_progress every ~4s while
@@ -690,8 +690,6 @@ export function SideAgentRail() {
                                 entityHint = { kind: 'contract', title }
                               } else if (tc.name === 'counterparty_get' || tc.name === 'counterparty_memory') {
                                 entityHint = { kind: 'counterparty', title }
-                              } else if (tc.name === 'matter_get') {
-                                entityHint = { kind: 'matter', title }
                               }
                             }
                           }

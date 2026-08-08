@@ -8,6 +8,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AgentHomePage } from '@/pages/AgentHomePage'
+import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { ContractsPage } from '@/pages/ContractsPage'
 import { ContractDetailPage } from '@/pages/ContractDetailPage'
@@ -149,6 +150,11 @@ export default function App() {
         <Route path="matters/:id" element={<MatterDetailPage />} />
         <Route path="team" element={<TeamPage />} />
         <Route path="profile" element={<ProfilePage />} />
+        {/* Catch-all, LAST. Without it an unmatched URL rendered AppShell's
+            <Outlet/> as null -- full chrome around a blank page, which reads as
+            a broken app rather than a bad link and cannot be diagnosed from a
+            user's description. */}
+        <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
     </>

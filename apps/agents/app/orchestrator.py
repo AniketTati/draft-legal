@@ -239,7 +239,13 @@ async def run_chat(
     resolved_llm = resolved.llm
     resolved_callbacks: list = resolved.callbacks
 
-    result = graph.invoke({
+    # `graph.invoke` is SYNCHRONOUS. Awaiting it directly from `async def
+    # run_chat` stalled the whole uvicorn worker for the full model round-trip
+    # -- 5-30s during which every concurrent chat, tool callback and health
+    # check behind it was blocked. Latent only because both web surfaces send
+    # agentMode: true, while agents.ts defaults agent_mode to FALSE, so any
+    # direct caller, probe or eval script omitting the flag takes this path.
+    result = await asyncio.to_thread(graph.invoke, {
         "session_id": session_id,
         "org_id": org_id,
         "user_id": user_id,
@@ -552,7 +558,6 @@ MAX_TOOL_ITERATIONS = 6
 #   contract_get        — 3 (matches A3 prompt rule; agent should
 #                            broaden via portfolio_search instead)
 #   counterparty_get    — 3 (same reasoning)
-#   matter_get          — 3
 # Per-turn total cap:
 #   ALL_TOOLS           — 25 (room for legit research turns: 1
 #                            search + 5 gets + 4 cites + …; well above
@@ -560,9 +565,13 @@ MAX_TOOL_ITERATIONS = 6
 PER_TOOL_BUDGET: dict[str, int] = {
     "contract_get":     3,
     "counterparty_get": 3,
-    "matter_get":       3,
 }
 TOTAL_TOOLS_PER_TURN = 25
+
+# How much of a tool result is PERSISTED for replay next turn, as opposed to
+# streamed to the rail once. Replayed bytes are re-sent on every subsequent
+# message, so this is the number that drives thread cost.
+PERSIST_RESULT_CHARS = 2_000
 
 
 async def run_agent_chat_stream(
@@ -931,7 +940,7 @@ async def run_agent_chat_stream(
                 # The truncation only affects the SSE-stream payload — the
                 # LLM still gets the full result via ToolMessage below.
                 # A2/U5 — single-entity get tools (contract_get, counterparty_get,
-                # matter_get) MUST stream the full JSON so the rail's chip can
+                # their summarize/memory siblings) MUST stream the full JSON so the rail's chip can
                 # extract `title`/`name` for human-readable labels. Truncation at
                 # 800 chars cut JSON mid-string, JSON.parse failed, and chips
                 # fell back to "cmogr4…" cuid-prefix display. Adding these to
@@ -968,16 +977,28 @@ async def run_agent_chat_stream(
                     "ok": not platform_error,
                 }
                 # P64 — keep a memory-budget-friendly slice of the
-                # result so the next turn can restore it. We deliberately
-                # cap at the same `preview` (≤2000 chars typically) so
-                # session memory doesn't blow up; ids and primary
-                # fields fit comfortably.
+                # result so the next turn can restore it.
+                #
+                # This comment used to claim the slice was capped "at the same
+                # `preview` (≤2000 chars typically)". That was true before the
+                # 20_000-char allowlist was added immediately above it, which
+                # made it off by 10x -- and that is precisely why the growth was
+                # invisible in review. What is REPLAYED matters more than what
+                # is streamed: the restore loop rebuilds every persisted result
+                # into the next prompt with no cap, so this number is a
+                # per-message cost multiplier for the rest of the thread.
+                #
+                # Streamed preview stays generous (the rail renders it once);
+                # the PERSISTED slice is capped separately and much tighter,
+                # because ids and primary fields are all the next turn needs.
+                persisted = preview[:PERSIST_RESULT_CHARS]
                 turn_tool_results.append({
                     "id": tc_id, "name": tc_name,
                     # Wave 3.10 — sanitize before persisting so a forged UI
                     # marker in document text is neutralized both in the stored
                     # slice and anywhere it's echoed next turn.
-                    "result": _sanitize_untrusted(preview), "truncated": truncated,
+                    "result": _sanitize_untrusted(persisted),
+                    "truncated": truncated or len(preview) > PERSIST_RESULT_CHARS,
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.

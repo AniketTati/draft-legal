@@ -26,6 +26,7 @@ import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
+import { CostCapExceededError } from '../lib/costCap.js'
 import { AuditAction } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
@@ -683,6 +684,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
           detail: err.message,
           tier: err.tier,
           attempted: err.attempted,
+        })
+      }
+      // Being over budget is a DECISION, not a failure. It used to land in the
+      // 500 branch below, and router.py treats any non-2xx as flaky infra and
+      // falls through to the platform key -- so the call proceeded and we paid.
+      // 429 is the one status that says "stop", not "retry".
+      if (err instanceof CostCapExceededError) {
+        return reply.status(429).send({
+          error:   'cost_cap_exceeded',
+          detail:  err.message,
+          usedUsd: Number(err.usedUsd.toFixed(4)),
+          capUsd:  Number(err.capUsd.toFixed(2)),
         })
       }
       app.log.error({ err }, 'aiRouter resolve failed')

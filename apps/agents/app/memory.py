@@ -14,6 +14,13 @@ async def get_redis() -> aioredis.Redis:
 
 SESSION_TTL = 60 * 60 * 24  # 24 hours
 
+# Ceiling on the serialized session log. Everything under this is replayed into
+# the prompt on EVERY subsequent turn, so this is a per-message cost multiplier,
+# not just a storage number. 256 KB is generous for the ids and titles the
+# restore exists to preserve, and two orders of magnitude below the 12 MB the
+# message-count-only trim allowed.
+MAX_SESSION_BYTES = 256 * 1024
+
 
 async def get_session_history(session_id: str) -> list[dict]:
     r = await get_redis()
@@ -52,4 +59,19 @@ async def append_to_session(session_id: str, role: str, content: str, *, tool_ca
     # Keep last 50 messages
     if len(history) > 50:
         history = history[-50:]
-    await r.setex(f"session:{session_id}", SESSION_TTL, json.dumps(history))
+
+    # A message COUNT is not a size bound. Tool results persist at up to 20_000
+    # chars each for most tools, and the restore loop replays every one of them
+    # into the next prompt with no cap -- so 25 tool calls x 20 KB x 25 assistant
+    # turns is megabytes re-sent on every subsequent message. Cost grows
+    # quadratically in turn count, and long before the wallet notices it
+    # exceeds the context window and 400s.
+    #
+    # Trim oldest-first until the serialized log fits. Newest turns are the ones
+    # the model actually needs for "tell me about the top one".
+    encoded = json.dumps(history)
+    while len(encoded) > MAX_SESSION_BYTES and len(history) > 1:
+        history = history[1:]
+        encoded = json.dumps(history)
+
+    await r.setex(f"session:{session_id}", SESSION_TTL, encoded)
