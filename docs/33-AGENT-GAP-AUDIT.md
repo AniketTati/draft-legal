@@ -33,7 +33,7 @@ that cannot produce a sendable document.
 `docs/35-FULL-DOCUMENT-REDLINING-PLAN.md`. In production 2026-08-08. Took
 substantially less than the estimate.
 
-### #2 — Close the broken loops the agent already 90% has ← NEXT
+### #2 — Close the broken loops the agent already 90% has ✅ SHIPPED
 
 Register the missing tools: the redline-apply tool the agent's own instructions
 reference but that was never registered; template list; user search so "assign
@@ -43,19 +43,38 @@ gate. Real token streaming.
 
 **Builds on:** existing endpoints — these are thin wrappers.
 **Effort:** ~1–2 weeks total.
-**Status:** in planning — `docs/36-AGENT-LOOPS-PLAN.md`. Sharpened by #1
-shipping: the batch redline endpoints and the tracked-changes DOCX export are
-all unreachable from the agent.
+**Status:** shipped 2026-08-08 across PRs #43-#46 — `docs/36-AGENT-LOOPS-PLAN.md`.
+All 13 L-items and all 14 dead-control categories closed; 16 check scripts.
+Actual effort ~2x this estimate. Found and fixed a live cross-tenant write, a
+VIEWER-can-create-contracts RBAC gap, a BYOK bypass, and a cost cap that failed
+open.
 
-### #3 — Eval suite for the agents
+### #3 — Eval suite for the agents ← NEXT
 
 We cannot claim quality, swap models, or safely edit the 240-line system prompt
-without measurement. The harness is already built and running in CI — guarding
-four toy cases. Convert the existing manual-audit rules into ~50 real cases
-against the live HTTP path.
+without measurement.
 
-**Builds on:** `evals/runner.py` harness + `EVAL_USE_HTTP` plumbing (exists).
-**Effort:** 1–2 weeks to meaningful coverage.
+**Three of this entry's four claims were wrong** — corrected 2026-08-08 by
+scouting the code; see `docs/37-AGENT-EVAL-PLAN.md`:
+
+- *"running in CI"* — it is not. Zero references to `eval` under `.github/`.
+  The only Python job runs `pytest tests/ ... || true`, and `tests/` does not
+  exist. The step cannot fail.
+- *"guarding four toy cases"* — it guards nothing, and the four cases are
+  tautologies: the echo runner is the identity function and the obligations
+  runner is a substring matcher asserting the keywords it hardcodes.
+- *"`EVAL_USE_HTTP` plumbing (exists)"* — true only for `/extract_obligations`.
+  Nothing in `evals/` touches the agent chat path.
+- **Missed entirely:** a second, more capable harness at `scripts/persona-tests/`
+  with an SSE parser, multi-turn conversations, tool-call assertions and 66
+  committed cases against an 800-contract seeded fixture.
+
+So the work is *consolidate two half-harnesses and put the result behind a gate
+that can fail*, not *add cases to a working suite*.
+
+**Builds on:** `scripts/persona-tests/` (agent loop) + `evals/` schema/baseline.
+**Effort:** 3–4 weeks. The extra time is making the suite able to fail,
+interpretable, and safe to run — all of which this entry assumed were done.
 
 ### #4 — Email-native intake triage
 
