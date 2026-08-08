@@ -115,7 +115,11 @@ const alices = []
 for (const [i, surname] of [[1, 'Nakamura'], [2, 'Okonkwo']]) {
   alices.push(await prisma.user.create({
     data: {
-      orgId, name: `Alice ${surname}`, email: `${TAG}+alice${i}@example.test`,
+      // Emails deliberately DO NOT contain the searched name. They used to
+      // ("l9probe+alice1@..."), which meant the endpoint's `email contains q`
+      // branch satisfied the name-search assertion on its own — the name
+      // matching could have been deleted and the check stayed green.
+      orgId, name: `Alice ${surname}`, email: `${TAG}+u${i}@example.test`,
       passwordHash: 'x', status: 'ACTIVE',
     },
     select: { id: true, name: true, email: true },
@@ -124,7 +128,7 @@ for (const [i, surname] of [[1, 'Nakamura'], [2, 'Okonkwo']]) {
 // One unambiguous person, for the happy path.
 const bob = await prisma.user.create({
   data: {
-    orgId, name: 'Bertrand Vasquez', email: `${TAG}+bertrand@example.test`,
+    orgId, name: 'Bertrand Vasquez', email: `${TAG}+u9@example.test`,
     passwordHash: 'x', status: 'ACTIVE',
   },
   select: { id: true, name: true, email: true },
@@ -135,7 +139,7 @@ const otherOrg = await prisma.organization.findFirst({ where: { id: { not: orgId
 const foreigner = otherOrg
   ? await prisma.user.create({
       data: {
-        orgId: otherOrg.id, name: 'Alice Trespasser', email: `${TAG}+foreign@example.test`,
+        orgId: otherOrg.id, name: 'Alice Trespasser', email: `${TAG}+u7@example.test`,
         passwordHash: 'x', status: 'ACTIVE',
       },
       select: { id: true },
@@ -185,6 +189,10 @@ section('1. user_search resolves a name to an id, org-scoped')
   // directory data, not counterparty document text -- the exemption is
   // deliberate, and pinned here so a future redaction sweep cannot quietly
   // break name resolution.
+  const byEmail = await tool('user_search', { orgId, query: 'u9@example' })
+  check('it also finds by email fragment', (byEmail.json?.items ?? []).some(u => u.id === bob.id),
+    'the two OR branches are asserted separately; a fixture whose email embeds the name proves only that one of them works')
+
   const me = items.find(u => u.id === bob.id)
   check('the email comes back un-redacted', me?.email === bob.email,
     `got ${JSON.stringify(me?.email)} — a redacted email cannot disambiguate two people named Alice`)
@@ -362,8 +370,12 @@ section('6. All three verbs are registered end to end')
 
   for (const t of ['user_search', 'template_list', 'approval_decide']) {
     check(`${t} has a tool module`, fs.existsSync(`${REPO}/apps/agents/app/tools/${t}.py`))
-    check(`${t} is in the tool registry`, initPy.includes(`build_${t}`),
-      'a tool file nothing imports is dead code')
+    // Scoped to the RETURN LIST. `initPy.includes('build_X')` matched the
+    // import line, so a tool imported but never registered — dead to the LLM —
+    // passed.
+    const returnList = (/def get_read_tools[\s\S]*?\n    return \[([\s\S]*?)\n    \]/.exec(initPy) || ['', ''])[1]
+    check(`${t} is bound in get_read_tools`, returnList.includes(`build_${t}(`),
+      'an import is not a registration; only the returned list is bound to the model')
     check(`${t} is named in the system prompt`, prompt.includes(t),
       'L7 measured that the prompt outranks tool descriptions for routing; an unmentioned tool is rarely picked')
   }
@@ -377,6 +389,14 @@ section('6. All three verbs are registered end to end')
   check('approval_decide maps its user field to userId',
     /body\.toolName === 'approval_decide'\s*\?\s*'userId'/.test(threads),
     'the wrong field name means orgId/userId are not injected and the downstream Zod schema rejects the call')
+  // The mapping only bites because the injected identity is spread AFTER the
+  // client's args and therefore overrides them. Reverse the order and a
+  // caller could supply their own userId — approval forgery by another route.
+  const enforced = (/const enforcedArgs[\s\S]{0,300}?\n {4}\}/.exec(threads) || [''])[0]
+  check('the injected identity overrides the client args, not the reverse',
+    enforced.indexOf('...(body.args') >= 0
+    && enforced.indexOf('[userField]: userId') > enforced.indexOf('...(body.args'),
+    'if body.args is spread last, a caller can set their own userId and decide someone else\'s approval step')
   check('approval_decide is not offered as reversible',
     !/REVERSIBLE[^\n]*approval_decide/.test(threads),
     'advanceWorkflow may already have closed the instance and fired notifications; that cannot unwind in a 15-minute window')

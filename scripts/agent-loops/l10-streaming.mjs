@@ -149,8 +149,19 @@ section('1. Tokens arrive as they are generated')
   const tokens = r.events.filter(e => e.frame.type === 'token')
   const done   = r.events.find(e => e.frame.type === 'done')
 
-  check('the turn produced token frames', tokens.length >= 3,
+  check('the turn produced token frames', tokens.length >= 2,
     `${tokens.length} token frames in ${r.totalMs} ms`)
+
+  // Hoisted out of the `>= 3` guard below. This assertion is NAMED after
+  // one-frame delivery, and used to sit inside a branch that a one-frame turn
+  // skipped entirely -- unreachable for the exact failure it describes.
+  {
+    const totalChars = tokens.reduce((n, t) => n + (t.frame.delta ?? '').length, 0)
+    const biggest    = tokens.length ? Math.max(...tokens.map(t => (t.frame.delta ?? '').length)) : 0
+    check('no single frame carries the whole answer',
+      totalChars > 0 && biggest / totalChars < 0.8,
+      `largest frame is ${biggest} of ${totalChars} chars (${totalChars ? Math.round((biggest / totalChars) * 100) : 0}%) — one frame with everything is what "streaming" meant before`)
+  }
 
   if (tokens.length >= 3) {
     const first  = tokens[0].at
@@ -170,13 +181,6 @@ section('1. Tokens arrive as they are generated')
     // most of the wall clock is the model thinking before it emits anything,
     // which is provider-side and varies by an order of magnitude between
     // providers -- a ratio threshold would measure the model, not this code.
-    // What IS ours is whether the answer is delivered in pieces, so assert
-    // that directly: no single frame may carry substantially all of it.
-    const totalChars = tokens.reduce((n, t) => n + (t.frame.delta ?? '').length, 0)
-    const biggest    = Math.max(...tokens.map(t => (t.frame.delta ?? '').length))
-    check('no single frame carries the whole answer',
-      totalChars > 0 && biggest / totalChars < 0.8,
-      `largest frame is ${biggest} of ${totalChars} chars (${Math.round((biggest / totalChars) * 100)}%) — one frame with everything is what "streaming" meant before`)
   }
 
   // Real streaming that drops the last chunk is worse than fake streaming.
@@ -330,8 +334,17 @@ section('4. Neither defect can come back quietly')
   check('the agent path resolves a streaming client',
     /_tier, org_id=org_id, streaming=True/.test(orchCode),
     'streaming=False cannot produce incremental chunks however it is consumed')
+  // Scoped to the MAIN tool-iteration loop. orchestrator.py has two astream
+  // loops -- this one and the A5 synthesis fallback -- and a file-wide match
+  // was satisfied by the fallback alone, so the terminal branch could go back
+  // to ainvoke and stay green.
+  const loopIdx  = orchCode.indexOf('for iteration in range(MAX_TOOL_ITERATIONS)')
+  const loopBody = loopIdx >= 0 ? orchCode.slice(loopIdx, loopIdx + 2500) : ''
+  check('the tool-iteration loop was located', loopIdx >= 0)
   check('the terminal branch streams instead of splitting a finished string',
-    /async for chunk in llm\.astream\(/.test(orchCode) && !/final_text\.split\(" "\)/.test(orchCode),
+    /async for chunk in llm\.astream\(/.test(loopBody)
+    && !/await llm\.ainvoke\(/.test(loopBody)
+    && !/\.split\(" "\)/.test(orchCode),
     'splitting a completed string on spaces is not streaming; with no sleep between yields it is one burst')
 }
 

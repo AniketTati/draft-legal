@@ -44,6 +44,14 @@ section('1. The session log has a size bound, not just a message count')
 {
   check('memory.py defines a byte ceiling', /MAX_SESSION_BYTES/.test(mem),
     'a message COUNT is not a size bound when one message can carry 500 KB of tool results')
+  // Presence alone said nothing about the number, and section 3's probe
+  // imports the ceiling from the module under test -- so a ceiling of 1 GB
+  // would satisfy every other assertion in this file.
+  const ceilMatch = /MAX_SESSION_BYTES\s*=\s*([\d_*\s]+)/.exec(mem)
+  const ceiling = ceilMatch ? Function(`return ${ceilMatch[1].replace(/_/g, '')}`)() : 0
+  check('the ceiling is a number that actually bounds a thread',
+    ceiling > 0 && ceiling <= 1024 * 1024,
+    `MAX_SESSION_BYTES = ${ceiling} — replayed on every subsequent turn, so anything near a megabyte is not a budget`)
   // Audit 2026-08-08 — this matched the loop HEADER only. Whether it drops the
   // OLDEST or the NEWEST turn is decided in the body, and the body was never
   // inspected — a trim that dropped the newest message would have passed.

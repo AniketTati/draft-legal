@@ -404,9 +404,18 @@ section('5. Bulk approve names the items that failed')
 
       const failList = page.locator('[data-testid="bulk-failure-list"]').first()
       const shown = await failList.count() > 0
-      check('the failed items are listed with the server reason', shown,
-        shown ? (await failList.innerText()).replace(/\s+/g, ' ').slice(0, 160)
+      const listText = shown ? (await failList.innerText()).replace(/\s+/g, ' ') : ''
+      // The original defect had TWO halves: `catch { failed++ }` discarded the
+      // server's per-item detail, AND the dialog closed over it. Asserting only
+      // that a list element exists covers neither -- a list showing just a
+      // count would pass. Match the server's own words.
+      check('the failed items are listed with the server reason',
+        shown && /Workflow is already closed/i.test(listText),
+        shown ? `list reads: ${listText.slice(0, 160)}`
               : 'no failure list — the bare catch discarded the detail and the dialog closed itself over the failure')
+      check('each failed item is named, not just counted',
+        shown && /Agreement|Contract|MSA|NDA/i.test(listText),
+        `list reads: ${listText.slice(0, 160)} — a bare count does not tell the user which items to retry`)
 
       const banner = page.locator('[data-testid="bulk-partial-failure"]').first()
       check('the summary is not styled as success', await banner.count() > 0,
