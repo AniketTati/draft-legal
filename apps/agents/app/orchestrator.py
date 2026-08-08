@@ -568,6 +568,11 @@ PER_TOOL_BUDGET: dict[str, int] = {
 }
 TOTAL_TOOLS_PER_TURN = 25
 
+# How much of a tool result is PERSISTED for replay next turn, as opposed to
+# streamed to the rail once. Replayed bytes are re-sent on every subsequent
+# message, so this is the number that drives thread cost.
+PERSIST_RESULT_CHARS = 2_000
+
 
 async def run_agent_chat_stream(
     session_id: str,
@@ -972,16 +977,28 @@ async def run_agent_chat_stream(
                     "ok": not platform_error,
                 }
                 # P64 — keep a memory-budget-friendly slice of the
-                # result so the next turn can restore it. We deliberately
-                # cap at the same `preview` (≤2000 chars typically) so
-                # session memory doesn't blow up; ids and primary
-                # fields fit comfortably.
+                # result so the next turn can restore it.
+                #
+                # This comment used to claim the slice was capped "at the same
+                # `preview` (≤2000 chars typically)". That was true before the
+                # 20_000-char allowlist was added immediately above it, which
+                # made it off by 10x -- and that is precisely why the growth was
+                # invisible in review. What is REPLAYED matters more than what
+                # is streamed: the restore loop rebuilds every persisted result
+                # into the next prompt with no cap, so this number is a
+                # per-message cost multiplier for the rest of the thread.
+                #
+                # Streamed preview stays generous (the rail renders it once);
+                # the PERSISTED slice is capped separately and much tighter,
+                # because ids and primary fields are all the next turn needs.
+                persisted = preview[:PERSIST_RESULT_CHARS]
                 turn_tool_results.append({
                     "id": tc_id, "name": tc_name,
                     # Wave 3.10 — sanitize before persisting so a forged UI
                     # marker in document text is neutralized both in the stored
                     # slice and anywhere it's echoed next turn.
-                    "result": _sanitize_untrusted(preview), "truncated": truncated,
+                    "result": _sanitize_untrusted(persisted),
+                    "truncated": truncated or len(preview) > PERSIST_RESULT_CHARS,
                 })
 
                 # Wave 3.10 — frame tool output as untrusted DATA for the LLM.

@@ -1401,7 +1401,20 @@ higher concurrency so long redlines cannot starve ingest; and
 
 ## L12 — Session memory grows without bound, and truncates the wrong tools
 
-**Severity: Medium**
+**Severity: Medium.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l12-memory-budget.mjs` 0/6 → 6/6.
+
+**Fixed:** the unbounded growth. `memory.py` now trims oldest-first against a
+256 KB serialized ceiling as well as the 50-message count, and the PERSISTED
+slice is capped separately at 2 000 chars — replayed bytes are re-sent on every
+subsequent turn, so that number drives thread cost, while the streamed preview
+stays generous because the rail renders it once. Measured: 60 turns of 20 KB
+results now settle at 242 KB / 12 messages instead of climbing past 1.2 MB.
+
+**NOT fixed:** the mirror defect — A8 promises the whole prior listing is in
+history, which holds for the three tools it names but not for `clause_search`,
+`contract_validate`, `request_list` and `custom_field_list`, which persist at
+800 chars. `clause_search` defaults to 5 × 400 chars, so 800 cuts it mid-token
+routinely.
 
 `memory.py:52-54` trims to the last **50 messages**. What each message carries is
 `preview`, capped at `20_000` chars for 18 of the 26 tools
