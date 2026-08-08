@@ -277,7 +277,10 @@ genuinely varies. Support list indexing in field paths.
 
 ---
 
-## E7 — Two harnesses, and no decision about which survives
+## E7 — Two harnesses ✅ DECIDED — see ADR-01 below
+
+**Resolved 2026-08-08.** JS harness survives; Python `evals/` is retired. The
+comparison that led there is kept for the record.
 
 **Severity: High (decision, not code).**
 
@@ -294,17 +297,13 @@ genuinely varies. Support list indexing in field paths.
 | Seeded fixtures | ❌ | ✅ `seed-personas.ts`, 800 contracts |
 | Real coverage | 4 tautologies | 66 conversations + ~86 asks |
 
-**Recommendation: keep the JS harness as the agent-loop runner, and give it the
-Python package's three missing pieces** (declarative cases, a baseline, a CI gate).
-Rebuilding the SSE parser, multi-turn model, tool assertions and 800-contract
-fixture in Python to preserve a package whose only real asset is `cli.py`'s
-150-line baseline diff would be the more expensive direction by a wide margin.
+**Decided: the JS harness survives** and gains declarative cases, a baseline and
+a CI gate. `evals/` is retired rather than kept for single-shot endpoints — a
+second harness maintained for four tautological cases and a 150-line baseline
+diff is negative value. Single-shot endpoint evals become ordinary cases in the
+one suite, calling the Python endpoint over HTTP like any other.
 
-Keep `evals/` for **single-shot endpoint** evals (`/extract_obligations` and
-siblings), where it already works and costs nothing to run.
-
-This is the first decision to make, and it is reversible only expensively. It
-should be made explicitly rather than by accretion.
+Full reasoning in ADR-01.
 
 ---
 
@@ -425,6 +424,137 @@ answer to a problem good assertions mostly solve.
 
 ---
 
+
+---
+
+## ADR-01 — One suite, three tiers, JavaScript, with record/replay
+
+**Decision made 2026-08-08.** Superseded framing: E7 asked "which harness
+survives." That was the wrong question. The right one is *what seam do we test
+at, and how do we make agent behaviour deterministic enough to gate a PR on.*
+
+### Decision
+
+1. **One suite, in TypeScript/JavaScript, testing through the public HTTP API.**
+   Retire the Python `evals/` package; port its baseline-diff concept (~150 lines).
+2. **Three tiers, split by cost and determinism, not by subject.**
+3. **Record/replay of model responses** is the mechanism that makes tier 2
+   possible. This is the load-bearing choice.
+4. `scripts/agent-loops/` and `scripts/persona-tests/` are absorbed into the
+   suite. They already *are* the eval suite; nobody named them that.
+
+### Why the public HTTP API, and not in-process Python
+
+This is the argument that actually decided it. **Look at where the defects were.**
+Of everything `docs/36` found and fixed:
+
+| Defect | Lives at |
+|---|---|
+| Cross-tenant write in `/api/v1/agent/draft` (status 200, victim contract mutated) | **Node route** |
+| VIEWER could create contracts by asking | **Node** — `agents.ts` `denied_tools` |
+| Write-tool RBAC | **Node** — `agent-threads.ts` is the *only* layer that sees caller role |
+| Cost cap failing open, BYOK bypass | **Node↔Python boundary** |
+| Thread poisoning, memory growth | Python, but observable through the chat API |
+| Nine dead controls | **Web UI** |
+
+An in-process Python harness is **on the wrong side of the boundary for almost
+every bug this system has actually had.** It structurally cannot see RBAC, the
+cost cap, tenancy enforcement, or the proxy. A suite that cannot test the
+security-critical layer is not the suite this product needs.
+
+The HTTP API is also the seam the *user* experiences. Testing there means the
+eval measures the product rather than an implementation detail, and survives the
+Python service being refactored or replaced.
+
+### Why JavaScript
+
+Not preference — grain. **The repo has 23 JS check scripts and zero Python
+tests.** The seed fixture is TypeScript. The API and web are TypeScript. Every
+piece of verification culture this codebase has built over four waves is in
+`.mjs`. Fighting that is a tax paid on every future check.
+
+Cost of the choice, both directions:
+- **Choosing JS:** reimplement `cli.py`'s baseline diff. ~150 lines. Once.
+- **Choosing Python:** reimplement the SSE parser, the multi-turn engine, the
+  tool-call assertions, and rewire an 800-contract fixture — all of which exist
+  and work in JS today. Then maintain a Python test culture that currently has
+  zero examples.
+
+The counter-argument is that model-eval libraries (ragas, deepeval) are Python.
+It does not bind: those consume **traces and datasets**, not your runner.
+Langfuse is already wired into the orchestrator, so traces are the integration
+point regardless of harness language. Keeping the case format as **YAML** also
+keeps the commercial off-ramp open — promptfoo, the most likely one, is JS +
+YAML natively.
+
+### The three tiers
+
+| | What it tests | Model | Cost | Runs |
+|---|---|---|---|---|
+| **T1 — Invariants** | tenancy, RBAC, gating, schema truth, dead controls, prompt-vs-reality | none | $0 | **blocking, every PR** |
+| **T2 — Contract** | the agent loop: tool selection, confirm-gating, error frames, memory reuse, budget caps | **replayed** | $0 | **blocking, every PR** |
+| **T3 — Behavioural** | is the answer *good*; model comparison; regression in quality | real | real | **nightly on `main`** |
+
+T1 exists already — it is the 16 `agent-loops` checks, plus the week-zero ones.
+They need a common runner and a gate, not a rewrite.
+
+### Record/replay is the decision that makes this work
+
+The central problem with agent evals is that the model is nondeterministic, so
+you cannot gate a PR on it. The usual answers are both bad: `temperature=0`
+(doesn't make tool-calling deterministic, and is not how production runs), or
+assertions loosened until they stop discriminating.
+
+The right answer is to **separate the two questions**:
+
+- *"Does my code do the right thing given what the model said?"* — tool dispatch,
+  the confirm gate, RBAC, error surfacing, memory replay, budget enforcement.
+  **This is most of the agent, it is entirely deterministic, and it is where
+  every bug in `docs/36` actually lived.**
+- *"Is what the model said any good?"* — genuinely model-dependent, genuinely
+  expensive, genuinely noisy.
+
+Record real model responses once; replay them to answer the first question on
+every PR for free. Reserve real calls for the second, nightly.
+
+**This is cheap here because of a fact I checked: `build_llm` has exactly one
+caller** — `router.py:345`. A single injection seam covers every LLM call in the
+entire system. That same seam is what E11 wanted for sampling control, so E11
+stops being "plumb temperature through 25 routes" and becomes "add one factory
+override" — more valuable, and less invasive.
+
+Recorded fixtures are committed, reviewable, and diffable. When a prompt change
+alters which tool the model picks, that shows up as a **fixture diff in code
+review** — which is a far better signal than a flaky nightly number.
+
+### What this changes in the plan
+
+- **E7 is decided.** No consolidation study; JS wins, Python `evals/` is retired.
+- **New E12 — the replay seam**, promoted into Wave B. It is the highest-leverage
+  item in this plan and the audit did not contemplate it.
+- **E11 is reframed** from sampling control to the injection seam, and merges
+  into E12.
+- **E9's constraint becomes a feature.** No model key in CI and a public repo
+  forced the tiering; T1+T2 need no key at all, so fork PRs get the *same*
+  blocking gate as maintainers. That is strictly better than a secret-gated suite.
+- **Wave E shrinks.** Many of the "~50 cases" the audit wants are T2 contract
+  cases against replayed fixtures — cheaper to write and to run than the audit
+  assumed, and they never flake.
+
+### What I am accepting as risk
+
+- **Fixture staleness.** Replayed responses drift from what models actually do.
+  Mitigated by T3 nightly against real models, which is precisely the tripwire
+  for "the recording no longer reflects reality," and by re-recording on a
+  cadence rather than on demand.
+- **Recording captures a bug as expected behaviour.** Same failure mode as a
+  snapshot test. Mitigated by the `docs/36` rule: every case must be shown to
+  fail before it is trusted — a fixture that cannot produce a red is not evidence.
+- **T2 cannot catch prompt regressions that change model behaviour** — by
+  construction, since the model is replayed. That is T3's job, and the split
+  should be stated in the suite's own README so nobody mistakes a green T2 for
+  "the prompt is fine."
+
 ## Ordering
 
 **Wave A — make it able to fail (2 days).** E1 gate, E4 empty-expectations,
@@ -434,18 +564,23 @@ turning CI red, then removed.
 **Wave B — make it interpretable (2 days).** E2 model observability on the `done`
 frame, E3 the discarded persona pin, E10 cost + thresholds.
 
-**Wave C — decide and consolidate (1 day + build).** E7. Then give the surviving
-harness declarative cases and a baseline.
+**Wave B — make it interpretable and deterministic (4 days).** E2 model
+observability, E3 the discarded persona pin, **E12 the replay seam** (ADR-01),
+E10 cost + thresholds.
 
-**Wave D — make it safe to run for real (1 day).** E8 eval identity, E9 nightly
-split. **Nothing hits a real model before this.**
+**Wave C — consolidate (3 days).** Absorb `agent-loops` and `persona-tests` under
+one runner, one YAML case format, one baseline. Retire Python `evals/`.
 
-**Wave E — coverage.** Only now do the ~50 cases the audit asks for, drawn from
-the A1–A13 prompt rules and the 16 `scripts/agent-loops/` checks. E6 graders land
-alongside, driven by what the cases actually need rather than speculatively.
+**Wave D — make real runs safe (1 day).** E8 eval identity, E9 nightly split.
+**Nothing hits a real model before this.**
 
-**Revised effort: 3–4 weeks**, against the audit's 1–2. The difference is entirely
-Waves A–D, which the audit assumed were already done.
+**Wave E — coverage.** The cases: T2 contract cases against replayed fixtures for
+the A1–A13 rules and the write-tool gate; T3 behavioural cases from the persona
+conversations. E6 graders land alongside, driven by what cases actually need.
+
+**Revised effort: 3–4 weeks**, against the audit's 1–2. The difference is Waves
+A–D, which the audit assumed were done — plus the replay seam, which it did not
+contemplate and which is what makes the PR gate possible at all.
 
 ---
 
