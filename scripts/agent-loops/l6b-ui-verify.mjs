@@ -38,10 +38,22 @@
  * Run AFTER:  badges hold, marks survive, the ampersand search matches, and
  *             failures are legible. Verified by reverting each fix.
  */
+import fsSync from 'node:fs'
 import { chromium } from 'playwright'
 import { db, check, report, section } from '../week-zero/lib/harness.mjs'
 
 const WEB = process.env.WEB ?? 'http://localhost:5173'
+const REPO_API = new URL('../../apps/api', import.meta.url).pathname
+
+// Child processes need DATABASE_URL passed explicitly; the services read it
+// from the repo-root .env, not from apps/api/.env.
+const dbUrl = () => {
+  try {
+    return /^DATABASE_URL=(.*)$/m.exec(
+      fsSync.readFileSync(new URL('../../.env', import.meta.url).pathname, 'utf8'))?.[1]
+      ?.trim().replace(/^["']|["']$/g, '') ?? ''
+  } catch { return '' }
+}
 const SHOTS = new URL('.', import.meta.url).pathname
 
 const prisma = db()
@@ -60,6 +72,22 @@ await page.click('button[type=submit]')
 await page.waitForLoadState('networkidle').catch(() => {})
 const skip = page.locator('text=Skip setup').first()
 if (await skip.count()) { await skip.click().catch(() => {}); await page.waitForTimeout(800) }
+
+// Guard. Editing a watched source file restarts the API, and a run that
+// happens to land inside that window fails to log in -- which then cascades
+// into every later section failing for reasons that look like nine separate
+// product defects. Ask once, loudly, instead.
+{
+  const stillOnLogin = await page.locator('input[type=password]').count() > 0
+  if (stillOnLogin) {
+    check('logged in', false,
+      'still on the sign-in page — the API was probably mid-restart (check /health uptime). Every assertion below would be meaningless.')
+    await browser.close()
+    await prisma.$disconnect()
+    report('L6b UI verification')
+    process.exit(1)
+  }
+}
 
 // ─── 1. Signature filter badges hold when a tab is selected ─────────────────
 
@@ -454,6 +482,91 @@ section('6. The agent artifact export produces a file')
     if (await errLabel.count()) {
       check('any failure is labelled rather than a bare icon', true,
         (await errLabel.innerText()).slice(0, 120))
+    }
+  }
+}
+
+// ─── 7. A notification toggle reaches the delivery decision ─────────────────
+//
+// The one gap the other sections cannot close. Flipping the toggle is only
+// half the story: what matters is whether the DELIVERY side then honours it,
+// and for two years it did not -- eleven controls persisted and nothing read
+// them. This chains the real UI control to the real decision function.
+//
+// Not covered: the SMTP send itself, which is gated on isEmailConfigured() and
+// has no provider in this workspace. Everything up to that gate is asserted.
+
+section('7. Flipping a Settings toggle changes what the worker decides')
+{
+  const me = await prisma.user.findFirst({ where: { email: 'admin@demo.com' }, select: { id: true, preferences: true } })
+  const original = me?.preferences ?? {}
+
+  const decide = async (type) => {
+    const { execFileSync } = await import('node:child_process')
+    const tmp = `${REPO_API}/.l6bui-probe.mts`
+    fsSync.writeFileSync(tmp, `
+      import { shouldEmail } from './src/lib/notification-prefs.js'
+      const r = await shouldEmail(${JSON.stringify(me?.id ?? '')}, ${JSON.stringify(type)})
+      process.stdout.write('<<<R>>>' + JSON.stringify(r))
+    `)
+    try {
+      const out = execFileSync('pnpm', ['exec', 'tsx', tmp], {
+        cwd: REPO_API, encoding: 'utf8', timeout: 90_000, stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL || dbUrl() },
+      })
+      return JSON.parse(out.split('<<<R>>>')[1])
+    } catch (e) {
+      return { emailed: null, reason: String(e.stderr ?? e.message).slice(-160) }
+    } finally { try { fsSync.unlinkSync(tmp) } catch { /* */ } }
+  }
+
+  try {
+    await page.goto(`${WEB}/settings`, { waitUntil: 'domcontentloaded' })
+    await page.waitForLoadState('networkidle').catch(() => {})
+    await page.waitForTimeout(1200)
+
+    const tab = page.locator('button:has-text("Notifications")').first()
+    if (await tab.count()) { await tab.click().catch(() => {}); await page.waitForTimeout(1000) }
+
+    const toggle = page.locator('[data-testid="notif-approvalRequested-toggle"]').first()
+    const present = await toggle.count() > 0
+    check('the "Approval requested from me" toggle is on the page', present,
+      present ? 'found' : 'could not reach the notifications tab')
+
+    if (present) {
+      // Establish the ON baseline first, so the OFF result below is a change
+      // rather than a coincidence.
+      const wasOn = await decide('APPROVAL_REQUEST')
+      check('the delivery decision starts as send', wasOn?.emailed === true,
+        `emailed=${wasOn?.emailed} (${wasOn?.reason})`)
+
+      await toggle.click()
+      await page.waitForTimeout(2500)          // let the PATCH land
+      await shot('settings-notifications')
+
+      const persisted = await prisma.user.findUnique({
+        where: { id: me.id }, select: { preferences: true },
+      })
+      const stored = persisted?.preferences?.notifications?.approvalRequested
+      check('the click persisted through PATCH /users/me', stored === false,
+        `stored approvalRequested=${JSON.stringify(stored)} — this half always worked; it is the next assertion that was broken`)
+
+      const nowOff = await decide('APPROVAL_REQUEST')
+      check('the worker now declines to email that type', nowOff?.emailed === false,
+        `emailed=${nowOff?.emailed} (${nowOff?.reason}) — for eleven controls this stayed true forever, so the user got a green "Saved" and kept getting mail`)
+
+      // A type with no toggle must be unaffected: ESCALATION and DELEGATION are
+      // direct assignments to a person, and there is no control to switch them
+      // off. Suppressing everything is not honouring a preference.
+      const unrelated = await decide('ESCALATION')
+      check('an un-suppressible type is still delivered', unrelated?.emailed === true,
+        `emailed=${unrelated?.emailed} (${unrelated?.reason})`)
+    }
+  } finally {
+    // Restore whatever the user actually had. See the Wave C incident where a
+    // probe left a cap at 0 and made unrelated checks look like regressions.
+    if (me?.id) {
+      await prisma.user.update({ where: { id: me.id }, data: { preferences: original } }).catch(() => {})
     }
   }
 }
