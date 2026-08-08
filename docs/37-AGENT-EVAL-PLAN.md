@@ -723,9 +723,45 @@ no assertion gained.
 
 **Wave D — make real runs safe ✅ DONE.** E8 eval identity, E9 nightly split.
 
-**Wave E — coverage.** The cases: T2 contract cases against replayed fixtures for
-the A1–A13 rules and the write-tool gate; T3 behavioural cases from the persona
-conversations. E6 graders land alongside, driven by what cases actually need.
+**Wave E — coverage.** ← REMAINING
+
+The highest-value work here is not writing new cases. It is **promoting the
+security checks that already exist from t3 to t2**, which replay now makes
+possible. Today these run nightly, if at all, because each needs a live model:
+
+| Check | Guards | Currently |
+|---|---|---|
+| `l4-draft-gate` | a VIEWER cannot create contracts by asking | t3 — nightly |
+| `l4-draft-tenancy` | the cross-tenant write (status 200, victim contract mutated) | t2 (no model) |
+| `l9-new-verbs` | approval forgery — the `approverId` predicate | t3 — nightly |
+| `l1-thread-poisoning` | a write proposal does not kill its thread | t3 — nightly |
+| `l11-cost-cap` | the cap fails closed; BYOK is not bypassed | t3 — nightly |
+
+Three of the five defects those guard were live in production and found by hand
+in `docs/36`. **They should gate every pull request, not run nightly** — a
+tenancy regression merged at 2pm and caught at 3am is a bad trade when the
+alternative is free.
+
+The conversion per check is mechanical:
+
+1. Give the check a stable `sessionId` (`replay:<case>`) instead of
+   `${Date.now()}`. That is usually a one-line change.
+2. Record once: `AGENT_REPLAY_MODE=record`, then commit the fixture.
+3. Move it to t2 in `manifest.mjs` with `needs: ['db', 'api', 'replay']`.
+4. **Verify it still fails.** Re-break the thing it guards — delete the
+   `approverId` predicate, restore the VIEWER's tool — and watch it go red
+   under replay. A check promoted to t2 that can no longer fail is worse than
+   one that ran nightly.
+
+Step 4 is the one that matters and the one that will be skipped. Replay makes a
+check cheap to run, not automatically correct: a fixture recorded from a turn
+where the model happened not to exercise the guarded path will pass forever
+while asserting nothing. That is the same shape as the assertion-free case E4
+closed, one level up.
+
+What genuinely needs writing after that: the A1–A13 prompt rules as t3 cases
+(they are model-dependent by definition), and the E6 graders those need. Both
+are cheaper than they look now that the runner, baseline and gate exist.
 
 **Revised effort: 3–4 weeks**, against the audit's 1–2. The difference is Waves
 A–D, which the audit assumed were done — plus the replay seam, which it did not
