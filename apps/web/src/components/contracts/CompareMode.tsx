@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { DiffViewer } from './DiffViewer'
 import { extractChanges, resolveDiff, type RedlineDecision, type RedlineChange } from '@/lib/redline'
 import { sanitizeHtml } from '@/lib/sanitize'
-import { X, ChevronDown, Loader2, User, Clock, Check, XCircle } from 'lucide-react'
+import { X, ChevronDown, Loader2, User, Clock, Check, XCircle, Download } from 'lucide-react'
 
 interface VersionMini {
   id:            string
@@ -113,6 +113,32 @@ export function CompareMode({
       qc.invalidateQueries({ queryKey: ['contract', contractId] })
       qc.invalidateQueries({ queryKey: ['contract-versions', contractId] })
       onClose()
+    },
+  })
+
+  /**
+   * Phase 4 — download the pair as a .docx with native tracked changes.
+   *
+   * Goes through the axios `api` client rather than raw fetch. ContractEditor
+   * downloads with a bare fetch and no Authorization header against a
+   * permission-guarded route, so it 401s and silently does nothing; that is
+   * not a pattern to copy.
+   */
+  const downloadDocx = useMutation({
+    mutationFn: async () => {
+      const r = await api.get(
+        `/contracts/${contractId}/versions/${olderId}/redline-docx/${newerId}`,
+        { responseType: 'blob' },
+      )
+      const blob = new Blob([r.data], {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `redline-v${older?.versionNumber ?? '?'}-to-v${newer?.versionNumber ?? '?'}.docx`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
     },
   })
 
@@ -223,6 +249,21 @@ export function CompareMode({
             >
               <XCircle className="h-3.5 w-3.5" /> Reject all
             </Button>
+            {/* Phase 4 — the same two versions, as a Word file with native
+                tracked changes. This is the handoff to the counterparty:
+                they mark it up in Word and send it back. */}
+            <Button
+              size="sm" variant="outline" className="gap-1"
+              onClick={() => downloadDocx.mutate()}
+              disabled={!olderId || !newerId || downloadDocx.isPending}
+              title="Download as a Word document with tracked changes"
+              data-testid="download-redline-docx"
+            >
+              {downloadDocx.isPending
+                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                : <Download className="h-3.5 w-3.5" />}
+              Word (tracked)
+            </Button>
             <Button
               size="sm" className="gap-1"
               onClick={() => applyMerge.mutate()}
@@ -234,6 +275,13 @@ export function CompareMode({
             </Button>
           </div>
           {applyMerge.isError && <span className="text-red-600">Failed to apply — try again.</span>}
+          {/* A download that silently does nothing is indistinguishable from a
+              browser blocking it, so say so rather than failing quietly. */}
+          {downloadDocx.isError && (
+            <span className="text-red-600" data-testid="docx-download-error">
+              Could not build the Word file — try again.
+            </span>
+          )}
         </div>
       )}
 
