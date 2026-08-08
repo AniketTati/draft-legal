@@ -17,11 +17,11 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
-import { resolveApprovers, checkAutoApprove, type WorkflowStepDef } from '../lib/workflow-engine.js'
+import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses } from '../lib/embeddings.js'
 import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
-import { queueClassifyDocument, queueParseDocument } from '../lib/queue.js'
+import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
@@ -489,6 +489,36 @@ const PortfolioSearchSchema = z.object({
   contractType:     z.string().optional(),
   status:           z.string().optional(),
   counterpartyName: z.string().optional(),
+})
+
+// L9 — name→id resolution. `limit` defaults low and is hard-capped: this is a
+// lookup, not a directory dump, and the whole result is replayed into the next
+// prompt.
+const UserSearchSchema = z.object({
+  orgId: z.string().min(1),
+  query: z.string().max(200).optional(),
+  limit: z.number().int().min(1).max(50).default(20),
+})
+
+const TemplateListSchema = z.object({
+  orgId:         z.string().min(1),
+  query:         z.string().max(200).optional(),
+  contractType:  z.string().max(50).optional(),
+  publishedOnly: z.boolean().default(false),
+  limit:         z.number().int().min(1).max(50).default(20),
+})
+
+// L9 — mirrors the REST twin's body plus the two identity fields
+// agent-threads.ts injects from the JWT. `userId` is not a convenience here:
+// it is the field the step's authorization predicate is matched against.
+const ApprovalDecideSchema = z.object({
+  orgId:      z.string().min(1),
+  userId:     z.string().min(1),
+  instanceId: z.string().min(1),
+  stepId:     z.string().min(1),
+  decision:   z.enum(['APPROVED', 'REJECTED', 'DELEGATED']),
+  comment:    z.string().max(2000).optional(),
+  delegateTo: z.string().optional(),
 })
 
 const ClauseSearchSchema = z.object({
@@ -4128,6 +4158,269 @@ export async function internalAiRoutes(app: FastifyInstance) {
       })),
       topics: body.topics,
       matrix: redactedMatrix,
+    })
+  })
+
+  // ── POST /internal/ai/tools/user_search (L9) ───────────────────────────────
+  // Turn a NAME into a user id. This is the blocker behind "assign the Acme MSA
+  // to Alice": contract_update's assign_owner requires payload.ownerId as a
+  // CUID and 404s anything else, and until now nothing anywhere resolved a name
+  // to one, so the flow dead-ended on asking the user to paste an id.
+  //
+  // Deliberately NARROWER than its user-facing counterpart, which is the
+  // reverse of the usual direction: GET /api/v1/users is requireAuth-only with
+  // no query param and no limit, and hands back every org member's email and
+  // role list in one response. An agent needs to look someone up, not to
+  // enumerate the directory.
+  //
+  // Results are NOT passed through redactExcerpts. That is deliberate: the
+  // redactor's email pattern would destroy exactly the field that
+  // distinguishes two people called Alice, and this is internal directory
+  // data, not counterparty document text. Pinned by l9-new-verbs.mjs so a
+  // future redaction sweep cannot quietly break name resolution.
+  app.post('/tools/user_search', async (req, reply) => {
+    let body
+    try { body = UserSearchSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const q = body.query?.trim()
+    if (q) {
+      where.OR = [
+        { name:  { contains: q, mode: 'insensitive' } },
+        { email: { contains: q, mode: 'insensitive' } },
+      ]
+    }
+
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where: where as never,
+        select: {
+          id: true, name: true, email: true, status: true,
+          userRoles: { select: { role: { select: { name: true } } } },
+        },
+        orderBy: { name: 'asc' },
+        take: body.limit,
+      }),
+      prisma.user.count({ where: where as never }),
+    ])
+
+    const items = users.map(u => ({
+      id:     u.id,
+      name:   u.name,
+      email:  u.email,
+      status: u.status,
+      roles:  u.userRoles.map(r => r.role.name),
+    }))
+
+    return reply.send({
+      items,
+      total,
+      // A name-resolution tool that GUESSES is worse than none: it silently
+      // assigns the wrong person and reports success. Say so explicitly rather
+      // than leaving the model to infer ambiguity from a count it may not
+      // read — the model is expected to ask which one rather than pick.
+      ambiguous: items.length > 1,
+      ...(items.length > 1
+        ? { note: `${items.length} people match "${q ?? ''}". Ask the user which one they mean — do not choose.` }
+        : {}),
+    })
+  })
+
+  // ── POST /internal/ai/tools/template_list (L9) ─────────────────────────────
+  // Answers "what can I draft from?". No endpoint existed: GET /api/v1/templates
+  // is JWT- and permission-gated, so the agents service cannot reach it.
+  //
+  // `sections` is deliberately NOT included. Section rows carry full HTML —
+  // one template is tens of KB — and the tool budget would be blown on the
+  // first call. This tool answers the QUESTION; it is not the path that feeds
+  // an id into drafting (contract_create_from_template posts free text and the
+  // pipeline picks the template).
+  app.post('/tools/template_list', async (req, reply) => {
+    let body
+    try { body = TemplateListSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    if (body.contractType) where.contractType = body.contractType
+    if (body.publishedOnly) where.isPublished = true
+    const q = body.query?.trim()
+    if (q) {
+      where.OR = [
+        { name:        { contains: q, mode: 'insensitive' } },
+        { description: { contains: q, mode: 'insensitive' } },
+      ]
+    }
+
+    const [templates, total] = await Promise.all([
+      prisma.template.findMany({
+        where: where as never,
+        select: {
+          id: true, name: true, description: true, contractType: true,
+          isPublished: true, version: true, usageCount: true, updatedAt: true,
+          variables: true,
+        },
+        orderBy: [{ usageCount: 'desc' }, { name: 'asc' }],
+        take: body.limit,
+      }),
+      prisma.template.count({ where: where as never }),
+    ])
+
+    return reply.send({
+      items: templates.map(t => ({
+        id:           t.id,
+        name:         t.name,
+        description:  t.description,
+        contractType: t.contractType,
+        isPublished:  t.isPublished,
+        version:      t.version,
+        usageCount:   t.usageCount,
+        // Variable KEYS only — enough for the agent to say what it will need
+        // to ask for, without the labels/defaults blob.
+        variableKeys: Array.isArray(t.variables)
+          ? (t.variables as Array<{ key?: string }>).map(v => v?.key).filter(Boolean)
+          : [],
+        updatedAt:    t.updatedAt,
+      })),
+      total,
+    })
+  })
+
+  // ── POST /internal/ai/tools/approval_decide (L9) ───────────────────────────
+  // Internal twin of POST /api/v1/approvals/:instanceId/decide (approvals.ts).
+  //
+  // THE LOAD-BEARING LINE is `approverId: body.userId` in the step where-clause
+  // below. The internal endpoints authenticate the SERVICE, and a valid
+  // internal secret maps to roles:['ADMIN'] — so nothing downstream of here
+  // constrains whose approval this is. Drop that one condition and this
+  // endpoint becomes an approval-forgery path: the agent could approve
+  // anything, on anyone's behalf, inside the org. agent-threads.ts checks the
+  // caller holds approve:workflow at all; this checks the step is THEIRS.
+  app.post('/tools/approval_decide', async (req, reply) => {
+    let body
+    try { body = ApprovalDecideSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+
+    // Same argument-level rules as the REST twin, so the two paths cannot
+    // disagree about the same decision.
+    if (body.decision === 'REJECTED' && !body.comment?.trim()) {
+      return reply.status(400).send({ detail: 'comment is required when rejecting' })
+    }
+    if (body.decision === 'DELEGATED' && !body.delegateTo) {
+      return reply.status(400).send({ detail: 'delegateTo is required when delegating' })
+    }
+
+    const step = await prisma.approvalStep.findFirst({
+      where: {
+        id:                 body.stepId,
+        approvalInstanceId: body.instanceId,
+        orgId:              body.orgId,
+        approverId:         body.userId,   // ← see the note above
+        status:             'PENDING',
+      },
+    })
+    if (!step) {
+      return reply.status(403).send({ detail: 'Step not found or not assigned to you' })
+    }
+
+    const instance = await prisma.approvalInstance.findFirst({
+      where: { id: body.instanceId, orgId: body.orgId },
+    })
+    if (!instance) return reply.status(404).send({ detail: 'Approval instance not found' })
+    if (instance.status !== 'PENDING' && instance.status !== 'ESCALATED') {
+      return reply.status(409).send({ detail: 'Workflow is already closed' })
+    }
+
+    // Cancel the escalation timer for this step, exactly as the REST twin does.
+    // Without this the step is decided but still escalates on the deadline.
+    try { await notificationQueue.remove(`escalate-${body.stepId}`) } catch { /* no-op */ }
+
+    if (body.decision === 'DELEGATED') {
+      const delegatee = await prisma.user.findFirst({
+        where: { id: body.delegateTo, orgId: body.orgId, deletedAt: null },
+      })
+      if (!delegatee) return reply.status(400).send({ detail: 'Delegatee user not found in this org' })
+
+      await prisma.$transaction([
+        prisma.approvalStep.update({
+          where: { id: body.stepId },
+          data: {
+            status: 'DELEGATED', decision: 'DELEGATED',
+            comment: body.comment?.trim(), delegatedToId: body.delegateTo,
+            decidedAt: new Date(),
+          },
+        }),
+        prisma.approvalStep.create({
+          data: {
+            approvalInstanceId: body.instanceId,
+            orgId:      body.orgId,
+            stepOrder:  step.stepOrder,
+            stepName:   step.stepName,
+            approverId: body.delegateTo as string,
+            status:     'PENDING',
+            escalateAt: step.escalateAt,   // preserve the original deadline
+          },
+        }),
+      ])
+
+      const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
+      queueNotification({
+        orgId:        body.orgId,
+        userId:       body.delegateTo as string,
+        type:         'DELEGATION',
+        title:        'Contract approval delegated to you',
+        body:         `"${contract?.title ?? 'Contract'}" approval has been delegated to you (${step.stepName}).`,
+        resourceType: 'approval_step',
+        resourceId:   body.stepId,
+        email:        delegatee.email,
+      })
+
+      createAuditEvent({
+        orgId:        body.orgId,
+        userId:       body.userId,
+        action:       AuditAction.APPROVAL_DECIDED,
+        resourceType: 'approval_step',
+        resourceId:   body.stepId,
+        metadata:     { decision: 'DELEGATED', delegateTo: body.delegateTo, instanceId: body.instanceId, via: 'agent' },
+      }).catch(() => {})
+
+      return reply.send({ stepId: body.stepId, decision: 'DELEGATED', delegatedTo: body.delegateTo })
+    }
+
+    await prisma.approvalStep.update({
+      where: { id: body.stepId },
+      data: {
+        status:    body.decision,
+        decision:  body.decision,
+        comment:   body.comment?.trim() ?? null,
+        decidedAt: new Date(),
+      },
+    })
+
+    createAuditEvent({
+      orgId:        body.orgId,
+      userId:       body.userId,
+      action:       AuditAction.APPROVAL_DECIDED,
+      resourceType: 'approval_step',
+      resourceId:   body.stepId,
+      metadata:     { decision: body.decision, instanceId: body.instanceId, via: 'agent' },
+    }).catch(() => {})
+
+    // Run the state machine to advance or close the workflow.
+    await advanceWorkflow(body.instanceId, prisma)
+
+    const updated = await prisma.approvalInstance.findUnique({ where: { id: body.instanceId } })
+    return reply.send({
+      instanceId:     body.instanceId,
+      instanceStatus: updated?.status,
+      stepId:         body.stepId,
+      stepDecision:   body.decision,
     })
   })
 }

@@ -58,6 +58,9 @@ from .request_create     import build_request_create
 from .approval_route     import build_approval_route
 from .redline_apply      import build_redline_apply
 from .compliance_get     import build_compliance_get
+from .user_search       import build_user_search
+from .template_list     import build_template_list
+from .approval_decide   import build_approval_decide
 
 
 def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTool]:
@@ -99,6 +102,10 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         build_renewal_advice(org_id),
         build_matter_list(org_id, user_id),
         build_compliance_get(org_id),
+        # L9 — the three verbs the loops needed and did not have.
+        # user_search is the name->id path assign_owner / delegation depend on.
+        build_user_search(org_id),
+        build_template_list(org_id),
         build_contract_create_from_template(org_id, user_id),
         # Write tools — return an awaiting-confirmation payload that the
         # orchestrator surfaces as an ActionPreview card.
@@ -107,6 +114,7 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         build_request_create(org_id, user_id),
         build_approval_route(org_id, user_id),
         build_redline_apply(org_id, user_id),
+        build_approval_decide(org_id, user_id),
     ]
 
 

@@ -46,6 +46,7 @@ const WRITE_TOOLS = new Map<string, [action: string, resource: string]>([
   ['approval_route',                ['edit',   'contract']], // contracts.ts:1907
   ['contract_create_from_template', ['create', 'contract']], // contracts.ts:306
   ['redline_apply',                 ['edit',   'contract']], // contracts.ts:625
+  ['approval_decide',               ['approve', 'workflow']], // approvals.ts:277
 ])
 
 /**
@@ -369,6 +370,10 @@ export async function agentThreadRoutes(app: FastifyInstance) {
       : body.toolName === 'approval_route'             ? 'userId'
       : body.toolName === 'contract_create_from_template' ? 'userId'
       : body.toolName === 'redline_apply'              ? 'userId'
+      // L9 — approval_decide's userId is not a convenience field: the endpoint
+      // matches the step's approverId against it, so this is what stops the
+      // agent approving on someone else's behalf.
+      : body.toolName === 'approval_decide'            ? 'userId'
       : 'authorId'
     const enforcedArgs: Record<string, unknown> = {
       ...(body.args ?? {}),
