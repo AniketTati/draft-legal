@@ -83,4 +83,9 @@ app.include_router(compliance.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    # docs/37 E12 — advertise the replay mode. A tier-2 check needs the service
+    # to be REPLAYING, and "is it up" cannot answer that: a check that silently
+    # ran against a live model would burn quota and be nondeterministic while
+    # reporting as a free deterministic gate.
+    from app.replay import mode as _replay_mode
+    return {"status": "ok", "replayMode": _replay_mode()}

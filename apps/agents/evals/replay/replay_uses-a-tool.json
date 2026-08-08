@@ -3,6 +3,25 @@
   "calls": [
     {
       "content": "",
+      "tool_calls": [
+        {
+          "name": "contract_search",
+          "args": {
+            "limit": 1
+          },
+          "id": "0c7e2a54-4e4a-41bd-abc9-5a8e7c77524d"
+        },
+        {
+          "name": "contract_search",
+          "args": {
+            "type": "NDA"
+          },
+          "id": "1cd36dc4-8860-4679-917d-3f305c41cd75"
+        }
+      ]
+    },
+    {
+      "content": "You have 134 contracts in total.\n\nI found 118 NDAs. Here are the first 10:\n*   \"W0-1 RBAC probe B\" (ID: cmshntanu0017mrp4a2fgtmib, Status: PENDING_REVIEW)\n*   \"W0-1 RBAC probe A\" (ID: cmshntaim000vmrp49p3nb3gu, Status: DRAFT)\n*   \"W0-2 divergence\" (ID: cmsjy4b2f009e7oeqk0jm3osc, Status: DRAFT)\n*   \"W0-2 escape\" (ID: cmsjy4b1300937oeqnsvaxmbo, Status: DRAFT)\n*   \"W0-2 optin\" (ID: cmsjy4ayf008s7oeqrh48aofh, Status: DRAFT)\n*   \"W0-2 miss\" (ID: cmsjy4awt008n7oeqxrj2ym8y, Status: DRAFT)\n*   \"W0-2 drift\" (ID: cmsjy4avb008c7oeqdoyoc3pf, Status: DRAFT)\n*   \"W0-2 exact\" (ID: cmsjy4ara00817oequ7wag8ni, Status: DRAFT)\n*   \"W0-2 divergence\" (ID: cmsjsy0g6002f39qok459uggs, Status: DRAFT)\n*   \"W0-2 escape\" (ID: cmsjsy0en002439qo16jzkx90, Status: DRAFT)\n\n[chip]: Show me all contracts\n[chip]: Show me only executed NDAs\n[chip]: Summarize \"W0-1 RBAC probe B\"",
       "tool_calls": []
     }
   ]

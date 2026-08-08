@@ -41,20 +41,27 @@ export const CHECKS = [
     what: 'no layer references a tool that does not exist' },
 
   // ── t2 — needs the stack, but no model call ─────────────────────────────
-  { id: 'l2-redline-propose', tier: 't2', needs: ['db', 'api'],
-    what: 'redline_propose returns three usable variants' },
   { id: 'l4-draft-tenancy',   tier: 't2', needs: ['db', 'api'],
     what: 'drafting cannot write into another org — the cross-tenant write' },
   { id: 'l6b-dead-controls',  tier: 't2', needs: ['db', 'api'],
     what: 'the nine remaining dead controls do what their labels say' },
   { id: 'l7-prompt-truth',    tier: 't2', needs: ['db', 'api'],
     what: 'the system prompt describes the product that exists' },
+  { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],
+    what: 'a recorded turn replays deterministically with no model and no key' },
   { id: 'l3-error-surface',   tier: 't2', needs: ['db', 'api', 'web'],
     what: 'a failed turn reaches the user instead of a blank bubble (SSE stubbed)' },
 
   // ── t3 — real model calls, nightly only ─────────────────────────────────
   { id: 'e2-model-observability', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'the done frame reports what actually answered, and a pin is forwarded' },
+  // Reclassified from t2 2026-08-08: it never calls /agent/chat, so a scan of
+  // its call sites said "no model" — but redline_propose reaches one INDIRECTLY
+  // through the tool it exercises. Running it under replay produced a 502 from
+  // the upstream tool, not a meaningful failure. Indirect model dependencies are
+  // the classification trap here; the tier gate is what surfaced it.
+  { id: 'l2-redline-propose',  tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+    what: 'redline_propose returns three usable variants' },
   { id: 'l1-thread-poisoning', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'a write proposal does not kill the thread that made it' },
   { id: 'l4-draft-gate',       tier: 't3', needs: ['db', 'api', 'agents', 'model'],

@@ -76,6 +76,14 @@ function reachable(url) {
   return r.status === 0 && r.stdout && r.stdout !== '000'
 }
 
+/** Is the agents service running in replay mode? Asking "is it up" cannot
+ *  answer this, and a tier-2 check that silently ran against a LIVE model would
+ *  burn quota and vary run to run while reporting as a free deterministic gate. */
+function replayReady() {
+  const r = spawnSync('curl', ['-s', '-m', '3', `${process.env.AGENTS_BASE ?? 'http://localhost:8002'}/health`], { encoding: 'utf8' })
+  try { return JSON.parse(r.stdout || '{}').replayMode === 'replay' } catch { return false }
+}
+
 function probe() {
   const env = fs.existsSync(path.join(REPO, '.env'))
     ? fs.readFileSync(path.join(REPO, '.env'), 'utf8') : ''
@@ -87,6 +95,7 @@ function probe() {
     web: reachable(process.env.WEB ?? 'http://localhost:5173'),
     model: modelKeys.some(k => process.env[k] || new RegExp(`^${k}=.+`, 'm').test(env)),
     playwright: fs.existsSync(path.join(REPO, 'node_modules/playwright')),
+    replay: replayReady(),
   }
 }
 

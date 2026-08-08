@@ -634,7 +634,7 @@ bug and is fixed:
 
 ---
 
-## E12 — the replay seam ⚠️ PARTIALLY BUILT 2026-08-08
+## E12 — the replay seam ✅ BUILT 2026-08-08 — `e12-replay.mjs` 15/15
 
 **Working:** `apps/agents/app/replay.py`. `AGENT_REPLAY_MODE=record` captures
 real model responses to `apps/agents/evals/replay/<session>.json`;
@@ -663,18 +663,36 @@ every key and watching a replay run 500. It now short-circuits in `resolve_llm`
 above provider and key resolution, and `chat.py` skips provider validation
 under replay.
 
-**NOT working, and not yet diagnosed: recording a TOOL-CALLING turn.** A
-recorded turn that should call `contract_search` captured `content: ""` with no
-tool calls, and the live stream produced no tokens and no tool call. The
-`ReplayChatModel` itself is fine in isolation (verified: loads the fixture,
-streams `O`/`K`, raises on a missing one), so the fault is in
-`RecordingChatModel._astream` — most likely that `bind_tools` on the inner
-model returns a `RunnableBinding` whose streamed tool-call chunks are not being
-merged the way `_capture` expects. **Until this is fixed, replay covers
-prose-only turns only** — which is a small fraction of what tier 2 needs, since
-tool dispatch is the main thing worth testing deterministically.
+**CORRECTION.** This section previously reported tool-call recording as broken,
+diagnosed to `RecordingChatModel._astream`. **That was wrong, and diagnosed
+from a single sample.** Probing the recording chain directly showed it captures
+tool calls correctly, and re-recording end to end produced a clean two-call
+fixture: call 0 with two `contract_search` invocations, call 1 with the prose
+answer. The original empty fixture was simply the model declining to call a
+tool for that prompt — a model response, not a defect. Diagnosing from one
+observation is how the plan acquired a false claim of its own.
 
-**Effort remaining:** ~1 day for the tool-call path, then tier-2 cases.
+**Tool-call replay verified working.** A replayed turn dispatches its recorded
+tools in 34 ms with no API key — and, importantly, **the tools genuinely
+execute**: `contract_search` hits the real database and returns real rows. Only
+the model is replaced. That is precisely the seam that makes tool dispatch, the
+confirm gate and RBAC testable without a model, which is the whole point of
+tier 2.
+
+**A precondition, not an assumption.** `/health` now advertises `replayMode`,
+and the runner treats it as a `needs` entry. With replay off, `e12-replay`
+SKIPS — verified. A tier-2 check that silently ran against a live model would
+burn quota and vary run to run while reporting as a free deterministic gate.
+
+**One classification error surfaced by the gate itself.** `l2-redline-propose`
+was filed t2 because it never calls `/agent/chat` — but it reaches a model
+*indirectly*, through the `redline_propose` tool, and under replay produced a
+502 from the upstream tool rather than a meaningful failure. Moved to t3.
+Indirect model dependencies are the classification trap here, and the tier
+gate is what found it.
+
+**Measured:** tier 1 — 5 checks, 54 assertions, sub-second, keyless.
+tier 2 — 5 checks, 75 assertions, ~35 s, keyless.
 
 ---
 
