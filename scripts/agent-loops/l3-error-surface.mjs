@@ -37,10 +37,11 @@
  * Run AFTER:  a human-readable message, a retry control, and the turn persists.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { chromium } from '../../node_modules/playwright/index.mjs'
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const WEB = process.env.WEB_BASE ?? 'http://localhost:5173'
 
 // ─── 1. Every error envelope the server can emit is typed ───────────────────

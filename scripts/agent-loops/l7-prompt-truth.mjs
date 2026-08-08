@@ -24,9 +24,10 @@
  *             marked as the lower bound it is.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { login, internal, db, check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const AGENTS = `${REPO}/apps/agents`
 
 const src = fs.readFileSync(`${AGENTS}/app/orchestrator.py`, 'utf8')

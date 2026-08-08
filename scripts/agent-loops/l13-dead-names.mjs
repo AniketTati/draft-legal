@@ -28,9 +28,10 @@
  * Run AFTER:  the phantoms are gone and the blocking call is off the loop.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const read = p => { try { return fs.readFileSync(`${REPO}/${p}`, 'utf8') } catch { return '' } }
 
 const orch = read('apps/agents/app/orchestrator.py')

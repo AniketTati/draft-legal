@@ -31,8 +31,6 @@ export const CHECKS = [
   // ── t1 — static analysis, free, no services ─────────────────────────────
   { id: 'e1-gate-bites',      tier: 't1', needs: [],
     what: 'the eval gate itself can fail — four ways, watched' },
-  { id: 'l5-redline-reach',   tier: 't1', needs: [],
-    what: 'the redline tools the agent is told about are the ones it can reach' },
   { id: 'l6-dead-controls',   tier: 't1', needs: [],
     what: 'the five dead controls fixed in wave C stay wired' },
   { id: 'l8-chip-truth',      tier: 't1', needs: [],
@@ -47,6 +45,12 @@ export const CHECKS = [
     what: 'the nine remaining dead controls do what their labels say' },
   { id: 'l7-prompt-truth',    tier: 't2', needs: ['db', 'api'],
     what: 'the system prompt describes the product that exists' },
+  // Reclassified from t1 2026-08-08: it shells out to apps/agents/.venv/bin/python,
+  // which no clean checkout has. Caught by running the suite from a git-archive
+  // copy at a different path — the same thing CI does, and the thing a local run
+  // can never tell you.
+  { id: 'l5-redline-reach',   tier: 't2', needs: ['venv'],
+    what: 'the redline tools the agent is told about are the ones it can reach' },
   { id: 'e8-eval-identity',   tier: 't2', needs: ['db', 'api'],
     what: 'a tier-3 run cannot spend a customer\'s BYOK budget or be halted by the cap' },
   { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],

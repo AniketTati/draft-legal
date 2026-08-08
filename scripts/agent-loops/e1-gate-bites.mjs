@@ -177,4 +177,41 @@ section('7. Tier 1 pulls in no database client')
     t1.map(c => `${c.id}:[${(c.needs ?? []).join(',')}]`).join(' '))
 }
 
+// ─── 8. Checks are portable ─────────────────────────────────────────────────
+//
+// Thirteen checks hardcoded `/Users/temp/Documents/Code/draft-legal` — the
+// author's own machine. They passed locally and died on every other host. CI
+// found it; no local run ever could.
+
+section('8. No check is pinned to one machine')
+{
+  const dir = `${REPO}/scripts/agent-loops`
+  // Comments stripped first. The first version of this assertion flagged THIS
+  // file, because the comment above quotes the offending path verbatim —
+  // matching prose instead of code, for the fourth time in this project.
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+  const offenders = fs.readdirSync(dir).filter(f => f.endsWith('.mjs'))
+    .filter(f => /['"`]\/(Users|home)\//.test(strip(fs.readFileSync(`${dir}/${f}`, 'utf8'))))
+  check('no check hardcodes an absolute home path', offenders.length === 0,
+    offenders.length
+      ? `${offenders.join(', ')} — derive the repo root from import.meta.url; an absolute path works on exactly one computer`
+      : 'all derive their paths')
+
+  // The other half of the same lesson: a check needing a build artifact is not
+  // tier 1, however static its assertions look. l5-redline-reach shells out to
+  // apps/agents/.venv/bin/python and had to be reclassified.
+  const { CHECKS } = await import(`${REPO}/scripts/evals/manifest.mjs`)
+  const t1 = CHECKS.filter(c => c.tier === 't1')
+  // Self-excluded, deliberately. This file must CONTAIN the pattern in order to
+  // search for it, so scanning itself is guaranteed to match — the meta-check
+  // equivalent of the comment problem above. It is the one exclusion, and it is
+  // named rather than silent.
+  const shellsOut = t1.filter(c => c.id !== 'e1-gate-bites').filter(c => {
+    const src = strip(fs.readFileSync(`${dir}/${c.id}.mjs`, 'utf8'))
+    return /\.venv\/bin\/python|execFileSync\(\s*[`'"]python/.test(src)
+  })
+  check('no tier-1 check needs the python venv', shellsOut.length === 0,
+    shellsOut.length ? `${shellsOut.map(c => c.id).join(', ')} — a build artifact is as absent as a service on a clean checkout` : 'none')
+}
+
 report('E1 eval gate bites')

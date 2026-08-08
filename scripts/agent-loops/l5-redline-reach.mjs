@@ -30,10 +30,11 @@
  *             tool, and the Node layers that were already finished are wired.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const TOOLDIR = `${REPO}/apps/agents/app/tools`
 
 const TOOLS = fs.readdirSync(TOOLDIR)

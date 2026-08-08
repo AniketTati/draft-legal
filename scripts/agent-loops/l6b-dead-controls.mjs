@@ -44,9 +44,10 @@
  * Run AFTER:  each does what its label says, or is gone.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { login, db, check, report, section, API } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const read = p => { try { return fs.readFileSync(`${REPO}/${p}`, 'utf8') } catch { return '' } }
 const stripTs = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
 

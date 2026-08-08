@@ -37,9 +37,10 @@
  *             resolved, and the failure logged.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const orch = fs.readFileSync(`${REPO}/apps/agents/app/orchestrator.py`, 'utf8')
 const rail = fs.readFileSync(`${REPO}/apps/web/src/components/agent/SideAgentRail.tsx`, 'utf8')
 const home = fs.readFileSync(`${REPO}/apps/web/src/pages/AgentHomePage.tsx`, 'utf8')

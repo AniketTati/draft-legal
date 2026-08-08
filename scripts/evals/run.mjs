@@ -107,6 +107,8 @@ function probe() {
     model: modelKeys.some(k => process.env[k] || new RegExp(`^${k}=.+`, 'm').test(env)),
     playwright: fs.existsSync(path.join(REPO, 'node_modules/playwright')),
     replay: replayReady(),
+    // A build artifact, not a service — but just as absent on a clean checkout.
+    venv: fs.existsSync(path.join(REPO, 'apps/agents/.venv/bin/python')),
     personas: personasSeeded(),
   }
 }
@@ -147,8 +149,14 @@ function runCheck(check) {
     // No summary line at all: the check crashed before reporting, or its output
     // format drifted. Either way we do not know what it asserted, so it cannot
     // be a pass.
+    // Keep the error MESSAGE, not the tail of the stack. Slicing the last 300
+    // chars reported "...tracePromise.__proto__ (node:internal/modules/esm/
+    // loader:681:26)" for three different root causes, which diagnosed nothing.
+    const firstErr = (out.match(/^(?:\w*Error|Error):.*$/m) ?? [])[0]
+      ?? (out.match(/^\s*(?:Cannot find|ENOENT|ERR_[A-Z_]+).*$/m) ?? [])[0]
+      ?? out.trim().split('\n').find(l => l.trim()) ?? ''
     return { ...check, status: 'error', passed: 0, total: 0, ms,
-             detail: `no summary line; exit ${r.status}. ${out.trim().slice(-300)}` }
+             detail: `no summary line; exit ${r.status}. ${firstErr.trim().slice(0, 300)}` }
   }
   // E4 — a check that asserted nothing is a failure, not a pass.
   if (sum.total === 0) {
