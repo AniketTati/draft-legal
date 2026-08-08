@@ -97,3 +97,4 @@ scripts/week-zero/screenshots/
 
 # Agent-loop check screenshots
 scripts/agent-loops/*.png
+scripts/evals/fixtures/baseline.json

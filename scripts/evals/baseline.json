@@ -1,0 +1,23 @@
+{
+  "tiers": [
+    "t1"
+  ],
+  "checks": {
+    "e1-gate-bites": {
+      "status": "pass",
+      "total": 18
+    },
+    "l6-dead-controls": {
+      "status": "pass",
+      "total": 9
+    },
+    "l8-chip-truth": {
+      "status": "pass",
+      "total": 11
+    },
+    "l13-dead-names": {
+      "status": "pass",
+      "total": 8
+    }
+  }
+}

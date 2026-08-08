@@ -63,19 +63,36 @@ async def chat(req: ChatRequest):
     # method", surfaced to users as an empty stream. Now we silently
     # swap to whichever provider IS configured (logs a warning so the
     # operator still sees the fallback).
-    resolved_provider = resolve_provider(req.provider)
-    if resolved_provider != req.provider:
+    # docs/37 E12 — under replay there is no provider and no key; validating
+    # one would reinstate the key requirement this seam exists to remove.
+    from app.replay import mode as _replay_mode
+    resolved_provider = req.provider if _replay_mode() == "replay" else resolve_provider(req.provider)
+    if _replay_mode() != "replay" and resolved_provider != req.provider:
         # Caller requested an unconfigured provider — pick a sensible
         # model id for the actual provider rather than passing through
         # the (now wrong) one (e.g. claude-sonnet-4-6 → openai breaks).
-        req.model_id = model_for(resolved_provider, tier="smart")
+        #
+        # docs/37 E13 — but ONLY when the requested model does not belong to
+        # the resolved provider. This used to overwrite unconditionally, and
+        # DEFAULT_PROVIDER is anthropic: on a deployment holding a single
+        # provider key — the common case — every request took this branch, so
+        # every model pin in the product was discarded, including pins that
+        # were valid for the provider actually being used. The model id is
+        # also what the orchestrator sniffs to choose a tier, so this
+        # destroyed the caller's tier signal too, not just the model.
+        try:
+            get_model_option(resolved_provider, req.model_id)
+        except ValueError:
+            req.model_id = model_for(resolved_provider, tier="smart")
     req.provider = resolved_provider
 
-    # Validate provider + model before starting the stream
-    try:
-        get_model_option(req.provider, req.model_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Validate provider + model before starting the stream. Skipped under
+    # replay: the recorded response is served without a provider at all.
+    if _replay_mode() != "replay":
+        try:
+            get_model_option(req.provider, req.model_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     session_id = req.session_id or str(uuid.uuid4())
 
@@ -103,8 +120,16 @@ async def chat(req: ChatRequest):
                 ):
                     # Tag every envelope with session_id + provider so clients
                     # that picked them up from the first frame keep working.
-                    event = {**event, "session_id": session_id,
-                             "provider": req.provider, "model_id": req.model_id}
+                    #
+                    # docs/37 E2 — these are the REQUESTED values, not the
+                    # resolved ones, and the spread used to put them LAST, so
+                    # they overwrote anything authoritative the orchestrator
+                    # set. The done frame now carries the genuinely resolved
+                    # provider/model/tier/source, so the defaults fill in only
+                    # where the event did not already say.
+                    event = {"session_id": session_id,
+                             "provider": req.provider, "model_id": req.model_id,
+                             **event}
                     yield f"data: {json.dumps(event)}\n\n"
             except Exception as e:
                 err = json.dumps({"type": "error", "error": str(e)})

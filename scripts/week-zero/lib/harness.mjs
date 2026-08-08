@@ -12,7 +12,15 @@
  */
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { PrismaClient } from '../../../apps/api/node_modules/@prisma/client/index.js'
+import { createRequire } from 'node:module'
+
+// Prisma is required LAZILY, inside db(). It used to be a static import, which
+// meant merely importing this harness pulled in apps/api/node_modules — so
+// every check needed `pnpm install` plus a generated client even when it never
+// touched the database. That silently made the "static analysis, no services,
+// $0" tier a lie: all five tier-1 checks died on a module-resolution error the
+// first time CI ran them on a clean checkout. Keeping db() synchronous (many
+// callers rely on that) means createRequire rather than a dynamic import.
 
 export const API = process.env.API_BASE ?? 'http://localhost:3001'
 export const AGENTS = process.env.AGENTS_BASE ?? 'http://localhost:8002'
@@ -38,6 +46,8 @@ let _prisma
 /** Lazily-constructed Prisma client pointed at the dev database. */
 export function db() {
   if (!_prisma) {
+    const require = createRequire(import.meta.url)
+    const { PrismaClient } = require('../../../apps/api/node_modules/@prisma/client/index.js')
     _prisma = new PrismaClient({
       datasources: { db: { url: process.env.DATABASE_URL ?? readDbUrl() } },
     })

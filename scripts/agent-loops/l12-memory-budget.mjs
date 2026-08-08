@@ -33,10 +33,11 @@
  *             persisted for replay, decoupled from the stream cap.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { login, db, check, report, section, API } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const mem  = fs.readFileSync(`${REPO}/apps/agents/app/memory.py`, 'utf8')
 const orch = fs.readFileSync(`${REPO}/apps/agents/app/orchestrator.py`, 'utf8')
 

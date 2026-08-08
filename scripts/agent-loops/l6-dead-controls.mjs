@@ -38,9 +38,10 @@
  * Run AFTER:  each one does what its label says, or is gone.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const read = p => { try { return fs.readFileSync(`${REPO}/${p}`, 'utf8') } catch { return '' } }
 
 const app      = read('apps/web/src/App.tsx')

@@ -27,9 +27,10 @@
  * Run AFTER:  every call is paired, and turn 2 answers normally.
  */
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { login, db, check, report, section, API } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const prisma = db()
 const admin = await login()
 const orgId = admin.user.orgId

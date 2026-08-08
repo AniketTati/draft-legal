@@ -684,7 +684,8 @@ async def run_agent_chat_stream(
       {"type": "tool_call_result", "id": ..., "name": ..., "result": "...",
                                    "truncated": bool}
       {"type": "token",            "delta": "..."}
-      {"type": "done",             "session_id": "..."}
+      {"type": "done",             "session_id": "...", "provider": "...",
+                                     "model": "...", "tier": "...", "source": "..."}
       {"type": "error",            "error": "..."}
 
     Backwards-compat: each token event ALSO includes a legacy `delta` field
@@ -744,6 +745,20 @@ async def run_agent_chat_stream(
     resolved = await resolve_llm(
         _tier, org_id=org_id, streaming=True,
         trace_name="agent.chat", user_id=user_id, thread_id=session_id,
+        # docs/37 E13 — honour an explicit per-request pin.
+        #
+        # resolve_llm has accepted these since it was written, and this module's
+        # own docstring says "Provider + model are passed per-request so the
+        # user can switch live". The call site simply never passed them, so the
+        # model was always whatever the org's tier config chose and the product's
+        # stated model-switching feature did nothing. Absent a pin these are
+        # None and org config still decides, so the default is unchanged.
+        #
+        # Cost is not the reason to withhold this: the daily cap is the cost
+        # control, and since docs/36 L11 it fails closed. Locking the model
+        # would be a second, weaker control over the same risk.
+        provider_override=provider or None,
+        model_override=model_id or None,
     )
     llm = resolved.llm.bind_tools(tools)
     chat_callbacks: list = resolved.callbacks
@@ -1188,4 +1203,19 @@ async def run_agent_chat_stream(
             tool_results=turn_tool_results or None,
         )
 
-    yield {"type": "done", "session_id": session_id}
+    # docs/37 E2 — report what actually answered, not what was asked for.
+    # All four values already existed on ResolvedLlm and were discarded. Without
+    # them a flipped eval case cannot be attributed: _platform_resolve returns
+    # the first provider in the tier list that has an env key, so the same case
+    # resolves differently in CI than on a dev box, and adding a secret to the
+    # repo silently changes every result. `source` additionally exposes the
+    # case that must never happen in an eval run — spending a customer's BYOK
+    # key.
+    yield {
+        "type": "done",
+        "session_id": session_id,
+        "provider": resolved.provider,
+        "model": resolved.model,
+        "tier": resolved.tier,
+        "source": resolved.source,
+    }

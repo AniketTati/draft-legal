@@ -32,10 +32,11 @@
  *             proxy intact, and the buffering hint is forwarded.
  */
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { login, db, check, report, section, API } from '../week-zero/lib/harness.mjs'
 
-const REPO = '/Users/temp/Documents/Code/draft-legal'
+const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const prisma = db()
 const admin  = await login()
 const orgId  = admin.user.orgId
