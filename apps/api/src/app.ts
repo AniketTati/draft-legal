@@ -56,6 +56,7 @@ import { cronRoutes } from './routes/cron.js'
 import { signatureRoutes } from './routes/signatures.js'
 import { inboundEmailRoutes } from './routes/inbound-email.js'
 import { marketingRoutes } from './routes/marketing.js'
+import { telemetryRoutes } from './routes/telemetry.js'
 import { slackRoutes } from './routes/slack.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
@@ -266,6 +267,10 @@ export async function buildApp() {
   // P7.6.3 — Inbound email parser webhook (SendGrid / Mailgun target)
   await app.register(inboundEmailRoutes,   { prefix: '/api/v1/inbound' })
   await app.register(marketingRoutes,      { prefix: '/api/v1/marketing' })
+  // L6 #13 — lib/telemetry.ts has posted here from nine call sites since
+  // B.5.17 against a route that was never registered. Unauthenticated by
+  // design: the client's primary transport is sendBeacon on unload.
+  await app.register(telemetryRoutes,      { prefix: '/api/v1/telemetry' })
   // Phase 10 — Slack slash command + interactive buttons (public; signed
   // by the org's Slack signing secret rather than a user JWT).
   await app.register(slackRoutes,          { prefix: '/api/v1/slack' })

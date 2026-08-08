@@ -365,6 +365,7 @@ function BulkDecisionDialog({
   const [decision, setDecision] = useState<'APPROVED' | 'REJECTED'>('APPROVED')
   const [comment, setComment] = useState('')
   const [progress, setProgress] = useState<{ done: number; failed: number; total: number } | null>(null)
+  const [failures, setFailures] = useState<{ stepId: string; title: string; detail: string }[]>([])
 
   const toggle = (id: string) => {
     setSelected(prev => {
@@ -374,11 +375,16 @@ function BulkDecisionDialog({
     })
   }
 
+  // L6 #10 — this used to `catch { failed++ }`, throwing away the server's
+  // per-step detail, then close the dialog unconditionally after 600 ms with
+  // the failure count rendered in emerald success green. The user got a green
+  // tick, a number, and no way to learn which items failed or why.
   const submit = async () => {
     const targets = items.filter(i => selected.has(i.stepId))
     setProgress({ done: 0, failed: 0, total: targets.length })
+    setFailures([])
     let done = 0
-    let failed = 0
+    const failedItems: { stepId: string; title: string; detail: string }[] = []
     for (const t of targets) {
       try {
         await api.post(`/approvals/${t.instanceId}/decide`, {
@@ -387,12 +393,25 @@ function BulkDecisionDialog({
           comment:  comment.trim() || undefined,
         })
         done++
-      } catch {
-        failed++
+      } catch (err) {
+        const detail =
+          (err as { response?: { data?: { detail?: string; error?: string } } })?.response?.data?.detail ??
+          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
+          'Request failed'
+        failedItems.push({ stepId: t.stepId, title: t.contract?.title ?? t.stepName ?? t.stepId, detail })
       }
-      setProgress({ done, failed, total: targets.length })
+      setProgress({ done, failed: failedItems.length, total: targets.length })
     }
-    setTimeout(() => onDone(), 600)
+    setFailures(failedItems)
+    // Only close on a clean run. Closing over failures is what made a partial
+    // failure indistinguishable from success.
+    if (failedItems.length === 0) setTimeout(() => onDone(), 600)
+  }
+
+  const retryFailed = () => {
+    setSelected(new Set(failures.map(f => f.stepId)))
+    setProgress(null)
+    setFailures([])
   }
 
   const isRejecting = decision === 'REJECTED'
@@ -481,17 +500,52 @@ function BulkDecisionDialog({
           </div>
 
           {progress && (
-            <div className="text-sm bg-blue-50 border border-blue-200 rounded-md px-3 py-2">
+            <div
+              className={`text-sm border rounded-md px-3 py-2 ${
+                progress.failed > 0
+                  ? 'bg-red-50 border-red-200'
+                  : 'bg-blue-50 border-blue-200'
+              }`}
+            >
               {progress.done + progress.failed === progress.total ? (
-                <span className="text-emerald-700">
-                  ✓ {progress.done} of {progress.total} processed{progress.failed ? ` · ${progress.failed} failed` : ''}
-                </span>
+                progress.failed > 0 ? (
+                  <span className="text-red-700" data-testid="bulk-partial-failure">
+                    {progress.done} of {progress.total} processed · {progress.failed} failed
+                  </span>
+                ) : (
+                  <span className="text-emerald-700">
+                    ✓ {progress.done} of {progress.total} processed
+                  </span>
+                )
               ) : (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
                   Processing {progress.done + progress.failed} of {progress.total}…
                 </>
               )}
+            </div>
+          )}
+
+          {/* Name the items that failed, with the server's own reason. The
+              bare `catch { failed++ }` this replaces threw that detail away,
+              so the count was all anyone ever saw — in success green, for
+              600 ms, before the dialog closed itself. */}
+          {failures.length > 0 && (
+            <div
+              className="text-sm border border-red-200 rounded-md divide-y divide-red-100"
+              data-testid="bulk-failure-list"
+            >
+              {failures.map(f => (
+                <div key={f.stepId} className="px-3 py-2">
+                  <div className="font-medium text-gray-900 truncate">{f.title}</div>
+                  <div className="text-xs text-red-700">{f.detail}</div>
+                </div>
+              ))}
+              <div className="px-3 py-2">
+                <Button size="sm" variant="outline" onClick={retryFailed}>
+                  Retry {failures.length} failed
+                </Button>
+              </div>
             </div>
           )}
         </div>

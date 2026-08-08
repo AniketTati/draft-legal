@@ -16,6 +16,10 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { sendSigningEmailForSigner } from '../lib/signing-email.js'
 import { sendEmail, isEmailConfigured } from '../lib/mailer.js'
+// L6 #3 — the delivery-preference decision. Lives in lib/ rather than here
+// because importing this file constructs a BullMQ Worker as a side effect, so
+// nothing can import it just to ask whether an email should be sent.
+import { shouldEmail } from '../lib/notification-prefs.js'
 
 // ─── notify ───────────────────────────────────────────────────────────────────
 
@@ -33,8 +37,16 @@ async function handleNotify(data: NotificationJob): Promise<void> {
     },
   })
 
-  // 2. Optional email — only if a provider is configured; failure does NOT
-  // fail the job (the DB notification is authoritative).
+  // 2. Optional email — only if a provider is configured, and only if the
+  // recipient has not switched this notification type off. The in-app row
+  // above is written either way: the toggles are about email delivery, and
+  // suppressing the record too would lose the notification entirely.
+  const gate = data.email ? await shouldEmail(data.userId, data.type) : { emailed: false, reason: 'no address' }
+  if (data.email && !gate.emailed) {
+    console.info('[notify] suppressed by preference for userId=%s type=%s (%s)', data.userId, data.type, gate.reason)
+    return
+  }
+
   if (data.email && isEmailConfigured()) {
     sendEmail({ to: data.email, subject: data.title, text: data.body })
       .then((r) => {
