@@ -123,8 +123,20 @@ export function NotificationBell() {
                   className={`flex gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors cursor-pointer ${!n.read ? 'bg-blue-50/40' : ''}`}
                   onClick={() => {
                     if (!n.read) markRead.mutate([n.id])
-                    if (n.resourceType === 'contract') { setOpen(false); navigate(`/contracts/${n.resourceId}`) }
-                    if (n.resourceType === 'approval_instance') { setOpen(false); navigate(`/approvals/${n.resourceId}`) }
+                    setOpen(false)
+                    if (n.resourceType === 'contract') { navigate(`/contracts/${n.resourceId}`); return }
+                    // APPROVAL_REQUEST -- the most actionable notification in
+                    // the product -- is emitted with resourceType
+                    // 'approval_step' by both workflow-engine.ts and
+                    // notification.worker.ts. It matched neither branch, so the
+                    // row simply greyed out and went nowhere.
+                    //
+                    // Both approval types go to the queue, not to
+                    // /approvals/<id>: App.tsx registers `approvals` and has no
+                    // :id child, so the old link rendered an empty page.
+                    if (n.resourceType === 'approval_step' || n.resourceType === 'approval_instance') {
+                      navigate('/approvals'); return
+                    }
                   }}
                 >
                   <div className="shrink-0 mt-0.5">

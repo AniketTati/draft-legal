@@ -109,3 +109,48 @@ export async function generateRedlineDocx(args: RedlineDocxArgs): Promise<Redlin
   const bytes = await Packer.toBuffer(doc)
   return { bytes, title: contract.title, author, stats }
 }
+
+/**
+ * A plain .docx of one version's HTML — no revisions, no diff.
+ *
+ * Exists because two endpoints were serving Gotenberg's
+ * /forms/libreoffice/convert output — which is a PDF — under a .docx filename
+ * and the wordprocessingml MIME type. Word refuses to open those, and one of
+ * them is the counterparty-facing portal download whose whole purpose is
+ * "download .docx -> redline locally -> upload back".
+ *
+ * Reuses the same mapper as the redline export; HTML with no <ins>/<del>
+ * simply produces a document with no tracked changes.
+ */
+export async function generatePlainDocx(
+  html: string,
+  { title, author = 'draftLegal' }: { title: string; author?: string },
+): Promise<Uint8Array> {
+  const meta: RevisionMeta = { author, date: toRevisionDate(new Date()) }
+  const body = new DocxMapper(meta).map(html) as (Paragraph | Table)[]
+
+  const doc = new Document({
+    title,
+    creator: 'draftLegal',
+    numbering: {
+      config: [{
+        reference: ORDERED_LIST_REF,
+        levels: Array.from({ length: 5 }, (_, i) => ({
+          level: i,
+          format: LevelFormat.DECIMAL,
+          text: `%${i + 1}.`,
+          alignment: AlignmentType.START,
+          style: { paragraph: { indent: { left: 720 * (i + 1), hanging: 360 } } },
+        })),
+      }],
+    },
+    styles: {
+      paragraphStyles: [{
+        id: 'Monospace', name: 'Monospace', basedOn: 'Normal',
+        quickFormat: false, run: { font: 'Courier New', size: 20 },
+      }],
+    },
+    sections: [{ children: body }],
+  })
+  return Packer.toBuffer(doc)
+}

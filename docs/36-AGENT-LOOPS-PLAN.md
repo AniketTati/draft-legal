@@ -752,7 +752,24 @@ most of the rest.
 
 ## L6 — Twenty-five controls in the app do nothing
 
-**Severity: High**
+**Severity: High.** ⚠️ PARTIALLY FIXED 2026-08-08 — `l6-dead-controls.mjs` 2/9 → 9/9.
+
+**Fixed (5 of 14 categories):** the catch-all route (#14), the notification bell's
+`approval_step` and its dead `/approvals/<id>` link (#2), the counterparty
+"New contract" CTA (#5), the diligence CSV export (#4), and BOTH Gotenberg
+`.docx` liars (#9 and half of #1) — now produced by the real OOXML writer via a
+new `generatePlainDocx()`.
+
+The catch-all went first deliberately: it is the force multiplier. Every other
+dead link in this list rendered full chrome around an empty page, which reads as
+a broken app and cannot be diagnosed from a user's description.
+
+**NOT fixed:** #1's six editor export buttons, #3's eleven notification
+preferences that persist and are never read, #6 agent artifact exports, #7
+contract Download, #8 Replace All (which corrupts HTML), #10 bulk approve, #11
+send reminder, #12 signature filter badges, #13 telemetry posting to a route
+that does not exist. Each needs its own change; none is covered by this check,
+which is scoped to what was fixed.
 
 Not agent work, but named in gap #2 and the highest-frequency defect class a
 user meets. Established by diffing all 268 registered API routes against all 266
