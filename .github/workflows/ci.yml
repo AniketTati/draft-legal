@@ -130,12 +130,32 @@ jobs:
           cache: 'pip'
           cache-dependency-path: apps/agents/requirements.txt
 
+      # There are no Python tests yet, so this install is the only real gate in
+      # this job — and it earns its keep: an unsatisfiable requirements.txt
+      # broke it (and the agents image build) for a full day in Aug 2026.
       - name: Install dependencies
         working-directory: apps/agents
         run: pip install -r requirements.txt pytest pytest-asyncio
+
+      # Installing is not the same as installing something coherent. pip will
+      # leave a requirement unsatisfied when packages arrive in separate steps,
+      # which is how the dev venv ended up on langchain-core 1.x under adapters
+      # that forbid it. `pip check` is the only thing that says so out loud.
+      - name: Verify the resolved set is self-consistent
+        working-directory: apps/agents
+        run: pip check
+
+      # The app importing proves every route module loads under the resolved
+      # versions — the langchain packages move imports between majors, and a
+      # resolve that succeeds can still produce a container that cannot boot.
+      - name: Import the app
+        working-directory: apps/agents
+        run: python -c "import main; print(f'{len(main.app.routes)} routes loaded')"
 
       - name: Run agent tests
         working-directory: apps/agents
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: pytest tests/ -v --tb=short || true  # non-blocking until Wave 5 lands real agent tests
+        # Still non-blocking, and tests/ does not exist yet — this step reports
+        # nothing today. The two steps above are what actually guard this job.
+        run: pytest tests/ -v --tb=short || true

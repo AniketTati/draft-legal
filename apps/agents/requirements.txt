@@ -2,12 +2,26 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 anthropic>=0.30.0
 openai>=1.35.0
-# Pin to the langchain 0.3 / langgraph 0.6 line. langchain-core 1.x exists but
-# is not yet uniformly adopted by the anthropic/openai/google providers — the
-# 0.3/0.2 trio below is the last consistent set. Revisit when all three hit 1.x.
-langgraph>=0.2.0,<1.0
-langchain-anthropic>=0.2.0,<1.0
-langchain-openai>=0.2.0,<1.0
+# The langchain stack stays on the 0.3 / langgraph 0.6 line, and these pins are
+# mutually load-bearing — `langchain` (needed by langfuse.langchain, below)
+# requires langchain-core>=1.0 from its 1.0 release onward, so pinning
+# langchain>=1.0 while holding langchain-core<1.0 is unsatisfiable. That exact
+# contradiction shipped on 2026-08-06: `pip install -r` died with
+# ResolutionImpossible, which reddened CI's agents job and broke the Cloud Build
+# of the agents image, so nothing shipped until it was fixed.
+#
+# The 1.x line does work — the app imports and langfuse loads under it — so
+# moving is a real option, but move ALL of these together and re-verify the
+# provider adapters: langchain-anthropic 0.3.x explicitly forbids
+# langchain-core 1.x, and a mixed set installs happily while `pip check` fails.
+#
+# Floors are >=0.3, not >=0.2: the 0.2-era adapters need langchain-core<0.3, and
+# leaving them reachable makes pip backtrack through them for minutes before it
+# gives up. scripts/agents/deps-check.mjs resolves this file in the real base
+# image and asserts the versions that come out.
+langgraph>=0.6,<1.0
+langchain-anthropic>=0.3.0,<1.0
+langchain-openai>=0.3.0,<1.0
 langchain-google-genai>=2.0.0,<3.0
 langchain-core>=0.3.0,<1.0
 redis>=5.0.0
@@ -32,4 +46,6 @@ pytesseract>=0.3.10
 # both layouts, but the pin keeps the resolution predictable.
 langfuse>=3.0.0,<5.0
 # Required by langfuse.langchain (the split langchain-* packages are not enough).
-langchain>=1.0,<2.0
+# Held below 1.0 to stay satisfiable against langchain-core<1.0 above — see the
+# note there before touching this bound.
+langchain>=0.3,<1.0
