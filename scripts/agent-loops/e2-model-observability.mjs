@@ -138,4 +138,60 @@ section('3. askAgent forwards a model pin instead of discarding it')
     `pinned anthropic; frame says provider=${resolvedProvider} model=${pinned.done?.model} — these must agree, or the stream is lying about who answered`)
 }
 
+// ─── 4. E13 — a valid model pin survives provider fallback ──────────────────
+//
+// chat.py auto-falls-back to a configured provider when the caller asks for one
+// without a key, and USED TO overwrite req.model_id unconditionally when it did:
+//
+//     if resolved_provider != req.provider:
+//         req.model_id = model_for(resolved_provider, tier="smart")
+//
+// The default provider is anthropic. On a deployment holding only ONE provider
+// key -- the common case, and this workspace -- every request takes that branch,
+// so every model pin in the entire product was discarded, including pins that
+// were perfectly valid for the provider actually being used. Model selection was
+// silently dead.
+//
+// Substituting is right when the requested model does not belong to the resolved
+// provider (claude-sonnet-4-6 would break against openai). It is wrong when it
+// does.
+
+section('4. A pin valid for the resolved provider is not overwritten')
+{
+  // Ask for a model the resolved provider genuinely offers and assert the pin
+  // SURVIVES to the service. Deliberately not asserted: that the pin changes
+  // the RESOLVED model. Measured on this deployment -- which holds one provider
+  // key and has no OrgAiSettings row -- both gemini-2.5-pro and
+  // gemini-2.5-flash resolve to gemini-2.5-flash at tier `fast`. The platform
+  // tier table, not the caller, chooses the final model. Whether a caller
+  // SHOULD be able to override that is a product decision (org cost control is
+  // a legitimate reason to say no), so it is recorded in docs/37 E13 rather
+  // than asserted here.
+  const probe = await turn({ message: 'Say OK.', sessionId: `e13-${Date.now()}` })
+  const provider = probe.done?.provider
+
+  const CANDIDATES = {
+    google:    ['gemini-2.5-flash', 'gemini-2.5-pro'],
+    anthropic: ['claude-haiku-4-5-20251001', 'claude-sonnet-4-6'],
+    openai:    ['gpt-4.1-mini', 'gpt-4.1'],
+  }
+  const pair = CANDIDATES[provider]
+  check('the resolved provider is one we know models for', Boolean(pair),
+    `provider=${provider} — extend CANDIDATES if this is a new provider`)
+
+  if (pair) {
+    // The regression that matters: a pin VALID for the resolved provider must
+    // reach the service intact. chat.py's fallback used to overwrite it
+    // unconditionally, and since DEFAULT_PROVIDER is anthropic, a single-key
+    // deployment took that branch on EVERY request — so no pin anywhere in the
+    // product survived.
+    for (const model of pair) {
+      const r = await turn({ message: 'Say OK.', sessionId: `e13-${model}-${Date.now()}`, provider, modelId: model })
+      check(`a pin of ${model} reaches the service intact`,
+        r.done?.model_id === model,
+        `sent ${model}, service echoed ${r.done?.model_id} — the fallback branch rewrote a pin that was valid for the provider actually in use`)
+    }
+  }
+}
+
 report('E2 model observability')

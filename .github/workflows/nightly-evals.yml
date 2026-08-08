@@ -47,5 +47,11 @@ jobs:
       - name: Run tier 3
         env:
           EVAL_ORG_ID: ${{ secrets.EVAL_ORG_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # This deployment holds a Google key only. Listed explicitly rather
+          # than passing every provider: router.py's _platform_resolve picks
+          # the FIRST provider in the tier list that has a key, so quietly
+          # adding a second key later would change every eval result. Make that
+          # a deliberate edit here.
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: node scripts/evals/run.mjs --tier t3 --check-baseline --strict

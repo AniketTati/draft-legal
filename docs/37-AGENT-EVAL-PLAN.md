@@ -607,7 +607,30 @@ E13 has to be resolved before any model-swap eval means anything.
 3. Either way: the echoed request metadata must not report a value that was
    not used.
 
-**Effort:** half a day once the rule is decided; the decision is the work.
+**Partly resolved 2026-08-08.** Two distinct layers, one of which was a plain
+bug and is fixed:
+
+1. **FIXED — `chat.py` discarded valid pins.** The provider auto-fallback
+   overwrote `req.model_id` *unconditionally* whenever it swapped provider.
+   `DEFAULT_PROVIDER` is anthropic, so on a deployment holding a **single
+   provider key** — the common case, and this workspace — **every request took
+   that branch and every model pin in the product was discarded**, including
+   pins perfectly valid for the provider actually in use. Because the model id
+   is also what the orchestrator sniffs to pick a tier, this destroyed the
+   caller's tier signal too. Now it substitutes only when the requested model
+   does not belong to the resolved provider. Verified: `gemini-2.5-flash` used
+   to echo back as `gemini-2.5-pro`; it now echoes correctly.
+
+2. **OPEN — the platform tier table, not the caller, chooses the final model.**
+   With the pin now arriving intact, both `gemini-2.5-pro` and
+   `gemini-2.5-flash` still resolve to `gemini-2.5-flash` at tier `fast`, on an
+   org with **no `OrgAiSettings` row at all** — so this is the platform tier
+   default, not org config. Whether a caller should be able to override it is a
+   genuine product decision: org-level cost control is a legitimate reason to
+   say no. **But a model-comparison eval is impossible until it is settled**,
+   which is the audit's own stated motivation for this gap.
+
+**Effort:** the remaining half is a decision, not code.
 
 ---
 
