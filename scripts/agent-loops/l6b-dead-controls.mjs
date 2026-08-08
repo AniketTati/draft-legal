@@ -79,9 +79,29 @@ section('1. Turning a notification off turns it off')
   const prefsLib = read('apps/api/src/lib/notification-prefs.ts')
   const code   = stripTs(worker) + '\n' + stripTs(prefsLib)
 
-  check('the worker consults the preference gate before emailing',
-    /shouldEmail\([\s\S]{0,200}gate\.emailed|!gate\.emailed/.test(stripTs(worker)),
-    'handleNotify emailed unconditionally; a decision function nothing calls is not a fix')
+  // Audit 2026-08-08 — the previous regex here was an alternation whose second
+  // branch matched the bare token `!gate.emailed` anywhere in the file. It
+  // never required the branch to RETURN, so dropping the early return would
+  // have kept this green while mail kept going out. Scope to the delivery
+  // function and require the gate to short-circuit BEFORE the send.
+  const delivery = stripTs(read('apps/api/src/lib/notification-delivery.ts'))
+  //
+  // Scoped to the gate's OWN block. A first attempt sliced from `!gate.emailed`
+  // to `sendEmail(` and required a `return` somewhere in between — which passed
+  // against the dropped-return regression, because the `if (!isEmailConfigured())`
+  // block sitting between them has a return of its own. That is the identical
+  // window-swallowing mistake this audit was cleaning up, reproduced while
+  // cleaning it up.
+  const gateBlock = (/if \(!gate\.emailed\) \{([\s\S]*?)\n {2}\}/.exec(delivery) || ['', ''])[1]
+  check('the delivery path was located', delivery.length > 0,
+    'an unreadable path makes every assertion below pass trivially')
+  check('it awaits the preference gate', /await shouldEmail\(/.test(delivery),
+    'a decision function nothing calls is not a fix')
+  check('the suppression branch was located', gateBlock.length > 0,
+    'if this is empty the assertion below is vacuous')
+  check('the gate short-circuits the send rather than only logging it',
+    gateBlock.length > 0 && /\breturn\b/.test(gateBlock),
+    'gate computed, suppression logged, `return` dropped — sendEmail still runs and the user keeps getting mail')
 
   check('handleNotify loads the recipient preferences',
     /preferences/.test(code),
@@ -210,9 +230,19 @@ section('3. Replace All cannot corrupt the markup')
   check('it walks the ProseMirror document instead',
     /state\.doc\.descendants|descendants\(/.test(code),
     'the document tree holds text as text, so entities and tag names are not in scope to be corrupted')
+  // Audit 2026-08-08 — VERIFIED DEAD by checking out the pre-fix file and
+  // running the old regex over it: it returned true. It searched the whole
+  // 33 KB file and matched unrelated toolbar calls (undo, bold, clause
+  // insert), so it was green against the original
+  // getHTML().replaceAll + setContent, which discarded undo history entirely.
+  const frBody = (/const handleFindReplace[\s\S]*?\n {2}\}, \[[^\]]*\]\)/.exec(code) || [''])[0]
+  check('handleFindReplace was located', frBody.length > 0)
   check('the replacement is one undoable transaction',
-    /chain\(\)[\s\S]{0,400}\.run\(\)|tr\.replaceWith|dispatch\(/.test(code),
-    'a per-match dispatch makes ctrl-Z undo one replacement at a time')
+    frBody.length > 0
+    && (frBody.match(/\.run\(\)|dispatch\(/g) || []).length === 1
+    && !/editor\.commands\./.test(frBody)
+    && /editor\.chain\(\)[\s\S]*for\s*\([\s\S]*insertContentAt/.test(frBody),
+    'the chain must open before the loop and run once after it; a per-match commands.*/dispatch inside the loop makes ctrl-Z undo one replacement at a time')
 }
 
 // ─── 4. Downloads go through the authenticated client ───────────────────────
@@ -232,13 +262,24 @@ section('4. Editor and contract downloads are authenticated and handled')
   // This first went green against BROKEN code: the regex allowed only a
   // backtick before /api/v1 and the source uses a single quote. Match any
   // quoting, and assert on the positive form too.
+  // Audit 2026-08-08 — both halves used to be file-global. The positive half
+  // was already satisfied by api.get('/clauses') and two api.post calls that
+  // predate this fix, so it proved nothing about handleExport.
+  const ed = stripTs(editor)
+  const hxStart = ed.indexOf('const handleExport')
+  const hxBody  = hxStart >= 0 ? ed.slice(hxStart, ed.indexOf('}, [editor, onExport])', hxStart)) : ''
+  check('handleExport was located', hxBody.length > 0)
   check('the editor export path uses the api client, not a bare fetch',
-    !/\bfetch\(\s*['"`]\/api\//.test(stripTs(editor)) && /api\.(post|get)\(/.test(stripTs(editor)),
+    hxBody.length > 0 && !/\bfetch\(/.test(hxBody) && /api\.post\(/.test(hxBody),
     'a bare fetch carries no Authorization header, so a permission-guarded export route 401s every time')
 
+  // Audit 2026-08-08 — this negative-matched the literal `resp`, but the code
+  // now names the response `res`, so the natural regression would slip past.
+  // Assert the positive property instead: the failure reaches a rendered state.
   check('a failed export is surfaced rather than swallowed',
-    !/if \(!resp\?\.ok\) return\b/.test(stripTs(editor)),
-    '`if (!resp?.ok) return` is why six buttons appear to do nothing at all')
+    /catch\s*\(/.test(hxBody) && /setExportError\(/.test(hxBody)
+    && /exportError &&/.test(ed) && !/\.ok\)\s*return\b/.test(hxBody),
+    'a silent return on failure is why six buttons appeared to do nothing at all')
 
   // This first went green against BROKEN code too: a 600-char window after
   // `handleDownload` swallowed the NEXT function, handleViewPdf, which does

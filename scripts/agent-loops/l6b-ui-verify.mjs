@@ -104,7 +104,12 @@ section('1. Selecting a signature tab does not zero the other badges')
       if (!await tab.count()) continue
       const text = (await tab.innerText().catch(() => '')) ?? ''
       const n = /(\d+)\s*$/.exec(text.trim())
-      out[key] = n ? Number(n[1]) : null
+      // Audit 2026-08-08 — this used to store null when no digit was present,
+      // and the comparison below skipped nulls. But SignaturesPage renders the
+      // badge span only `{count > 0 && ...}`, so a ZEROED badge shows no digit
+      // at all — meaning the precise regression this section exists to catch
+      // was recorded as null and silently ignored. Absent badge === 0.
+      out[key] = n ? Number(n[1]) : 0
     }
     return out
   }
@@ -129,7 +134,7 @@ section('1. Selecting a signature tab does not zero the other badges')
 
     // BEFORE: every other badge read 0, because counts were reduced over the
     // filtered response.
-    const zeroed = Object.entries(after).filter(([k, v]) => k !== target && (onAll[k] ?? 0) > 0 && v === 0)
+    const zeroed = Object.entries(after).filter(([k, v]) => k !== target && (onAll[k] ?? 0) > 0 && (v ?? 0) === 0)
     check(`selecting "${target}" leaves the other badges intact`, zeroed.length === 0,
       `before ${JSON.stringify(onAll)} → after ${JSON.stringify(after)}${zeroed.length ? ` — zeroed: ${zeroed.map(z => z[0]).join(', ')}` : ''}`)
 
@@ -478,11 +483,13 @@ section('6. The agent artifact export produces a file')
         `starts: ${JSON.stringify(body.slice(0, 40))}`)
     }
 
-    const errLabel = page.locator('[data-testid^="artifact-action-error-"]').first()
-    if (await errLabel.count()) {
-      check('any failure is labelled rather than a bare icon', true,
-        (await errLabel.innerText()).slice(0, 120))
-    }
+    // Audit 2026-08-08 — this was `check(..., true, ...)`: a hardcoded pass,
+    // inside a guard that only ran when the element whose absence IS the defect
+    // was already present. It could not fail. The labelled-error path is now
+    // asserted where it belongs — on the REVERT, in the commit message and in
+    // l6b-dead-controls.mjs section 6, which pins that the catch keeps the
+    // message. Nothing is asserted here on the happy path, because on the happy
+    // path there is no error to label.
   }
 }
 
@@ -498,15 +505,24 @@ section('6. The agent artifact export produces a file')
 
 section('7. Flipping a Settings toggle changes what the worker decides')
 {
-  const me = await prisma.user.findFirst({ where: { email: 'admin@demo.com' }, select: { id: true, preferences: true } })
+  const me = await prisma.user.findFirst({ where: { email: 'admin@demo.com' }, select: { id: true, orgId: true, preferences: true } })
   const original = me?.preferences ?? {}
+  const orgIdOf = me?.orgId ?? ''
 
   const decide = async (type) => {
     const { execFileSync } = await import('node:child_process')
     const tmp = `${REPO_API}/.l6bui-probe.mts`
     fsSync.writeFileSync(tmp, `
-      import { shouldEmail } from './src/lib/notification-prefs.js'
-      const r = await shouldEmail(${JSON.stringify(me?.id ?? '')}, ${JSON.stringify(type)})
+      // Audit 2026-08-08 — this used to call shouldEmail directly, the PURE
+      // decision function, and therefore proved nothing about the code that
+      // consumes it. Drive the real delivery path instead: it writes the
+      // in-app row and returns whether mail was actually handed to the mailer.
+      import { deliverNotification } from './src/lib/notification-delivery.js'
+      const r = await deliverNotification({
+        orgId: ${JSON.stringify(orgIdOf)}, userId: ${JSON.stringify(me?.id ?? '')},
+        type: ${JSON.stringify(type)}, title: 'l6bui probe', body: 'probe',
+        resourceType: 'probe', resourceId: 'probe', email: 'probe@example.test',
+      })
       process.stdout.write('<<<R>>>' + JSON.stringify(r))
     `)
     try {
@@ -536,9 +552,17 @@ section('7. Flipping a Settings toggle changes what the worker decides')
     if (present) {
       // Establish the ON baseline first, so the OFF result below is a change
       // rather than a coincidence.
+      // Assert on the GATE, not on `emailed`. Driving the real delivery path
+      // (rather than the pure decision function, as this probe used to) exposed
+      // that `emailed` is also false when no SMTP provider is configured —
+      // which is true in this workspace. Conflating "suppressed by preference"
+      // with "no mailer" would make the section pass for the wrong reason in
+      // CI and fail for the wrong reason on a developer machine with SMTP set.
+      // `reason` distinguishes them, and the gate is what is under test.
+      const suppressed = r => /is off/.test(r?.reason ?? '')
       const wasOn = await decide('APPROVAL_REQUEST')
-      check('the delivery decision starts as send', wasOn?.emailed === true,
-        `emailed=${wasOn?.emailed} (${wasOn?.reason})`)
+      check('the delivery path starts by clearing the preference gate', !suppressed(wasOn),
+        `reason: ${wasOn?.reason} (emailed=${wasOn?.emailed}) — "no email provider configured" means it cleared the gate and stopped at the mailer, which is the environment, not this code`)
 
       await toggle.click()
       await page.waitForTimeout(2500)          // let the PATCH land
@@ -552,21 +576,28 @@ section('7. Flipping a Settings toggle changes what the worker decides')
         `stored approvalRequested=${JSON.stringify(stored)} — this half always worked; it is the next assertion that was broken`)
 
       const nowOff = await decide('APPROVAL_REQUEST')
-      check('the worker now declines to email that type', nowOff?.emailed === false,
-        `emailed=${nowOff?.emailed} (${nowOff?.reason}) — for eleven controls this stayed true forever, so the user got a green "Saved" and kept getting mail`)
+      check('the delivery path now stops at the preference gate',
+        nowOff?.emailed === false && suppressed(nowOff),
+        `reason: ${nowOff?.reason} (emailed=${nowOff?.emailed}) — for eleven controls this never happened, so the user got a green "Saved" and kept getting mail`)
 
       // A type with no toggle must be unaffected: ESCALATION and DELEGATION are
       // direct assignments to a person, and there is no control to switch them
       // off. Suppressing everything is not honouring a preference.
       const unrelated = await decide('ESCALATION')
-      check('an un-suppressible type is still delivered', unrelated?.emailed === true,
-        `emailed=${unrelated?.emailed} (${unrelated?.reason})`)
+      check('the in-app row is written even when email is suppressed',
+        nowOff?.notified === true,
+        `notified=${nowOff?.notified} — the toggles govern EMAIL; suppressing the record too would lose the notification entirely`)
+
+      check('an un-suppressible type still clears the gate', !suppressed(unrelated),
+        `reason: ${unrelated?.reason} — ESCALATION and DELEGATION are direct, time-sensitive assignments to a person with no toggle offered; suppressing everything is not honouring a preference`)
     }
   } finally {
     // Restore whatever the user actually had. See the Wave C incident where a
     // probe left a cap at 0 and made unrelated checks look like regressions.
     if (me?.id) {
       await prisma.user.update({ where: { id: me.id }, data: { preferences: original } }).catch(() => {})
+      // deliverNotification writes a real in-app row on every probe call.
+      await prisma.notification.deleteMany({ where: { userId: me.id, title: 'l6bui probe' } }).catch(() => {})
     }
   }
 }

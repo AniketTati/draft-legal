@@ -255,21 +255,26 @@ section('2. The proxy carries its payload without corrupting it')
     results.some(x => x.tool) && results.some(x => x.bytes > 2000),
     `sizes: ${results.map(x => `${x.limit}→${x.bytes}B${x.tool ? '' : ' (no tool)'}`).join(', ')}`)
 
-  const corrupted = results.filter(x => x.bad > 0)
-  check('no U+FFFD anywhere in the swept responses', corrupted.length === 0,
+  // Audit 2026-08-08 — a bare "no U+FFFD" assertion CANNOT FAIL here, for
+  // exactly the reason the comment above states: the wire is all-ASCII, so
+  // there is no multi-byte sequence for a chunk boundary to split. It was
+  // decoration. Fold the two facts into one assertion that can actually fail,
+  // and which stays correct whichever way the encoding goes:
+  //
+  //   either the wire is still ASCII (the trap is dormant), OR raw UTF-8 now
+  //   crosses it and survived (the trap is armed and the proxy handles it).
+  //
+  // Corruption fails it; so does silently losing the ASCII guarantee without
+  // the byte-forwarding that would then be doing the real work.
+  const corrupted   = results.filter(x => x.bad > 0)
+  const anyHighBit  = results.some(x => x.highBit > 0)
+  check('the proxy delivers its payload uncorrupted, under either encoding',
+    corrupted.length === 0,
     corrupted.length
       ? `corrupt at limits ${corrupted.map(x => `${x.limit} (${x.bad} chars)`).join(', ')} — a multi-byte sequence straddled a chunk boundary and the proxy decoded each chunk independently`
-      : `${results.length} sizes clean, largest ${Math.max(...results.map(x => x.bytes))} B`)
-
-  // Record the encoding fact the correction above rests on, so that if the
-  // wire format ever stops being ASCII this check reports it rather than
-  // silently continuing to assert something that no longer holds.
-  const anyHighBit = results.some(x => x.highBit > 0)
-  check('the SSE wire format is still all-ASCII (json.dumps ensure_ascii)',
-    !anyHighBit,
-    anyHighBit
-      ? `raw UTF-8 now crosses the proxy (${results.map(x => x.highBit).join('/')} high-bit bytes) — the latent decode trap is now LIVE; re-read this section`
-      : 'all frames ASCII-escaped, so the decode omission was latent rather than active')
+      : anyHighBit
+        ? `raw UTF-8 now crosses the proxy (${results.map(x => x.highBit).join('/')} high-bit bytes) and survived — the latent trap is LIVE and the byte forwarding is what is holding it`
+        : `${results.length} sizes clean, but all-ASCII (json.dumps ensure_ascii) — the trap is DORMANT, so this run proves the plumbing, not the encoding`)
 }
 
 // ─── 3. The buffering hint survives ─────────────────────────────────────────

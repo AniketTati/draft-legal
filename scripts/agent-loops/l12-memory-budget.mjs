@@ -44,9 +44,16 @@ section('1. The session log has a size bound, not just a message count')
 {
   check('memory.py defines a byte ceiling', /MAX_SESSION_BYTES/.test(mem),
     'a message COUNT is not a size bound when one message can carry 500 KB of tool results')
-  check('the trim loop enforces it',
-    /while\s+len\(encoded\)\s*>\s*MAX_SESSION_BYTES/.test(mem),
-    'oldest-first, because the newest turns are the ones the model needs')
+  // Audit 2026-08-08 — this matched the loop HEADER only. Whether it drops the
+  // OLDEST or the NEWEST turn is decided in the body, and the body was never
+  // inspected — a trim that dropped the newest message would have passed.
+  const trimIdx = mem.search(/while\s+len\(encoded\)\s*>\s*MAX_SESSION_BYTES/)
+  const trimBody = trimIdx >= 0 ? mem.slice(trimIdx, trimIdx + 600) : ''
+  check('the trim loop enforces it', trimIdx >= 0,
+    'a byte ceiling nothing enforces is a comment')
+  check('it drops the OLDEST entry, not the newest',
+    /\.pop\(0\)|del [a-z_]+\[0\]|\[1:\]/.test(trimBody),
+    'oldest-first, because the newest turns are the ones the model needs; dropping from the end would silently discard the turn just written')
 }
 
 section('2. What is REPLAYED is capped tighter than what is streamed')
@@ -59,6 +66,13 @@ section('2. What is REPLAYED is capped tighter than what is streamed')
   const capMatch = /^PERSIST_RESULT_CHARS\s*=\s*([\d_]+)/m.exec(orch)
   const cap = capMatch ? Number(capMatch[1].replace(/_/g, '')) : Infinity
   check('it is well below the 20K streaming allowlist', cap <= 4000, `PERSIST_RESULT_CHARS = ${cap}`)
+  // Audit 2026-08-08 — reading the DEFINITION line proves nothing about the
+  // persist site. Nothing here asserted that the non-listing branch actually
+  // resolves to PERSIST_RESULT_CHARS, so the constant could sit there unused
+  // while the code applied any number it liked.
+  check('the non-listing branch resolves to that constant',
+    /persist_cap = \([\s\S]{0,200}else PERSIST_RESULT_CHARS/.test(orch),
+    'the constant is only a budget if the code that slices actually uses it')
 }
 
 // ─── 4. The persisted slice is not derived from the streamed one ────────────
@@ -120,6 +134,16 @@ asyncio.run(main())
   check('60 turns of 20 KB results stay under the ceiling',
     out && !out._error && out.bytes <= out.ceiling,
     out?._error ?? `${out?.bytes} bytes vs ceiling ${out?.ceiling} (${out?.messages} messages) — before the fix this was ~1.2 MB and climbing`)
+  // Audit 2026-08-08 — the assertion above is one-sided: it only says the log
+  // is SMALL. A trim that emptied the session entirely, or a get_session_history
+  // that returned [], would sail through it while destroying the feature this
+  // whole mechanism exists for.
+  check('and the most recent turns actually survive',
+    out && !out._error && out.messages >= 2,
+    `${out?.messages} messages retained — a byte ceiling that keeps nothing is not a budget, it is a delete`)
+  check('the retained log is a meaningful fraction of the ceiling',
+    out && !out._error && out.bytes > out.ceiling * 0.5,
+    `${out?.bytes} of ${out?.ceiling} bytes — trimming far below the ceiling means the budget is not the thing doing the work`)
 }
 
 // ─── 5. The A8 promise, end to end ──────────────────────────────────────────
