@@ -684,7 +684,8 @@ async def run_agent_chat_stream(
       {"type": "tool_call_result", "id": ..., "name": ..., "result": "...",
                                    "truncated": bool}
       {"type": "token",            "delta": "..."}
-      {"type": "done",             "session_id": "..."}
+      {"type": "done",             "session_id": "...", "provider": "...",
+                                     "model": "...", "tier": "...", "source": "..."}
       {"type": "error",            "error": "..."}
 
     Backwards-compat: each token event ALSO includes a legacy `delta` field
@@ -1188,4 +1189,19 @@ async def run_agent_chat_stream(
             tool_results=turn_tool_results or None,
         )
 
-    yield {"type": "done", "session_id": session_id}
+    # docs/37 E2 — report what actually answered, not what was asked for.
+    # All four values already existed on ResolvedLlm and were discarded. Without
+    # them a flipped eval case cannot be attributed: _platform_resolve returns
+    # the first provider in the tier list that has an env key, so the same case
+    # resolves differently in CI than on a dev box, and adding a secret to the
+    # repo silently changes every result. `source` additionally exposes the
+    # case that must never happen in an eval run — spending a customer's BYOK
+    # key.
+    yield {
+        "type": "done",
+        "session_id": session_id,
+        "provider": resolved.provider,
+        "model": resolved.model,
+        "tier": resolved.tier,
+        "source": resolved.source,
+    }

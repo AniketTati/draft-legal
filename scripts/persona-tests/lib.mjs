@@ -45,6 +45,15 @@ export async function askAgent({
   contractId = null,
   pageContext = null,
   timeoutMs = 90_000,
+  // docs/37 E3 — these were passed by lib-multi.mjs and silently discarded:
+  // they were never destructured here and never reached the request body. So
+  // 66 committed conversations ran on org defaults while persona-test-report.md
+  // attributed their cost and latency to gpt-4.1-mini. Whether a pin is
+  // HONOURED still depends on which keys the environment has; the done frame
+  // now reports what actually answered (E2), so check there rather than
+  // assuming.
+  provider = null,
+  modelId = null,
 }) {
   const start = Date.now()
   const controller = new AbortController()
@@ -62,6 +71,8 @@ export async function askAgent({
       agentMode,
       ...(contractId ? { contractId } : {}),
       ...(pageContext ? { pageContext } : {}),
+      ...(provider ? { provider } : {}),
+      ...(modelId ? { modelId } : {}),
     }),
     signal: controller.signal,
   }).catch(err => {

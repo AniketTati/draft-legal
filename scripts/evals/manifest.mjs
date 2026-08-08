@@ -53,6 +53,8 @@ export const CHECKS = [
     what: 'a failed turn reaches the user instead of a blank bubble (SSE stubbed)' },
 
   // ── t3 — real model calls, nightly only ─────────────────────────────────
+  { id: 'e2-model-observability', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+    what: 'the done frame reports what actually answered, and a pin is forwarded' },
   { id: 'l1-thread-poisoning', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'a write proposal does not kill the thread that made it' },
   { id: 'l4-draft-gate',       tier: 't3', needs: ['db', 'api', 'agents', 'model'],

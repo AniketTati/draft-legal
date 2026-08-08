@@ -103,8 +103,16 @@ async def chat(req: ChatRequest):
                 ):
                     # Tag every envelope with session_id + provider so clients
                     # that picked them up from the first frame keep working.
-                    event = {**event, "session_id": session_id,
-                             "provider": req.provider, "model_id": req.model_id}
+                    #
+                    # docs/37 E2 — these are the REQUESTED values, not the
+                    # resolved ones, and the spread used to put them LAST, so
+                    # they overwrote anything authoritative the orchestrator
+                    # set. The done frame now carries the genuinely resolved
+                    # provider/model/tier/source, so the defaults fill in only
+                    # where the event did not already say.
+                    event = {"session_id": session_id,
+                             "provider": req.provider, "model_id": req.model_id,
+                             **event}
                     yield f"data: {json.dumps(event)}\n\n"
             except Exception as e:
                 err = json.dumps({"type": "error", "error": str(e)})

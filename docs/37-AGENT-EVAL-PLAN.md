@@ -569,6 +569,48 @@ review** — which is a far better signal than a flaky nightly number.
   should be stated in the suite's own README so nobody mistakes a green T2 for
   "the prompt is fine."
 
+## E13 — a client-supplied `modelId` never reaches model selection
+
+**Severity: unknown — needs a product decision before it is a defect.**
+**Found 2026-08-08 while building the E2 check.**
+
+Probed four turns through `POST /api/v1/agent/chat` with `modelId` set to
+`claude-opus-4-reasoning`, `gpt-5-turbo`, `claude-haiku-4-5-20251001`, and
+omitted. **All four resolved identically**: `tier=fast`,
+`model=gemini-2.5-flash`, `provider=google` — and the requested `model_id`
+echoed back on every frame was the service default (`gemini-2.5-pro`) in all
+four cases, including the ones where a different value was sent.
+
+So either the pin is dropped between the Zod schema (`agents.ts:25` accepts
+`modelId`, `:135` forwards it as `model_id`) and `chat.py`, or org AI settings
+override it downstream. The orchestrator's own tier sniffing
+(`orchestrator.py:738-744`) would map `claude-opus-4-reasoning` to `reasoning`
+and `claude-haiku` to `fast`, so it is not being consulted with the requested
+value.
+
+**Why this is not filed as a bug yet.** Org-level AI settings arguably *should*
+win over a client-supplied model — that is a reasonable product stance, and
+letting any caller pick the model has cost and safety implications. But the
+current behaviour is the worst of both: the pin is accepted, echoed back
+inaccurately, and silently ignored. Whatever the intended rule is, the API
+should either honour the pin or reject it.
+
+**This matters for evals specifically.** The audit's stated motivation for gap
+#3 is *"swap models"*. If a test cannot pin a model, model comparison is not
+possible at all — it would compare two runs of whatever the org config says.
+E13 has to be resolved before any model-swap eval means anything.
+
+**How we check it** — once the intended rule is decided
+1. If pins are honoured: a pinned model is what the `done` frame reports.
+2. If pins are refused: the request 400s naming the field, rather than being
+   accepted and ignored.
+3. Either way: the echoed request metadata must not report a value that was
+   not used.
+
+**Effort:** half a day once the rule is decided; the decision is the work.
+
+---
+
 ## Ordering
 
 **Wave A — make it able to fail (2 days).** E1 gate, E4 empty-expectations,
