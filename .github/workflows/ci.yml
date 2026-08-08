@@ -135,7 +135,7 @@ jobs:
       # broke it (and the agents image build) for a full day in Aug 2026.
       - name: Install dependencies
         working-directory: apps/agents
-        run: pip install -r requirements.txt pytest pytest-asyncio
+        run: pip install -r requirements.txt
 
       # Installing is not the same as installing something coherent. pip will
       # leave a requirement unsatisfied when packages arrive in separate steps,
@@ -152,10 +152,28 @@ jobs:
         working-directory: apps/agents
         run: python -c "import main; print(f'{len(main.app.routes)} routes loaded')"
 
-      - name: Run agent tests
-        working-directory: apps/agents
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        # Still non-blocking, and tests/ does not exist yet — this step reports
-        # nothing today. The two steps above are what actually guard this job.
-        run: pytest tests/ -v --tb=short || true
+      # There are no Python tests yet. The pytest step that used to sit here ran
+      # `pytest tests/ -v --tb=short || true` against a directory that does not
+      # exist — three independent reasons it could never fail. It has been
+      # replaced by the `agent-evals` job below, which can. See docs/37 E1.
+
+  # ── Agent eval suite — docs/37, ADR-01 ────────────────────────────────────
+  # Its own job so it has a name in the checks list and a node runtime. Tier 1
+  # is static analysis: no services, no database, no model key, well under a
+  # second. That is what makes it safe to block every PR on, including forks,
+  # which cannot read repo secrets.
+  agent-evals:
+    name: Agent evals (tier 1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # --check-baseline is what makes this more than a pass/fail run: it also
+      # fails when a check DISAPPEARS or quietly asserts less than it used to.
+      # Deleting an inconvenient check must not be a way to go green.
+      - name: Run tier 1
+        run: node scripts/evals/run.mjs --tier t1 --check-baseline

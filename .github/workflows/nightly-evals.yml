@@ -1,0 +1,51 @@
+# Tier 3 agent evals — docs/37 ADR-01.
+#
+# These make REAL model calls: they cost money and vary run to run, so they
+# never gate a PR. They run nightly on main, where secrets exist and a fork
+# cannot read them.
+#
+# Not enabled until docs/37 E8 lands. An eval run currently has no identity at
+# any layer: the daily cost cap defaults to $50/day with policy `block` and now
+# fails CLOSED, so a breach would kill the run mid-suite and every later case
+# would misreport as "runner raised" rather than as a model regression. Worse,
+# running under an org with a BYOK key spends that customer's provider budget,
+# because BYOK is returned before the cap is ever checked.
+#
+# So this file is deliberately manual-only for now. Flipping on the schedule
+# before E8 is how you bill a customer for your test suite.
+name: Nightly agent evals (tier 3)
+
+on:
+  workflow_dispatch:
+  # schedule:
+  #   - cron: '0 3 * * *'   # enable with docs/37 E8 — eval identity first
+
+jobs:
+  tier3:
+    name: Agent evals (tier 3 — real models)
+    runs-on: ubuntu-latest
+    # Never run on a fork: secrets are unavailable there, so the suite would be
+    # green-and-meaningless rather than skipped.
+    if: github.repository_owner == 'AniketTati'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Guard — refuse to run without an eval identity
+        run: |
+          if [ -z "${EVAL_ORG_ID}" ]; then
+            echo "EVAL_ORG_ID is not set. See docs/37 E8: a tier-3 run without a"
+            echo "dedicated eval org can spend a customer's BYOK budget and will"
+            echo "be killed mid-suite by the daily cost cap. Refusing to run."
+            exit 1
+          fi
+        env:
+          EVAL_ORG_ID: ${{ secrets.EVAL_ORG_ID }}
+
+      - name: Run tier 3
+        env:
+          EVAL_ORG_ID: ${{ secrets.EVAL_ORG_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/evals/run.mjs --tier t3 --check-baseline --strict
