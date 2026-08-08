@@ -206,4 +206,35 @@ section('4. A pin valid for the resolved provider is not overwritten')
   }
 }
 
+// ─── 5. The real web client still works ─────────────────────────────────────
+//
+// A near-miss caught in pre-merge review. SideAgentRail.tsx:494 and
+// AgentHomePage.tsx:493 both pin `provider: 'openai', modelId: 'gpt-4.1-mini'`.
+// Before E13 that pin was IGNORED, so a deployment holding only a Google key
+// worked by accident. Honouring pins could therefore have broken the entire
+// agent UI on any single-provider deployment — including this one.
+//
+// It does not, because chat.py's auto-fallback normalises BOTH provider and
+// model to something valid before the orchestrator is reached, so the override
+// only ever forwards already-valid values. That ordering is now load-bearing
+// and nothing else asserted it.
+
+section('5. The pin the shipped web client actually sends still resolves')
+{
+  // Byte-for-byte what the two web surfaces send.
+  const r = await turn({
+    message: 'Say OK.', sessionId: `webpin-${Date.now()}`,
+    provider: 'openai', modelId: 'gpt-4.1-mini',
+  })
+  const err = r.frames.find(f => f.type === 'error')?.error ?? null
+  check('a pin for an unconfigured provider does not error', err == null,
+    err ? String(err).slice(0, 160) : 'no error')
+  check('it falls back to a provider that is configured',
+    typeof r.done?.provider === 'string' && r.done.provider.length > 0 && r.done?.model,
+    `resolved to ${r.done?.provider}/${r.done?.model} — if this ever errors, every agent turn in the web UI is broken on a single-key deployment`)
+  check('and the turn still produces an answer',
+    r.frames.some(f => f.type === 'token'),
+    `frames: ${[...new Set(r.frames.map(f => f.type))].join(', ')}`)
+}
+
 report('E2 model observability')
