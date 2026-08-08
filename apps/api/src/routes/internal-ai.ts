@@ -910,7 +910,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // length — see app/orchestrator.py.
       total:         finalResults.length,
       pageSize:      finalResults.length,
-      totalMatching: usedFallback ? fallbackResults.length : totalMatching,
+      // NULL under the semantic fallback, not a number. `fallbackResults` is
+      // built by breaking at `orderedIds.length >= body.limit`, so its length
+      // equals the page size BY CONSTRUCTION — it is not a count of matching
+      // rows. The prompt's A11 rule tells the model `totalMatching` is "the DB
+      // count of rows satisfying the filter", so returning a page count here
+      // made the agent answer "you have 10" with total confidence. A11 exists
+      // to prevent exactly that hallucination, and this line was causing it.
+      // Null forces the model onto the `searchMode` branch, which says to
+      // report a lower bound and announce that the search was broadened.
+      totalMatching: usedFallback ? null : totalMatching,
       results: finalResults.map(c => ({
         ...c,
         value: c.value != null ? Number(c.value) : null,
