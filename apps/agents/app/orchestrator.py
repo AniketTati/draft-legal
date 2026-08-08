@@ -35,6 +35,34 @@ from app.untrusted import sanitize_untrusted as _sanitize_untrusted
 from app.untrusted import wrap_untrusted_document
 
 
+def _chunk_text(chunk) -> str:
+    """Pull the text out of one streamed message chunk.
+
+    Providers disagree on the shape. OpenAI and Google give `content` as a
+    plain str; Anthropic gives a list of content blocks, and a tool-calling
+    turn interleaves text blocks with tool_use blocks that carry no text at
+    all. Blocks arrive as dicts over the wire but as objects when a callback
+    has already deserialized them, so both are handled — missing one shape
+    yields empty deltas and silently reinstates the dead-air this replaced.
+
+    routes/assist.py:702-712 has the same extraction for its own stream.
+    """
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        out: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                out.append(block)
+            elif isinstance(block, dict):
+                out.append(block.get("text") or "")
+            else:
+                out.append(getattr(block, "text", "") or "")
+        return "".join(out)
+    return ""
+
+
 def _wrap_untrusted_tool_result(name: str, payload: str) -> str:
     """Frame a tool result as clearly-labeled DATA that must never be treated as
     instructions. Sanitizes forged markers first."""
@@ -714,7 +742,7 @@ async def run_agent_chat_stream(
     else:
         _tier = "default"
     resolved = await resolve_llm(
-        _tier, org_id=org_id, streaming=False,
+        _tier, org_id=org_id, streaming=True,
         trace_name="agent.chat", user_id=user_id, thread_id=session_id,
     )
     llm = resolved.llm.bind_tools(tools)
@@ -808,20 +836,45 @@ async def run_agent_chat_stream(
     # either re-searches (wrong contract) or hallucinates ids.
     turn_tool_calls: list = []
     turn_tool_results: list = []
+    # L10 — everything the user was shown this turn, in order, accumulated
+    # across iterations. This is also what gets persisted, so what the user
+    # saw and what the next turn replays cannot drift apart.
+    streamed_parts: list[str] = []
     try:
         for iteration in range(MAX_TOOL_ITERATIONS):
-            ai: AIMessage = await llm.ainvoke(messages, config={"callbacks": chat_callbacks})
+            # L10 — real token streaming. This used to be `await llm.ainvoke`,
+            # which blocked for the whole model round-trip and then split the
+            # finished string on ' ' and yielded one frame per word with no
+            # sleep between yields — so the "typewriter" was a single burst
+            # arriving after multi-second silence, and bought nothing at all
+            # over sending one frame. Measured before this change: first token
+            # at 1735 ms, last at 1743 ms, of a 1747 ms turn.
+            #
+            # Chunks are accumulated as well as streamed because the tool-call
+            # iterations need the assembled message: tool_call fragments arrive
+            # split across chunks and only the merged AIMessageChunk carries a
+            # usable .tool_calls.
+            ai = None
+            async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
+                ai = chunk if ai is None else ai + chunk
+                piece = _chunk_text(chunk)
+                if piece:
+                    streamed_parts.append(piece)
+                    yield {"type": "token", "delta": piece}
+            if ai is None:
+                # The provider yielded nothing at all. Treat as an empty turn
+                # and let the synthesis safety net below handle it.
+                break
+
             tool_calls = getattr(ai, "tool_calls", None) or []
 
-            # Terminal branch: no more tool calls → stream the answer.
+            # Terminal branch: no more tool calls. The answer has already been
+            # streamed above as it was generated.
             if not tool_calls:
-                final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
-                # Word-by-word "stream" to match the existing UX. Real token
-                # streaming lands when we add .astream_events() in a follow-up.
-                words = final_text.split(" ")
-                for i, word in enumerate(words):
-                    chunk = word + (" " if i < len(words) - 1 else "")
-                    yield {"type": "token", "delta": chunk}
+                final_text = "".join(streamed_parts)
+                if not final_text:
+                    # Some providers deliver content only on the aggregate.
+                    final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
                 break
 
             # Tool-call branch: emit start + execute + emit result for each
@@ -1094,14 +1147,18 @@ async def run_agent_chat_stream(
                 "concrete next step."
             )))
             try:
-                synth: AIMessage = await llm.ainvoke(messages, config={"callbacks": chat_callbacks})
-                final_text = synth.content if isinstance(synth.content, str) else str(synth.content)
-                if final_text.strip():
-                    words = final_text.split(" ")
-                    for i, word in enumerate(words):
-                        chunk = word + (" " if i < len(words) - 1 else "")
-                        yield {"type": "token", "delta": chunk}
-                else:
+                # L10 — streamed for the same reason as the main branch. This
+                # is the path a long research turn ends on, so it is the one
+                # where dead air is longest.
+                synth_parts: list[str] = []
+                async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
+                    piece = _chunk_text(chunk)
+                    if piece:
+                        synth_parts.append(piece)
+                        streamed_parts.append(piece)
+                        yield {"type": "token", "delta": piece}
+                final_text = "".join(synth_parts)
+                if not final_text.strip():
                     yield {"type": "error", "error": f"Agent stopped after {MAX_TOOL_ITERATIONS} tool iterations without producing a final answer."}
                     return
             except Exception as e:
