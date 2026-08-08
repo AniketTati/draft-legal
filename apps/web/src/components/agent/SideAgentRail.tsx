@@ -472,6 +472,10 @@ export function SideAgentRail() {
     const ctl = new AbortController()
     abortRef.current = ctl
 
+    // Set by the error branch inside the frame loop and rethrown after it, so
+    // the friendly ladder in the outer catch actually sees agent failures.
+    let streamError: string | null = null
+
     try {
       const res = await fetch('/api/v1/agent/chat', {
         method:  'POST',
@@ -531,8 +535,17 @@ export function SideAgentRail() {
             try {
               const parsed = JSON.parse(data)
               // Terminal-error envelopes surface as a string bubble.
+              //
+              // Recorded rather than thrown. This `try` exists to tolerate ONE
+              // malformed frame — its catch logs and continues, and in a
+              // production build does not even log — so throwing from here
+              // discarded every agent failure silently and left an empty
+              // bubble. The outer catch below holds the friendly three-tier
+              // ladder; rethrowing after the read loop is what finally lets it
+              // run.
               if (parsed.type === 'error' || parsed.error) {
-                throw new Error(parsed.error || 'agent error')
+                streamError = parsed.error || 'agent error'
+                break
               }
               if (parsed.session_id) sessionIdRef.current = parsed.session_id
 
@@ -682,8 +695,15 @@ export function SideAgentRail() {
               if (process.env.NODE_ENV !== 'production') console.warn('[rail] bad SSE frame', line, e)
             }
           }
+          if (streamError) break
         }
       }
+
+      // The agent reported a failure. Raise it here, OUTSIDE the frame-parse
+      // try, so the outer catch's friendly ladder runs — the stream itself was
+      // fine (HTTP 200), which is why `!res.ok` never caught this.
+      if (streamError) throw new Error(streamError)
+
       // Mark assistant message complete so the cursor stops blinking.
       setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, streaming: false } : m))
 

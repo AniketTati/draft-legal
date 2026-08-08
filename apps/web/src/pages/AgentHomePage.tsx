@@ -63,6 +63,23 @@ interface ThreadSummary {
   toolCallCount: number
 }
 
+/**
+ * Turn a raw failure into something a user can act on.
+ *
+ * Shared by the streamed-error path and the outer catch. They used to differ:
+ * the outer catch had this ladder and the streamed path had nothing, because
+ * the streamed path threw from inside the frame-parse `try` and was swallowed.
+ */
+function friendlyAgentError(raw: string): string {
+  if (/api\s+key|authentication|RuntimeError/i.test(raw)) {
+    return 'The AI assistant isn\'t configured for your workspace yet. An admin needs to add an OpenAI or Anthropic API key in Organization → AI Config.'
+  }
+  if (/upstream|50[234]|fetch\s+failed|ECONNREFUSED|timeout/i.test(raw)) {
+    return 'The AI assistant is temporarily unavailable — please try again in a moment.'
+  }
+  return 'Sorry, the AI assistant ran into a problem. Try again, or refresh if it persists.'
+}
+
 interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -84,6 +101,8 @@ interface ChatMessage {
   pendingActions?: PendingAction[]
   streaming?: boolean
   error?: string
+  /** The user text that produced this turn, so a failed turn can be retried. */
+  retryPrompt?: string
 }
 
 /**
@@ -385,13 +404,16 @@ export function AgentHomePage() {
     setMessages(prev => [
       ...prev,
       { id: userMsgId, role: 'user', content: clean },
-      { id: assistantMsgId, role: 'assistant', content: '', streaming: true, toolCalls: [] },
+      { id: assistantMsgId, role: 'assistant', content: '', streaming: true, toolCalls: [], retryPrompt: clean },
     ])
     setComposer('')
     setStreaming(true)
 
     abortRef.current?.abort()
     abortRef.current = new AbortController()
+
+    // Set by the error branch inside the frame loop and handled after it.
+    let streamError: string | null = null
 
     try {
       const res = await fetch('/api/v1/agent/chat', {
@@ -590,18 +612,41 @@ export function AgentHomePage() {
               } catch (err) {
                 console.warn('[artifact] failed to render:', err)
               }
-            } else if (evt.type === 'error') {
-              throw new Error(evt.error || 'agent error')
+            } else if (evt.type === 'error' || evt.error) {
+              // Recorded, not thrown. This catch tolerates one malformed frame
+              // by ignoring it, so throwing from here discarded every agent
+              // failure and left an empty bubble.
+              //
+              // `evt.error` without a type is also matched: routes/chat.py's
+              // legacy handler emits a bare {"error": …} envelope, which the
+              // old `evt.type === 'error'` test never saw at all.
+              streamError = evt.error || 'agent error'
+              break
             }
           } catch {
             // ignore parse errors
           }
         }
+        if (streamError) break
       }
 
-      setMessages(prev => prev.map(m =>
-        m.id === assistantMsgId ? { ...m, streaming: false } : m,
-      ))
+      if (streamError) {
+        // Render the failure AND let the persistence block below run: the
+        // guard is `assembled.trim().length > 0`, so a failed turn used to be
+        // dropped entirely and vanish on refresh — the user could not even
+        // show anyone what happened.
+        const friendly = friendlyAgentError(streamError)
+        assembled = assembled || friendly
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMsgId
+            ? { ...m, streaming: false, error: streamError!, content: m.content || friendly }
+            : m,
+        ))
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMsgId ? { ...m, streaming: false } : m,
+        ))
+      }
 
       // ── Persist this turn server-side so the conversation survives a
       // refresh. The agents service is stateless; the chat endpoint just
@@ -610,7 +655,13 @@ export function AgentHomePage() {
       // the user msg + assistant msg + tool calls in one transaction.
       // Failures here are non-fatal — the in-memory conversation still
       // works, the user just loses persistence on this turn.
+      // A run that fails before the agents service emits `session_id` — an
+      // unconfigured key, a provider 400 — leaves nothing to persist against,
+      // so the whole turn used to vanish on reload and the user could not show
+      // anyone what happened. Mint an id for that case; the threads endpoint
+      // upserts on it, so a client-minted id is a real thread from then on.
       const sidToPersist = newSessionId ?? threadId
+        ?? (streamError ? (globalThis.crypto?.randomUUID?.() ?? `err-${Date.now()}`) : null)
       if (sidToPersist && assembled.trim().length > 0) {
         try {
           // Upsert thread (idempotent on id) — first turn creates, later turns no-op.
@@ -641,20 +692,22 @@ export function AgentHomePage() {
         }
       }
 
+      // Mark the just-streamed id so the load-effect doesn't refetch (which
+      // could 404 if persistence is still in flight). Set whenever this turn
+      // was persisted, not only when a NEW session id appeared: on an existing
+      // thread the refetch would otherwise replace local state with the
+      // server's, discarding client-only fields — which is how a failed turn
+      // lost its error detail and its Try again button while still showing the
+      // friendly text.
+      if (sidToPersist) justStreamedThreadIdRef.current = sidToPersist
       if (newSessionId && newSessionId !== threadId) {
-        // Mark the just-streamed id so the load-effect doesn't try to
-        // refetch (which could 404 if persistence is still in flight).
-        justStreamedThreadIdRef.current = newSessionId
         setThreadId(newSessionId)
       }
       // refresh thread list to surface the new conversation
       qc.invalidateQueries({ queryKey: ['agent-threads-home'] })
     } catch (e) {
       const msg = (e as Error).message
-      const noKey = /api\s+key|authentication|RuntimeError/i.test(msg)
-      const friendly = noKey
-        ? 'The AI assistant isn\'t configured for your workspace yet. An admin needs to add an OpenAI or Anthropic API key in Organization → AI Config.'
-        : 'Sorry, the AI assistant ran into a problem. Try again, or refresh if it persists.'
+      const friendly = friendlyAgentError(msg)
       setMessages(prev => prev.map(m =>
         m.id === assistantMsgId
           ? { ...m, streaming: false, error: msg, content: m.content || friendly }
@@ -952,6 +1005,7 @@ export function AgentHomePage() {
                   onActionApply={(actionId, args) => applyAction(m.id, actionId, args)}
                   onActionCancel={(actionId) => cancelAction(m.id, actionId)}
                   onActionUndo={(actionId) => undoAction(m.id, actionId)}
+                  onRetry={(prompt) => { if (!streaming && prompt) send(prompt) }}
                 />
               ))}
               <div ref={messagesEndRef} />
@@ -1141,6 +1195,7 @@ function MessageBubble({
   onActionApply,
   onActionCancel,
   onActionUndo,
+  onRetry,
 }: {
   message:      ChatMessage
   onChipSelect?: (text: string) => void
@@ -1148,6 +1203,7 @@ function MessageBubble({
   onActionApply?:  (actionId: string, args: Record<string, unknown>) => void | Promise<void>
   onActionCancel?: (actionId: string) => void
   onActionUndo?:   (actionId: string) => void | Promise<void>
+  onRetry?:        (prompt: string) => void
 }) {
   if (message.role === 'user') {
     return (
@@ -1239,7 +1295,20 @@ function MessageBubble({
           />
         )}
         {message.error && (
-          <div className="text-[11px] text-red-600 mt-1">{message.error.slice(0, 200)}</div>
+          <div className="mt-1.5 space-y-1" data-testid="agent-error">
+            <div className="text-[11px] text-red-600">{message.error.slice(0, 200)}</div>
+            {/* A diagnosis with no way forward leaves the user stuck on a dead
+                thread. Retry re-sends the message that failed. */}
+            {onRetry && (
+              <button
+                onClick={() => onRetry(message.retryPrompt ?? '')}
+                className="text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                data-testid="agent-error-retry"
+              >
+                Try again
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
