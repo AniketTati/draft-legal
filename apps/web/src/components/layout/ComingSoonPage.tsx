@@ -13,6 +13,7 @@ import { Link } from 'react-router-dom'
 import { ArrowLeft, BellPlus, CheckCircle2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 interface ComingSoonPageProps {
   icon: LucideIcon
@@ -52,54 +53,57 @@ export function ComingSoonPage({
 
   return (
     <div className="flex min-h-full items-center justify-center p-6">
-      <div className="w-full max-w-lg rounded-xl border border-border bg-card p-8 shadow-sm">
-        <div className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Icon className="h-6 w-6" />
+      <div className="w-full max-w-lg rounded-card border border-paper-200 bg-card p-8 shadow-e1">
+        <div className="mb-4 inline-flex size-12 items-center justify-center rounded-md bg-paper-100 text-ink-700">
+          <Icon className="size-6" />
         </div>
 
         <div className="flex items-center gap-2 mb-1">
-          <h1 className="text-xl font-semibold text-foreground">{title}</h1>
+          <h1 className="text-title text-ink-950">{title}</h1>
           {eta && (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+            // A ship date blocks nobody — it is a neutral fact, not "your turn".
+            <span className="rounded-full border border-paper-200 bg-paper-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-ink-700">
               {eta}
             </span>
           )}
         </div>
 
-        <p className="text-sm text-muted-foreground">{description}</p>
+        <p className="text-body text-ink-500">{description}</p>
 
         {capabilities && capabilities.length > 0 && (
-          <ul className="mt-4 space-y-2 text-sm text-foreground">
+          <ul className="mt-4 space-y-2 text-body text-ink-950">
             {capabilities.map((c) => (
               <li key={c} className="flex items-start gap-2">
-                <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-foreground/40" />
+                <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-ink-400" />
                 <span>{c}</span>
               </li>
             ))}
           </ul>
         )}
 
-        <div className="mt-6 rounded-md border border-dashed border-border/70 bg-muted/30 p-4">
+        <div className="mt-6 rounded-md border border-dashed border-paper-300 bg-paper-50 p-4">
           {submitted ? (
-            <div className="flex items-center gap-2 text-sm text-emerald-700">
-              <CheckCircle2 className="h-4 w-4" />
+            // A promise to email later is a neutral fact, not a binding event —
+            // the checkmark carries it without spending the brand color.
+            <div className="flex items-center gap-2 text-body text-ink-700">
+              <CheckCircle2 className="size-4 text-ink-400" />
               We&rsquo;ll email you as soon as {title.toLowerCase()} ships.
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-2">
-              <label htmlFor="notify-email" className="flex items-center gap-2 text-sm font-medium text-foreground">
-                <BellPlus className="h-4 w-4" />
+              <label htmlFor="notify-email" className="flex items-center gap-2 text-body font-medium text-ink-950">
+                <BellPlus className="size-4" />
                 Notify me when this launches
               </label>
               <div className="flex gap-2">
-                <input
+                <Input
                   id="notify-email"
                   type="email"
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@company.com"
-                  className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  className="flex-1"
                 />
                 <Button type="submit" size="sm">
                   Notify me
@@ -109,16 +113,22 @@ export function ComingSoonPage({
           )}
         </div>
 
-        <div className="mt-6 flex items-center justify-between border-t border-border pt-4 text-sm">
+        <div className="mt-6 flex items-center justify-between border-t border-paper-200 pt-4 text-body">
           <Link
             to="/dashboard"
-            className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors"
+            className="inline-flex items-center gap-1.5 text-ink-500 hover:text-ink-950 transition-colors"
           >
-            <ArrowLeft className="h-4 w-4" />
+            <ArrowLeft className="size-4" />
             Back to dashboard
           </Link>
-          <span className="text-xs text-muted-foreground">
-            Questions? <a href="mailto:support@clmplatform.test" className="text-primary hover:underline">Contact us</a>
+          <span className="text-dense text-ink-500">
+            Questions?{' '}
+            <a
+              href="mailto:support@clmplatform.test"
+              className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:text-brand-700 hover:decoration-brand-700"
+            >
+              Contact us
+            </a>
           </span>
         </div>
       </div>

@@ -155,12 +155,12 @@ export function CompareMode({
     <div
       role="dialog"
       aria-label="Compare versions"
-      className="fixed inset-0 z-50 bg-white flex flex-col"
+      className="fixed inset-0 z-50 bg-card flex flex-col"
     >
       {/* ── Header ───────────────────────────────────────────────── */}
-      <div className="flex items-center gap-4 px-6 py-3 border-b border-gray-200 bg-white">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="font-semibold text-gray-900">Compare versions</span>
+      <div className="flex items-center gap-4 px-6 py-3 border-b border-paper-200 bg-card">
+        <div className="flex items-center gap-2 text-body">
+          <span className="font-semibold text-ink-950">Compare versions</span>
 
           {/* Newer picker */}
           <VersionPicker
@@ -170,7 +170,7 @@ export function CompareMode({
             label="Newer"
           />
 
-          <span className="text-gray-400 text-xs">vs.</span>
+          <span className="text-ink-400 text-dense">vs.</span>
 
           {/* Older picker */}
           <VersionPicker
@@ -182,24 +182,24 @@ export function CompareMode({
         </div>
 
         {/* Attribution chips for the two versions */}
-        <div className="hidden md:flex items-center gap-3 text-[11px] text-gray-500">
+        <div className="hidden md:flex items-center gap-3 text-[11px] text-ink-500">
           {newer && (
-            <Attribution label={`v${newer.versionNumber}`} author={newer.authorName} createdAt={newer.createdAt} tone="blue" />
+            <Attribution label={`v${newer.versionNumber}`} author={newer.authorName} createdAt={newer.createdAt} tone="ink" />
           )}
           {older && (
-            <Attribution label={`v${older.versionNumber}`} author={older.authorName} createdAt={older.createdAt} tone="gray" />
+            <Attribution label={`v${older.versionNumber}`} author={older.authorName} createdAt={older.createdAt} tone="muted" />
           )}
         </div>
 
         {/* Filter chips — filter the per-change review list (theirs=added, ours=removed, pending=undecided) */}
-        <div className="ml-auto flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg">
+        <div className="ml-auto flex items-center gap-1 p-0.5 bg-paper-100 rounded-md">
           {(['all', 'theirs', 'ours', 'pending'] as const).map(f => (
             <button
               key={f}
               onClick={() => setFilter(f)}
               className={cn(
-                'px-2.5 py-1 rounded-md text-xs font-medium capitalize',
-                filter === f ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700',
+                'px-2.5 py-1 rounded-chip text-[11.5px] font-semibold capitalize',
+                filter === f ? 'bg-card shadow-e1 text-ink-950' : 'text-ink-500 hover:text-ink-950',
               )}
             >
               {f}
@@ -209,45 +209,48 @@ export function CompareMode({
 
         <button
           onClick={onClose}
-          className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+          className="p-1.5 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100"
           aria-label="Close compare (Esc)"
           title="Close (Esc)"
         >
-          <X className="h-4 w-4" />
+          <X className="size-4" />
         </button>
       </div>
 
       {/* ── Bulk action bar — visible when diff loaded ──────────── */}
       {diff && (
-        <div className="flex items-center gap-3 px-6 py-2 border-b border-gray-100 bg-gray-50 text-xs">
-          <span className="text-gray-500">
-            <span className="text-emerald-700 font-medium">{diff.stats.insertions}</span> added,{' '}
-            <span className="text-red-700 font-medium">{diff.stats.deletions}</span> removed
+        <div className="flex items-center gap-3 px-6 py-2 border-b border-paper-200 bg-paper-50 text-dense tabular-nums">
+          <span className="text-ink-500">
+            <span className="text-brand-700 font-medium">{diff.stats.insertions}</span> added,{' '}
+            <span className="text-risk-700 font-medium">{diff.stats.deletions}</span> removed
           </span>
           {changes.length > 0 && (
             <>
-              <div className="h-3 w-px bg-gray-300" aria-hidden />
-              <span className="text-gray-500">
-                <span className="text-emerald-700 font-medium">{acceptedCount}</span> accepted ·{' '}
-                <span className="text-red-700 font-medium">{rejectedCount}</span> rejected ·{' '}
-                <span className="text-gray-500 font-medium">{pendingCount}</span> pending
+              <div className="h-3 w-px bg-paper-300" aria-hidden />
+              <span className="text-ink-500">
+                <span className="text-brand-700 font-medium">{acceptedCount}</span> accepted ·{' '}
+                <span className="text-risk-700 font-medium">{rejectedCount}</span> rejected ·{' '}
+                <span className="text-ink-500 font-medium">{pendingCount}</span> pending
               </span>
             </>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {/* Accept/reject a redline IS the approval surface, so brand and
+                risk are earned here — but they stay outlined so the ink
+                "Apply as new version" remains the one primary. */}
             <Button
               size="sm" variant="outline"
-              className="gap-1 text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+              className="gap-1 text-brand-700 border-brand-200 hover:bg-brand-50"
               onClick={() => setAll('accept')} disabled={changes.length === 0}
             >
-              <Check className="h-3.5 w-3.5" /> Accept all
+              <Check className="size-3.5" /> Accept all
             </Button>
             <Button
-              size="sm" variant="outline"
-              className="gap-1 text-red-700 border-red-200 hover:bg-red-50"
+              size="sm" variant="danger"
+              className="gap-1"
               onClick={() => setAll('reject')} disabled={changes.length === 0}
             >
-              <XCircle className="h-3.5 w-3.5" /> Reject all
+              <XCircle className="size-3.5" /> Reject all
             </Button>
             {/* Phase 4 — the same two versions, as a Word file with native
                 tracked changes. This is the handoff to the counterparty:
@@ -260,8 +263,8 @@ export function CompareMode({
               data-testid="download-redline-docx"
             >
               {downloadDocx.isPending
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : <Download className="h-3.5 w-3.5" />}
+                ? <Loader2 className="size-3.5 animate-spin" />
+                : <Download className="size-3.5" />}
               Word (tracked)
             </Button>
             <Button
@@ -270,15 +273,15 @@ export function CompareMode({
               disabled={changes.length === 0 || acceptedCount + rejectedCount === 0 || applyMerge.isPending}
               title={pendingCount > 0 ? `${pendingCount} undecided change(s) will keep the older version` : 'Save the merged result as a new version'}
             >
-              {applyMerge.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              {applyMerge.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}
               Apply as new version
             </Button>
           </div>
-          {applyMerge.isError && <span className="text-red-600">Failed to apply — try again.</span>}
+          {applyMerge.isError && <span className="text-risk-700">Failed to apply — try again.</span>}
           {/* A download that silently does nothing is indistinguishable from a
               browser blocking it, so say so rather than failing quietly. */}
           {downloadDocx.isError && (
-            <span className="text-red-600" data-testid="docx-download-error">
+            <span className="text-risk-700" data-testid="docx-download-error">
               Could not build the Word file — try again.
             </span>
           )}
@@ -286,24 +289,24 @@ export function CompareMode({
       )}
 
       {/* ── Diff body ───────────────────────────────────────────── */}
-      <div className="flex-1 overflow-auto bg-gray-50 p-4">
+      <div className="flex-1 overflow-auto bg-paper-50 p-4">
         {sorted.length < 2 ? (
           <Centered>
-            <p className="text-sm text-gray-500">Only one version exists — nothing to compare.</p>
+            <p className="text-body text-ink-500">Only one version exists — nothing to compare.</p>
           </Centered>
         ) : olderId === newerId ? (
           <Centered>
-            <p className="text-sm text-gray-500">Pick two different versions to see changes.</p>
+            <p className="text-body text-ink-500">Pick two different versions to see changes.</p>
           </Centered>
         ) : isLoading ? (
           <Centered>
-            <Loader2 className="h-5 w-5 animate-spin text-gray-400 mb-2" />
-            <p className="text-sm text-gray-500">Computing diff…</p>
+            <Loader2 className="size-5 animate-spin text-ink-400 mb-2" />
+            <p className="text-body text-ink-500">Computing diff…</p>
           </Centered>
         ) : stillProcessing ? (
           <Centered>
-            <Loader2 className="h-5 w-5 animate-spin text-gray-400 mb-2" />
-            <p className="text-sm text-gray-500 max-w-sm text-center">
+            <Loader2 className="size-5 animate-spin text-ink-400 mb-2" />
+            <p className="text-body text-ink-500 max-w-sm text-center">
               This version is still being processed. The comparison will be
               available once extraction finishes.
             </p>
@@ -329,7 +332,7 @@ export function CompareMode({
           </div>
         ) : (
           <Centered>
-            <p className="text-sm text-gray-500">No diff available for these versions.</p>
+            <p className="text-body text-ink-500">No diff available for these versions.</p>
           </Centered>
         )}
       </div>
@@ -349,12 +352,12 @@ function VersionPicker({
   label:     string
 }) {
   return (
-    <label className="inline-flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-md px-2 py-1 text-xs">
-      <span className="text-gray-500 text-[10px] uppercase tracking-wide">{label}</span>
+    <label className="inline-flex items-center gap-1 bg-paper-50 border border-paper-200 rounded-md px-2 py-1 text-dense">
+      <span className="text-ink-400 text-[10px] uppercase tracking-[0.09em] font-bold">{label}</span>
       <select
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="bg-transparent outline-none text-gray-800 font-medium pr-1"
+        className="bg-transparent outline-none text-ink-950 font-medium pr-1 tabular-nums"
       >
         {versions.map(v => (
           <option key={v.id} value={v.id}>
@@ -362,7 +365,7 @@ function VersionPicker({
           </option>
         ))}
       </select>
-      <ChevronDown className="h-3 w-3 text-gray-400 -ml-1" />
+      <ChevronDown className="size-3 text-ink-400 -ml-1" />
     </label>
   )
 }
@@ -376,21 +379,25 @@ function Attribution({
   label:     string
   author?:   string | null
   createdAt: string
-  tone:      'blue' | 'gray'
+  /**
+   * Which version this chip labels — the newer one leads, the older recedes.
+   * That is emphasis, not meaning, so it is spent in ink rather than a hue.
+   */
+  tone:      'ink' | 'muted'
 }) {
   return (
     <div className={cn(
       'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border',
-      tone === 'blue'
-        ? 'bg-blue-50 text-blue-700 border-blue-200'
-        : 'bg-gray-50 text-gray-600 border-gray-200',
+      tone === 'ink'
+        ? 'bg-paper-100 text-ink-950 border-paper-300'
+        : 'bg-paper-50 text-ink-500 border-paper-200',
     )}>
-      <span className="font-semibold">{label}</span>
+      <span className="font-semibold tabular-nums">{label}</span>
       <span className="opacity-60">·</span>
-      <User className="h-3 w-3 opacity-60" />
+      <User className="size-3 opacity-60" />
       <span className="truncate max-w-[120px]">{short(author)}</span>
       <span className="opacity-60">·</span>
-      <Clock className="h-3 w-3 opacity-60" />
+      <Clock className="size-3 opacity-60" />
       <span>{dateLabel(createdAt)}</span>
     </div>
   )
@@ -408,56 +415,56 @@ function ChangesList({
   onDecide:     (id: string, d: RedlineDecision) => void
 }) {
   return (
-    <aside className="w-80 shrink-0 sticky top-0 self-start max-h-[calc(100vh-170px)] overflow-auto rounded-lg border border-gray-200 bg-white">
-      <div className="px-3 py-2 border-b border-gray-100 text-xs font-semibold text-gray-700 sticky top-0 bg-white">
+    <aside className="w-80 shrink-0 sticky top-0 self-start max-h-[calc(100vh-170px)] overflow-auto rounded-card border border-paper-200 bg-card">
+      <div className="px-3 py-2 border-b border-paper-200 text-dense font-semibold text-ink-950 sticky top-0 bg-card tabular-nums">
         Changes ({totalChanges})
       </div>
       {changes.length === 0 ? (
-        <p className="px-3 py-4 text-xs text-gray-400 italic">No changes match this filter.</p>
+        <p className="px-3 py-4 text-dense text-ink-400 italic">No changes match this filter.</p>
       ) : (
-        <ul className="divide-y divide-gray-50">
+        <ul className="divide-y divide-paper-100">
           {changes.map(c => {
             const decision = decisions[c.id]
             return (
               <li key={c.id} className="px-3 py-2">
                 <div className="flex items-start gap-2">
                   <span className={cn(
-                    'mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
-                    c.type === 'ins' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700',
+                    'mt-0.5 shrink-0 rounded-chip px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+                    c.type === 'ins' ? 'bg-brand-50 text-brand-700' : 'bg-risk-50 text-risk-700',
                   )}>
                     {c.type === 'ins' ? 'Added' : 'Removed'}
                   </span>
                   <p className={cn(
-                    'text-xs text-gray-700 line-clamp-3',
-                    c.type === 'del' && 'line-through text-gray-400',
+                    'text-dense text-ink-700 line-clamp-3',
+                    c.type === 'del' && 'line-through text-ink-400',
                   )}>
-                    {c.text || <span className="italic text-gray-400">(formatting change)</span>}
+                    {c.text || <span className="italic text-ink-400">(formatting change)</span>}
                   </p>
                 </div>
                 <div className="mt-1.5 flex items-center gap-1.5">
                   <button
                     onClick={() => onDecide(c.id, 'accept')}
                     className={cn(
-                      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium border',
+                      'inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[11px] font-medium border',
                       decision === 'accept'
-                        ? 'bg-emerald-600 text-white border-emerald-600'
-                        : 'text-emerald-700 border-emerald-200 hover:bg-emerald-50',
+                        ? 'bg-brand-700 text-white border-brand-700'
+                        : 'text-brand-700 border-brand-200 hover:bg-brand-50',
                     )}
                   >
-                    <Check className="h-3 w-3" /> Accept
+                    <Check className="size-3" /> Accept
                   </button>
                   <button
                     onClick={() => onDecide(c.id, 'reject')}
                     className={cn(
-                      'inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium border',
+                      'inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[11px] font-medium border',
                       decision === 'reject'
-                        ? 'bg-red-600 text-white border-red-600'
-                        : 'text-red-700 border-red-200 hover:bg-red-50',
+                        ? 'bg-risk-600 text-white border-risk-600'
+                        : 'text-risk-700 border-risk-200 hover:bg-risk-50',
                     )}
                   >
-                    <XCircle className="h-3 w-3" /> Reject
+                    <XCircle className="size-3" /> Reject
                   </button>
-                  {!decision && <span className="text-[10px] text-gray-400">pending</span>}
+                  {!decision && <span className="text-[10px] text-ink-400">pending</span>}
                 </div>
               </li>
             )

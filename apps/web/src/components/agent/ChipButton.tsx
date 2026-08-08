@@ -25,7 +25,7 @@ export function ChipRow({ chips, onSelect, disabled, streaming }: ChipRowProps) 
         {[88, 124, 96].map((w, i) => (
           <span
             key={i}
-            className="h-6 rounded-full bg-gray-100 animate-pulse"
+            className="h-6 rounded-full bg-paper-100 animate-pulse"
             style={{ width: w }}
           />
         ))}
@@ -54,10 +54,12 @@ export function ChipButton({ chip, onSelect, disabled }: {
       disabled={disabled}
       data-testid={`chip-${chip.id}`}
       title={chip.label}
-      className="inline-flex items-center gap-1 max-w-[280px] rounded-full border border-blue-200 bg-blue-50/60 px-2.5 py-1 text-[11.5px] text-blue-800 hover:bg-blue-100 hover:border-blue-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      // Follow-up suggestions are the thread's "Try:" pills — neutral paper, not
+      // an accent. They act, so they darken to ink on hover rather than to a hue.
+      className="inline-flex items-center gap-1 max-w-[280px] rounded-full border border-paper-200 bg-paper-50 px-2.5 py-1 text-[11.5px] text-ink-700 hover:bg-paper-100 hover:border-paper-300 hover:text-ink-950 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
     >
       <span className="truncate">{chip.label}</span>
-      <ArrowUpRight className="h-3 w-3 flex-shrink-0 text-blue-500" />
+      <ArrowUpRight className="size-3 flex-shrink-0 text-ink-400" />
     </button>
   )
 }

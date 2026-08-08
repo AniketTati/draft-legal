@@ -12,6 +12,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { AssistCard, AssistChip, AssistMark } from '@/components/ui/assist'
+import { CountBadge } from '@/components/ui/primitives'
+import { StatusPill } from '@/components/ui/status-pill'
+import type { Meaning } from '@/lib/status'
 import {
   Receipt, Plus, Loader2, AlertCircle, CheckCircle2, ArrowRight,
   Search, Sparkles, RotateCw, Flag, FileText, X,
@@ -45,12 +49,13 @@ interface ApiStats {
   openTotal:  number
 }
 
-const STATUS_PILL: Record<string, { bg: string; label: string }> = {
-  PENDING:    { bg: 'bg-gray-100 border-gray-200 text-gray-700',           label: 'Pending' },
-  MATCHED:    { bg: 'bg-blue-50 border-blue-200 text-blue-700',             label: 'Matched' },
-  RECONCILED: { bg: 'bg-emerald-50 border-emerald-200 text-emerald-700',    label: 'Reconciled' },
-  DISPUTED:   { bg: 'bg-red-50 border-red-200 text-red-700',                label: 'Disputed' },
-}
+/*
+ * The local STATUS_PILL map is gone — all four states live in lib/status now,
+ * with no local exception. MATCHED reads as binding here exactly as it does
+ * everywhere else; the "still waiting on a human to reconcile" story is told
+ * by the Reconciled column and the filter tabs, not by a second colour for a
+ * status the rest of the product has already coloured.
+ */
 
 const FILTERS: { key: Status; label: string; statKey?: keyof ApiStats }[] = [
   { key: 'all',        label: 'All' },
@@ -71,17 +76,19 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+/*
+ * The auto-matcher's confidence in its own answer — the design system's
+ * canonical "confidence mark", so it takes the assist accent and the diamond,
+ * hollowing out as the model gets less sure.
+ */
 function MatchScoreBadge({ score }: { score: number | null }) {
   if (score == null) return null
   const pct = Math.round(score * 100)
-  const tone = pct >= 70 ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-            : pct >= 50 ? 'text-blue-700 bg-blue-50 border-blue-200'
-            : 'text-amber-700 bg-amber-50 border-amber-200'
+  const confidence = pct >= 70 ? 'high' : pct >= 50 ? 'medium' : 'low'
   return (
-    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10.5px] font-medium border ${tone}`}>
-      <Sparkles className="h-2.5 w-2.5" />
+    <AssistChip icon={<AssistMark confidence={confidence} className="size-[5px]" />}>
       {pct}%
-    </span>
+    </AssistChip>
   )
 }
 
@@ -131,38 +138,40 @@ export function InvoicesPage() {
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="invoices-page">
       <div className="flex items-center justify-between mb-1 gap-4">
         <div className="flex items-center gap-3">
-          <Receipt className="h-5 w-5 text-amber-600" />
-          <h1 className="text-2xl font-semibold text-gray-900">Invoices</h1>
+          {/* Amber means "blocked on you"; an invoice queue is not, by itself,
+              your turn — so the page chrome is ink. */}
+          <Receipt className="size-4 text-ink-400" />
+          <h1 className="text-title text-ink-950">Invoices</h1>
         </div>
         <Button
           onClick={() => setCreateOpen(true)}
           data-testid="add-invoice-btn"
-          className="gap-1.5 bg-amber-600 hover:bg-amber-700 text-white"
+          className="gap-1.5"
         >
-          <Plus className="h-4 w-4" />
+          <Plus className="size-3.5" />
           Add invoice
         </Button>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
+      <p className="text-dense text-ink-500 mb-5">
         Match incoming vendor invoices to the payment obligations on your executed contracts.
       </p>
 
       {/* Stats strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <StatCard label="Pending"      value={stats?.pending ?? 0}     tone="gray"    data-testid="stat-pending" />
-        <StatCard label="Matched"      value={stats?.matched ?? 0}     tone="blue"    data-testid="stat-matched" />
-        <StatCard label="Reconciled"   value={stats?.reconciled ?? 0}  tone="emerald" data-testid="stat-reconciled" />
+        <StatCard label="Pending"      value={stats?.pending ?? 0}     tone="neutral"  data-testid="stat-pending" />
+        <StatCard label="Matched"      value={stats?.matched ?? 0}     tone="inflight" data-testid="stat-matched" />
+        <StatCard label="Reconciled"   value={stats?.reconciled ?? 0}  tone="binding"  data-testid="stat-reconciled" />
         <StatCard
           label="Open total"
           value={stats?.openTotal ? formatMoney(stats.openTotal) : '$0'}
-          tone="amber"
+          tone="neutral"
           data-testid="stat-open-total"
           subtitle="pending + matched"
         />
       </div>
 
       {/* Filter tabs + search */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-gray-200 pb-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-paper-200 pb-2">
         <div className="flex items-center gap-1 -mb-2 overflow-x-auto">
           {FILTERS.map(f => {
             const active = status === f.key
@@ -173,31 +182,31 @@ export function InvoicesPage() {
                 type="button"
                 onClick={() => setStatus(f.key)}
                 data-testid={`invoice-filter-${f.key}`}
-                className={`px-3 py-2 text-sm border-b-2 transition-colors whitespace-nowrap ${
+                className={`px-3 py-2 text-dense border-b-2 transition-colors whitespace-nowrap ${
+                  // A selected tab is an action state, so it underlines in ink.
                   active
-                    ? 'border-amber-600 text-amber-700 font-medium'
-                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                    ? 'border-ink-950 text-ink-950 font-semibold'
+                    : 'border-transparent text-ink-500 hover:text-ink-950'
                 }`}
               >
                 {f.label}
+                {/* Filter counts are informational — only "your turn" earns color. */}
                 {count != null && count > 0 && (
-                  <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
-                    active ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500'
-                  }`}>{count}</span>
+                  <CountBadge tone={active ? 'ink' : 'neutral'} className="ml-1.5">{count}</CountBadge>
                 )}
               </button>
             )
           })}
         </div>
         <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
-          <input
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-ink-400" />
+          <Input
             type="search"
             placeholder="Search vendor or invoice #"
             value={q}
             onChange={e => setQ(e.target.value)}
             data-testid="invoices-search"
-            className="pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-md focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-400 w-full sm:w-64"
+            className="pl-8 w-full sm:w-64"
           />
         </div>
       </div>
@@ -205,20 +214,20 @@ export function InvoicesPage() {
       {/* Table */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+          <Loader2 className="size-5 animate-spin text-ink-400" />
         </div>
       ) : isError ? (
-        <div className="flex items-start gap-2 p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 mt-0.5" />
+        <div className="flex items-start gap-2 p-4 rounded-md bg-risk-50 border border-risk-200 text-dense text-risk-700">
+          <AlertCircle className="size-4 mt-0.5" />
           Failed to load invoices.
         </div>
       ) : items.length === 0 ? (
-        <div className="text-center py-16 px-6 border border-dashed border-gray-200 rounded-xl" data-testid="invoices-empty">
-          <Receipt className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">
+        <div className="text-center py-16 px-6 border border-dashed border-paper-300 rounded-card" data-testid="invoices-empty">
+          <Receipt className="size-6 text-ink-400 mx-auto mb-2" />
+          <p className="text-dense text-ink-500 mb-1">
             {q ? `No invoices match "${q}".` : 'No invoices yet.'}
           </p>
-          <p className="text-xs text-gray-400 mb-3">
+          <p className="text-[11.5px] text-ink-400 mb-3">
             Add an invoice to auto-match it against the payment obligations on your contracts.
           </p>
           <Button
@@ -227,128 +236,129 @@ export function InvoicesPage() {
             size="sm"
             className="gap-1.5"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="size-3.5" />
             Add invoice
           </Button>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <div className="px-5 py-2 text-xs text-gray-500 bg-gray-50 border-b border-gray-200">
-            {total} {total === 1 ? 'invoice' : 'invoices'}
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <div className="px-5 py-2 text-[11.5px] text-ink-500 bg-paper-50 border-b border-paper-200">
+            <span className="tabular-nums">{total}</span> {total === 1 ? 'invoice' : 'invoices'}
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm" data-testid="invoices-table">
-              <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+            <table className="w-full text-dense" data-testid="invoices-table">
+              <thead className="bg-paper-50 text-[10px] uppercase tracking-[0.09em] text-ink-400">
                 <tr>
-                  <th className="text-left px-4 py-3 font-medium">Vendor</th>
-                  <th className="text-left px-4 py-3 font-medium">Amount</th>
-                  <th className="text-left px-4 py-3 font-medium">Invoice date</th>
-                  <th className="text-left px-4 py-3 font-medium">Match</th>
-                  <th className="text-left px-4 py-3 font-medium">Status</th>
-                  <th className="text-right px-4 py-3 font-medium"></th>
+                  <th className="text-left px-4 py-2 font-semibold">Vendor</th>
+                  <th className="text-left px-4 py-2 font-semibold">Amount</th>
+                  <th className="text-left px-4 py-2 font-semibold">Invoice date</th>
+                  <th className="text-left px-4 py-2 font-semibold">Match</th>
+                  <th className="text-left px-4 py-2 font-semibold">Status</th>
+                  <th className="text-right px-4 py-2 font-semibold"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
-                {items.map(inv => {
-                  const pill = STATUS_PILL[inv.status]
-                  return (
-                    <tr key={inv.id} className="hover:bg-gray-50" data-testid={`invoice-row-${inv.id}`}>
-                      <td className="px-4 py-3 max-w-[280px]">
-                        <div className="font-medium text-gray-900 truncate" title={inv.vendorName}>
-                          {inv.vendorName}
-                        </div>
-                        {inv.invoiceNumber && (
-                          <div className="text-xs text-gray-500 mt-0.5 font-mono">#{inv.invoiceNumber}</div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-900 tabular-nums">
-                        {formatMoney(inv.amount, inv.currency)}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-gray-600 whitespace-nowrap">
-                        {formatDate(inv.invoiceDate)}
-                      </td>
-                      <td className="px-4 py-3">
-                        {inv.matchedObligation && inv.contract ? (
-                          <div className="flex items-start gap-1.5 min-w-0">
-                            <Sparkles className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
-                            <div className="min-w-0 max-w-[260px]">
-                              <Link
-                                to={`/contracts/${inv.contract.id}`}
-                                className="text-xs font-medium text-blue-700 hover:text-blue-800 truncate block"
-                                title={inv.contract.title}
-                              >
-                                {inv.contract.title}
-                              </Link>
-                              <div className="text-[10.5px] text-gray-500 truncate" title={inv.matchedObligation.description}>
-                                {inv.matchedObligation.description}
-                              </div>
-                              <div className="mt-0.5">
-                                <MatchScoreBadge score={inv.matchScore} />
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-400 italic">No match</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border ${pill.bg}`}>
-                          {pill.label}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center gap-3">
-                          {inv.status === 'MATCHED' && (
-                            <button
-                              type="button"
-                              onClick={() => reconcile.mutate(inv.id)}
-                              disabled={reconcile.isPending}
-                              data-testid={`reconcile-${inv.id}`}
-                              className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-800 font-medium disabled:opacity-50"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Reconcile
-                            </button>
-                          )}
-                          {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
-                            <button
-                              type="button"
-                              onClick={() => rematch.mutate(inv.id)}
-                              disabled={rematch.isPending}
-                              data-testid={`rematch-${inv.id}`}
-                              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-                              title="Re-run auto-matcher"
-                            >
-                              <RotateCw className="h-3.5 w-3.5" />
-                              Rematch
-                            </button>
-                          )}
-                          {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
-                            <button
-                              type="button"
-                              onClick={() => dispute.mutate(inv.id)}
-                              disabled={dispute.isPending}
-                              data-testid={`dispute-${inv.id}`}
-                              className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 font-medium"
-                            >
-                              <Flag className="h-3.5 w-3.5" />
-                              Dispute
-                            </button>
-                          )}
-                          {inv.contract?.id && (
+              <tbody className="divide-y divide-paper-100">
+                {items.map(inv => (
+                  <tr key={inv.id} className="hover:bg-paper-50" data-testid={`invoice-row-${inv.id}`}>
+                    <td className="px-4 py-2 max-w-[280px]">
+                      <div className="text-[13px] font-medium text-ink-950 truncate" title={inv.vendorName}>
+                        {inv.vendorName}
+                      </div>
+                      {inv.invoiceNumber && (
+                        <div className="text-[11px] text-ink-400 mt-0.5 font-mono">#{inv.invoiceNumber}</div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2 whitespace-nowrap font-medium text-ink-950 tabular-nums">
+                      {formatMoney(inv.amount, inv.currency)}
+                    </td>
+                    <td className="px-4 py-2 text-ink-700 whitespace-nowrap tabular-nums">
+                      {formatDate(inv.invoiceDate)}
+                    </td>
+                    <td className="px-4 py-2">
+                      {inv.matchedObligation && inv.contract ? (
+                        <div className="flex items-start gap-1.5 min-w-0">
+                          {/* The auto-matcher drew this link, so it carries the mark. */}
+                          <AssistMark className="mt-1.5 flex-shrink-0" />
+                          <div className="min-w-0 max-w-[260px]">
                             <Link
                               to={`/contracts/${inv.contract.id}`}
-                              className="inline-flex items-center gap-0.5 text-xs text-gray-500 hover:text-gray-700"
+                              className="text-[11.5px] font-medium text-ink-950 hover:text-brand-700 truncate block"
+                              title={inv.contract.title}
                             >
-                              <FileText className="h-3.5 w-3.5" />
-                              <ArrowRight className="h-3 w-3" />
+                              {inv.contract.title}
                             </Link>
-                          )}
+                            <div className="text-[10.5px] text-ink-500 truncate" title={inv.matchedObligation.description}>
+                              {inv.matchedObligation.description}
+                            </div>
+                            <div className="mt-0.5">
+                              <MatchScoreBadge score={inv.matchScore} />
+                            </div>
+                          </div>
                         </div>
-                      </td>
-                    </tr>
-                  )
-                })}
+                      ) : (
+                        <span className="text-[11.5px] text-ink-400 italic">No match</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-2">
+                      <StatusPill
+                        status={inv.status}
+                        meaning={inv.status === 'MATCHED' ? 'inflight' : undefined}
+                      />
+                    </td>
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-3">
+                        {inv.status === 'MATCHED' && (
+                          <button
+                            type="button"
+                            onClick={() => reconcile.mutate(inv.id)}
+                            disabled={reconcile.isPending}
+                            data-testid={`reconcile-${inv.id}`}
+                            // Reconciling settles the invoice — the one binding
+                            // decision in this row group.
+                            className="inline-flex items-center gap-1 text-[11.5px] text-brand-700 hover:text-brand-800 font-medium disabled:opacity-50"
+                          >
+                            <CheckCircle2 className="size-3.5" />
+                            Reconcile
+                          </button>
+                        )}
+                        {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
+                          <button
+                            type="button"
+                            onClick={() => rematch.mutate(inv.id)}
+                            disabled={rematch.isPending}
+                            data-testid={`rematch-${inv.id}`}
+                            className="inline-flex items-center gap-1 text-[11.5px] text-ink-700 hover:text-ink-950 font-medium"
+                            title="Re-run auto-matcher"
+                          >
+                            <RotateCw className="size-3.5" />
+                            Rematch
+                          </button>
+                        )}
+                        {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
+                          <button
+                            type="button"
+                            onClick={() => dispute.mutate(inv.id)}
+                            disabled={dispute.isPending}
+                            data-testid={`dispute-${inv.id}`}
+                            className="inline-flex items-center gap-1 text-[11.5px] text-risk-600 hover:text-risk-700 font-medium"
+                          >
+                            <Flag className="size-3.5" />
+                            Dispute
+                          </button>
+                        )}
+                        {inv.contract?.id && (
+                          <Link
+                            to={`/contracts/${inv.contract.id}`}
+                            className="inline-flex items-center gap-0.5 text-[11.5px] text-ink-400 hover:text-ink-950"
+                          >
+                            <FileText className="size-3.5" />
+                            <ArrowRight className="size-3" />
+                          </Link>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
@@ -371,22 +381,27 @@ export function InvoicesPage() {
 function StatCard({ label, value, tone, subtitle, ...rest }: {
   label:    string
   value:    number | string
-  tone:     'gray' | 'blue' | 'emerald' | 'amber' | 'red'
+  tone:     Meaning
   subtitle?: string
   'data-testid'?: string
 }) {
+  // These are counts, and "your turn" is the only count that earns colour.
+  // Tinting them by pipeline stage also made the strip disagree with the rows
+  // underneath — the shared map reads MATCHED as binding, so a blue "Matched"
+  // figure sat directly above a green "Matched" pill. The figure stays ink;
+  // the pill in the row is where the meaning lives.
   const toneClass = {
-    gray:    'text-gray-700',
-    blue:    'text-blue-700',
-    emerald: 'text-emerald-700',
-    amber:   'text-amber-700',
-    red:     'text-red-700',
+    neutral:  'text-ink-950',
+    inflight: 'text-ink-950',
+    turn:     'text-attention-700',
+    binding:  'text-ink-950',
+    risk:     'text-ink-950',
   }[tone]
   return (
-    <div className="border border-gray-200 rounded-xl p-3 bg-white" {...rest}>
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className={`text-2xl font-semibold mt-0.5 ${toneClass}`}>{value}</div>
-      {subtitle && <div className="text-[10.5px] text-gray-500 mt-0.5">{subtitle}</div>}
+    <div className="border border-paper-200 rounded-card p-4 bg-card" {...rest}>
+      <div className="text-[11px] text-ink-500">{label}</div>
+      <div className={`text-[24px] font-semibold tracking-[-0.02em] tabular-nums mt-0.5 ${toneClass}`}>{value}</div>
+      {subtitle && <div className="text-[10.5px] text-ink-500 mt-0.5">{subtitle}</div>}
     </div>
   )
 }
@@ -436,18 +451,18 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
 
   if (matchPreview) {
     return (
-      <div role="dialog" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
-        <div className="bg-white rounded-xl max-w-md w-full shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
+      <div role="dialog" className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-card rounded-card max-w-md w-full shadow-e3 p-6" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center gap-2 mb-3">
-            <Sparkles className="h-5 w-5 text-blue-600" />
-            <h2 className="text-lg font-semibold">Match found</h2>
+            {/* This whole dialog reports what the matcher concluded, so it is
+                marked machine-authored rather than tinted an arbitrary blue. */}
+            <Sparkles className="size-4 text-assist-600" />
+            <h2 className="text-section text-ink-950">Match found</h2>
           </div>
-          <p className="text-sm text-gray-600 mb-4">
+          <p className="text-body text-ink-700 mb-4">
             We linked this invoice to <strong>{matchPreview.vendor}</strong> at <strong>{matchPreview.score}%</strong> confidence.
           </p>
-          <div className="text-xs bg-blue-50 border border-blue-200 rounded-md p-2 mb-4">
-            <div className="text-blue-900">{matchPreview.obligation}</div>
-          </div>
+          <AssistCard className="mb-4">{matchPreview.obligation}</AssistCard>
           <div className="flex justify-end">
             <Button onClick={() => { onCreated(); onClose() }}>Done</Button>
           </div>
@@ -460,40 +475,40 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
     <div
       role="dialog"
       aria-label="Add invoice"
-      className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 overflow-auto"
+      className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4 overflow-auto"
       onClick={onClose}
       data-testid="create-invoice-dialog"
     >
-      <div className="bg-white rounded-xl max-w-lg w-full shadow-2xl my-8" onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
+      <div className="bg-card rounded-card max-w-lg w-full shadow-e3 my-8" onClick={(e) => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-              <Receipt className="h-5 w-5 text-amber-600" />
+            <h2 className="text-section text-ink-950 flex items-center gap-2">
+              <Receipt className="size-4 text-ink-400" />
               Add invoice
             </h2>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-[11.5px] text-ink-500 mt-1">
               Auto-matches against open payment obligations on your contracts.
             </p>
           </div>
-          <button onClick={onClose} aria-label="Close" className="p-1 rounded hover:bg-gray-100 text-gray-400">
-            <X className="h-4 w-4" />
+          <button onClick={onClose} aria-label="Close" className="p-1 rounded-md hover:bg-paper-100 text-ink-400">
+            <X className="size-4" />
           </button>
         </div>
 
         <div className="px-6 py-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Vendor name</label>
+            <label className="block text-[11px] font-medium text-ink-700 mb-1">Vendor name</label>
             <Input
               value={vendorName}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setVendorName(e.target.value)}
               placeholder="Acme Corp"
               data-testid="invoice-vendor"
             />
-            <p className="text-[10.5px] text-gray-400 mt-1">Match works best when this matches the contract counterparty.</p>
+            <p className="text-[10.5px] text-ink-400 mt-1">Match works best when this matches the contract counterparty.</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+              <label className="block text-[11px] font-medium text-ink-700 mb-1">Amount</label>
               <Input
                 type="number"
                 step="0.01"
@@ -504,11 +519,11 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Currency</label>
+              <label className="block text-[11px] font-medium text-ink-700 mb-1">Currency</label>
               <select
                 value={currency}
                 onChange={e => setCurrency(e.target.value)}
-                className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 bg-white focus:outline-none focus:ring-1 focus:ring-amber-400"
+                className="w-full h-8 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus:outline-none focus-visible:border-brand-700"
                 data-testid="invoice-currency"
               >
                 <option value="USD">USD</option>
@@ -520,7 +535,7 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Invoice date</label>
+              <label className="block text-[11px] font-medium text-ink-700 mb-1">Invoice date</label>
               <Input
                 type="date"
                 value={invoiceDate}
@@ -529,7 +544,7 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Due date <span className="text-gray-400 font-normal">(optional)</span></label>
+              <label className="block text-[11px] font-medium text-ink-700 mb-1">Due date <span className="text-ink-400 font-normal">(optional)</span></label>
               <Input
                 type="date"
                 value={dueDate}
@@ -539,7 +554,7 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Invoice number <span className="text-gray-400 font-normal">(optional)</span></label>
+            <label className="block text-[11px] font-medium text-ink-700 mb-1">Invoice number <span className="text-ink-400 font-normal">(optional)</span></label>
             <Input
               value={invoiceNumber}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInvoiceNumber(e.target.value)}
@@ -548,33 +563,32 @@ function CreateInvoiceDialog({ onClose, onCreated }: { onClose: () => void; onCr
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Description <span className="text-gray-400 font-normal">(optional)</span></label>
+            <label className="block text-[11px] font-medium text-ink-700 mb-1">Description <span className="text-ink-400 font-normal">(optional)</span></label>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
               placeholder="Q2 2026 retainer, monthly hosting fee, etc."
               rows={2}
               data-testid="invoice-description"
-              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:outline-none focus:ring-1 focus:ring-amber-400 resize-y"
+              className="w-full text-[13px] text-ink-950 border border-input bg-card rounded-md px-3 py-2 placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-y"
             />
           </div>
           {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
+            <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-xl">
+        <div className="px-6 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose} disabled={create.isPending}>Cancel</Button>
           <Button
             onClick={() => create.mutate()}
             disabled={!valid || create.isPending}
             data-testid="invoice-create-confirm"
-            className="bg-amber-600 hover:bg-amber-700"
           >
             {create.isPending ? (
-              <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Saving…</>
+              <><Loader2 className="size-3.5 animate-spin mr-1" /> Saving…</>
             ) : (
-              <><Sparkles className="h-4 w-4 mr-1" /> Add + match</>
+              <><Sparkles className="size-3.5 mr-1" /> Add + match</>
             )}
           </Button>
         </div>

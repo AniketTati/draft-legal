@@ -94,29 +94,31 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[85vh]">
+      <div className="bg-card rounded-card shadow-e3 w-full max-w-lg flex flex-col max-h-[85vh]">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
           <div className="flex items-center gap-2">
-            <Link className="h-5 w-5 text-blue-600" />
-            <h2 className="text-base font-semibold text-gray-900">Share Contract</h2>
+            <Link className="size-4 text-ink-400" />
+            <h2 className="text-section text-ink-950">Share Contract</h2>
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors">
-            <X className="h-4 w-4" />
+          <button onClick={onClose} className="p-1.5 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100 transition-colors">
+            <X className="size-4" />
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* New link just created */}
+          {/* New link just created. A link that exists is a fact, not a
+              binding one — this used to be an emerald "success" card, which is
+              the decoration emerald is not for. */}
           {newLinkUrl && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-              <p className="text-sm font-semibold text-emerald-700 mb-2">
+            <div className="bg-paper-50 border border-paper-200 rounded-card p-4">
+              <p className="text-body font-semibold text-ink-950 mb-2">
                 {emailedTo && emailDelivered
                   ? `Link sent to ${emailedTo}`
                   : 'Link created! Share this URL:'}
               </p>
               {emailedTo && emailDelivered === false && (
-                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mb-2">
+                <p className="text-dense text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2.5 py-1.5 mb-2">
                   Email isn't configured on this deployment, so nothing was sent to{' '}
                   <span className="font-medium">{emailedTo}</span>. Copy the URL below and send it yourself.
                 </p>
@@ -125,33 +127,34 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
                 <input
                   readOnly
                   value={newLinkUrl}
-                  className="flex-1 text-xs font-mono bg-white border border-emerald-200 rounded-lg px-2 py-1.5 truncate"
+                  className="flex-1 h-8 text-[11px] font-mono bg-card border border-paper-200 rounded-md px-2 truncate"
                 />
-                <button
+                <Button
+                  variant="outline"
+                  size="xs"
                   onClick={() => handleCopy(newLinkUrl, 'new')}
-                  className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 text-white text-xs font-medium rounded-lg hover:bg-emerald-700 transition-colors flex-shrink-0"
+                  className="flex-shrink-0"
                 >
-                  {copiedId === 'new' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedId === 'new' ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
                   {copiedId === 'new' ? 'Copied!' : 'Copy'}
-                </button>
+                </Button>
               </div>
             </div>
           )}
 
           {/* Create form */}
           <div className="space-y-4">
-            <p className="text-sm font-semibold text-gray-700">Create new link</p>
+            <p className="text-section text-ink-950">Create new link</p>
             <div>
-              <label className="text-xs text-gray-500 font-medium mb-1 block">Label (optional)</label>
+              <label className="text-dense text-ink-500 font-medium mb-1 block">Label (optional)</label>
               <Input
                 value={label}
                 onChange={e => setLabel(e.target.value)}
                 placeholder="e.g. Acme Legal Review"
-                className="text-sm"
               />
             </div>
             <div>
-              <label className="text-xs text-gray-500 font-medium mb-1 block">
+              <label className="text-dense text-ink-500 font-medium mb-1 block">
                 Send to (optional)
               </label>
               <Input
@@ -160,30 +163,29 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
                 onChange={e => setRecipientEmail(e.target.value)}
                 placeholder="counsel@counterparty.com"
                 data-testid="share-recipient-email"
-                className="text-sm"
               />
-              <p className="text-[11px] text-gray-400 mt-1">
+              <p className="text-[11px] text-ink-400 mt-1">
                 Leave blank to just generate a link you copy yourself.
               </p>
             </div>
             {recipientEmail.trim() && (
               <div>
-                <label className="text-xs text-gray-500 font-medium mb-1 block">Note (optional)</label>
+                <label className="text-dense text-ink-500 font-medium mb-1 block">Note (optional)</label>
                 <textarea
                   value={message}
                   onChange={e => setMessage(e.target.value)}
                   rows={2}
                   placeholder="Happy to walk through the redlines this week."
-                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
                 />
               </div>
             )}
             <div>
-              <label className="text-xs text-gray-500 font-medium mb-1 block">Expires in</label>
+              <label className="text-dense text-ink-500 font-medium mb-1 block">Expires in</label>
               <select
                 value={expiresInHours}
                 onChange={e => setExpiresInHours(Number(e.target.value))}
-                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               >
                 {EXPIRY_OPTIONS.map(opt => (
                   <option key={opt.hours} value={opt.hours}>{opt.label}</option>
@@ -191,14 +193,14 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
               </select>
             </div>
             <div>
-              <p className="text-xs text-gray-500 font-medium mb-2">Permissions</p>
+              <p className="text-dense text-ink-500 font-medium mb-2">Permissions</p>
               <div className="space-y-2">
                 <label className="flex items-center gap-2.5 cursor-pointer">
-                  <div className="w-4 h-4 rounded border-2 border-blue-500 bg-blue-500 flex items-center justify-center flex-shrink-0">
-                    <Check className="h-2.5 w-2.5 text-white" />
+                  <div className="size-4 rounded-chip border-2 border-ink-950 bg-ink-950 flex items-center justify-center flex-shrink-0">
+                    <Check className="size-2.5 text-white" />
                   </div>
-                  <div className="flex items-center gap-1.5 text-sm text-gray-700">
-                    <Eye className="h-3.5 w-3.5 text-gray-400" />
+                  <div className="flex items-center gap-1.5 text-body text-ink-700">
+                    <Eye className="size-3.5 text-ink-400" />
                     Read — view contract
                   </div>
                 </label>
@@ -207,10 +209,10 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
                     type="checkbox"
                     checked={canComment}
                     onChange={e => setCanComment(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    className="size-4 rounded-chip border-paper-300 accent-ink-950"
                   />
-                  <div className="flex items-center gap-1.5 text-sm text-gray-700">
-                    <MessageSquare className="h-3.5 w-3.5 text-gray-400" />
+                  <div className="flex items-center gap-1.5 text-body text-ink-700">
+                    <MessageSquare className="size-3.5 text-ink-400" />
                     Comment — add comments
                   </div>
                 </label>
@@ -219,16 +221,16 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
                     type="checkbox"
                     checked={canUpload}
                     onChange={e => setCanUpload(e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    className="size-4 rounded-chip border-paper-300 accent-ink-950"
                   />
-                  <div className="flex items-center gap-1.5 text-sm text-gray-700">
-                    <Upload className="h-3.5 w-3.5 text-gray-400" />
+                  <div className="flex items-center gap-1.5 text-body text-ink-700">
+                    <Upload className="size-3.5 text-ink-400" />
                     Upload — return a revised version
                   </div>
                 </label>
               </div>
               {canUpload && (
-                <p className="text-[11px] text-gray-500 mt-2 leading-relaxed">
+                <p className="text-[11px] text-ink-500 mt-2 leading-relaxed">
                   Lets the counterparty download the document, redline it offline, and
                   upload it back as a new version for you to review.
                 </p>
@@ -239,7 +241,7 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
               disabled={createLink.isPending}
               onClick={() => createLink.mutate()}
             >
-              {createLink.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Link className="h-4 w-4 mr-2" />}
+              {createLink.isPending ? <Loader2 className="size-3.5 animate-spin mr-2" /> : <Link className="size-3.5 mr-2" />}
               {recipientEmail.trim() ? 'Send link' : 'Generate link'}
             </Button>
           </div>
@@ -247,44 +249,46 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
           {/* Existing links */}
           {links.length > 0 && (
             <div className="space-y-3">
-              <p className="text-sm font-semibold text-gray-700">Active links</p>
+              <p className="text-section text-ink-950">Active links</p>
               {links.map(link => (
-                <div key={link.id} className="bg-gray-50 border border-gray-200 rounded-xl p-3.5 space-y-2">
+                <div key={link.id} className="bg-paper-50 border border-paper-200 rounded-card p-3.5 space-y-2">
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <p className="text-sm font-medium text-gray-800">
+                      <p className="text-body font-medium text-ink-950">
                         {link.label ?? 'Untitled link'}
                       </p>
                       {link.invitedEmail && (
-                        <p className="text-xs text-gray-500 mt-0.5">Sent to {link.invitedEmail}</p>
+                        <p className="text-dense text-ink-500 mt-0.5">Sent to {link.invitedEmail}</p>
                       )}
-                      <p className="text-xs text-gray-400 mt-0.5">
+                      <p className="text-dense text-ink-400 mt-0.5 tabular-nums">
                         Expires {new Date(link.expiresAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                         {' · '}{link.viewCount} view{link.viewCount !== 1 ? 's' : ''}
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
+                      {/* Permissions are labels, not states — none of the
+                          three is a meaning, so all three are neutral. */}
                       <div className="flex gap-1">
                         {(link.permissions.includes('upload') || link.permissions.includes('edit')) && (
-                          <span className="text-xs bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-medium">
+                          <span className="text-[11px] bg-paper-100 text-ink-700 px-1.5 py-0.5 rounded-chip font-medium">
                             upload
                           </span>
                         )}
                         {link.permissions.includes('comment') && (
-                          <span className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">
+                          <span className="text-[11px] bg-paper-100 text-ink-700 px-1.5 py-0.5 rounded-chip font-medium">
                             comment
                           </span>
                         )}
-                        <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-medium">
+                        <span className="text-[11px] bg-paper-100 text-ink-500 px-1.5 py-0.5 rounded-chip font-medium">
                           read
                         </span>
                       </div>
                       <button
                         onClick={() => revokeLink.mutate(link.id)}
-                        className="p-1 text-gray-400 hover:text-red-500 rounded transition-colors ml-1"
+                        className="p-1 text-ink-400 hover:text-risk-600 rounded-md transition-colors ml-1"
                         title="Revoke link"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 className="size-3.5" />
                       </button>
                     </div>
                   </div>

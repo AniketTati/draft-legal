@@ -10,6 +10,11 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { ContractEditor } from '@/components/editor/ContractEditor'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { EmptyState } from '@/components/ui/primitives'
+import { StatusPill } from '@/components/ui/status-pill'
+import type { Meaning } from '@/lib/status'
 import type { ClauseCategory, ClauseLibraryItem } from '@clm/types'
 import { cn } from '@/lib/utils'
 
@@ -33,22 +38,26 @@ function CategoryTreeNode({
     <div>
       <div
         className={cn(
-          'flex items-center gap-1 px-2 py-1.5 rounded cursor-pointer group text-sm',
+          'flex items-center gap-1 px-2 py-1.5 rounded-md cursor-pointer group text-[12.5px]',
+          // This tree is the page's navigation, so the active item takes the
+          // system's nav-active treatment: ink fill, not a colored wash.
           selected === category.id
-            ? 'bg-blue-50 text-blue-700 font-medium'
-            : 'text-gray-700 hover:bg-gray-100',
+            ? 'bg-ink-950 text-white font-medium'
+            : 'text-ink-700 hover:bg-paper-100',
         )}
         onClick={() => { onSelect(category.id); if (hasChildren) setOpen(o => !o) }}
       >
         {hasChildren
-          ? (open ? <ChevronDown className="w-3.5 h-3.5 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 shrink-0" />)
-          : <span className="w-3.5 h-3.5" />}
+          ? (open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />)
+          : <span className="size-3.5" />}
         <span className="flex-1 truncate">{category.name}</span>
         <button
           onClick={e => { e.stopPropagation(); onAdd(category.id) }}
-          className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-blue-600 transition-opacity"
+          // No color of its own — it inherits the row's, so it stays legible
+          // on both the ink-filled active row and the plain ones.
+          className="opacity-0 group-hover:opacity-100 transition-opacity"
         >
-          <Plus className="w-3.5 h-3.5" />
+          <Plus className="size-3.5" />
         </button>
       </div>
       {hasChildren && open && (
@@ -83,11 +92,17 @@ function ClauseRow({
   onApprove: (approved: boolean) => void
   onDelete: () => void
 }) {
-  const RISK_COLORS: Record<string, string> = {
-    favorable: 'bg-green-100 text-green-700',
-    unfavorable: 'bg-red-100 text-red-700',
-    neutral: 'bg-gray-100 text-gray-600',
-    standard: 'bg-blue-100 text-blue-700',
+  /*
+   * A risk rating is a risk reading, so it collapses onto the same five
+   * meanings every other state uses: favorable is inside the playbook
+   * (binding), unfavorable is exposure, and "standard"/"neutral" simply
+   * describe a clause rather than flag anything — they stay neutral.
+   */
+  const RISK_MEANING: Record<string, Meaning> = {
+    favorable: 'binding',
+    unfavorable: 'risk',
+    neutral: 'neutral',
+    standard: 'neutral',
   }
 
   return (
@@ -101,28 +116,28 @@ function ClauseRow({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() }
       }}
       className={cn(
-        'px-4 py-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400',
-        selected && 'bg-blue-50 border-l-2 border-l-blue-500',
+        'px-4 py-2 border-b border-paper-100 cursor-pointer hover:bg-paper-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35',
+        selected && 'bg-paper-100 border-l-2 border-l-ink-950',
       )}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-gray-900 truncate">{clause.title}</p>
+          <p className="text-[13px] font-medium text-ink-950 truncate">{clause.title}</p>
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             {clause.riskRating && (
-              <span className={cn('text-xs px-1.5 py-0.5 rounded', RISK_COLORS[clause.riskRating])}>
+              <StatusPill meaning={RISK_MEANING[clause.riskRating] ?? 'neutral'}>
                 {clause.riskRating}
-              </span>
+              </StatusPill>
             )}
             {clause.isApproved && (
-              <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 text-green-700 font-medium">approved</span>
+              <StatusPill meaning="binding">approved</StatusPill>
             )}
-            <span className="text-xs text-gray-400">used {clause.usageCount}×</span>
+            <span className="text-[11px] tabular-nums text-ink-400">used {clause.usageCount}×</span>
           </div>
           {clause.tags.length > 0 && (
             <div className="flex gap-1 mt-1 flex-wrap">
               {clause.tags.slice(0, 3).map(t => (
-                <span key={t} className="text-xs px-1 py-0.5 bg-gray-100 text-gray-500 rounded">{t}</span>
+                <span key={t} className="text-[11px] px-1 py-0.5 bg-paper-100 text-ink-500 rounded-chip">{t}</span>
               ))}
             </div>
           )}
@@ -131,18 +146,20 @@ function ClauseRow({
           <button
             onClick={e => { e.stopPropagation(); onApprove(!clause.isApproved) }}
             className={cn(
-              'p-1 rounded hover:bg-gray-100 transition-colors',
-              clause.isApproved ? 'text-green-500 hover:text-green-700' : 'text-gray-300 hover:text-green-500',
+              'p-1 rounded-md hover:bg-paper-100 transition-colors',
+              // An approved clause is binding — the only thing on this row
+              // that earns the brand color.
+              clause.isApproved ? 'text-brand-700 hover:text-brand-800' : 'text-ink-400 hover:text-brand-700',
             )}
             title={clause.isApproved ? 'Click to unapprove' : 'Click to approve'}
           >
-            <CheckCircle className="w-3.5 h-3.5" />
+            <CheckCircle className="size-3.5" />
           </button>
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
-            className="p-1 rounded hover:bg-red-50 text-gray-400 hover:text-red-600"
+            className="p-1 rounded-md hover:bg-risk-50 text-ink-400 hover:text-risk-600"
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="size-3.5" />
           </button>
         </div>
       </div>
@@ -184,35 +201,33 @@ function ClauseDetailPanel({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-800">{clause ? 'Edit Clause' : 'New Clause'}</h3>
+      <div className="px-4 py-3 border-b border-paper-200 flex items-center justify-between">
+        <h3 className="text-section text-ink-950">{clause ? 'Edit Clause' : 'New Clause'}</h3>
         <div className="flex gap-2">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
-          >
-            {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+          {/* The editor pane's one primary — it is the only ink fill on screen
+              whenever the pane is open. */}
+          <Button size="xs" onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="animate-spin" />}
             Save
-          </button>
-          <button onClick={onCancel} className="text-xs px-3 py-1.5 bg-gray-100 rounded hover:bg-gray-200">Cancel</button>
+          </Button>
+          <Button size="xs" variant="outline" onClick={onCancel}>Cancel</Button>
         </div>
       </div>
 
-      <div className="p-4 space-y-3 border-b border-gray-100">
-        <input
+      <div className="p-4 space-y-3 border-b border-paper-200">
+        <Input
           value={title}
           onChange={e => setTitle(e.target.value)}
           placeholder="Clause title..."
-          className="w-full text-sm font-medium border border-gray-200 rounded px-3 py-2 outline-none focus:border-blue-400"
+          className="font-medium"
         />
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-500 mb-0.5 block">Risk Rating</label>
+            <label className="text-[11px] text-ink-500 mb-1 block">Risk Rating</label>
             <select
               value={riskRating}
               onChange={e => setRiskRating(e.target.value)}
-              className="w-full text-xs border border-gray-200 rounded px-2 py-1.5 outline-none"
+              className="w-full h-8 rounded-md border border-input bg-card px-2 text-[12.5px] text-ink-950 outline-none"
             >
               <option value="">None</option>
               <option value="favorable">Favorable</option>
@@ -222,12 +237,11 @@ function ClauseDetailPanel({
             </select>
           </div>
           <div>
-            <label className="text-xs text-gray-500 mb-0.5 block">Tags (comma-separated)</label>
-            <input
+            <label className="text-[11px] text-ink-500 mb-1 block">Tags (comma-separated)</label>
+            <Input
               value={tags}
               onChange={e => setTags(e.target.value)}
               placeholder="e.g. mutual, standard"
-              className="w-full text-xs border border-gray-200 rounded px-2 py-1.5 outline-none"
             />
           </div>
         </div>
@@ -241,8 +255,8 @@ function ClauseDetailPanel({
       </div>
 
       {clause && (
-        <div className="px-4 py-2 border-t border-gray-100 bg-gray-50">
-          <p className="text-xs text-gray-400">
+        <div className="px-4 py-2 border-t border-paper-200 bg-paper-50">
+          <p className="text-[11px] tabular-nums text-ink-400">
             {Array.isArray(clause.versions) ? clause.versions.length : 0} version(s) · used {clause.usageCount}×
           </p>
         </div>
@@ -315,19 +329,19 @@ export function ClausesPage() {
   return (
     <div className="flex h-full">
       {/* ── Category Tree (Left) ── */}
-      <div className="w-56 shrink-0 border-r border-gray-200 bg-gray-50 flex flex-col">
-        <div className="flex items-center justify-between px-3 py-3 border-b border-gray-200">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Categories</p>
-          <button onClick={() => handleAddCategory()} className="text-gray-400 hover:text-blue-600">
-            <Plus className="w-4 h-4" />
+      <div className="w-56 shrink-0 border-r border-paper-200 bg-paper-50 flex flex-col">
+        <div className="flex items-center justify-between px-3 py-3 border-b border-paper-200">
+          <p className="text-eyebrow uppercase text-ink-700">Categories</p>
+          <button onClick={() => handleAddCategory()} className="text-ink-400 hover:text-ink-950">
+            <Plus className="size-4" />
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
           <div
             onClick={() => setSelectedCategoryId(null)}
             className={cn(
-              'px-2 py-1.5 rounded text-sm cursor-pointer mb-1',
-              !selectedCategoryId ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100',
+              'px-2 py-1.5 rounded-md text-[12.5px] cursor-pointer mb-1',
+              !selectedCategoryId ? 'bg-ink-950 text-white font-medium' : 'text-ink-700 hover:bg-paper-100',
             )}
           >
             All Clauses
@@ -345,13 +359,13 @@ export function ClausesPage() {
       </div>
 
       {/* ── Clause List (Center) ── */}
-      <div className="w-80 shrink-0 border-r border-gray-200 flex flex-col">
-        <div className="flex items-center gap-2 px-3 py-3 border-b border-gray-200">
-          <input
+      <div className="w-80 shrink-0 border-r border-paper-200 flex flex-col">
+        <div className="flex items-center gap-2 px-3 py-3 border-b border-paper-200">
+          <Input
             value={q}
             onChange={e => setQ(e.target.value)}
             placeholder="Search clauses..."
-            className="flex-1 text-sm border border-gray-200 rounded px-2 py-1.5 outline-none focus:border-blue-400"
+            className="flex-1"
           />
           {/*
             B.6.18 — "New clause" button is always visible when at
@@ -359,7 +373,11 @@ export function ClausesPage() {
             selected we auto-pick the first one so the user isn't
             blocked with an obscure prerequisite.
           */}
-          <button
+          {/* Outline, not ink: the rail's create affordance sits beside the
+              editor pane, which owns this screen's single ink primary. */}
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => {
               if (!selectedCategoryId && categories[0]) setSelectedCategoryId(categories[0].id)
               setShowNewClause(true)
@@ -368,22 +386,22 @@ export function ClausesPage() {
             disabled={categories.length === 0}
             data-testid="new-clause-button"
             title={categories.length === 0 ? 'Create a category first, then add clauses to it' : undefined}
-            className="flex items-center gap-1 text-xs px-2 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="disabled:cursor-not-allowed"
           >
-            <Plus className="w-3.5 h-3.5" /> New clause
-          </button>
+            <Plus /> New clause
+          </Button>
         </div>
 
         <div className="flex-1 overflow-y-auto">
           {clausesLoading && (
             <div className="flex items-center justify-center h-16">
-              <Loader2 className="w-5 h-5 text-gray-400 animate-spin" />
+              <Loader2 className="size-5 text-ink-400 animate-spin" />
             </div>
           )}
           {!clausesLoading && !clauses.length && (
-            <div className="flex flex-col items-center justify-center h-32 text-gray-400">
-              <BookOpen className="w-8 h-8 mb-1" />
-              <p className="text-xs">No clauses yet</p>
+            <div className="flex flex-col items-center justify-center h-32 text-ink-400">
+              <BookOpen className="size-6 mb-1" />
+              <p className="text-[11.5px]">No clauses yet</p>
             </div>
           )}
           {clauses.map(c => (
@@ -397,8 +415,8 @@ export function ClausesPage() {
             />
           ))}
         </div>
-        <div className="px-3 py-2 border-t border-gray-100 bg-gray-50">
-          <p className="text-xs text-gray-400">{clauses.length} clauses</p>
+        <div className="px-3 py-2 border-t border-paper-200 bg-paper-50">
+          <p className="text-[11px] tabular-nums text-ink-400">{clauses.length} clauses</p>
         </div>
       </div>
 
@@ -416,21 +434,26 @@ export function ClausesPage() {
             onCancel={() => { setShowNewClause(false); setSelectedClause(null) }}
           />
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-3">
-            <BookOpen className="w-12 h-12 text-gray-300" />
-            <p className="text-sm">Select a clause to edit, or create a new one.</p>
-            {categories.length > 0 && (
-              <button
-                onClick={() => {
-                  if (!selectedCategoryId && categories[0]) setSelectedCategoryId(categories[0].id)
-                  setShowNewClause(true)
-                }}
-                data-testid="empty-new-clause-button"
-                className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-gray-200 bg-white hover:bg-gray-50 text-gray-700"
-              >
-                <Plus className="w-3.5 h-3.5" /> New clause
-              </button>
-            )}
+          <div className="flex h-full items-center justify-center p-6">
+            <EmptyState
+              className="w-full max-w-sm border-0 bg-transparent"
+              icon={<BookOpen />}
+              title="Select a clause to edit, or create a new one."
+              action={categories.length > 0 ? (
+                // With the editor pane closed there is no other ink fill on
+                // screen, so this empty state carries the primary.
+                <Button
+                  size="xs"
+                  onClick={() => {
+                    if (!selectedCategoryId && categories[0]) setSelectedCategoryId(categories[0].id)
+                    setShowNewClause(true)
+                  }}
+                  data-testid="empty-new-clause-button"
+                >
+                  <Plus /> New clause
+                </Button>
+              ) : undefined}
+            />
           </div>
         )}
       </div>

@@ -12,6 +12,8 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { useState } from 'react'
 import axios from 'axios'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   AlertCircle, Loader2, PenLine, ShieldCheck, Clock, Building2, X, CheckCircle2,
 } from 'lucide-react'
@@ -94,8 +96,8 @@ export function SignerPortal() {
   if (isLoading) {
     return (
       <Centered>
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500 mb-3" />
-        <p className="text-gray-500 text-sm">Loading document to sign…</p>
+        <Loader2 className="size-6 animate-spin text-ink-400 mb-3" />
+        <p className="text-ink-500 text-body">Loading document to sign…</p>
       </Centered>
     )
   }
@@ -103,9 +105,10 @@ export function SignerPortal() {
     const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
     return (
       <Centered>
-        <AlertCircle className="h-12 w-12 text-red-300 mb-4" />
-        <h1 className="text-lg font-semibold text-gray-800 mb-2">Link unavailable</h1>
-        <p className="text-sm text-gray-500 max-w-sm text-center">
+        {/* A dead signing link is expiry or revocation — real risk. */}
+        <AlertCircle className="size-6 text-risk-600 mb-4" />
+        <h1 className="text-title text-ink-950 mb-2">Link unavailable</h1>
+        <p className="text-body text-ink-500 max-w-sm text-center">
           {detail ?? 'This signing link is invalid, has expired, or has been revoked. Please contact the sender for a new link.'}
         </p>
       </Centered>
@@ -113,7 +116,9 @@ export function SignerPortal() {
   }
 
   const { contract, signer, signatureRequest, version } = data
-  const brandColor = contract.org?.brandColor ?? '#2563eb'
+  // Same call as the external portal: the sending org's own brand keeps this
+  // strip when they've set one, otherwise ink rather than an off-system blue.
+  const brandColor = contract.org?.brandColor ?? null
   const daysToExpiry = signatureRequest.expiresAt
     ? Math.max(0, Math.ceil((new Date(signatureRequest.expiresAt).getTime() - Date.now()) / 86_400_000))
     : null
@@ -121,29 +126,29 @@ export function SignerPortal() {
   const declined = signer.status === 'DECLINED' || confirmation === 'declined'
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col pb-24" data-testid="signer-portal">
+    <div className="min-h-screen bg-paper-50 flex flex-col pb-24" data-testid="signer-portal">
       {/* ── Slim branded strip ─────────────────────────────────── */}
       <header
-        className="px-6 py-3 flex items-center justify-between"
-        style={{ backgroundColor: brandColor }}
+        className={`px-6 py-3 flex items-center justify-between ${brandColor ? '' : 'bg-ink-950'}`}
+        style={brandColor ? { backgroundColor: brandColor } : undefined}
       >
         <div className="flex items-center gap-2">
           {contract.org.logoUrl ? (
-            <img src={contract.org.logoUrl} alt="" className="h-6 w-auto object-contain bg-white/10 rounded px-1" />
+            <img src={contract.org.logoUrl} alt="" className="h-6 w-auto object-contain bg-white/10 rounded-chip px-1" />
           ) : (
-            <div className="flex items-center justify-center w-6 h-6 rounded bg-white/20">
-              <Building2 className="h-3.5 w-3.5 text-white" />
+            <div className="flex items-center justify-center size-6 rounded-chip bg-white/20">
+              <Building2 className="size-3.5 text-white" />
             </div>
           )}
-          <span className="text-white font-medium text-sm">{contract.org.name} · Signing portal</span>
+          <span className="text-white font-medium text-body">{contract.org.name} · Signing portal</span>
         </div>
-        <div className="flex items-center gap-3 text-white/80 text-xs">
+        <div className="flex items-center gap-3 text-white/80 text-dense">
           <span className="inline-flex items-center gap-1">
-            <ShieldCheck className="h-3.5 w-3.5" /> Secure link
+            <ShieldCheck className="size-3.5" /> Secure link
           </span>
           {daysToExpiry != null && (
-            <span className="inline-flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" />
+            <span className="inline-flex items-center gap-1 tabular-nums">
+              <Clock className="size-3.5" />
               {daysToExpiry > 0 ? `Expires in ${daysToExpiry}d` : 'Expires today'}
             </span>
           )}
@@ -151,31 +156,34 @@ export function SignerPortal() {
       </header>
 
       {/* ── Banner: who you are + progress ─────────────────────── */}
-      <div className="bg-white border-b border-gray-200 px-6 py-2 text-xs text-gray-600">
-        Signing as <span className="font-medium text-gray-900">{signer.name}</span>
-        {signer.role && <span className="text-gray-400"> · {signer.role}</span>}
-        <span className="text-gray-400 mx-2">·</span>
-        v{version.versionNumber}
-        <span className="text-gray-400 mx-2">·</span>
-        {signatureRequest.signedCount} / {signatureRequest.totalSigners} signed
+      <div className="bg-card border-b border-paper-200 px-6 py-2 text-dense text-ink-500">
+        Signing as <span className="font-medium text-ink-950">{signer.name}</span>
+        {signer.role && <span className="text-ink-400"> · {signer.role}</span>}
+        <span className="text-ink-400 mx-2">·</span>
+        <span className="font-mono">v{version.versionNumber}</span>
+        <span className="text-ink-400 mx-2">·</span>
+        <span className="tabular-nums">{signatureRequest.signedCount} / {signatureRequest.totalSigners}</span> signed
       </div>
 
       {/* ── Document (read-only, full-bleed) ────────────────────── */}
       <main className="flex-1 px-4 py-6">
         <div className="max-w-4xl mx-auto">
           <div className="mb-4">
-            <h1 className="text-xl font-semibold text-gray-900">{contract.title}</h1>
-            <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-              <span className="uppercase tracking-wide font-medium">{contract.type.replace(/_/g, ' ')}</span>
+            <h1 className="text-title text-ink-950">{contract.title}</h1>
+            <div className="flex items-center gap-2 mt-1 text-dense text-ink-500">
+              <span className="text-eyebrow uppercase">{contract.type.replace(/_/g, ' ')}</span>
               {contract.counterpartyName && <span>· {contract.counterpartyName}</span>}
             </div>
           </div>
+          {/* A note from the sender describes nothing about the document's
+              state, so it takes no meaning color — just a quiet paper card. */}
           {signatureRequest.message && (
-            <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-100 text-sm text-blue-900">
+            <div className="mb-4 p-3 rounded-md border border-paper-200 bg-paper-100 text-body text-ink-950">
               <strong>Message from sender:</strong> {signatureRequest.message}
             </div>
           )}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+          {/* The document is the hero — paper radius and the one page shadow. */}
+          <div className="bg-card rounded-paper shadow-page overflow-hidden">
             <div className="p-8 md:p-12">
               {editor ? (
                 <EditorContent
@@ -184,7 +192,7 @@ export function SignerPortal() {
                 />
               ) : (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+                  <Loader2 className="size-5 animate-spin text-ink-400" />
                 </div>
               )}
             </div>
@@ -196,27 +204,31 @@ export function SignerPortal() {
       <div
         role="region"
         aria-label="Sign bar"
-        className="fixed bottom-0 inset-x-0 bg-white border-t border-gray-200 shadow-[0_-2px_8px_rgba(0,0,0,0.04)] z-40"
+        className="fixed bottom-0 inset-x-0 bg-card border-t border-paper-200 z-40"
       >
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
           {alreadySigned ? (
-            <p className="text-sm text-emerald-700 font-medium inline-flex items-center gap-2" data-testid="signer-confirmation">
-              <CheckCircle2 className="h-4 w-4" />
+            <p className="text-body text-brand-700 font-medium inline-flex items-center gap-2" data-testid="signer-confirmation">
+              <CheckCircle2 className="size-4" />
               You've signed this document. Thank you.
             </p>
           ) : declined ? (
-            <p className="text-sm text-red-700 font-medium" data-testid="signer-declined">
+            <p className="text-body text-risk-700 font-medium" data-testid="signer-declined">
               You declined to sign this document.
             </p>
           ) : (
             <>
-              <p className="text-sm text-gray-700">
+              <p className="text-body text-ink-700">
                 <span className="font-medium">Ready to sign?</span>
-                <span className="text-gray-500"> Review the document above, then click Sign.</span>
+                <span className="text-ink-500"> Review the document above, then click Sign.</span>
               </p>
+              {/* This is the one surface where the decision buttons belong:
+                  danger for the reject, brand for the binding act. */}
               <div className="flex gap-2">
-                <button
+                <Button
                   type="button"
+                  variant="danger"
+                  size="md"
                   onClick={() => {
                     const reason = window.prompt('Optional — tell the sender why you cannot sign:') ?? ''
                     if (window.confirm('Decline signing this document? This cannot be undone.')) {
@@ -224,18 +236,18 @@ export function SignerPortal() {
                     }
                   }}
                   data-testid="signer-decline-btn"
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-600 hover:bg-gray-50"
                 >
                   Decline
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="brand"
+                  size="md"
                   onClick={() => setShowSignDialog(true)}
                   data-testid="signer-sign-btn"
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 shadow"
                 >
-                  <PenLine className="h-4 w-4" />
+                  <PenLine />
                   Sign
-                </button>
+                </Button>
               </div>
             </>
           )}
@@ -247,45 +259,46 @@ export function SignerPortal() {
         <div
           role="dialog"
           aria-label="Confirm signature"
-          className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4"
           onClick={() => setShowSignDialog(false)}
         >
           <div
-            className="bg-white rounded-xl max-w-md w-full shadow-2xl p-6"
+            className="bg-card rounded-card max-w-md w-full shadow-e3 p-6"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between mb-3">
-              <h2 className="text-lg font-semibold text-gray-900">Sign this document</h2>
-              <button
+              <h2 className="text-section text-ink-950">Sign this document</h2>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 onClick={() => setShowSignDialog(false)}
-                className="p-1 rounded hover:bg-gray-100 text-gray-400"
+                className="text-ink-400"
                 aria-label="Close"
               >
-                <X className="h-4 w-4" />
-              </button>
+                <X />
+              </Button>
             </div>
-            <p className="text-sm text-gray-600 leading-relaxed mb-4">
+            <p className="text-body text-ink-500 mb-4">
               Type your full legal name to sign. Your signature, IP address, and timestamp
               will be captured + included in the signed audit trail.
             </p>
-            <label className="block text-xs font-medium text-gray-700 mb-1.5">Your full legal name</label>
-            <input
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">Your full legal name</label>
+            <Input
               type="text"
               value={signedName}
               onChange={(e) => setSignedName(e.target.value)}
               placeholder={signer.name}
               data-testid="signer-name-input"
-              className="w-full h-10 text-sm border border-gray-300 rounded-lg px-3 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:border-emerald-500"
               autoFocus
             />
             {/* Wave 2.7 — explicit ESIGN/UETA consent, required before signing. */}
-            <label className="mt-4 flex items-start gap-2 text-xs text-gray-600 cursor-pointer">
+            <label className="mt-4 flex items-start gap-2 text-dense text-ink-500 cursor-pointer">
               <input
                 type="checkbox"
                 checked={consent}
                 onChange={(e) => setConsent(e.target.checked)}
                 data-testid="signer-consent"
-                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500/40"
+                className="mt-0.5 size-4 rounded-chip border-input text-brand-700 focus:ring-brand-700/35"
               />
               <span>
                 I agree to conduct this transaction and sign electronically. I understand my
@@ -294,26 +307,28 @@ export function SignerPortal() {
               </span>
             </label>
             {sign.isError && (
-              <p className="mt-2 text-xs text-red-600">
+              <p className="mt-2 text-dense text-risk-700">
                 {(sign.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to record signature.'}
               </p>
             )}
             <div className="mt-5 flex justify-end gap-2">
-              <button
+              <Button
+                variant="outline"
+                size="md"
                 onClick={() => setShowSignDialog(false)}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-600 hover:bg-gray-50"
               >
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="brand"
+                size="md"
                 onClick={() => sign.mutate()}
                 disabled={!signedName.trim() || !consent || sign.isPending}
                 data-testid="signer-confirm-btn"
-                className="inline-flex items-center gap-2 px-5 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {sign.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PenLine className="h-4 w-4" />}
+                {sign.isPending ? <Loader2 className="animate-spin" /> : <PenLine />}
                 Sign
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -324,7 +339,7 @@ export function SignerPortal() {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
+    <div className="min-h-screen bg-paper-50 flex flex-col items-center justify-center p-4">
       {children}
     </div>
   )

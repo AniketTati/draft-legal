@@ -10,7 +10,9 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { PenSquare, CheckCircle2, Clock, XCircle, Ban, AlertCircle, Loader2, ArrowRight } from 'lucide-react'
+import { PenSquare, AlertCircle, Loader2, ArrowRight } from 'lucide-react'
+import { StatusPill } from '@/components/ui/status-pill'
+import { CountBadge, EmptyState } from '@/components/ui/primitives'
 
 type SrStatus = 'PENDING' | 'COMPLETED' | 'VOIDED' | 'EXPIRED'
 
@@ -45,11 +47,16 @@ const STATUS_FILTERS: { key: SrStatus | 'ALL'; label: string }[] = [
   { key: 'EXPIRED',   label: 'Expired' },
 ]
 
-const STATUS_PILL: Record<SrStatus, { bg: string; fg: string; icon: React.ComponentType<{ className?: string }>; label: string }> = {
-  PENDING:   { bg: 'bg-amber-50 border-amber-200',   fg: 'text-amber-700',   icon: Clock,         label: 'Awaiting' },
-  COMPLETED: { bg: 'bg-emerald-50 border-emerald-200', fg: 'text-emerald-700', icon: CheckCircle2, label: 'Completed' },
-  VOIDED:    { bg: 'bg-gray-100 border-gray-200',     fg: 'text-gray-600',    icon: Ban,           label: 'Voided' },
-  EXPIRED:   { bg: 'bg-red-50 border-red-200',        fg: 'text-red-700',     icon: XCircle,       label: 'Expired' },
+/**
+ * Colour and icon now come from lib/status via <StatusPill/>. Only the wording
+ * stays local: this screen has always called a PENDING request "Awaiting", and
+ * the shared map's "Pending" would be a copy change.
+ */
+const STATUS_LABEL: Record<SrStatus, string> = {
+  PENDING:   'Awaiting',
+  COMPLETED: 'Completed',
+  VOIDED:    'Voided',
+  EXPIRED:   'Expired',
 }
 
 function relTime(iso: string | null): string {
@@ -92,16 +99,16 @@ export function SignaturesPage() {
 
   return (
     <div className="px-6 py-6 max-w-6xl mx-auto" data-testid="signatures-page">
-      <div className="flex items-center gap-3 mb-1">
-        <PenSquare className="h-5 w-5 text-emerald-600" />
-        <h1 className="text-2xl font-semibold text-gray-900">Signatures</h1>
+      <div className="flex items-center gap-2 mb-1">
+        <PenSquare className="size-4 text-ink-400" />
+        <h1 className="text-title text-ink-950">Signatures</h1>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
+      <p className="text-body text-ink-500 mb-5">
         Every contract sent for signature across your organization.
       </p>
 
-      {/* Filter tabs */}
-      <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
+      {/* Filter tabs — the selected tab is a selection, so it is ink, not brand. */}
+      <div className="flex items-center gap-1 mb-5 border-b border-paper-200">
         {STATUS_FILTERS.map(f => {
           const isActive = filter === f.key
           const count = f.key === 'ALL' ? totalAll : counts[f.key] ?? 0
@@ -111,19 +118,15 @@ export function SignaturesPage() {
               type="button"
               onClick={() => setFilter(f.key)}
               data-testid={`filter-${f.key.toLowerCase()}`}
-              className={`px-4 py-2 text-sm border-b-2 -mb-px transition-colors ${
+              className={`inline-flex items-center gap-1.5 px-4 py-2 text-[13px] border-b-2 -mb-px transition-colors ${
                 isActive
-                  ? 'border-emerald-600 text-emerald-700 font-medium'
-                  : 'border-transparent text-gray-500 hover:text-gray-800'
+                  ? 'border-ink-950 text-ink-950 font-medium'
+                  : 'border-transparent text-ink-500 hover:text-ink-950'
               }`}
             >
               {f.label}
               {count > 0 && (
-                <span className={`ml-2 text-xs px-1.5 py-0.5 rounded-full ${
-                  isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'
-                }`}>
-                  {count}
-                </span>
+                <CountBadge tone={isActive ? 'ink' : 'neutral'}>{count}</CountBadge>
               )}
             </button>
           )
@@ -133,91 +136,81 @@ export function SignaturesPage() {
       {/* List */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+          <Loader2 className="size-5 animate-spin text-ink-400" />
         </div>
       ) : isError ? (
-        <div className="flex items-start gap-2 p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 mt-0.5" />
+        <div className="flex items-start gap-2 p-4 rounded-md bg-risk-50 border border-risk-200 text-body text-risk-700">
+          <AlertCircle className="size-4 mt-0.5" />
           Failed to load signature requests.
         </div>
       ) : items.length === 0 ? (
-        <div className="text-center py-16 px-6 border border-dashed border-gray-200 rounded-xl">
-          <PenSquare className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">
-            {filter === 'ALL' ? 'No signature requests yet.' : `No ${filter.toLowerCase()} signature requests.`}
-          </p>
-          <p className="text-xs text-gray-400">
-            Open any contract and click <strong>Send for Signature</strong> to get started.
-          </p>
-        </div>
+        <EmptyState
+          icon={<PenSquare />}
+          title={filter === 'ALL' ? 'No signature requests yet.' : `No ${filter.toLowerCase()} signature requests.`}
+          description={<>Open any contract and click <strong>Send for Signature</strong> to get started.</>}
+        />
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-sm" data-testid="signatures-table">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <table className="w-full text-[13px]" data-testid="signatures-table">
+            <thead className="bg-paper-50 text-eyebrow uppercase text-ink-500">
               <tr>
-                <th className="text-left px-5 py-3 font-medium">Contract</th>
-                <th className="text-left px-5 py-3 font-medium">Signers</th>
-                <th className="text-left px-5 py-3 font-medium">Status</th>
-                <th className="text-left px-5 py-3 font-medium">Sent</th>
-                <th className="text-right px-5 py-3 font-medium">Action</th>
+                <th className="text-left px-5 py-2 font-semibold">Contract</th>
+                <th className="text-left px-5 py-2 font-semibold">Signers</th>
+                <th className="text-left px-5 py-2 font-semibold">Status</th>
+                <th className="text-left px-5 py-2 font-semibold">Sent</th>
+                <th className="text-right px-5 py-2 font-semibold">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
-              {items.map(it => {
-                const pill = STATUS_PILL[it.status]
-                const StatusIcon = pill.icon
-                return (
-                  <tr key={it.id} className="hover:bg-gray-50" data-testid={`signature-row-${it.id}`}>
-                    <td className="px-5 py-3">
+            <tbody className="divide-y divide-paper-200">
+              {items.map(it => (
+                <tr key={it.id} className="hover:bg-paper-50" data-testid={`signature-row-${it.id}`}>
+                  <td className="px-5 py-2">
+                    <Link
+                      to={`/contracts/${it.contract?.id ?? ''}`}
+                      className="font-medium text-ink-950 truncate block max-w-xs hover:underline underline-offset-2 decoration-paper-300"
+                      title={it.contract?.title}
+                    >
+                      {it.contract?.title ?? '(deleted contract)'}
+                    </Link>
+                    <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5">
+                      <span className="uppercase tracking-[0.08em]">{it.contract?.type?.replace(/_/g, ' ') ?? ''}</span>
+                      {it.contract?.counterpartyName && <span>· {it.contract.counterpartyName}</span>}
+                    </div>
+                  </td>
+                  <td className="px-5 py-2">
+                    <div className="text-[11.5px] text-ink-700">
+                      <div className="font-medium tabular-nums">{it.signedCount} / {it.totalSigners} signed</div>
+                      <div className="text-ink-500 mt-0.5 truncate max-w-[180px]">
+                        {it.signers.slice(0, 3).map(s => s.name).join(', ')}
+                        {it.signers.length > 3 && ` +${it.signers.length - 3}`}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-5 py-2">
+                    <StatusPill status={it.status}>{STATUS_LABEL[it.status]}</StatusPill>
+                  </td>
+                  <td className="px-5 py-2 text-[11.5px] text-ink-500">
+                    {relTime(it.createdAt)}
+                    {it.completedAt && (
+                      // Fully executed — the one binding fact in this row.
+                      <div className="text-brand-700 mt-0.5">
+                        done {relTime(it.completedAt)}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-5 py-2 text-right">
+                    {it.contract?.id && (
                       <Link
-                        to={`/contracts/${it.contract?.id ?? ''}`}
-                        className="font-medium text-gray-900 hover:text-blue-600 truncate block max-w-xs"
-                        title={it.contract?.title}
+                        to={`/contracts/${it.contract.id}`}
+                        className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
                       >
-                        {it.contract?.title ?? '(deleted contract)'}
+                        Open
+                        <ArrowRight className="size-3.5" />
                       </Link>
-                      <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5">
-                        <span className="uppercase tracking-wide">{it.contract?.type?.replace(/_/g, ' ') ?? ''}</span>
-                        {it.contract?.counterpartyName && <span>· {it.contract.counterpartyName}</span>}
-                      </div>
-                    </td>
-                    <td className="px-5 py-3">
-                      <div className="text-xs text-gray-700">
-                        <div className="font-medium">{it.signedCount} / {it.totalSigners} signed</div>
-                        <div className="text-gray-500 mt-0.5 truncate max-w-[180px]">
-                          {it.signers.slice(0, 3).map(s => s.name).join(', ')}
-                          {it.signers.length > 3 && ` +${it.signers.length - 3}`}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-5 py-3">
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${pill.bg} ${pill.fg}`}>
-                        <StatusIcon className="h-3.5 w-3.5" />
-                        {pill.label}
-                      </span>
-                    </td>
-                    <td className="px-5 py-3 text-xs text-gray-500">
-                      {relTime(it.createdAt)}
-                      {it.completedAt && (
-                        <div className="text-emerald-600 mt-0.5">
-                          done {relTime(it.completedAt)}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {it.contract?.id && (
-                        <Link
-                          to={`/contracts/${it.contract.id}`}
-                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-                        >
-                          Open
-                          <ArrowRight className="h-3.5 w-3.5" />
-                        </Link>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
+                    )}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

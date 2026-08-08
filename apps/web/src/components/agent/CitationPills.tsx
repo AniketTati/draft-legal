@@ -39,7 +39,9 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
     return (
       <div
         data-testid="citation-pills-empty"
-        className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5"
+        // Nothing is blocked on the user here — a miss is an informational
+        // outcome, not "your turn", so it stays neutral rather than attention.
+        className="text-[11px] text-ink-700 bg-paper-100 border border-paper-200 rounded-md px-2.5 py-1.5"
       >
         {bundle.warning ?? 'No matching passages found in this contract.'}
       </div>
@@ -50,22 +52,24 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
     <div
       data-testid="citation-pills"
       data-contract-id={bundle.contractId}
-      className="rounded-xl border border-blue-200 bg-blue-50/60 text-[12px] overflow-hidden"
+      // Citations are neutral pills — the point is the source, not the machine.
+      // Indigo here would claim the passage was authored by the model.
+      className="rounded-card border border-paper-200 bg-card text-[12px] overflow-hidden"
     >
-      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-blue-200/70">
-        <Quote className="h-3.5 w-3.5 text-blue-600 flex-shrink-0" />
-        <span className="font-semibold text-blue-900 text-[11.5px]">
+      <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-paper-200">
+        <Quote className="size-3.5 text-ink-400 flex-shrink-0" />
+        <span className="font-semibold text-ink-950 text-[11.5px]">
           Citations
         </span>
-        <span className="font-mono text-[10.5px] text-blue-700 truncate">
+        <span className="font-mono text-[10.5px] text-ink-500 truncate">
           · {bundle.title}
         </span>
-        <span className="ml-auto text-[10px] text-blue-500 tabular-nums">
+        <span className="ml-auto text-[10px] text-ink-400 tabular-nums">
           {bundle.citations.length}
         </span>
       </div>
 
-      <ul className="divide-y divide-blue-100">
+      <ul className="divide-y divide-paper-100">
         {bundle.citations.map((c, i) => {
           const targetPath = `/contracts/${bundle.contractId}` + (
             c.sectionRef ? `?section=${encodeURIComponent(c.sectionRef)}` : ''
@@ -78,7 +82,7 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
               data-ref={c.sectionRef || undefined}
               data-page={c.page ?? undefined}
               data-exact={c.exact ? '1' : '0'}
-              className="px-3 py-1.5 hover:bg-blue-100/40 transition-colors"
+              className="px-3 py-1.5 hover:bg-paper-50 transition-colors"
             >
               <div className="flex items-start gap-2">
                 <a
@@ -89,33 +93,35 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
                   title={`Open contract at ${c.sectionRef ? `§${c.sectionRef}` : c.sectionTitle}`}
                 >
                   {c.sectionRef && (
-                    <span className="font-mono text-[10.5px] text-blue-700 flex-shrink-0">
+                    <span className="font-mono text-[10.5px] text-ink-500 flex-shrink-0">
                       §{c.sectionRef}
                     </span>
                   )}
-                  <span className="truncate text-[11.5px] text-gray-900 group-hover:text-blue-800">
+                  <span className="truncate text-[11.5px] text-ink-950 group-hover:text-brand-700">
                     {c.sectionTitle || c.quote.slice(0, 60)}
                   </span>
                   {c.page != null && (
-                    <span className="font-mono text-[9.5px] text-blue-500 flex-shrink-0 tabular-nums">
+                    <span className="font-mono text-[9.5px] text-ink-400 flex-shrink-0 tabular-nums">
                       p.{c.page}
                     </span>
                   )}
                   {c.exact && (
+                    // "exact" is a verified match against the source document —
+                    // binding in the design system's sense, not decoration.
                     <span
-                      className="text-[9px] uppercase tracking-wider font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1 flex-shrink-0"
+                      className="text-[9px] uppercase tracking-wider font-medium text-brand-700 bg-brand-50 border border-brand-200 rounded-chip px-1 flex-shrink-0"
                       title="Exact substring match of the query"
                     >
                       exact
                     </span>
                   )}
-                  <ExternalLink className="h-2.5 w-2.5 text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                  <ExternalLink className="size-2.5 text-ink-400 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
                 </a>
                 <button
                   type="button"
                   onClick={() => setExpandedIdx(isExpanded ? null : i)}
                   data-testid={`citation-toggle-${i}`}
-                  className="text-[10px] text-blue-600 hover:underline flex-shrink-0"
+                  className="text-[10px] text-ink-700 hover:text-ink-950 hover:underline flex-shrink-0"
                   aria-expanded={isExpanded}
                 >
                   {isExpanded ? 'hide' : 'quote'}
@@ -124,7 +130,7 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
               {isExpanded && (
                 <div
                   data-testid={`citation-quote-${i}`}
-                  className="mt-1 text-[11px] text-gray-700 bg-white/70 border border-blue-100 rounded px-2 py-1 italic"
+                  className="mt-1 text-[11px] text-ink-700 bg-paper-50 border border-paper-200 rounded-chip px-2 py-1 italic"
                 >
                   “{c.quote}”
                 </div>

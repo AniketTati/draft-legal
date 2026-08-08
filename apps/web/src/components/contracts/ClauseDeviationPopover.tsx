@@ -19,6 +19,7 @@
  */
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Sparkles, CheckCircle2, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 
 type Position = 'market' | 'aggressive' | 'weak' | 'off'
 
@@ -31,11 +32,17 @@ interface DeviationDetail {
   anchor:         { top: number; left: number }
 }
 
+/**
+ * The four positions are a severity ramp, so they take the same three meanings
+ * riskMeaning() uses for a score: at-market is healthy (binding), weaker-than-
+ * market hands the call back to the drafter (turn), aggressive is real exposure
+ * (risk). "Off playbook" says nothing about severity, so it stays neutral.
+ */
 const POS_HEADLINE: Record<string, { label: string; cls: string; tone: string }> = {
-  market:     { label: 'In line with market practice',   cls: 'bg-emerald-50 border-emerald-200 text-emerald-900',  tone: 'emerald' },
-  aggressive: { label: 'Aggressive — review before send', cls: 'bg-red-50 border-red-200 text-red-900',              tone: 'red' },
-  weak:       { label: 'Weaker than market',             cls: 'bg-amber-50 border-amber-200 text-amber-900',        tone: 'amber' },
-  off:        { label: 'Off the standard playbook',      cls: 'bg-gray-50 border-gray-300 text-gray-800',           tone: 'gray' },
+  market:     { label: 'In line with market practice',   cls: 'bg-brand-50 border-brand-200 text-brand-800',           tone: 'binding' },
+  aggressive: { label: 'Aggressive — review before send', cls: 'bg-risk-50 border-risk-200 text-risk-900',             tone: 'risk' },
+  weak:       { label: 'Weaker than market',             cls: 'bg-attention-50 border-attention-200 text-attention-700', tone: 'turn' },
+  off:        { label: 'Off the standard playbook',      cls: 'bg-paper-50 border-paper-300 text-ink-950',             tone: 'neutral' },
 }
 
 export function ClauseDeviationPopover({
@@ -85,29 +92,29 @@ export function ClauseDeviationPopover({
 
   return (
     <div
-      className="fixed z-[60] rounded-xl border shadow-xl bg-white"
+      className="fixed z-[60] rounded-card border border-paper-200 shadow-e2 bg-popover"
       style={{ top: detail.anchor.top, left, width }}
       data-testid="clause-deviation-popover"
     >
       <div className={`flex items-center gap-1.5 px-3 py-2 border-b ${meta.cls}`}>
-        <AlertTriangle className="h-3.5 w-3.5" />
-        <span className="text-xs font-semibold">{meta.label}</span>
+        <AlertTriangle className="size-3.5" />
+        <span className="text-dense font-semibold">{meta.label}</span>
         <button
           onClick={() => setDetail(null)}
-          className="ml-auto p-0.5 rounded hover:bg-black/5"
+          className="ml-auto p-0.5 rounded-chip hover:bg-black/5"
           aria-label="Close"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="size-3.5" />
         </button>
       </div>
 
       <div className="p-3 space-y-2">
-        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-gray-500">
+        <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-ink-500">
           <span className="font-mono">{detail.category || 'clause'}</span>
           {detail.keyTerm && (
             <>
               <span>·</span>
-              <span className="font-medium text-gray-700 normal-case tracking-normal">
+              <span className="font-medium text-ink-700 normal-case tracking-normal">
                 Key: <span className="font-mono">{detail.keyTerm}</span>
               </span>
             </>
@@ -115,38 +122,42 @@ export function ClauseDeviationPopover({
         </div>
 
         {detail.reasoning && (
-          <p className="text-[12px] text-gray-800 leading-snug" data-testid="clause-deviation-reasoning">
+          <p className="text-[12px] text-ink-950 leading-snug" data-testid="clause-deviation-reasoning">
             {detail.reasoning}
           </p>
         )}
 
         <div className="flex gap-1.5 pt-1">
           {detail.position !== 'market' && (
-            <button
+            <Button
+              variant="assist"
+              size="xs"
               onClick={() => {
                 onAskRewrite?.(detail.paragraphText)
                 setDetail(null)
               }}
               data-testid="clause-deviation-rewrite"
-              className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-violet-600 text-white hover:bg-violet-700"
             >
-              <Sparkles className="h-3 w-3" /> Rewrite to market
-            </button>
+              <Sparkles className="size-3" /> Rewrite to market
+            </Button>
           )}
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => setDetail(null)}
             data-testid="clause-deviation-accept"
-            className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-md border border-gray-200 text-gray-700 hover:bg-gray-50"
           >
-            <CheckCircle2 className="h-3 w-3" /> Accept as-is
-          </button>
-          <button
+            <CheckCircle2 className="size-3" /> Accept as-is
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={() => setDetail(null)}
             data-testid="clause-deviation-dismiss"
-            className="text-[11px] px-2 py-1 rounded-md text-gray-500 hover:bg-gray-50 ml-auto"
+            className="ml-auto font-normal text-ink-500"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       </div>
     </div>

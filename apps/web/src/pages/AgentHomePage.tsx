@@ -40,10 +40,13 @@ import { useAuthStore } from '@/store/auth'
 import { useAgentStore } from '@/store/agent'
 import { Button } from '@/components/ui/button'
 import {
-  Sparkles, Send, Plus, MessageSquare, ArrowLeft, Loader2, Bot,
+  Sparkles, Send, Plus, MessageSquare, ArrowLeft, Loader2,
   ChevronRight, ChevronDown, FileText, Building2, CalendarClock, Search, Wrench, X,
   Table as TableIcon, GitCompareArrows, ListChecks, FormInput, Trash2,
 } from 'lucide-react'
+// One glyph for the machine — the diamond replaces the bot/sparkle avatars.
+import { AssistMark } from '@/components/ui/assist'
+import { MEANING_CLASS, type Meaning } from '@/lib/status'
 import { ArtifactPane, type Artifact } from '@/components/agent/ArtifactPane'
 import { artifactFromToolResult } from '@/components/agent/artifact-from-tool'
 import { ActionPreview, type PendingAction } from '@/components/agent/ActionPreview'
@@ -889,7 +892,7 @@ export function AgentHomePage() {
 
   return (
     <div
-      className="h-full flex bg-white"
+      className="h-full flex bg-card"
       data-testid="agent-home"
       data-streaming={streaming ? 'true' : 'false'}
       aria-busy={streaming || undefined}
@@ -907,15 +910,18 @@ export function AgentHomePage() {
       )}
 
       {/* ─── Conversation list (left) ─────────────────────────── */}
-      <aside className="w-64 border-r border-gray-200 bg-gray-50/50 flex flex-col">
-        <div className="px-3 py-3 border-b border-gray-200">
+      <aside className="w-64 border-r border-paper-200 bg-paper-50 flex flex-col">
+        <div className="px-3 py-3 border-b border-paper-200">
+          {/* Outline, not ink: the composer's Send is this screen's one
+              ink-filled primary. */}
           <Button
+            variant="outline"
             onClick={startNewConversation}
             data-testid="agent-new-conversation"
-            className="w-full justify-start gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+            className="w-full justify-start gap-2"
             size="sm"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="size-4" />
             New conversation
           </Button>
         </div>
@@ -923,26 +929,27 @@ export function AgentHomePage() {
         {/* U.5.1 — by-resource filter chip. Lets users quickly find
             "every thread about Zynga MSA" — replaces the per-contract
             "Ask" tab pattern. */}
-        <div className="px-3 pt-2 pb-1.5 border-b border-gray-100 flex items-center gap-1.5 text-[11px]">
-          <span className="text-gray-400">Filter:</span>
+        <div className="px-3 pt-2 pb-1.5 border-b border-paper-200 flex items-center gap-1.5 text-[11px]">
+          <span className="text-ink-400">Filter:</span>
+          {/* Selected filter chips invert to ink, matching ui/primitives Chip. */}
           <button
             onClick={() => setResourceFilter(resourceFilter ? null : 'pending')}
             data-testid="thread-filter-by-resource"
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors ${
               resourceFilter
-                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
-                : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'
+                ? 'bg-ink-950 border-ink-950 text-white'
+                : 'bg-card border-paper-200 hover:bg-paper-100 text-ink-700'
             }`}
           >
             by resource
             {resourceFilter ? (
-              <X className="h-2.5 w-2.5" />
+              <X className="size-2.5" />
             ) : (
-              <ChevronDown className="h-2.5 w-2.5" />
+              <ChevronDown className="size-2.5" />
             )}
           </button>
           {resourceFilter && (
-            <span className="text-[10.5px] text-indigo-600 truncate">
+            <span className="text-[10.5px] text-ink-500 truncate">
               {resourceFilter === 'pending' ? 'pick a resource…' : resourceFilter}
             </span>
           )}
@@ -950,13 +957,13 @@ export function AgentHomePage() {
 
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
           {threads.length === 0 ? (
-            <div className="text-center text-xs text-gray-400 py-6 px-2">
+            <div className="text-center text-dense text-ink-400 py-6 px-2">
               No conversations yet. Ask the agent something to start.
             </div>
           ) : (
             Object.entries(groupedThreads).map(([bucket, list]) => (
               <div key={bucket}>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold px-2 mb-1">{bucket}</div>
+                <div className="text-[10px] uppercase tracking-[0.08em] text-ink-500 font-semibold px-2 mb-1">{bucket}</div>
                 <ul className="space-y-0.5">
                   {list.map(t => {
                     const active = t.id === threadId
@@ -965,18 +972,20 @@ export function AgentHomePage() {
                         <button
                           onClick={() => setThreadId(t.id)}
                           data-testid={`thread-row-${t.id}`}
+                          // The open conversation is a persistent selection, so
+                          // it takes the system's ink fill (same as active nav).
                           className={`w-full text-left px-2 py-1.5 pr-7 rounded-md transition-colors ${
-                            active ? 'bg-indigo-50 text-indigo-900 border border-indigo-200' : 'hover:bg-gray-100 text-gray-700'
+                            active ? 'bg-ink-950 text-white border border-ink-950' : 'hover:bg-paper-100 text-ink-700 border border-transparent'
                           }`}
                         >
                           <div className="flex items-center gap-1.5">
-                            <MessageSquare className="h-3 w-3 shrink-0 opacity-60" />
+                            <MessageSquare className="size-3 shrink-0 opacity-60" />
                             <span className="text-[12px] truncate">
                               {t.title || 'Untitled conversation'}
                             </span>
                           </div>
                           {(t.messageCount ?? 0) > 0 && (
-                            <div className="text-[10px] text-gray-400 mt-0.5 ml-4.5">
+                            <div className="text-[10px] text-ink-400 mt-0.5 ml-4.5 tabular-nums">
                               {t.messageCount} message{t.messageCount === 1 ? '' : 's'}
                               {t.toolCallCount > 0 && ` · ${t.toolCallCount} tool call${t.toolCallCount === 1 ? '' : 's'}`}
                             </div>
@@ -998,9 +1007,9 @@ export function AgentHomePage() {
                           data-testid={`thread-delete-${t.id}`}
                           aria-label="Delete conversation"
                           title="Delete conversation"
-                          className="absolute right-1.5 top-1.5 p-1 rounded text-gray-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 transition-all"
+                          className="absolute right-1.5 top-1.5 p-1 rounded-chip text-ink-400 opacity-0 group-hover:opacity-100 hover:text-risk-700 hover:bg-risk-50 transition-all"
                         >
-                          <Trash2 className="h-3 w-3" />
+                          <Trash2 className="size-3" />
                         </button>
                       </li>
                     )
@@ -1021,28 +1030,30 @@ export function AgentHomePage() {
           openArtifactId ? 'w-[480px] shrink-0' : 'flex-1',
         )}
       >
-        <header className="px-6 py-3 border-b border-gray-200 flex items-center justify-between bg-white">
+        <header className="px-6 py-3 border-b border-paper-200 flex items-center justify-between bg-card">
           <div className="flex items-center gap-2">
             <button
               onClick={() => navigate('/dashboard')}
-              className="p-1 rounded hover:bg-gray-100 text-gray-500"
+              className="p-1 rounded-md hover:bg-paper-100 text-ink-500"
               aria-label="Back to dashboard"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft className="size-4" />
             </button>
             <div className="flex items-center gap-2">
               {/* U.2.1 / decision 14a — indigo accent for Assistant */}
-              <div className="h-7 w-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center">
-                <Bot className="h-3.5 w-3.5 text-indigo-600" />
+              <div className="size-7 rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center">
+                <AssistMark />
               </div>
               <div>
-                <h1 className="text-sm font-semibold text-gray-900">Assistant</h1>
-                <p className="text-[11px] text-gray-500">{activeThread?.title ?? 'New conversation'}</p>
+                {/* text-section, not text-title: on this screen the thread is
+                    the hero and the header is chrome. */}
+                <h1 className="text-section text-ink-950">Assistant</h1>
+                <p className="text-[11px] text-ink-500">{activeThread?.title ?? 'New conversation'}</p>
               </div>
             </div>
           </div>
-          <div className="text-[11px] text-gray-400">
-            {streaming ? <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> thinking…</span>
+          <div className="text-[11px] text-ink-400">
+            {streaming ? <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" /> thinking…</span>
                        : 'Press ⌘K from anywhere to open'}
           </div>
         </header>
@@ -1077,8 +1088,8 @@ export function AgentHomePage() {
         {/* U.5.2 — artifact strip. Lets users re-open closed artifacts
             for this thread. Only renders when there's at least one. */}
         {artifacts.length > 0 && (
-          <div className="border-t border-gray-100 px-4 py-2 flex items-center gap-2 text-[11.5px] flex-wrap">
-            <span className="text-gray-400">Artifacts:</span>
+          <div className="border-t border-paper-200 px-4 py-2 flex items-center gap-2 text-[11.5px] flex-wrap">
+            <span className="text-ink-400">Artifacts:</span>
             {artifacts.map(a => {
               const Icon =
                 a.kind === 'doc'   ? FileText :
@@ -1098,11 +1109,11 @@ export function AgentHomePage() {
                   className={cn(
                     'inline-flex items-center gap-1.5 px-2 py-1 rounded-md font-medium transition-colors',
                     active
-                      ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                      : 'bg-white text-gray-700 border border-gray-200 hover:border-indigo-300',
+                      ? 'bg-ink-950 text-white border border-ink-950'
+                      : 'bg-card text-ink-700 border border-paper-200 hover:border-paper-300',
                   )}
                 >
-                  <Icon className="h-3 w-3" />
+                  <Icon className="size-3" />
                   <span className="truncate max-w-[180px]">{a.title}</span>
                 </button>
               )
@@ -1111,7 +1122,7 @@ export function AgentHomePage() {
         )}
 
         {/* Composer */}
-        <div className="border-t border-gray-200 bg-white px-6 py-3">
+        <div className="border-t border-paper-200 bg-card px-6 py-3">
           <div className="max-w-3xl mx-auto">
             {/* P-feedback (2026-05-02). Skill autocomplete picker —
                 shows when the user types `@<query>` so they can
@@ -1128,7 +1139,7 @@ export function AgentHomePage() {
               if (matches.length === 0) return null
               return (
                 <div
-                  className="mb-2 max-h-60 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-md text-sm"
+                  className="mb-2 max-h-60 overflow-y-auto rounded-md border border-paper-200 bg-card shadow-e2 text-body"
                   data-testid="agent-skill-picker"
                 >
                   {matches.map(s => (
@@ -1140,16 +1151,16 @@ export function AgentHomePage() {
                         const next = composer.replace(/@[a-z0-9-]*$/i, s.slug + ' ')
                         setComposer(next)
                       }}
-                      className="w-full text-left px-3 py-2 hover:bg-indigo-50 border-b border-gray-100 last:border-b-0"
+                      className="w-full text-left px-3 py-2 hover:bg-paper-100 border-b border-paper-200 last:border-b-0"
                     >
                       <div className="flex items-center gap-2">
-                        <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
-                        <span className="font-medium text-gray-900">{s.slug}</span>
-                        <span className="text-gray-400">·</span>
-                        <span className="text-gray-700">{s.name}</span>
+                        <AssistMark />
+                        <span className="font-mono font-medium text-assist-700">{s.slug}</span>
+                        <span className="text-ink-400">·</span>
+                        <span className="text-ink-700">{s.name}</span>
                       </div>
                       {s.description && (
-                        <p className="text-xs text-gray-500 mt-0.5 ml-5 line-clamp-1">{s.description}</p>
+                        <p className="text-dense text-ink-500 mt-0.5 ml-5 line-clamp-1">{s.description}</p>
                       )}
                     </button>
                   ))}
@@ -1170,20 +1181,21 @@ export function AgentHomePage() {
                 rows={2}
                 disabled={streaming}
                 data-testid="agent-composer"
-                className="w-full resize-none rounded-lg border border-gray-200 px-3 py-2 pr-12 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-12 text-[13px] text-ink-950 placeholder:text-ink-400 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               />
+              {/* This screen's one ink-filled primary. */}
               <Button
                 onClick={() => send(composer)}
                 disabled={!composer.trim() || streaming}
                 size="sm"
-                className="absolute right-2 bottom-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+                className="absolute right-2 bottom-2"
                 data-testid="agent-send"
                 aria-label="Send message"
               >
-                <Send className="h-3.5 w-3.5" />
+                <Send className="size-3.5" />
               </Button>
             </div>
-            <p className="text-[10px] text-gray-400 text-center mt-1.5">
+            <p className="text-[10px] text-ink-400 text-center mt-1.5">
               The agent uses your contracts, playbook, and counterparty memory.
               Replies are grounded in tool calls — never made up.
             </p>
@@ -1277,7 +1289,7 @@ function MessageBubble({
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[70%] rounded-2xl rounded-br-sm bg-blue-600 text-white px-4 py-2 text-sm whitespace-pre-wrap">
+        <div className="max-w-[82%] rounded-[12px_12px_3px_12px] bg-ink-950 text-white px-4 py-2 text-[12.5px] leading-[1.55] whitespace-pre-wrap">
           {message.content}
         </div>
       </div>
@@ -1289,50 +1301,51 @@ function MessageBubble({
     : { cleanProse: message.content ?? '', chips: [] as ReturnType<typeof parseActionChips>['chips'] }
   return (
     <div className="flex gap-3">
-      <div className="h-7 w-7 shrink-0 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center">
-        <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+      <div className="size-7 shrink-0 rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center">
+        <AssistMark />
       </div>
       <div className="min-w-0 flex-1">
         {(message.toolCalls?.length ?? 0) > 0 && (
           <div className="flex flex-wrap gap-1 mb-2" data-testid="agent-tool-chips">
-            {message.toolCalls!.map((tc, i) => (
-              <span
-                key={i}
-                data-testid={`tool-chip-${tc.name}`}
-                data-entity-title={tc.entityTitle}
-                className={`inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded border ${
-                  tc.status === 'running'
-                    ? 'bg-blue-50 border-blue-200 text-blue-700'
-                    : tc.status === 'ok'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                      : 'bg-red-50 border-red-200 text-red-700'
-                }`}
-              >
-                <Wrench className="h-2.5 w-2.5" />
-                <span>{tc.name}</span>
-                {tc.entityTitle && (
-                  <>
-                    <span className="opacity-50">·</span>
-                    <span className="font-sans normal-case opacity-90 max-w-[160px] truncate">{tc.entityTitle}</span>
-                  </>
-                )}
-                {tc.status === 'running' && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-                {tc.status === 'running' && tc.elapsedSec != null && (
-                  <span className="opacity-70">{tc.elapsedSec.toFixed(0)}s</span>
-                )}
-              </span>
-            ))}
+            {message.toolCalls!.map((tc, i) => {
+              // Neutral mono pill; the wrench is the one coloured mark and it
+              // carries the same meaning vocabulary as every status pill.
+              const meaning: Meaning = tc.status === 'running' ? 'inflight'
+                : tc.status === 'ok' ? 'binding'
+                : 'risk'
+              return (
+                <span
+                  key={i}
+                  data-testid={`tool-chip-${tc.name}`}
+                  data-entity-title={tc.entityTitle}
+                  className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-full border border-paper-200 bg-card text-ink-700"
+                >
+                  <Wrench className={`size-2.5 ${MEANING_CLASS[meaning].fg}`} />
+                  <span className="text-ink-950">{tc.name}</span>
+                  {tc.entityTitle && (
+                    <>
+                      <span className="text-ink-400">·</span>
+                      <span className="font-sans normal-case text-ink-500 max-w-[160px] truncate">{tc.entityTitle}</span>
+                    </>
+                  )}
+                  {tc.status === 'running' && <Loader2 className="size-2.5 animate-spin" />}
+                  {tc.status === 'running' && tc.elapsedSec != null && (
+                    <span className="text-ink-400 tabular-nums">{tc.elapsedSec.toFixed(0)}s</span>
+                  )}
+                </span>
+              )
+            })}
           </div>
         )}
-        <div className="text-sm text-gray-900 leading-relaxed">
+        <div className="text-body text-ink-950 leading-[1.65]">
           {/* Markdown rendering (bold, lists, code, links) — Gemini and
               Claude both return Markdown in assistant prose. Prior to
               this the response was rendered with whitespace-pre-wrap
               so users saw literal `**`, `*`, etc. */}
           {cleanProse && <MarkdownProse text={cleanProse} />}
           {message.streaming && !message.content && (
-            <span className="inline-flex items-center gap-1 text-gray-400">
-              <Loader2 className="h-3 w-3 animate-spin" /> thinking…
+            <span className="inline-flex items-center gap-1 text-ink-400">
+              <Loader2 className="size-3 animate-spin" /> thinking…
             </span>
           )}
         </div>
@@ -1365,13 +1378,13 @@ function MessageBubble({
         )}
         {message.error && (
           <div className="mt-1.5 space-y-1" data-testid="agent-error">
-            <div className="text-[11px] text-red-600">{message.error.slice(0, 200)}</div>
+            <div className="text-[11px] text-risk-700">{message.error.slice(0, 200)}</div>
             {/* A diagnosis with no way forward leaves the user stuck on a dead
                 thread. Retry re-sends the message that failed. */}
             {onRetry && (
               <button
                 onClick={() => onRetry(message.retryPrompt ?? '')}
-                className="text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                className="text-[11px] font-medium text-ink-950 hover:text-brand-700 hover:underline"
                 data-testid="agent-error-retry"
               >
                 Try again
@@ -1394,13 +1407,13 @@ function EmptyChat({
   return (
     <div className="max-w-3xl mx-auto px-6 py-12">
       <div className="text-center mb-8">
-        <div className="h-12 w-12 mx-auto rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
-          <Sparkles className="h-6 w-6 text-blue-600" />
+        <div className="size-12 mx-auto rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center mb-4">
+          <AssistMark className="size-[13px]" />
         </div>
-        <h2 className="text-2xl font-semibold text-gray-900">
+        <h2 className="text-title text-ink-950">
           Hello{userName ? `, ${userName.split(' ')[0]}` : ''} — what can I help with?
         </h2>
-        <p className="text-sm text-gray-500 mt-2">
+        <p className="text-body text-ink-500 mt-2">
           I can search contracts, draft new ones, summarise risks, run playbook checks,
           and act on your portfolio. Pick a starter or just ask.
         </p>
@@ -1411,16 +1424,18 @@ function EmptyChat({
             key={i}
             onClick={() => onPick(s.prompt)}
             data-testid={`starter-prompt-${i}`}
-            className="group text-left p-3 rounded-lg border border-gray-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors flex items-start gap-2.5"
+            // Starters hand work to the machine, so they warm to the assist
+            // wash on hover rather than to a neutral or a status colour.
+            className="group text-left p-3 rounded-md border border-paper-200 bg-card hover:border-assist-200 hover:bg-assist-50 transition-colors flex items-start gap-2.5"
           >
-            <div className="h-7 w-7 shrink-0 rounded-md bg-indigo-50 border border-indigo-100 flex items-center justify-center group-hover:bg-indigo-100">
-              <s.icon className="h-3.5 w-3.5 text-indigo-600" />
+            <div className="size-7 shrink-0 rounded-md bg-assist-50 border border-assist-200 flex items-center justify-center group-hover:bg-assist-200">
+              <s.icon className="size-3.5 text-assist-600" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-gray-900">{s.label}</div>
-              <div className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{s.prompt}</div>
+              <div className="text-body font-semibold text-ink-950">{s.label}</div>
+              <div className="text-[11px] text-ink-500 mt-0.5 line-clamp-2">{s.prompt}</div>
             </div>
-            <ChevronRight className="h-3.5 w-3.5 text-gray-300 group-hover:text-indigo-400 shrink-0 mt-1" />
+            <ChevronRight className="size-3.5 text-ink-400 group-hover:text-assist-600 shrink-0 mt-1" />
           </button>
         ))}
       </div>

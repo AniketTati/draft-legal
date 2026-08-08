@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Check, Plus, Building2, Loader2, X } from 'lucide-react'
+import { Input } from '@/components/ui/input'
 
 interface Counterparty {
   id: string
@@ -88,8 +89,8 @@ export function CounterpartyPicker({
   return (
     <div ref={containerRef} className="relative">
       <div className="relative">
-        <Building2 className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
-        <input
+        <Building2 className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-ink-400 pointer-events-none" />
+        <Input
           type="text"
           value={query}
           onChange={(e) => {
@@ -103,25 +104,26 @@ export function CounterpartyPicker({
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
           data-testid={`${testIdPrefix}-input`}
-          className="w-full h-9 text-sm border border-gray-200 rounded-lg pl-8 pr-8 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+          className="pl-8 pr-8"
         />
         {value.id && (
+          // Resolved to a real counterparty row — a verified link, so brand.
           <span
             title="Linked to counterparty"
             data-testid={`${testIdPrefix}-linked`}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-emerald-500"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-brand-700"
           >
-            <Check className="h-3.5 w-3.5" />
+            <Check className="size-3.5" />
           </span>
         )}
         {!value.id && query && (
           <button
             type="button"
             onClick={() => { setQuery(''); onChange({ id: null, name: '' }); setOpen(false) }}
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-700"
             data-testid={`${testIdPrefix}-clear`}
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="size-3.5" />
           </button>
         )}
       </div>
@@ -129,11 +131,11 @@ export function CounterpartyPicker({
       {open && (matches.length > 0 || showCreate) && (
         <div
           data-testid={`${testIdPrefix}-dropdown`}
-          className="absolute z-30 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-72 overflow-y-auto"
+          className="absolute z-30 left-0 right-0 mt-1 bg-card border border-paper-200 rounded-md shadow-e2 max-h-72 overflow-y-auto"
         >
           {isFetching && matches.length === 0 && (
-            <div className="px-3 py-2 text-[12px] text-gray-400 inline-flex items-center gap-1.5">
-              <Loader2 className="h-3 w-3 animate-spin" /> Searching…
+            <div className="px-3 py-2 text-dense text-ink-400 inline-flex items-center gap-1.5">
+              <Loader2 className="size-3 animate-spin" /> Searching…
             </div>
           )}
           {matches.map(cp => (
@@ -146,30 +148,32 @@ export function CounterpartyPicker({
                 setOpen(false)
               }}
               data-testid={`${testIdPrefix}-option-${cp.id}`}
-              className="w-full px-3 py-2 text-left hover:bg-blue-50 flex items-center justify-between gap-2 group"
+              className="w-full px-3 py-2 text-left hover:bg-paper-100 flex items-center justify-between gap-2"
             >
               <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-gray-900 group-hover:text-blue-700 truncate">{cp.name}</div>
+                <div className="text-[13px] font-medium text-ink-950 truncate">{cp.name}</div>
                 {cp.legalName && cp.legalName !== cp.name && (
-                  <div className="text-[10.5px] text-gray-400 truncate">{cp.legalName}</div>
+                  <div className="text-[10.5px] text-ink-400 truncate">{cp.legalName}</div>
                 )}
               </div>
               {(cp.contractCount ?? 0) > 0 && (
-                <span className="text-[10.5px] text-gray-400 tabular-nums shrink-0">
+                <span className="text-[10.5px] text-ink-400 tabular-nums shrink-0">
                   {cp.contractCount} {cp.contractCount === 1 ? 'contract' : 'contracts'}
                 </span>
               )}
             </button>
           ))}
           {showCreate && (
+            // Creating a counterparty is an action, not a binding state, so it
+            // reads as ink rather than keeping the old emerald.
             <button
               type="button"
               onClick={() => create.mutate()}
               disabled={create.isPending}
               data-testid={`${testIdPrefix}-create`}
-              className="w-full px-3 py-2 text-left border-t border-gray-100 hover:bg-emerald-50 inline-flex items-center gap-2 text-[12.5px] text-emerald-700 font-medium disabled:opacity-50"
+              className="w-full px-3 py-2 text-left border-t border-paper-200 hover:bg-paper-100 inline-flex items-center gap-2 text-dense text-ink-950 font-medium disabled:opacity-50"
             >
-              {create.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              {create.isPending ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3.5" />}
               Create new counterparty <span className="font-semibold">"{trimmed}"</span>
             </button>
           )}

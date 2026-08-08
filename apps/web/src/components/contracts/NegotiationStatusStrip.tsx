@@ -117,13 +117,13 @@ export function NegotiationStatusStrip({
     if (commentDate > versionDate && lastComment) {
       const ex = (lastComment.excerpt ?? '').trim()
       return {
-        icon:  <MessageCircle className="h-3 w-3" />,
+        icon:  <MessageCircle className="size-3" />,
         label: ex.length > 42 ? ex.slice(0, 42) + '…' : (ex || 'Comment'),
       }
     }
     if (latestVersion) {
       return {
-        icon:  <Clock className="h-3 w-3" />,
+        icon:  <Clock className="size-3" />,
         label: latestVersion.changeNote?.trim() || `v${latestVersion.versionNumber} uploaded`,
       }
     }
@@ -134,6 +134,10 @@ export function NegotiationStatusStrip({
   // previous version always said "Waiting on counterparty revisions"
   // for any UNDER_NEGOTIATION contract — even when we'd never sent
   // anything to the counterparty.
+  // Whether the ball is in OUR court. Drives the "your turn" color below:
+  // amber here means the user is the blocker, not merely that the deal is old.
+  const blockedOnUs = typeof blockedBy === 'string' && blockedBy.startsWith('You')
+
   const next = (() => {
     if (status === 'PENDING_APPROVAL') return 'Waiting on review'
     if (status !== 'UNDER_NEGOTIATION') return null
@@ -150,51 +154,51 @@ export function NegotiationStatusStrip({
     <div
       role="region"
       aria-label="Negotiation status"
-      className="border-b border-gray-200 bg-gray-50/70"
+      className="border-b border-paper-200 bg-paper-50"
     >
-      <div className="px-6 py-2 flex items-center gap-3 text-xs text-gray-600 flex-wrap">
+      <div className="px-6 py-2 flex items-center gap-3 text-dense text-ink-500 flex-wrap">
         <div className="flex items-center gap-1.5 shrink-0">
-          <ArrowRight className="h-3 w-3 text-gray-400" />
-          <span className="text-gray-400">You</span>
-          <ArrowRight className="h-3 w-3 text-gray-400" />
+          <ArrowRight className="size-3 text-ink-400" />
+          <span className="text-ink-400">You</span>
+          <ArrowRight className="size-3 text-ink-400" />
           <span className={cn(
-            'font-medium text-gray-800',
-            status === 'UNDER_NEGOTIATION' && 'text-amber-700',
-            status === 'PENDING_APPROVAL' && 'text-blue-700',
+            'font-medium text-ink-950',
+            status === 'UNDER_NEGOTIATION' && (blockedOnUs ? 'text-attention-700' : 'text-info-700'),
+            status === 'PENDING_APPROVAL' && 'text-info-700',
           )}>
             {blockedBy ?? 'Awaiting action'}
           </span>
         </div>
 
         {waitDays != null && (
-          <div className="flex items-center gap-1 text-gray-500 shrink-0" title={new Date(waitingSince!).toLocaleString()}>
-            <Hourglass className="h-3 w-3" />
+          <div className="flex items-center gap-1 text-ink-500 shrink-0" title={new Date(waitingSince!).toLocaleString()}>
+            <Hourglass className="size-3" />
             Waiting {waitDays === 0 ? 'today' : `${waitDays}d`}
           </div>
         )}
 
         {last && (
-          <div className="flex items-center gap-1 text-gray-500 truncate">
-            <span className="text-gray-400 shrink-0">Last:</span>
+          <div className="flex items-center gap-1 text-ink-500 truncate">
+            <span className="text-ink-400 shrink-0">Last:</span>
             <span className="shrink-0">{last.icon}</span>
             <span className="truncate">{last.label}</span>
           </div>
         )}
 
         {next && (
-          <div className="flex items-center gap-1 text-gray-500 shrink-0">
-            <span className="text-gray-400">Next:</span>
-            <span className="text-gray-700">{next}</span>
+          <div className="flex items-center gap-1 text-ink-500 shrink-0">
+            <span className="text-ink-400">Next:</span>
+            <span className="text-ink-700">{next}</span>
           </div>
         )}
 
         {onNudge && (
           <button
             onClick={onNudge}
-            className="ml-auto inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium shrink-0"
+            className="ml-auto inline-flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium shrink-0"
             title="Send a nudge"
           >
-            <Send className="h-3 w-3" />
+            <Send className="size-3" />
             Nudge
           </button>
         )}

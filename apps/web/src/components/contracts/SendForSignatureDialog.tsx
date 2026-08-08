@@ -23,6 +23,7 @@ import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { X, Plus, Trash2, Loader2, AlertCircle, PenLine, ArrowRight, Users } from 'lucide-react'
 
 interface SignerRow {
@@ -119,86 +120,88 @@ export function SendForSignatureDialog({
       data-testid="send-for-signature-dialog"
     >
       <div
-        className="bg-white rounded-xl max-w-2xl w-full shadow-2xl my-8"
+        className="bg-card rounded-card max-w-2xl w-full shadow-e3 my-8"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
+        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-              <PenLine className="h-5 w-5 text-emerald-600" />
+            {/* Signature is the surface brand exists for — this is the moment
+                the document becomes binding. */}
+            <h2 className="text-section text-ink-950 flex items-center gap-2">
+              <PenLine className="size-4 text-brand-700" />
               Send for signature
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5 truncate max-w-md">
+            <p className="text-dense text-ink-500 mt-1 truncate max-w-md">
               {contractTitle}
             </p>
           </div>
           <button
             onClick={onClose}
             aria-label="Close"
-            className="p-1 rounded hover:bg-gray-100 text-gray-400"
+            className="p-1 rounded-md hover:bg-paper-100 text-ink-400"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Body */}
         <div className="px-6 py-5 space-y-5">
           {blockReason && (
-            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 p-3 rounded-md bg-attention-50 border border-attention-200 text-body text-attention-700">
+              <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
               <span>{blockReason}</span>
             </div>
           )}
 
           {/* Signers section */}
           <div>
-            <label className="text-sm font-medium text-gray-900 mb-1 flex items-center gap-1.5">
-              <Users className="h-4 w-4 text-gray-500" />
+            <label className="text-body font-medium text-ink-950 mb-1 flex items-center gap-1.5">
+              <Users className="size-4 text-ink-400" />
               Signers
-              <span className="text-xs font-normal text-gray-400 ml-1">
+              <span className="text-dense font-normal text-ink-400 ml-1 tabular-nums">
                 ({validSigners.length} valid · {signers.length} row{signers.length === 1 ? '' : 's'})
               </span>
             </label>
-            <p className="text-xs text-gray-500 mb-2">
+            <p className="text-dense text-ink-500 mb-2">
               Each signer gets a unique link. Internal signers can also sign in-app.
             </p>
             <div className="space-y-2">
               {signers.map((s, i) => (
                 <div key={i} className="flex items-center gap-2" data-testid={`signer-row-${i}`}>
                   {signOrder === 'SEQUENTIAL' && (
-                    <input
+                    <Input
                       type="number"
                       min={1}
                       value={s.signOrder}
                       onChange={(e) => update(i, { signOrder: Math.max(1, +e.target.value || 1) })}
-                      className="w-12 h-9 text-sm text-center border border-gray-300 rounded-md"
+                      className="w-12 px-0 text-center tabular-nums"
                       title="Sign order (1 first)"
                       aria-label={`Sign order for signer ${i + 1}`}
                     />
                   )}
-                  <input
+                  <Input
                     type="text"
                     placeholder="Name"
                     value={s.name}
                     onChange={(e) => update(i, { name: e.target.value })}
-                    className="flex-1 h-9 text-sm border border-gray-300 rounded-md px-2"
+                    className="flex-1"
                     data-testid={`signer-name-${i}`}
                   />
-                  <input
+                  <Input
                     type="email"
                     placeholder="email@example.com"
                     value={s.email}
                     onChange={(e) => update(i, { email: e.target.value })}
-                    className="flex-1 h-9 text-sm border border-gray-300 rounded-md px-2"
+                    className="flex-1"
                     data-testid={`signer-email-${i}`}
                   />
-                  <input
+                  <Input
                     type="text"
                     placeholder="Role (optional)"
                     value={s.role}
                     onChange={(e) => update(i, { role: e.target.value })}
-                    className="w-28 h-9 text-sm border border-gray-300 rounded-md px-2"
+                    className="w-28"
                     data-testid={`signer-role-${i}`}
                   />
                   {signers.length > 1 && (
@@ -206,9 +209,9 @@ export function SendForSignatureDialog({
                       type="button"
                       onClick={() => remove(i)}
                       aria-label={`Remove signer ${i + 1}`}
-                      className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"
+                      className="p-1.5 rounded-md text-ink-400 hover:bg-risk-50 hover:text-risk-600"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      <Trash2 className="size-4" />
                     </button>
                   )}
                 </div>
@@ -217,10 +220,10 @@ export function SendForSignatureDialog({
             <button
               type="button"
               onClick={add}
-              className="mt-2 inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
+              className="mt-2 inline-flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
               data-testid="add-signer"
             >
-              <Plus className="h-3.5 w-3.5" />
+              <Plus className="size-3.5" />
               Add signer
             </button>
           </div>
@@ -228,18 +231,20 @@ export function SendForSignatureDialog({
           {/* Sign order + expiry row */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="text-sm font-medium text-gray-900 mb-1 block">
+              <label className="text-body font-medium text-ink-950 mb-1 block">
                 Sign order
               </label>
+              {/* Selection is an action, so the chosen option inverts to ink —
+                  the same rule the filter chips follow. */}
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setSignOrder('ANY')}
                   data-testid="sign-order-any"
-                  className={`flex-1 h-9 text-xs rounded-md border ${
+                  className={`flex-1 h-8 text-[12.5px] rounded-md border transition-colors ${
                     signOrder === 'ANY'
-                      ? 'border-emerald-600 bg-emerald-50 text-emerald-700 font-medium'
-                      : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                      ? 'border-ink-950 bg-ink-950 text-white font-semibold'
+                      : 'border-paper-200 text-ink-700 hover:border-paper-300'
                   }`}
                 >
                   Anyone, any order
@@ -248,10 +253,10 @@ export function SendForSignatureDialog({
                   type="button"
                   onClick={() => setSignOrder('SEQUENTIAL')}
                   data-testid="sign-order-sequential"
-                  className={`flex-1 h-9 text-xs rounded-md border ${
+                  className={`flex-1 h-8 text-[12.5px] rounded-md border transition-colors ${
                     signOrder === 'SEQUENTIAL'
-                      ? 'border-emerald-600 bg-emerald-50 text-emerald-700 font-medium'
-                      : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                      ? 'border-ink-950 bg-ink-950 text-white font-semibold'
+                      : 'border-paper-200 text-ink-700 hover:border-paper-300'
                   }`}
                 >
                   In sequence
@@ -259,14 +264,14 @@ export function SendForSignatureDialog({
               </div>
             </div>
             <div>
-              <label className="text-sm font-medium text-gray-900 mb-1 block">
+              <label className="text-body font-medium text-ink-950 mb-1 block">
                 Expires in
               </label>
               <select
                 value={expiresInDays}
                 onChange={(e) => setExpiresInDays(+e.target.value)}
                 data-testid="expires-in-days"
-                className="w-full h-9 text-sm border border-gray-300 rounded-md px-2 bg-white"
+                className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               >
                 <option value={7}>7 days</option>
                 <option value={14}>14 days</option>
@@ -279,8 +284,8 @@ export function SendForSignatureDialog({
 
           {/* Message */}
           <div>
-            <label className="text-sm font-medium text-gray-900 mb-1 block">
-              Message <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="text-body font-medium text-ink-950 mb-1 block">
+              Message <span className="text-ink-400 font-normal">(optional)</span>
             </label>
             <textarea
               value={message}
@@ -288,15 +293,15 @@ export function SendForSignatureDialog({
               placeholder="Shown above the document on the signer's page. Add context — what they're signing, deadline, who to contact with questions."
               rows={3}
               data-testid="sign-message"
-              className="w-full text-sm border border-gray-300 rounded-md px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+              className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
             />
-            <p className="text-xs text-gray-400 mt-1">{message.length} / 2000</p>
+            <p className="text-dense text-ink-400 mt-1 tabular-nums">{message.length} / 2000</p>
           </div>
 
           {/* Error from backend */}
           {submit.isError && (
-            <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700" data-testid="send-for-signature-error">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 p-3 rounded-md bg-risk-50 border border-risk-200 text-body text-risk-700" data-testid="send-for-signature-error">
+              <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
               <span>
                 {(submit.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
                   ?? 'Failed to send for signature. Please try again.'}
@@ -306,28 +311,31 @@ export function SendForSignatureDialog({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-gray-200 flex items-center justify-between bg-gray-50 rounded-b-xl">
-          <div className="text-xs text-gray-500">
+        <div className="px-6 py-3.5 border-t border-paper-200 flex items-center justify-between bg-paper-50 rounded-b-card">
+          <div className="text-dense text-ink-500">
             {validSigners.length === 0
               ? 'Add at least one signer with a valid email.'
               : `Will send ${validSigners.length} signing link${validSigners.length === 1 ? '' : 's'}.`}
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={onClose}>Cancel</Button>
+            {/* Ink, not brand: this dispatches signing links, it does not make
+                the contract binding. Matches the design system's own
+                send-for-signature dialog, which confirms with an ink button. */}
             <Button
+              variant="default"
               size="sm"
               onClick={() => submit.mutate()}
               disabled={!canSubmit}
               data-testid="send-for-signature-confirm"
-              className="bg-emerald-600 hover:bg-emerald-700 text-white"
             >
               {submit.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2 className="size-3.5 animate-spin" />
               ) : (
                 <>
-                  <PenLine className="h-3.5 w-3.5 mr-1" />
+                  <PenLine className="size-3.5 mr-1" />
                   Send for signature
-                  <ArrowRight className="h-3.5 w-3.5 ml-1" />
+                  <ArrowRight className="size-3.5 ml-1" />
                 </>
               )}
             </Button>

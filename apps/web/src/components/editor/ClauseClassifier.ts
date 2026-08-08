@@ -47,11 +47,23 @@ export interface ClauseClassifierOptions {
   maxParagraphsPerDoc: number
 }
 
+/*
+ * The badge is painted into a ProseMirror decoration as inline CSS, so the
+ * palette has to be restated as hex rather than as classes. Every value below
+ * is a stop from tailwind.config.ts, on the same five meanings the rest of the
+ * product uses — these badges open ClauseDeviationPopover, and the two must not
+ * disagree about what "weak" or "aggressive" looks like.
+ *
+ *   market     → brand   (binding: the language we'd sign)
+ *   aggressive → risk    (exposure)
+ *   weak       → attention (your turn: someone has to decide)
+ *   off        → neutral (a fact about the clause, not a verdict)
+ */
 const POS_META: Record<Position, { label: string; bg: string; fg: string; border: string; title: string }> = {
-  market:     { label: 'MARKET', bg: '#d1fae5', fg: '#065f46', border: '#6ee7b7', title: 'In line with common market practice' },
-  aggressive: { label: 'AGGR.',  bg: '#fee2e2', fg: '#7f1d1d', border: '#fca5a5', title: 'Heavily favors one side — review before sending' },
-  weak:       { label: 'WEAK',   bg: '#fef3c7', fg: '#78350f', border: '#fbbf24', title: 'Materially weaker than market — consider tightening' },
-  off:        { label: 'OFF',    bg: '#f3f4f6', fg: '#374151', border: '#d1d5db', title: 'Not in the standard playbook — custom language' },
+  market:     { label: 'MARKET', bg: '#D1FAE5', fg: '#065F46', border: '#A7F3D0', title: 'In line with common market practice' },
+  aggressive: { label: 'AGGR.',  bg: '#FEE2E2', fg: '#7F1D1D', border: '#FECACA', title: 'Heavily favors one side — review before sending' },
+  weak:       { label: 'WEAK',   bg: '#FEF3C7', fg: '#B45309', border: '#FDE68A', title: 'Materially weaker than market — consider tightening' },
+  off:        { label: 'OFF',    bg: '#F4F4F2', fg: '#57554F', border: '#D3D2CE', title: 'Not in the standard playbook — custom language' },
   skip:       { label: '',       bg: '',        fg: '',        border: '',        title: '' },
 }
 

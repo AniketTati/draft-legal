@@ -54,8 +54,15 @@ function scorePassword(pw: string): Strength {
   return { score, label, reasons }
 }
 
-const STRENGTH_COLORS = ['', 'bg-red-400', 'bg-amber-400', 'bg-emerald-400', 'bg-emerald-500']
-const STRENGTH_TEXT = ['', 'text-red-500', 'text-amber-600', 'text-emerald-600', 'text-emerald-700']
+/*
+ * The strength bar is the one place on this page that earns color, and it maps
+ * onto the meaning scale rather than a traffic light: a weak password is real
+ * exposure (risk), a fair one is the user's turn to improve (attention), and a
+ * good/strong one is "healthy" — the only sense in which the brand green is
+ * allowed outside binding states.
+ */
+const STRENGTH_COLORS = ['', 'bg-risk-600', 'bg-attention-600', 'bg-brand-500', 'bg-brand-700']
+const STRENGTH_TEXT = ['', 'text-risk-700', 'text-attention-700', 'text-brand-700', 'text-brand-700']
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
@@ -118,11 +125,11 @@ export function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background py-10">
-      <div className="w-full max-w-sm space-y-6 p-8 border border-border rounded-lg bg-card shadow-sm">
+    <div className="min-h-screen flex items-center justify-center bg-paper-50 py-10">
+      <div className="w-full max-w-sm space-y-6 p-8 border border-paper-200 rounded-card bg-card shadow-e1">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">Create account</h1>
-          <p className="text-sm text-muted-foreground mt-1">Set up your CLM workspace</p>
+          <h1 className="text-title text-ink-950">Create account</h1>
+          <p className="text-body text-ink-500 mt-1">Set up your CLM workspace</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -191,17 +198,17 @@ export function RegisterPage() {
                       <div
                         key={i}
                         className={`h-1 flex-1 rounded-full transition-colors ${
-                          i <= strength.score ? STRENGTH_COLORS[strength.score] : 'bg-muted'
+                          i <= strength.score ? STRENGTH_COLORS[strength.score] : 'bg-paper-100'
                         }`}
                       />
                     ))}
                   </div>
-                  <span className={`text-xs font-medium tabular-nums ${STRENGTH_TEXT[strength.score]}`}>
+                  <span className={`text-dense font-medium tabular-nums ${STRENGTH_TEXT[strength.score]}`}>
                     {strength.label}
                   </span>
                 </div>
                 {strength.score < 3 && strength.reasons.length > 0 && (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-[11px] text-ink-500">
                     Add: {strength.reasons.slice(0, 3).join(' · ')}
                   </p>
                 )}
@@ -209,7 +216,8 @@ export function RegisterPage() {
             )}
           </div>
 
-          {/* Confirm password */}
+          {/* Confirm password. No invalid-state className here — Input derives
+              its risk border and focus halo from aria-[invalid=true]. */}
           <div className="space-y-1.5">
             <Label htmlFor="confirmPassword">Confirm password</Label>
             <Input
@@ -225,54 +233,56 @@ export function RegisterPage() {
               data-testid="confirm-password"
               aria-invalid={confirmMismatch}
               aria-describedby={confirmMismatch ? 'confirm-mismatch' : undefined}
-              className={confirmMismatch ? 'border-red-400 focus-visible:ring-red-400' : undefined}
             />
             {confirmMismatch ? (
-              <p id="confirm-mismatch" className="flex items-center gap-1 text-xs text-red-500">
-                <AlertCircle className="h-3 w-3" />
+              <p id="confirm-mismatch" className="flex items-center gap-1 text-dense text-risk-700">
+                <AlertCircle className="size-3" />
                 Passwords don&rsquo;t match
               </p>
             ) : passwordsMatch ? (
-              <p className="flex items-center gap-1 text-xs text-emerald-600">
-                <CheckCircle2 className="h-3 w-3" />
+              // "Verified" is one of the few non-legal senses the brand green
+              // keeps — the two fields have actually been checked against
+              // each other, so this is a result, not decoration.
+              <p className="flex items-center gap-1 text-dense text-brand-700">
+                <CheckCircle2 className="size-3" />
                 Passwords match
               </p>
             ) : null}
           </div>
 
           {/* Terms + privacy */}
-          <label className="flex items-start gap-2 text-xs text-muted-foreground cursor-pointer">
+          <label className="flex items-start gap-2 text-dense text-ink-500 cursor-pointer">
             <input
               type="checkbox"
               checked={termsAccepted}
               onChange={(e) => setTermsAccepted(e.target.checked)}
               data-testid="terms-checkbox"
-              className="mt-0.5 h-3.5 w-3.5 rounded border-input text-primary focus:ring-primary"
+              className="mt-0.5 size-3.5 rounded-chip border-input text-ink-950 focus:ring-ink-950"
               required
             />
             <span className="leading-snug">
               I agree to the{' '}
-              <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              <a href="/terms" target="_blank" rel="noopener noreferrer" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">
                 Terms of Service
               </a>{' '}
               and{' '}
-              <a href="/privacy" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              <a href="/privacy" target="_blank" rel="noopener noreferrer" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">
                 Privacy Policy
               </a>
               .
             </span>
           </label>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && <p className="text-body text-risk-700">{error}</p>}
 
-          <Button type="submit" className="w-full" disabled={!canSubmit}>
+          <Button type="submit" size="md" className="w-full" disabled={!canSubmit}>
             {loading ? 'Creating…' : 'Create account'}
           </Button>
         </form>
 
-        <p className="text-sm text-center text-muted-foreground">
+        <p className="text-body text-center text-ink-500">
           Already have an account?{' '}
-          <Link to="/login" className="text-primary hover:underline">
+          <Link to="/login" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">
             Sign in
           </Link>
         </p>

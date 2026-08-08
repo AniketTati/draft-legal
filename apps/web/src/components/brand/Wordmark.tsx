@@ -42,10 +42,11 @@ export function Wordmark({
       aria-label="draftLegal"
     >
       {/* Weight contrast (medium → bold) reinforces "tentative → committed".
-          Slate-700 reads as ink-on-paper graphite; emerald-700 carries the
-          authority. Together: "drafts become legally binding". */}
-      <span className="font-medium text-slate-700">{draft}</span>
-      <span className="font-bold text-emerald-700">{legal}</span>
+          ink-700 reads as pencil on paper; brand-700 carries the authority.
+          Together: "drafts become legally binding". This is the one place the
+          brand color appears as identity rather than as the meaning "binding". */}
+      <span className="font-medium text-ink-700">{draft}</span>
+      <span className="font-bold text-brand-700">{legal}</span>
     </span>
   )
 }

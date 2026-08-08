@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { toast } from '@/components/common/Toaster'
+import { Card, Chip } from '@/components/ui/primitives'
 import type { User } from '@clm/types'
 
 export function ProfilePage() {
@@ -94,15 +95,15 @@ export function ProfilePage() {
 
   return (
     <div className="max-w-2xl mx-auto py-10 px-4 space-y-8">
-      <h1 className="text-2xl font-semibold text-foreground">Profile</h1>
+      <h1 className="text-title text-ink-950">Profile</h1>
 
       {/* Profile Info */}
-      <div className="border border-border rounded-lg bg-card shadow-sm p-6 space-y-5">
-        <h2 className="text-lg font-medium text-foreground">Profile Info</h2>
+      <Card className="p-5 space-y-4">
+        <h2 className="text-section text-ink-950">Profile Info</h2>
 
         <form onSubmit={handleProfileSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="profile-name">Name</Label>
+            <Label htmlFor="profile-name" className="text-[11.5px] font-semibold text-ink-950">Name</Label>
             <Input
               id="profile-name"
               type="text"
@@ -120,8 +121,8 @@ export function ProfilePage() {
               flow we'll wire later; for now the path is "ask admin". */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between">
-              <Label htmlFor="profile-email">Email</Label>
-              <span className="text-[10px] uppercase tracking-wider text-gray-500">read-only</span>
+              <Label htmlFor="profile-email" className="text-[11.5px] font-semibold text-ink-950">Email</Label>
+              <span className="text-[10px] uppercase tracking-wider text-ink-500">read-only</span>
             </div>
             <Input
               id="profile-email"
@@ -129,7 +130,7 @@ export function ProfilePage() {
               value={profile?.email ?? ''}
               readOnly
               data-testid="profile-email"
-              className="bg-gray-50 text-gray-700 cursor-not-allowed select-all"
+              className="bg-paper-50 text-ink-700 cursor-not-allowed select-all"
             />
             <p className="text-[11px] text-muted-foreground">
               Email is your login identifier. Contact an admin to change it.
@@ -137,7 +138,7 @@ export function ProfilePage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="profile-avatar">Avatar</Label>
+            <Label htmlFor="profile-avatar" className="text-[11.5px] font-semibold text-ink-950">Avatar</Label>
             <div className="flex items-start gap-3">
               {/* Live preview — initials fallback, or image if URL is valid */}
               <div className="shrink-0">
@@ -175,11 +176,13 @@ export function ProfilePage() {
           </div>
 
           {profileMsg && (
+            // Success is neutral here: saving a profile is an acknowledgement, not a
+            // binding event. Only failure earns a meaning color.
             <div
-              className={`text-sm px-3 py-2 rounded ${
+              className={`text-dense px-3 py-2 rounded-md border ${
                 profileMsg.type === 'success'
-                  ? 'bg-green-50 text-green-700 border border-green-200'
-                  : 'bg-red-50 text-destructive border border-red-200'
+                  ? 'bg-paper-100 text-ink-700 border-paper-200'
+                  : 'bg-risk-50 text-risk-700 border-risk-200'
               }`}
             >
               {profileMsg.text}
@@ -190,38 +193,31 @@ export function ProfilePage() {
             {updateProfile.isPending ? 'Saving...' : 'Save Profile'}
           </Button>
         </form>
-      </div>
+      </Card>
 
       {/* My Roles */}
-      <div className="border border-border rounded-lg bg-card shadow-sm p-6 space-y-3">
-        <h2 className="text-lg font-medium text-foreground">My Roles</h2>
+      <Card className="p-5 space-y-3">
+        <h2 className="text-section text-ink-950">My Roles</h2>
 
         <div className="flex flex-wrap gap-2">
           {profile?.roles && profile.roles.length > 0 ? (
-            profile.roles.map((role) => (
-              <span
-                key={role}
-                className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary/10 text-primary"
-              >
-                {role}
-              </span>
-            ))
+            profile.roles.map((role) => <Chip key={role}>{role}</Chip>)
           ) : (
-            <p className="text-sm text-muted-foreground">No roles assigned.</p>
+            <p className="text-dense text-muted-foreground">No roles assigned.</p>
           )}
         </div>
-      </div>
+      </Card>
 
       {/* Change Password */}{/*
          AvatarPreview is defined below the component to keep the form
          layout tidy above.
       */}
-      <div className="border border-border rounded-lg bg-card shadow-sm p-6 space-y-5">
-        <h2 className="text-lg font-medium text-foreground">Change Password</h2>
+      <Card className="p-5 space-y-4">
+        <h2 className="text-section text-ink-950">Change Password</h2>
 
         <form onSubmit={handlePasswordSubmit} className="space-y-4">
           <div className="space-y-1.5">
-            <Label htmlFor="old-password">Current Password</Label>
+            <Label htmlFor="old-password" className="text-[11.5px] font-semibold text-ink-950">Current Password</Label>
             <Input
               id="old-password"
               type="password"
@@ -234,7 +230,7 @@ export function ProfilePage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="new-password">New Password</Label>
+            <Label htmlFor="new-password" className="text-[11.5px] font-semibold text-ink-950">New Password</Label>
             <Input
               id="new-password"
               type="password"
@@ -247,7 +243,7 @@ export function ProfilePage() {
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="confirm-password">Confirm New Password</Label>
+            <Label htmlFor="confirm-password" className="text-[11.5px] font-semibold text-ink-950">Confirm New Password</Label>
             <Input
               id="confirm-password"
               type="password"
@@ -261,10 +257,10 @@ export function ProfilePage() {
 
           {passwordMsg && (
             <div
-              className={`text-sm px-3 py-2 rounded ${
+              className={`text-dense px-3 py-2 rounded-md border ${
                 passwordMsg.type === 'success'
-                  ? 'bg-green-50 text-green-700 border border-green-200'
-                  : 'bg-red-50 text-destructive border border-red-200'
+                  ? 'bg-paper-100 text-ink-700 border-paper-200'
+                  : 'bg-risk-50 text-risk-700 border-risk-200'
               }`}
             >
               {passwordMsg.text}
@@ -275,7 +271,7 @@ export function ProfilePage() {
             {changePassword.isPending ? 'Changing...' : 'Change Password'}
           </Button>
         </form>
-      </div>
+      </Card>
     </div>
   )
 }
@@ -293,16 +289,22 @@ function initialsFrom(name: string, fallback: string): string {
   return (fallback[0] ?? 'U').toUpperCase()
 }
 
+/*
+ * Identity, not meaning. The old hue palette (blue/emerald/amber/violet/rose)
+ * spent five of the system's meaning colors on a hash of an email address — an
+ * emerald avatar would have read as "binding". The hash still varies the chip so
+ * two people don't look identical, but only along the ink/paper ramp.
+ */
 function colorFromString(s: string): string {
   let h = 0
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
   const palette = [
-    'bg-blue-100 text-blue-700',
-    'bg-emerald-100 text-emerald-700',
-    'bg-amber-100 text-amber-700',
-    'bg-violet-100 text-violet-700',
-    'bg-rose-100 text-rose-700',
-    'bg-indigo-100 text-indigo-700',
+    'bg-paper-100 text-ink-700',
+    'bg-paper-200 text-ink-950',
+    'bg-ink-950 text-white',
+    'bg-paper-100 text-ink-950',
+    'bg-paper-300 text-ink-950',
+    'bg-ink-700 text-white',
   ]
   return palette[h % palette.length]
 }
@@ -326,7 +328,7 @@ function AvatarPreview({ name, url, email }: { name: string; url: string; email:
         src={url}
         alt={`${name || email}'s avatar`}
         data-testid="avatar-img"
-        className="h-16 w-16 rounded-full object-cover border border-border"
+        className="size-16 rounded-full object-cover border border-border"
         onError={() => setImageOk(false)}
       />
     )
@@ -334,7 +336,7 @@ function AvatarPreview({ name, url, email }: { name: string; url: string; email:
   return (
     <div
       data-testid="avatar-initials"
-      className={`h-16 w-16 rounded-full flex items-center justify-center text-base font-semibold ${cls}`}
+      className={`size-16 rounded-full flex items-center justify-center text-section ${cls}`}
       aria-label={`${name || email}'s avatar — ${initials}`}
     >
       {initials}

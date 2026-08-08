@@ -95,25 +95,29 @@ export function NewRequestModal({ onClose }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 backdrop-blur-sm"
       data-testid="new-request-modal"
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[90vh]">
-        {/* Success banner */}
+      <div className="bg-card rounded-card shadow-e3 w-full max-w-lg mx-4 flex flex-col max-h-[90vh]">
+        {/* Acknowledgement, not a binding event: a submitted request is SUBMITTED
+            in lib/status, which is "turn" — nothing has been approved, signed or
+            executed, and the copy itself says the classifier is still running.
+            Brand would read as "done", so this stays neutral like every other
+            "we heard you" confirmation in the product. */}
         {submitted && (
-          <div className="px-6 py-4 bg-emerald-50 border-b border-emerald-100 flex items-center gap-2 text-emerald-700 text-sm font-medium">
-            <CheckCircle2 className="h-4 w-4" />
+          <div className="px-6 py-4 bg-paper-100 border-b border-paper-200 flex items-center gap-2 text-ink-950 text-body font-medium">
+            <CheckCircle2 className="size-4 text-ink-500" />
             Request submitted! AI is classifying it now.
           </div>
         )}
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">New Contract Request</h2>
-            <p className="text-xs text-gray-400 mt-0.5">AI will classify and extract key terms automatically</p>
+            <h2 className="text-section text-ink-950">New Contract Request</h2>
+            <p className="text-dense text-ink-500 mt-0.5">AI will classify and extract key terms automatically</p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
-            <X className="h-4 w-4 text-gray-500" />
+          <button onClick={onClose} className="p-1.5 hover:bg-paper-100 rounded-md transition-colors">
+            <X className="size-4 text-ink-500" />
           </button>
         </div>
 
@@ -121,14 +125,14 @@ export function NewRequestModal({ onClose }: Props) {
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
           {/* Title */}
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1.5">
-              Request title <span className="text-red-400">*</span>
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
+              Request title <span className="text-risk-600">*</span>
             </label>
             <Input
               value={form.title}
               onChange={set('title')}
               placeholder="e.g. NDA with Acme Corp for Q2 partnership"
-              className="h-9 text-sm"
+              className="h-9 text-[13px]"
               data-testid="request-title"
             />
           </div>
@@ -136,11 +140,11 @@ export function NewRequestModal({ onClose }: Props) {
           {/* Type + Priority row */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1.5">Contract type</label>
+              <label className="block text-dense font-medium text-ink-700 mb-1.5">Contract type</label>
               <select
                 value={form.type}
                 onChange={set('type')}
-                className="w-full h-9 text-sm border border-gray-200 rounded-lg px-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               >
                 {CONTRACT_TYPES.map(t => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -148,11 +152,11 @@ export function NewRequestModal({ onClose }: Props) {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1.5">Priority</label>
+              <label className="block text-dense font-medium text-ink-700 mb-1.5">Priority</label>
               <select
                 value={form.priority}
                 onChange={set('priority')}
-                className="w-full h-9 text-sm border border-gray-200 rounded-lg px-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               >
                 {PRIORITIES.map(p => (
                   <option key={p.value} value={p.value}>{p.label}</option>
@@ -166,7 +170,7 @@ export function NewRequestModal({ onClose }: Props) {
               existing rows as the user types. */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1.5">Counterparty</label>
+              <label className="block text-dense font-medium text-ink-700 mb-1.5">Counterparty</label>
               <CounterpartyPicker
                 value={counterparty}
                 onChange={(sel) => {
@@ -178,13 +182,13 @@ export function NewRequestModal({ onClose }: Props) {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1.5">Estimated value (USD)</label>
+              <label className="block text-dense font-medium text-ink-700 mb-1.5">Estimated value (USD)</label>
               <Input
                 type="number"
                 value={form.estimatedValue}
                 onChange={set('estimatedValue')}
                 placeholder="e.g. 50000"
-                className="h-9 text-sm"
+                className="h-9 text-[13px] tabular-nums"
                 min="0"
               />
             </div>
@@ -192,45 +196,46 @@ export function NewRequestModal({ onClose }: Props) {
 
           {/* Description */}
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1.5">
-              Description <span className="text-red-400">*</span>
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
+              Description <span className="text-risk-600">*</span>
             </label>
             <textarea
               value={form.description}
               onChange={set('description')}
               placeholder="Describe the purpose, key terms, deadlines, or any special requirements…"
               rows={4}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400"
+              className="w-full text-[13px] text-ink-950 border border-input rounded-md px-3 py-2 bg-card resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
               data-testid="request-description"
             />
           </div>
 
           {/* Optional document attachment */}
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1.5">
-              Attach document <span className="text-gray-400">(optional — PDF or DOCX)</span>
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
+              Attach document <span className="text-ink-400 font-normal">(optional — PDF or DOCX)</span>
             </label>
             {attachedFile ? (
-              <div className="flex items-center gap-2 px-3 py-2 border border-blue-200 bg-blue-50 rounded-lg text-sm">
-                <FileText className="h-4 w-4 text-blue-500 flex-shrink-0" />
-                <span className="flex-1 truncate text-blue-800 font-medium">{attachedFile.name}</span>
-                <span className="text-xs text-blue-500 flex-shrink-0">
+              // An attached file is a fact about the form, not a state — paper, not info.
+              <div className="flex items-center gap-2 px-3 py-2 border border-paper-200 bg-paper-100 rounded-md text-[13px]">
+                <FileText className="size-4 text-ink-500 flex-shrink-0" />
+                <span className="flex-1 truncate text-ink-950 font-medium">{attachedFile.name}</span>
+                <span className="text-[11px] tabular-nums text-ink-500 flex-shrink-0">
                   {(attachedFile.size / 1024 / 1024).toFixed(1)} MB
                 </span>
                 <button
                   onClick={() => setAttachedFile(null)}
-                  className="text-blue-400 hover:text-blue-600 ml-1"
+                  className="text-ink-400 hover:text-ink-950 ml-1"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="size-3.5" />
                 </button>
               </div>
             ) : (
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                className="w-full flex items-center gap-2 px-3 py-2 border border-dashed border-gray-300 rounded-lg text-sm text-gray-400 hover:border-blue-400 hover:text-blue-500 transition-colors"
+                className="w-full flex items-center gap-2 px-3 py-2 border border-dashed border-paper-300 rounded-md text-[13px] text-ink-500 hover:border-ink-400 hover:text-ink-950 transition-colors"
               >
-                <Paperclip className="h-4 w-4" />
+                <Paperclip className="size-4" />
                 Click to attach a draft contract for AI analysis
               </button>
             )}
@@ -248,12 +253,12 @@ export function NewRequestModal({ onClose }: Props) {
           </div>
 
           {create.isError && (
-            <p className="text-xs text-red-500">Failed to submit request. Please try again.</p>
+            <p className="text-dense text-risk-700">Failed to submit request. Please try again.</p>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100">
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-paper-200">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={create.isPending}>
             Cancel
           </Button>
@@ -262,10 +267,9 @@ export function NewRequestModal({ onClose }: Props) {
             onClick={() => create.mutate()}
             disabled={!valid || create.isPending}
             data-testid="request-submit"
-            className="gap-1.5"
           >
             {create.isPending ? (
-              <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Submitting…</>
+              <><Loader2 className="animate-spin" /> Submitting…</>
             ) : (
               'Submit Request'
             )}

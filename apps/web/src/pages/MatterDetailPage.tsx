@@ -10,6 +10,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { StatusPill } from '@/components/ui/status-pill'
 import {
   Briefcase, FileText, ClipboardList, MessageSquare, ArrowLeft,
   Archive, CheckCircle2,
@@ -70,32 +71,28 @@ export function MatterDetailPage() {
   })
 
   if (isLoading || !data) {
-    return <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+    return <div className="p-6 text-dense text-muted-foreground">Loading…</div>
   }
 
   return (
     <div className="px-6 py-5 max-w-6xl mx-auto" data-testid="matter-detail-page">
-      <Link to="/matters" className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-gray-900 mb-3">
-        <ArrowLeft className="h-3 w-3" /> Matters
+      <Link to="/matters" className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-ink-950 mb-3">
+        <ArrowLeft className="size-3" /> Matters
       </Link>
       <div className="flex items-start justify-between mb-4">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <Briefcase className="h-4 w-4 text-indigo-600" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <Briefcase className="size-4 text-ink-400" />
             {data.name}
-            <span className={
-              'text-[10px] uppercase tracking-wider font-medium rounded px-1.5 py-0.5 border ' +
-              (data.status === 'OPEN'     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : data.status === 'CLOSED' ? 'bg-gray-50 text-gray-600 border-gray-200'
-                :                            'bg-amber-50 text-amber-700 border-amber-200')
-            }>{data.status}</span>
+            <StatusPill status={data.status} />
           </h1>
           <div className="text-[12px] text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
-            {data.counterpartyName && <span>Counterparty: <span className="text-gray-900">{data.counterpartyName}</span></span>}
-            {data.owner && <span>· Owner: <span className="text-gray-900">{data.owner.name}</span></span>}
-            {data.tags.map(t => <span key={t} className="font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5">#{t}</span>)}
+            {data.counterpartyName && <span>Counterparty: <span className="text-ink-950">{data.counterpartyName}</span></span>}
+            {data.owner && <span>· Owner: <span className="text-ink-950">{data.owner.name}</span></span>}
+            {/* User-authored tags, so neutral — indigo is the machine's. */}
+            {data.tags.map(t => <span key={t} className="font-mono text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-1.5">#{t}</span>)}
           </div>
-          {data.description && <p className="text-[12px] text-gray-700 mt-2 max-w-3xl">{data.description}</p>}
+          {data.description && <p className="text-[12px] text-ink-700 mt-2 max-w-3xl">{data.description}</p>}
         </div>
         <div className="flex items-center gap-1.5">
           {data.status === 'OPEN' ? (
@@ -106,7 +103,7 @@ export function MatterDetailPage() {
                 data-testid="matter-close-btn"
                 className="gap-1 text-[12px]"
               >
-                <CheckCircle2 className="h-3 w-3" /> Close
+                <CheckCircle2 className="size-3" /> Close
               </Button>
               <Button
                 variant="outline" size="sm"
@@ -114,7 +111,7 @@ export function MatterDetailPage() {
                 data-testid="matter-archive-btn"
                 className="gap-1 text-[12px]"
               >
-                <Archive className="h-3 w-3" /> Archive
+                <Archive className="size-3" /> Archive
               </Button>
             </>
           ) : (
@@ -140,12 +137,13 @@ export function MatterDetailPage() {
               data-testid={`matter-tab-${t.k}`}
               className={cn(
                 'relative flex items-center gap-1.5 py-2 border-b-2 transition-colors',
+                // Selected tab is an action state — ink, not a hue.
                 active
-                  ? 'text-gray-900 border-indigo-500 font-medium'
-                  : 'text-muted-foreground border-transparent hover:text-gray-900',
+                  ? 'text-ink-950 border-ink-950 font-semibold'
+                  : 'text-muted-foreground border-transparent hover:text-ink-950',
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
+              <Icon className="size-3.5" />
               {t.label}
               <span className="text-[10.5px] tabular-nums opacity-70">{t.count}</span>
             </button>
@@ -154,22 +152,26 @@ export function MatterDetailPage() {
       </div>
 
       {tab === 'contracts' && (
-        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-contracts-body">
+        <ul className="divide-y divide-border border border-border rounded-card bg-card overflow-hidden" data-testid="matter-tab-contracts-body">
           {data.contracts.length === 0 && <EmptyRow text="No contracts in this matter yet. Open a contract and assign it via the Matter picker in its header." />}
           {data.contracts.map(c => (
             <li key={c.id}>
               <Link to={`/contracts/${c.id}`} className="block px-4 py-2 hover:bg-muted/40">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-[12.5px] text-gray-900 truncate">{c.title}</span>
-                  <span className="text-[10.5px] uppercase tracking-wider text-muted-foreground font-mono">{c.type}</span>
-                  <span className={cn(
-                    'text-[10px] uppercase tracking-wider rounded px-1.5 py-0.5 border',
-                    c.status === 'EXECUTED' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                    c.status === 'DRAFT' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                    'bg-gray-50 text-gray-600 border-gray-200',
-                  )}>{c.status}</span>
-                  {c.value != null && <span className="text-[11px] text-muted-foreground">{(c.currency ?? '$')}{Number(c.value).toLocaleString()}</span>}
-                  {c.riskScore != null && <span className="text-[10.5px] text-amber-700">risk {(c.riskScore * 100).toFixed(0)}%</span>}
+                  <span className="font-medium text-[12.5px] text-ink-950 truncate">{c.title}</span>
+                  <span className="text-[10.5px] uppercase tracking-[0.09em] text-muted-foreground font-mono">{c.type}</span>
+                  <StatusPill status={c.status} />
+                  {c.value != null && <span className="text-[11px] tabular-nums text-muted-foreground">{(c.currency ?? '$')}{Number(c.value).toLocaleString()}</span>}
+                  {/* A bare risk score isn't "your turn" — it's a reading, so
+                      it takes the meaning its own threshold implies. */}
+                  {c.riskScore != null && (
+                    <span className={cn(
+                      'text-[10.5px] tabular-nums',
+                      c.riskScore >= 0.67 ? 'text-risk-700'
+                        : c.riskScore >= 0.34 ? 'text-attention-700'
+                        : 'text-ink-500',
+                    )}>risk {(c.riskScore * 100).toFixed(0)}%</span>
+                  )}
                 </div>
               </Link>
             </li>
@@ -178,13 +180,13 @@ export function MatterDetailPage() {
       )}
 
       {tab === 'requests' && (
-        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-requests-body">
+        <ul className="divide-y divide-border border border-border rounded-card bg-card overflow-hidden" data-testid="matter-tab-requests-body">
           {data.requests.length === 0 && <EmptyRow text="No intake requests linked to this matter." />}
           {data.requests.map(r => (
             <li key={r.id} className="px-4 py-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-[10.5px] text-muted-foreground">{r.requestNumber ?? r.id.slice(-6)}</span>
-                <span className="font-medium text-[12.5px] text-gray-900 truncate">{r.title}</span>
+                <span className="font-medium text-[12.5px] text-ink-950 truncate">{r.title}</span>
                 <span className="text-[10.5px] text-muted-foreground">· {r.status} · {r.priority}</span>
               </div>
             </li>
@@ -193,13 +195,13 @@ export function MatterDetailPage() {
       )}
 
       {tab === 'threads' && (
-        <ul className="divide-y divide-border border border-border rounded-lg bg-card overflow-hidden" data-testid="matter-tab-threads-body">
+        <ul className="divide-y divide-border border border-border rounded-card bg-card overflow-hidden" data-testid="matter-tab-threads-body">
           {data.threads.length === 0 && <EmptyRow text="No agent threads linked to this matter yet." />}
           {data.threads.map(t => (
             <li key={t.id} className="px-4 py-2">
               <div className="flex items-center gap-2 flex-wrap">
-                <MessageSquare className="h-3 w-3 text-muted-foreground" />
-                <span className="text-[12.5px] text-gray-900 truncate">{t.title}</span>
+                <MessageSquare className="size-3 text-muted-foreground" />
+                <span className="text-[12.5px] text-ink-950 truncate">{t.title}</span>
                 <span className="text-[10.5px] text-muted-foreground">· last activity {new Date(t.updatedAt).toLocaleDateString()}</span>
               </div>
             </li>

@@ -25,38 +25,38 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
     <div className="flex flex-col gap-3">
       {/* Stats bar + mode toggle */}
       <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-4 text-sm">
-          <span className="flex items-center gap-1.5 text-emerald-700 font-medium">
-            <span className="w-3 h-3 rounded-sm bg-emerald-200 border border-emerald-400 inline-block" />
+        <div className="flex items-center gap-4 text-dense tabular-nums">
+          <span className="flex items-center gap-1.5 text-brand-700 font-medium">
+            <span className="size-3 rounded-sm bg-brand-100 border border-brand-500 inline-block" />
             {stats.insertions} insertion{stats.insertions !== 1 ? 's' : ''}
           </span>
-          <span className="flex items-center gap-1.5 text-red-700 font-medium">
-            <span className="w-3 h-3 rounded-sm bg-red-100 border border-red-300 inline-block" />
+          <span className="flex items-center gap-1.5 text-risk-700 font-medium">
+            <span className="size-3 rounded-sm bg-risk-100 border border-risk-200 inline-block" />
             {stats.deletions} deletion{stats.deletions !== 1 ? 's' : ''}
           </span>
         </div>
-        <div className="flex items-center gap-1 p-0.5 bg-gray-100 rounded-lg">
+        <div className="flex items-center gap-1 p-0.5 bg-paper-100 rounded-md">
           <button
             onClick={() => setMode('unified')}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-              mode === 'unified' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-chip text-[11.5px] font-semibold transition-colors ${
+              mode === 'unified' ? 'bg-card shadow-e1 text-ink-950' : 'text-ink-500 hover:text-ink-950'
             }`}
           >
-            <AlignLeft className="h-3.5 w-3.5" /> Unified
+            <AlignLeft className="size-3.5" /> Unified
           </button>
           <button
             onClick={() => setMode('side-by-side')}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-              mode === 'side-by-side' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-chip text-[11.5px] font-semibold transition-colors ${
+              mode === 'side-by-side' ? 'bg-card shadow-e1 text-ink-950' : 'text-ink-500 hover:text-ink-950'
             }`}
           >
-            <ArrowLeftRight className="h-3.5 w-3.5" /> Side by side
+            <ArrowLeftRight className="size-3.5" /> Side by side
           </button>
         </div>
       </div>
 
       {mode === 'unified' ? (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
           <div
             className="diff-unified prose prose-sm max-w-none p-6 overflow-auto max-h-[70vh]"
             dangerouslySetInnerHTML={{ __html: sanitizeHtml(diffHtml) }}
@@ -64,8 +64,8 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="px-4 py-2 border-b bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+            <div className="px-4 py-2 border-b border-paper-200 bg-paper-50 text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">
               {v1Label}
             </div>
             <div
@@ -73,8 +73,8 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
               dangerouslySetInnerHTML={{ __html: sanitizeHtml(diffHtml) }}
             />
           </div>
-          <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-            <div className="px-4 py-2 border-b bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wide">
+          <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+            <div className="px-4 py-2 border-b border-paper-200 bg-paper-50 text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">
               {v2Label}
             </div>
             <div
@@ -85,18 +85,21 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
         </div>
       )}
 
+      {/* Redline marks read off the meaning tokens, not literal green/red: what
+          survives into the agreement is brand, what is struck is risk. Washes
+          are held low so the serif body stays the thing you read. */}
       <style>{`
         /* Unified: show both ins and del */
         .diff-unified ins {
-          background: #dcfce7;
-          color: #166534;
+          background: hsl(var(--brand) / 0.12);
+          color: hsl(var(--brand));
           text-decoration: none;
           border-radius: 2px;
           padding: 0 1px;
         }
         .diff-unified del {
-          background: #fee2e2;
-          color: #991b1b;
+          background: hsl(var(--destructive) / 0.08);
+          color: hsl(var(--destructive));
           text-decoration: line-through;
           border-radius: 2px;
           padding: 0 1px;
@@ -104,8 +107,8 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
         /* Side-by-side left: hide ins (counterparty additions not in original) */
         .diff-left ins { display: none; }
         .diff-left del {
-          background: #fee2e2;
-          color: #991b1b;
+          background: hsl(var(--destructive) / 0.08);
+          color: hsl(var(--destructive));
           text-decoration: none;
           border-radius: 2px;
           padding: 0 1px;
@@ -113,8 +116,8 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
         /* Side-by-side right: hide del (original text removed by counterparty) */
         .diff-right del { display: none; }
         .diff-right ins {
-          background: #dcfce7;
-          color: #166534;
+          background: hsl(var(--brand) / 0.12);
+          color: hsl(var(--brand));
           text-decoration: none;
           border-radius: 2px;
           padding: 0 1px;

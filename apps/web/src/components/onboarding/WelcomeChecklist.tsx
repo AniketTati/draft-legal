@@ -148,26 +148,31 @@ export function WelcomeChecklist() {
   if (doneCount === items.length) return null
 
   return (
+    // The emerald wash this card used to carry meant nothing — setup progress
+    // isn't a binding state — so the card is a plain paper card now and the
+    // colored elements are gone with it.
     <div
-      className="relative overflow-hidden rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50/80 via-white to-white p-5"
+      className="relative overflow-hidden rounded-card border border-paper-200 bg-card p-5"
       data-testid="welcome-checklist"
     >
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => dismiss.mutate()}
-        className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-md text-muted-foreground/60 hover:bg-emerald-100 hover:text-foreground"
+        className="absolute right-3 top-3 text-ink-400"
         aria-label="Dismiss welcome checklist"
         data-testid="welcome-checklist-dismiss"
       >
-        <X className="h-4 w-4" />
-      </button>
+        <X />
+      </Button>
 
       <div className="flex items-center gap-2">
-        <span className="grid h-7 w-7 place-items-center rounded-md bg-emerald-100 text-emerald-700">
-          <Sparkles className="h-3.5 w-3.5" />
+        <span className="grid size-7 place-items-center rounded-md bg-paper-100 text-ink-500">
+          <Sparkles className="size-3.5" />
         </span>
         <div>
-          <h2 className="text-sm font-semibold text-foreground">Get the most out of draftLegal</h2>
-          <p className="text-xs text-muted-foreground">
+          <h2 className="text-section text-ink-950">Get the most out of draftLegal</h2>
+          <p className="text-dense text-ink-500">
             {doneCount} of {items.length} done — these all live on their own pages so you can
             come back any time.
           </p>
@@ -180,38 +185,40 @@ export function WelcomeChecklist() {
           return (
             <li
               key={item.id}
-              className={`flex items-start gap-3 rounded-lg border border-border bg-card p-3 transition-colors ${
-                item.done ? 'opacity-60' : 'hover:border-emerald-200'
+              className={`flex items-start gap-3 rounded-md border border-paper-200 bg-card p-3 transition-colors ${
+                item.done ? 'opacity-60' : 'hover:border-paper-300'
               }`}
             >
+              {/* A finished setup step is a neutral fact — the strike-through
+                  and the dimmed row carry "done", so the tick stays ink. */}
               <span className="mt-0.5">
                 {item.done ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  <CheckCircle2 className="size-4 text-ink-700" />
                 ) : (
-                  <Circle className="h-4 w-4 text-muted-foreground/40" />
+                  <Circle className="size-4 text-ink-400" />
                 )}
               </span>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <Icon className="h-3.5 w-3.5 text-muted-foreground" />
+                  <Icon className="size-3.5 text-ink-400" />
                   <span
-                    className={`text-sm font-medium ${
-                      item.done ? 'line-through text-muted-foreground' : 'text-foreground'
+                    className={`text-body font-medium ${
+                      item.done ? 'line-through text-ink-500' : 'text-ink-950'
                     }`}
                   >
                     {item.label}
                   </span>
                 </div>
-                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{item.sub}</p>
+                <p className="mt-0.5 text-dense text-ink-500">{item.sub}</p>
                 {!item.done && (
                   <Button
                     asChild
                     variant="link"
                     size="sm"
-                    className="mt-1 h-auto p-0 text-xs font-medium text-emerald-700"
+                    className="mt-1 h-auto p-0 text-[12.5px] font-medium"
                   >
                     <Link to={item.to}>
-                      {item.cta} <ArrowRight className="ml-1 h-3 w-3" />
+                      {item.cta} <ArrowRight className="ml-1 size-3" />
                     </Link>
                   </Button>
                 )}

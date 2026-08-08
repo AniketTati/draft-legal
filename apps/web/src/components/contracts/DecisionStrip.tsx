@@ -25,6 +25,7 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
+import { MEANING_CLASS, riskMeaning } from '@/lib/status'
 import {
   CheckCircle2, XCircle, ArrowRight, AlertTriangle, Loader2, Sparkles,
   ShieldAlert, TrendingUp, ChevronDown,
@@ -53,10 +54,16 @@ interface AwaitingMe {
   }
 }
 
+// A model advising "Approve" is not an approval. Brand means binding, and this
+// chip sits inches from the real brand Approve button — colouring the advice
+// the same green would read as the decision already being made, so the
+// recommendation stays neutral and lets the words carry it. (Same call
+// ApprovalCard makes.) "Review required" is genuinely the user's turn and
+// "Reject advised" is genuine exposure, so those two keep their meaning.
 const REC_TONE: Record<string, { label: string; tone: string; icon: JSX.Element }> = {
-  approve:         { label: 'Approve',         tone: 'text-emerald-700 bg-emerald-50 border-emerald-200', icon: <CheckCircle2 className="h-3.5 w-3.5" /> },
-  review_required: { label: 'Review required', tone: 'text-amber-700 bg-amber-50 border-amber-200',       icon: <AlertTriangle className="h-3.5 w-3.5" /> },
-  reject_advised:  { label: 'Reject advised',  tone: 'text-red-700 bg-red-50 border-red-200',             icon: <XCircle className="h-3.5 w-3.5" /> },
+  approve:         { label: 'Approve',         tone: 'text-ink-700 bg-paper-100 border-paper-200',              icon: <CheckCircle2 className="size-3.5" /> },
+  review_required: { label: 'Review required', tone: 'text-attention-700 bg-attention-50 border-attention-200', icon: <AlertTriangle className="size-3.5" /> },
+  reject_advised:  { label: 'Reject advised',  tone: 'text-risk-700 bg-risk-50 border-risk-200',                icon: <XCircle className="size-3.5" /> },
 }
 
 export function DecisionStrip({
@@ -108,49 +115,54 @@ export function DecisionStrip({
   )))
 
   const riskPct = riskScore != null ? Math.round(riskScore * 100) : null
-  const riskTone =
-    riskPct == null ? 'text-gray-500 bg-gray-50 border-gray-200'
-      : riskPct >= 67 ? 'text-red-700 bg-red-50 border-red-200'
-      : riskPct >= 34 ? 'text-amber-700 bg-amber-50 border-amber-200'
-      : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+  // Route the badge through riskMeaning so this pill and the risk meters
+  // elsewhere can never disagree about where amber and red begin.
+  const riskKey = riskPct == null ? 'neutral' : riskMeaning(riskPct)
+  const riskTone = cn(
+    MEANING_CLASS[riskKey].wash,
+    MEANING_CLASS[riskKey].washFg,
+    MEANING_CLASS[riskKey].washBorder,
+  )
 
   return (
     <div
       id="approval-decision-strip"
       role="region"
       aria-label="Approval decision strip"
-      className="border-b border-amber-200 bg-gradient-to-r from-amber-50 to-amber-50/40"
+      // The one surface in the product that is literally "your turn".
+      className="border-b border-attention-200 bg-attention-50"
     >
       <div className="px-6 py-3 flex items-center gap-4 flex-wrap">
         {/* Status label */}
         <div className="flex items-center gap-1.5 shrink-0">
-          <ShieldAlert className="h-4 w-4 text-amber-600" />
-          <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide">
+          <ShieldAlert className="size-4 text-attention-600" />
+          <span className="text-eyebrow uppercase text-attention-700">
             Awaiting your decision
           </span>
         </div>
 
-        <div className="h-4 w-px bg-amber-300/60" aria-hidden />
+        <div className="h-4 w-px bg-attention-200" aria-hidden />
 
         {/* AI Confidence */}
-        <div className="flex items-center gap-1.5 text-xs" title="Higher = AI is more certain about its recommendation">
-          <Sparkles className="h-3.5 w-3.5 text-violet-500" />
-          <span className="text-gray-500">Confidence</span>
-          <span className="font-semibold text-gray-900">{confidence}%</span>
+        <div className="flex items-center gap-1.5 text-dense" title="Higher = AI is more certain about its recommendation">
+          {/* A machine-produced number, so the glyph keeps the assist accent. */}
+          <Sparkles className="size-3.5 text-assist-600" />
+          <span className="text-ink-500">Confidence</span>
+          <span className="font-semibold text-ink-950 tabular-nums">{confidence}%</span>
         </div>
 
         {/* Risk score */}
         <div className={cn(
-          'flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs',
+          'flex items-center gap-1 px-2 py-0.5 rounded-full border text-dense tabular-nums',
           riskTone,
         )}>
-          <TrendingUp className="h-3 w-3" />
+          <TrendingUp className="size-3" />
           <span>Risk {riskPct != null ? `${riskPct}%` : '—'}</span>
         </div>
 
         {/* AI Recommendation */}
         <div className={cn(
-          'flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs font-medium',
+          'flex items-center gap-1 px-2 py-0.5 rounded-full border text-dense font-medium',
           rec.tone,
         )}>
           {rec.icon}
@@ -163,47 +175,49 @@ export function DecisionStrip({
             onClick={() => topRisk.clauseId && onJumpToClause?.(topRisk.clauseId)}
             disabled={!topRisk.clauseId || !onJumpToClause}
             className={cn(
-              'flex items-center gap-1 text-xs text-gray-600 truncate max-w-[260px]',
+              'flex items-center gap-1 text-dense text-ink-700 truncate max-w-[260px]',
               topRisk.clauseId && onJumpToClause
-                ? 'hover:text-amber-700 hover:underline cursor-pointer'
+                ? 'hover:text-attention-700 hover:underline cursor-pointer'
                 : 'opacity-70 cursor-default',
             )}
             title={topRisk.description}
           >
-            <span className="text-gray-400">Top blocker:</span>
+            <span className="text-ink-400">Top blocker:</span>
             <span className="font-medium truncate">{topRisk.title}</span>
-            {topRisk.clauseId && onJumpToClause && <ArrowRight className="h-3 w-3 shrink-0" />}
+            {topRisk.clauseId && onJumpToClause && <ArrowRight className="size-3 shrink-0" />}
           </button>
         )}
 
-        {/* Primary CTAs pushed to the right */}
+        {/* Primary CTAs pushed to the right — this is the approval surface, so
+            brand and danger are earned here rather than borrowed. */}
         <div className="ml-auto flex items-center gap-1.5 shrink-0">
           <Button
             size="sm"
+            variant="brand"
             onClick={() => setPending('APPROVED')}
-            className="gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+            className="gap-1"
           >
-            <CheckCircle2 className="h-3.5 w-3.5" />
+            <CheckCircle2 className="size-3.5" />
             Approve
           </Button>
           <Button
             size="sm"
-            variant="outline"
+            variant="danger"
             onClick={() => setPending('REJECTED')}
-            className="gap-1 border-red-200 text-red-700 hover:bg-red-50"
+            className="gap-1"
           >
-            <XCircle className="h-3.5 w-3.5" />
+            <XCircle className="size-3.5" />
             Reject
           </Button>
           <Button
             size="sm"
             variant="outline"
             onClick={() => setPending('DELEGATED')}
-            className="gap-1 text-gray-600"
+            className="gap-1"
           >
-            <ArrowRight className="h-3.5 w-3.5" />
+            <ArrowRight className="size-3.5" />
             Delegate
-            <ChevronDown className="h-3 w-3 opacity-60" />
+            <ChevronDown className="size-3 opacity-60" />
           </Button>
         </div>
       </div>
@@ -211,7 +225,7 @@ export function DecisionStrip({
       {/* Inline confirmation row — appears below the strip once a decision
           is clicked. Collects the required input for the chosen action. */}
       {pending && (
-        <div className="px-6 pb-3 pt-0 flex items-start gap-2 border-t border-amber-200/60 bg-white/50">
+        <div className="px-6 pb-3 pt-0 flex items-start gap-2 border-t border-attention-200 bg-card/50">
           <div className="flex-1 pt-3">
             {pending === 'REJECTED' && (
               <textarea
@@ -219,7 +233,7 @@ export function DecisionStrip({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 placeholder="Reason for rejection (required) — helps the submitter fix and re-submit…"
-                className="w-full text-sm px-2.5 py-1.5 border border-red-200 rounded-md focus:outline-none focus:ring-1 focus:ring-red-400 resize-y min-h-[52px]"
+                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/12 resize-y min-h-[52px]"
               />
             )}
             {pending === 'DELEGATED' && (
@@ -237,7 +251,7 @@ export function DecisionStrip({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 placeholder="Optional note for the audit trail…"
-                className="w-full text-sm px-2.5 py-1.5 border border-emerald-200 rounded-md focus:outline-none focus:ring-1 focus:ring-emerald-400"
+                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-brand-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
               />
             )}
           </div>
@@ -247,12 +261,15 @@ export function DecisionStrip({
               variant="ghost"
               onClick={() => { setPending(null); setComment(''); setDelegateTo('') }}
               disabled={decide.isPending}
-              className="text-gray-500"
+              className="text-ink-500"
             >
               Cancel
             </Button>
+            {/* Delegating is a routing action, not a verdict, so it commits in
+                ink while approve/reject keep their decision colors. */}
             <Button
               size="sm"
+              variant={pending === 'APPROVED' ? 'brand' : pending === 'REJECTED' ? 'danger' : 'default'}
               onClick={() => decide.mutate({
                 decision:   pending,
                 comment:    comment.trim() || undefined,
@@ -263,14 +280,9 @@ export function DecisionStrip({
                 || (pending === 'REJECTED' && !comment.trim())
                 || (pending === 'DELEGATED' && !delegateTo.trim())
               }
-              className={cn(
-                'gap-1',
-                pending === 'APPROVED' && 'bg-emerald-600 hover:bg-emerald-700 text-white',
-                pending === 'REJECTED' && 'bg-red-600 hover:bg-red-700 text-white',
-                pending === 'DELEGATED' && 'bg-blue-600 hover:bg-blue-700 text-white',
-              )}
+              className="gap-1"
             >
-              {decide.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {decide.isPending && <Loader2 className="size-3.5 animate-spin" />}
               Confirm {pending === 'APPROVED' ? 'Approve' : pending === 'REJECTED' ? 'Reject' : 'Delegate'}
             </Button>
           </div>

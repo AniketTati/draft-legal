@@ -10,6 +10,8 @@ import {
   AlertCircle,
   CalendarOff,
 } from 'lucide-react'
+import { Card, EmptyState } from '@/components/ui/primitives'
+import { MEANING_CLASS } from '@/lib/status'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -39,17 +41,24 @@ function getInitials(name: string): string {
     .toUpperCase()
 }
 
+/*
+ * A capacity meter reads on the same three meanings as a risk meter: healthy
+ * capacity is binding-green, a stretched person is your-turn amber (someone
+ * needs to rebalance), and an overloaded one is risk. The count thresholds are
+ * the product's own — only the colors move onto the meaning tokens.
+ */
 function workloadColor(count: number): string {
-  if (count < 5) return 'bg-green-500'
-  if (count <= 10) return 'bg-yellow-500'
-  return 'bg-red-500'
+  if (count < 5) return MEANING_CLASS.binding.dot
+  if (count <= 10) return MEANING_CLASS.turn.dot
+  return MEANING_CLASS.risk.dot
 }
 
 function workloadPercent(count: number): number {
   return Math.min(count / 15, 1) * 100
 }
 
-const ROLE_STYLES = 'bg-blue-50 text-blue-700 border border-blue-200'
+// A role is metadata, not a state and not an action — so it stays neutral.
+const ROLE_STYLES = 'bg-paper-100 text-ink-700 border border-paper-200'
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -78,11 +87,11 @@ export function TeamPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <UsersRound className="h-5 w-5" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <UsersRound className="size-5" />
             Team Workload
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-dense text-ink-500 mt-1">
             Monitor team capacity, workload, and out-of-office status.
           </p>
         </div>
@@ -94,7 +103,7 @@ export function TeamPage() {
           variant="outline"
           className="gap-2"
         >
-          <CalendarOff className="h-4 w-4" />
+          <CalendarOff className="size-4" />
           Set OOO
         </Button>
       </div>
@@ -102,19 +111,16 @@ export function TeamPage() {
       {/* Grid */}
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+          <div className="size-5 border-2 border-paper-300 border-t-ink-950 rounded-full animate-spin" />
         </div>
       ) : team.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
-          <UsersRound className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-600 font-medium">No team members found</p>
-        </div>
+        <EmptyState icon={<UsersRound />} title="No team members found" />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {team.map(member => (
-            <div
+            <Card
               key={member.id}
-              className="bg-white rounded-xl border shadow-sm p-5 space-y-4 hover:shadow-md transition-shadow"
+              className="p-5 space-y-4 transition-colors hover:border-paper-300"
             >
               {/* Avatar + Info */}
               <div className="flex items-start gap-3">
@@ -122,37 +128,39 @@ export function TeamPage() {
                   <img
                     src={member.avatarUrl}
                     alt={member.name}
-                    className="w-10 h-10 rounded-full object-cover"
+                    className="size-10 rounded-full object-cover"
                   />
                 ) : (
-                  <div className="w-10 h-10 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-sm font-semibold shrink-0">
+                  <div className="size-10 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-dense font-semibold shrink-0">
                     {getInitials(member.name)}
                   </div>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-gray-900 truncate">
+                    <p className="text-body font-semibold text-ink-950 truncate">
                       {member.name}
                     </p>
                     {member.outOfOffice && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-orange-100 text-orange-700 shrink-0">
+                      // Attention, not decoration: an absent owner is what makes
+                      // their queue somebody else's problem to delegate.
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-chip text-[10px] font-bold bg-attention-100 text-attention-700 shrink-0">
                         OOO
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-gray-500 truncate">{member.email}</p>
+                  <p className="text-dense text-ink-500 truncate">{member.email}</p>
                   {member.outOfOffice && member.outOfOfficeUntil && (
-                    <p className="text-[11px] text-orange-600 mt-0.5">
+                    <p className="text-[11px] text-attention-700 mt-0.5">
                       Returns {new Date(member.outOfOfficeUntil).toLocaleDateString()}
                     </p>
                   )}
                 </div>
                 <button
                   onClick={() => handleSetOoo(member.id)}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors shrink-0"
+                  className="p-1.5 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100 transition-colors shrink-0"
                   title="Set out-of-office"
                 >
-                  <CalendarOff className="h-3.5 w-3.5" />
+                  <CalendarOff className="size-3.5" />
                 </button>
               </div>
 
@@ -161,7 +169,7 @@ export function TeamPage() {
                 {member.roles.map(role => (
                   <span
                     key={role}
-                    className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${ROLE_STYLES}`}
+                    className={`inline-flex items-center px-2 py-0.5 rounded-chip text-[11px] font-medium ${ROLE_STYLES}`}
                   >
                     {role}
                   </span>
@@ -169,31 +177,31 @@ export function TeamPage() {
               </div>
 
               {/* Stats */}
-              <div className="flex items-center gap-4 text-xs text-gray-600">
+              <div className="flex items-center gap-4 text-dense text-ink-500">
                 <span>
-                  <span className="font-semibold text-gray-900">{member.activeContracts}</span>{' '}
+                  <span className="font-semibold tabular-nums text-ink-950">{member.activeContracts}</span>{' '}
                   contracts
                 </span>
                 <span>
-                  <span className="font-semibold text-gray-900">{member.pendingApprovals}</span>{' '}
+                  <span className="font-semibold tabular-nums text-ink-950">{member.pendingApprovals}</span>{' '}
                   approvals pending
                 </span>
               </div>
 
               {/* Workload bar */}
               <div>
-                <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
+                <div className="flex items-center justify-between text-[11px] text-ink-500 mb-1">
                   <span>Workload</span>
-                  <span>{member.activeContracts} active</span>
+                  <span className="tabular-nums">{member.activeContracts} active</span>
                 </div>
-                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div className="w-full h-1 bg-paper-100 rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full transition-all ${workloadColor(member.activeContracts)}`}
                     style={{ width: `${workloadPercent(member.activeContracts)}%` }}
                   />
                 </div>
               </div>
-            </div>
+            </Card>
           ))}
         </div>
       )}
@@ -261,24 +269,24 @@ function OooModal({
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+    <div className="fixed inset-0 bg-ink-950/50 flex items-center justify-center z-50">
+      <div className="bg-card rounded-card border border-paper-200 shadow-e3 w-full max-w-md mx-4">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-900">Set Out-of-Office</h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-paper-200">
+          <h2 className="text-section text-ink-950">Set Out-of-Office</h2>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+            className="p-1 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="px-6 py-4 space-y-4">
+        <div className="px-5 py-4 space-y-4">
           {/* User selector */}
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Team Member *</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Team Member *</Label>
             <select
               value={userId}
               onChange={e => {
@@ -294,7 +302,7 @@ function OooModal({
                   setDelegateId(m.delegateToId ?? '')
                 }
               }}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
             >
               <option value="">Select a member...</option>
               {members.map(m => (
@@ -312,15 +320,15 @@ function OooModal({
                 type="checkbox"
                 checked={outOfOffice}
                 onChange={e => setOutOfOffice(e.target.checked)}
-                className="rounded border-gray-300 text-blue-600"
+                className="rounded-chip border-paper-300 accent-ink-950"
               />
-              <span className="text-sm text-gray-700">Mark as out-of-office</span>
+              <span className="text-body text-ink-700">Mark as out-of-office</span>
             </label>
           </div>
 
           {/* Return date */}
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Return Date</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Return Date</Label>
             <Input
               type="date"
               value={returnDate}
@@ -330,11 +338,11 @@ function OooModal({
 
           {/* Delegate */}
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Delegate To</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Delegate To</Label>
             <select
               value={delegateId}
               onChange={e => setDelegateId(e.target.value)}
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
             >
               <option value="">None</option>
               {members
@@ -348,20 +356,20 @@ function OooModal({
           </div>
 
           {error && (
-            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-              <p className="text-sm text-red-700">{error}</p>
+            <div className="flex items-center gap-2 p-3 bg-risk-50 border border-risk-200 rounded-md">
+              <AlertCircle className="size-4 text-risk-600 flex-shrink-0" />
+              <p className="text-dense text-risk-700">{error}</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-6 py-4 border-t">
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-paper-200">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button onClick={handleSubmit} disabled={mutation.isPending} className="gap-2">
-            <CalendarOff className="h-4 w-4" />
+            <CalendarOff className="size-4" />
             {mutation.isPending ? 'Saving...' : 'Save'}
           </Button>
         </div>

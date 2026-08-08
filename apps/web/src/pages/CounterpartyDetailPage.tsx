@@ -33,6 +33,9 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { EmptyState } from '@/components/ui/primitives'
+import { StatusPill } from '@/components/ui/status-pill'
+import type { Meaning } from '@/lib/status'
 import {
   ArrowLeft, Building2, Globe, Mail, Phone, FileText, Plus,
   TrendingUp, AlertTriangle, Clock, Edit, Loader2, X,
@@ -87,19 +90,12 @@ interface CpDetail {
   }>
 }
 
-const STATUS_PILL: Record<string, string> = {
-  DRAFT:               'bg-blue-50 text-blue-700 border-blue-200',
-  PENDING_REVIEW:      'bg-amber-50 text-amber-800 border-amber-200',
-  UNDER_NEGOTIATION:   'bg-amber-50 text-amber-800 border-amber-200',
-  PENDING_APPROVAL:    'bg-purple-50 text-purple-700 border-purple-200',
-  APPROVED:            'bg-purple-50 text-purple-700 border-purple-200',
-  PENDING_SIGNATURE:   'bg-indigo-50 text-indigo-700 border-indigo-200',
-  EXECUTED:            'bg-emerald-50 text-emerald-700 border-emerald-200',
-  PARTIALLY_EXECUTED:  'bg-emerald-50 text-emerald-700 border-emerald-200',
-  EXPIRED:             'bg-gray-100 text-gray-600 border-gray-200',
-  TERMINATED:          'bg-red-50 text-red-700 border-red-200',
-  CANCELLED:           'bg-gray-100 text-gray-600 border-gray-200',
-}
+/*
+ * The local STATUS_PILL map is gone: statuses resolve through lib/status so a
+ * contract row here reads the same as the same contract in the repository.
+ * (Its PARTIALLY_EXECUTED / CANCELLED keys were dead — no enum emits them —
+ * and statusMeta() humanises anything it hasn't seen anyway.)
+ */
 
 function relTime(iso: string | null | undefined): string {
   if (!iso) return '—'
@@ -135,8 +131,8 @@ export function CounterpartyDetailPage() {
 
   if (isLoading || !data) {
     return (
-      <div className="px-6 py-12 max-w-6xl mx-auto text-center text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin inline-block mr-2" /> Loading counterparty…
+      <div className="px-6 py-12 max-w-6xl mx-auto text-center text-dense text-muted-foreground">
+        <Loader2 className="size-4 animate-spin inline-block mr-2" /> Loading counterparty…
       </div>
     )
   }
@@ -151,18 +147,18 @@ export function CounterpartyDetailPage() {
       {/* Breadcrumb */}
       <Link
         to="/counterparties"
-        className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-gray-900 mb-3"
+        className="inline-flex items-center gap-1 text-[12px] text-muted-foreground hover:text-ink-950 mb-3"
         data-testid="cp-back-link"
       >
-        <ArrowLeft className="h-3 w-3" /> Counterparties
+        <ArrowLeft className="size-3" /> Counterparties
       </Link>
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-5">
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-semibold text-gray-900 flex items-center gap-2.5" data-testid="cp-name">
-            <span className="inline-flex items-center justify-center h-9 w-9 rounded-lg bg-blue-50 border border-blue-100">
-              <Building2 className="h-5 w-5 text-blue-600" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2.5" data-testid="cp-name">
+            <span className="inline-flex items-center justify-center size-9 rounded-card bg-paper-100 border border-paper-200">
+              <Building2 className="size-4 text-ink-500" />
             </span>
             {cp.name}
           </h1>
@@ -179,32 +175,32 @@ export function CounterpartyDetailPage() {
                 href={cp.website.startsWith('http') ? cp.website : `https://${cp.website}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-gray-700 hover:text-blue-700"
+                className="inline-flex items-center gap-1.5 text-ink-700 hover:text-brand-700"
                 data-testid="cp-website"
               >
-                <Globe className="h-3.5 w-3.5 text-gray-400" />
+                <Globe className="size-3.5 text-ink-400" />
                 {cp.website.replace(/^https?:\/\//, '').replace(/\/$/, '')}
-                <ExternalLink className="h-2.5 w-2.5" />
+                <ExternalLink className="size-2.5" />
               </a>
             )}
             {cp.email && (
               <a
                 href={`mailto:${cp.email}`}
-                className="inline-flex items-center gap-1.5 text-gray-700 hover:text-blue-700"
+                className="inline-flex items-center gap-1.5 text-ink-700 hover:text-brand-700"
                 data-testid="cp-email"
               >
-                <Mail className="h-3.5 w-3.5 text-gray-400" />
+                <Mail className="size-3.5 text-ink-400" />
                 {cp.email}
               </a>
             )}
             {cp.phone && (
-              <span className="inline-flex items-center gap-1.5 text-gray-700">
-                <Phone className="h-3.5 w-3.5 text-gray-400" />
+              <span className="inline-flex items-center gap-1.5 text-ink-700">
+                <Phone className="size-3.5 text-ink-400" />
                 {cp.phone}
               </span>
             )}
-            <span className="inline-flex items-center gap-1.5 text-gray-500">
-              <Clock className="h-3.5 w-3.5 text-gray-400" />
+            <span className="inline-flex items-center gap-1.5 text-ink-500">
+              <Clock className="size-3.5 text-ink-400" />
               Member since {new Date(cp.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
               {yearsActive > 0 && ` · ${yearsActive} ${yearsActive === 1 ? 'yr' : 'yrs'} of business`}
             </span>
@@ -237,65 +233,68 @@ export function CounterpartyDetailPage() {
           label="Contracts"
           value={String(cp.stats.contractCount)}
           icon={FileText}
-          tone="default"
+          tone="neutral"
         />
         <StatCard
           label={`Total value (${cp.stats.currency})`}
           value={formatMoney(cp.stats.totalValue, cp.stats.currency)}
           icon={TrendingUp}
-          tone="default"
+          tone="neutral"
         />
         <StatCard
           label="In flight"
           value={String(cp.stats.activeCount)}
           sub={cp.stats.activeCount > 0 ? 'active negotiations' : 'all settled'}
           icon={Clock}
-          tone={cp.stats.activeCount > 0 ? 'amber' : 'default'}
+          // Live negotiations are moving but not on this user's desk — that is
+          // "in flight", which is info, not the amber that means your turn.
+          tone={cp.stats.activeCount > 0 ? 'inflight' : 'neutral'}
         />
         <StatCard
           label="High risk"
           value={String(cp.stats.highRiskCount)}
           sub={cp.stats.highRiskCount > 0 ? 'contracts ≥ 70%' : 'all in playbook'}
           icon={AlertTriangle}
-          tone={cp.stats.highRiskCount > 0 ? 'red' : 'default'}
+          tone={cp.stats.highRiskCount > 0 ? 'risk' : 'neutral'}
         />
       </div>
 
       {/* Contracts + Activity — two column on wide, stacked on narrow */}
       <div className="grid grid-cols-1 lg:grid-cols-[2fr_1fr] gap-5">
-        <section className="border border-border rounded-xl bg-card overflow-hidden" data-testid="cp-contracts">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-gray-50/60">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+        <section className="border border-border rounded-card bg-card overflow-hidden" data-testid="cp-contracts">
+          <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-paper-50">
+            <h2 className="text-eyebrow uppercase text-ink-700">
               Contracts ({cp.contracts.length})
             </h2>
             {cp.contracts.length > 0 && (
               <Link
                 to={`/contracts?counterpartyId=${cp.id}&filterLabel=${encodeURIComponent(cp.name)}`}
-                className="text-[11px] text-blue-700 hover:underline"
+                className="text-[11px] font-medium text-ink-950 hover:text-brand-700 hover:underline"
               >
                 View in list →
               </Link>
             )}
           </div>
           {cp.contracts.length === 0 ? (
-            <div className="px-4 py-10 text-center">
-              <Briefcase className="h-7 w-7 text-gray-300 mx-auto mb-2" />
-              <p className="text-[12.5px] text-muted-foreground">
-                No contracts with {cp.name} yet.
-              </p>
-              <Button
-                size="sm" variant="outline"
-                className="mt-3 gap-1 text-[12px]"
-                onClick={() => navigate(`/contracts?new=1&counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
-              >
-                <Plus className="h-3 w-3" /> Create first contract
-              </Button>
+            <div className="p-4">
+              <EmptyState
+                icon={<Briefcase />}
+                title={`No contracts with ${cp.name} yet.`}
+                action={
+                  <Button
+                    size="sm" variant="outline"
+                    className="gap-1 text-[12px]"
+                    onClick={() => navigate(`/contracts?new=1&counterpartyId=${cp.id}&counterpartyName=${encodeURIComponent(cp.name)}`)}
+                  >
+                    <Plus className="size-3" /> Create first contract
+                  </Button>
+                }
+              />
             </div>
           ) : (
             <ul className="divide-y divide-border">
               {cp.contracts.map(c => {
                 const v = c.value ? Number(c.value.toString()) : 0
-                const pill = STATUS_PILL[c.status] ?? STATUS_PILL.DRAFT
                 const expiryDays = c.expiryDate
                   ? Math.floor((new Date(c.expiryDate).getTime() - Date.now()) / 86_400_000)
                   : null
@@ -303,40 +302,40 @@ export function CounterpartyDetailPage() {
                   <li key={c.id} data-testid={`cp-contract-${c.id}`}>
                     <Link
                       to={`/contracts/${c.id}`}
-                      className="block px-4 py-3 hover:bg-blue-50/40 transition-colors group"
+                      className="block px-4 py-2 hover:bg-paper-50 transition-colors group"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <FileText className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
-                            <span className="font-medium text-[13px] text-gray-900 group-hover:text-blue-700">
+                            <FileText className="size-3.5 text-ink-400 flex-shrink-0" />
+                            <span className="font-medium text-[13px] text-ink-950 group-hover:text-brand-700">
                               {c.title}
                             </span>
                             {c.contractNumber && (
-                              <span className="font-mono text-[10px] text-gray-400">{c.contractNumber}</span>
+                              <span className="font-mono text-[10px] text-ink-400">{c.contractNumber}</span>
                             )}
                           </div>
                           <div className="mt-1 flex items-center gap-2 flex-wrap text-[11px]">
-                            <span className={`inline-flex items-center text-[9.5px] uppercase tracking-wider font-medium px-1.5 py-0.5 rounded border ${pill}`}>
-                              {c.status.replace(/_/g, ' ')}
-                            </span>
-                            <span className="font-mono uppercase text-[9.5px] tracking-wider text-gray-400">{c.type}</span>
+                            <StatusPill status={c.status} />
+                            <span className="font-mono uppercase text-[9.5px] tracking-[0.09em] text-ink-400">{c.type}</span>
                             {v > 0 && (
-                              <span className="text-gray-700 font-medium tabular-nums">
+                              <span className="text-ink-700 font-medium tabular-nums">
                                 {formatMoney(v, c.currency ?? 'USD')}
                               </span>
                             )}
                             {c.riskScore != null && c.riskScore >= 0.7 && (
-                              <span className="inline-flex items-center gap-0.5 text-red-700">
-                                <AlertTriangle className="h-2.5 w-2.5" />
+                              <span className="inline-flex items-center gap-0.5 text-risk-700">
+                                <AlertTriangle className="size-2.5" />
                                 risk {Math.round(c.riskScore * 100)}%
                               </span>
                             )}
                             {expiryDays != null && (
                               expiryDays < 0 ? (
-                                <span className="text-red-700">expired {-expiryDays}d ago</span>
+                                // Already expired: exposure. Still inside the
+                                // 90-day window: the user's turn to renew.
+                                <span className="text-risk-700">expired {-expiryDays}d ago</span>
                               ) : expiryDays <= 90 ? (
-                                <span className="text-amber-700">expires in {expiryDays}d</span>
+                                <span className="text-attention-700">expires in {expiryDays}d</span>
                               ) : (
                                 <span className="text-muted-foreground">expires {new Date(c.expiryDate!).toLocaleDateString()}</span>
                               )
@@ -358,9 +357,9 @@ export function CounterpartyDetailPage() {
           )}
         </section>
 
-        <aside className="border border-border rounded-xl bg-card overflow-hidden h-fit" data-testid="cp-activity">
-          <div className="px-4 py-2.5 border-b border-border bg-gray-50/60">
-            <h2 className="text-[11px] font-semibold uppercase tracking-wider text-gray-600">
+        <aside className="border border-border rounded-card bg-card overflow-hidden h-fit" data-testid="cp-activity">
+          <div className="px-4 py-2.5 border-b border-border bg-paper-50">
+            <h2 className="text-eyebrow uppercase text-ink-700">
               Recent activity
             </h2>
           </div>
@@ -376,7 +375,7 @@ export function CounterpartyDetailPage() {
                     to={`/contracts/${e.contractId}`}
                     className="block group"
                   >
-                    <p className="text-[12px] text-gray-800 group-hover:text-blue-700 line-clamp-2">
+                    <p className="text-[12px] text-ink-950 group-hover:text-brand-700 line-clamp-2">
                       {e.label}
                     </p>
                     <p className="text-[10.5px] text-muted-foreground mt-0.5">
@@ -412,24 +411,24 @@ function StatCard({
   value: string
   sub?: string
   icon: React.ComponentType<{ className?: string }>
-  tone: 'default' | 'amber' | 'red'
+  tone: Extract<Meaning, 'neutral' | 'inflight' | 'risk'>
 }) {
   const toneCls =
-    tone === 'amber' ? 'border-amber-200 bg-amber-50/40' :
-    tone === 'red' ? 'border-red-200 bg-red-50/40' :
+    tone === 'inflight' ? 'border-info-200 bg-info-50' :
+    tone === 'risk' ? 'border-risk-200 bg-risk-50' :
     'border-border bg-card'
   const iconCls =
-    tone === 'amber' ? 'text-amber-600' :
-    tone === 'red' ? 'text-red-600' :
-    'text-gray-400'
+    tone === 'inflight' ? 'text-info-600' :
+    tone === 'risk' ? 'text-risk-600' :
+    'text-ink-400'
   return (
-    <div className={`border rounded-lg px-3.5 py-3 ${toneCls}`}>
+    <div className={`border rounded-card px-3.5 py-3 ${toneCls}`}>
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500">{label}</p>
-          <p className="text-xl font-semibold text-gray-900 mt-1 tabular-nums">{value}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.09em] text-ink-400">{label}</p>
+          <p className="text-[20px] font-semibold tracking-[-0.015em] text-ink-950 mt-1 tabular-nums">{value}</p>
         </div>
-        <Icon className={`h-4 w-4 ${iconCls}`} />
+        <Icon className={`size-4 ${iconCls}`} />
       </div>
       {sub && <p className="text-[10.5px] text-muted-foreground mt-1.5">{sub}</p>}
     </div>
@@ -470,40 +469,40 @@ function EditModal({
     setForm(v => ({ ...v, [f]: e.target.value }))
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h2 className="text-base font-semibold text-gray-900">Edit Counterparty</h2>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg">
-            <X className="h-4 w-4 text-gray-500" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 backdrop-blur-sm">
+      <div className="bg-card rounded-card shadow-e3 w-full max-w-md mx-4">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
+          <h2 className="text-section text-ink-950">Edit Counterparty</h2>
+          <button onClick={onClose} className="p-1.5 hover:bg-paper-100 rounded-md">
+            <X className="size-4 text-ink-500" />
           </button>
         </div>
         <div className="px-6 py-5 space-y-3.5">
           <Field label="Name *">
-            <Input value={form.name} onChange={set('name')} className="h-9 text-sm" />
+            <Input value={form.name} onChange={set('name')} />
           </Field>
           <Field label="Legal name">
-            <Input value={form.legalName} onChange={set('legalName')} className="h-9 text-sm" />
+            <Input value={form.legalName} onChange={set('legalName')} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Email">
-              <Input type="email" value={form.email} onChange={set('email')} className="h-9 text-sm" />
+              <Input type="email" value={form.email} onChange={set('email')} />
             </Field>
             <Field label="Phone">
-              <Input value={form.phone} onChange={set('phone')} className="h-9 text-sm" />
+              <Input value={form.phone} onChange={set('phone')} />
             </Field>
           </div>
           <Field label="Website">
-            <Input value={form.website} onChange={set('website')} className="h-9 text-sm" />
+            <Input value={form.website} onChange={set('website')} />
           </Field>
           <Field label="Address">
-            <Input value={form.address} onChange={set('address')} className="h-9 text-sm" />
+            <Input value={form.address} onChange={set('address')} />
           </Field>
           {save.isError && (
-            <p className="text-xs text-red-500">Failed to save changes.</p>
+            <p className="text-[11.5px] text-risk-700">Failed to save changes.</p>
           )}
         </div>
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100">
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-paper-200">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={save.isPending}>Cancel</Button>
           <Button
             size="sm"
@@ -523,7 +522,7 @@ function EditModal({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-700 mb-1.5">{label}</label>
+      <label className="block text-[11px] font-medium text-ink-700 mb-1.5">{label}</label>
       {children}
     </div>
   )

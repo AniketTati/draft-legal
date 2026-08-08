@@ -24,8 +24,9 @@
  * (comment_add). Every subsequent write tool plugs in the same card.
  */
 import { useEffect, useState } from 'react'
-import { Loader2, Check, Pencil, X, AlertTriangle, Sparkles, Undo2 } from 'lucide-react'
+import { Loader2, Check, Pencil, X, AlertTriangle, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { AssistMark } from '@/components/ui/assist'
 
 export interface PendingAction {
   /** Unique id — ties the card back to a specific tool_call_awaiting_confirmation event. */
@@ -110,22 +111,25 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
 
   // Terminal states — compact receipt instead of the full card.
   if (isDone) {
+    // Applied is binding — the write landed. Undone and Cancelled are both
+    // "nothing stands", so both read neutral; the icon and the word carry the
+    // difference rather than a second colour. Failed is real risk.
     const palette = isApplied
-      ? { border: 'border-emerald-200', bg: 'bg-emerald-50', text: 'text-emerald-800', icon: Check }
+      ? { border: 'border-brand-200', bg: 'bg-brand-50', text: 'text-brand-700', icon: Check }
       : isUndone
-        ? { border: 'border-amber-200', bg: 'bg-amber-50', text: 'text-amber-800', icon: Undo2 }
+        ? { border: 'border-paper-200', bg: 'bg-paper-50', text: 'text-ink-700', icon: Undo2 }
         : isCancelled
-          ? { border: 'border-gray-200', bg: 'bg-gray-50', text: 'text-gray-600', icon: X }
-          : { border: 'border-red-200', bg: 'bg-red-50', text: 'text-red-800', icon: AlertTriangle }
+          ? { border: 'border-paper-200', bg: 'bg-paper-50', text: 'text-ink-500', icon: X }
+          : { border: 'border-risk-200', bg: 'bg-risk-50', text: 'text-risk-700', icon: AlertTriangle }
     const Icon = palette.icon
     const label = isApplied ? 'Applied' : isUndone ? 'Undone' : isCancelled ? 'Cancelled' : 'Failed'
     return (
       <div
         data-testid="action-preview-receipt"
         data-status={action.status}
-        className={`rounded-lg border ${palette.border} ${palette.bg} ${palette.text} text-[11px] px-2.5 py-1.5 flex items-center gap-1.5`}
+        className={`rounded-md border ${palette.border} ${palette.bg} ${palette.text} text-[11px] px-2.5 py-1.5 flex items-center gap-1.5`}
       >
-        <Icon className="h-3 w-3 flex-shrink-0" />
+        <Icon className="size-3 flex-shrink-0" />
         <span className="font-medium">{label}</span>
         <span className="opacity-75 truncate flex-1">· {action.summary}</span>
         {action.errorMessage && (
@@ -136,10 +140,10 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
             type="button"
             onClick={() => void onUndo?.()}
             data-testid="action-preview-undo"
-            className="ml-auto flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100 rounded px-1.5 py-0.5 transition-colors"
+            className="ml-auto flex-shrink-0 inline-flex items-center gap-1 text-[10.5px] font-medium text-ink-700 hover:text-ink-950 hover:bg-brand-100 rounded-chip px-1.5 py-0.5 transition-colors"
             title="Undo this action (within 15 minutes)"
           >
-            <Undo2 className="h-2.5 w-2.5" />
+            <Undo2 className="size-2.5" />
             Undo
           </button>
         )}
@@ -152,15 +156,19 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
       data-testid="action-preview"
       data-status={action.status}
       data-tool={action.toolName}
-      className="rounded-xl border border-amber-200 bg-amber-50/70 text-[12px] overflow-hidden"
+      // Attention, not assist: the card's whole reason to exist is that the
+      // write is blocked on this user. The diamond still marks who authored
+      // the proposal.
+      className="rounded-card border border-attention-200 bg-attention-50 text-dense overflow-hidden"
     >
       {/* Header — tool + reversible badge */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-amber-200/80">
-        <Sparkles className="h-3.5 w-3.5 text-amber-600 flex-shrink-0" />
-        <span className="font-semibold text-amber-900">About to run</span>
-        <span className="font-mono text-[10.5px] text-amber-700">{action.toolName}</span>
+      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-attention-200">
+        <AssistMark className="flex-shrink-0" />
+        <span className="font-semibold text-attention-700">About to run</span>
+        <span className="font-mono text-[10.5px] text-ink-700">{action.toolName}</span>
         {action.reversible && (
-          <span className="ml-auto text-[9.5px] uppercase tracking-wider font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+          // Reversibility is a neutral fact about the tool, not a verdict.
+          <span className="ml-auto text-[9.5px] uppercase tracking-wider font-medium text-ink-500 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5">
             Undoable
           </span>
         )}
@@ -168,30 +176,30 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
 
       <div className="px-3 py-2.5 space-y-2">
         {/* Plain-English summary — always first, always visible */}
-        <div className="text-gray-900 leading-relaxed">{action.summary}</div>
+        <div className="text-ink-950 leading-relaxed">{action.summary}</div>
 
         {/* Target + diff */}
         {action.target && (
-          <div className="text-[10.5px] text-gray-600">
+          <div className="text-[10.5px] text-ink-500">
             <span className="font-medium">Target:</span>{' '}
             <span className="font-mono">{action.target}</span>
           </div>
         )}
 
         {action.diff && action.diff.length > 0 && (
-          <div className="rounded border border-amber-100 bg-white/70 divide-y divide-amber-100">
-            <div className="px-2 py-1 text-[9.5px] font-medium uppercase tracking-wider text-gray-400">
+          <div className="rounded-chip border border-attention-200 bg-card divide-y divide-attention-200">
+            <div className="px-2 py-1 text-[9.5px] font-medium uppercase tracking-wider text-ink-400">
               Changes
             </div>
             {action.diff.map(d => (
               <div key={d.field} className="px-2 py-1.5 text-[11px]">
-                <div className="text-gray-600 font-medium">{d.field}</div>
+                <div className="text-ink-700 font-medium">{d.field}</div>
                 <div className="font-mono text-[10.5px] flex items-baseline gap-1.5">
-                  <span className="line-through text-red-600 bg-red-50 px-1 rounded">
+                  <span className="line-through text-risk-700 bg-risk-50 px-1 rounded-chip">
                     {d.before === null || d.before === '' ? '∅' : String(d.before)}
                   </span>
-                  <span className="text-gray-400">→</span>
-                  <span className="text-emerald-700 bg-emerald-50 px-1 rounded">
+                  <span className="text-ink-400">→</span>
+                  <span className="text-brand-700 bg-brand-50 px-1 rounded-chip">
                     {d.after === null || d.after === '' ? '∅' : String(d.after)}
                   </span>
                 </div>
@@ -203,17 +211,17 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
         {/* Args editor — hidden until "Edit" is clicked */}
         {editing && (
           <div>
-            <div className="text-[9.5px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+            <div className="text-[9.5px] font-medium uppercase tracking-wider text-ink-400 mb-1">
               Arguments
             </div>
             <textarea
               value={draftJson}
               onChange={e => { setDraftJson(e.target.value); setJsonError(null) }}
               data-testid="action-preview-args"
-              className="w-full text-[10.5px] font-mono rounded-md border border-amber-200 bg-white p-2 resize-y min-h-[6em] focus:outline-none focus:ring-2 focus:ring-amber-500/20"
+              className="w-full text-[10.5px] font-mono rounded-md border border-input bg-card p-2 text-ink-950 resize-y min-h-[6em] focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
             />
             {jsonError && (
-              <div className="text-[10.5px] text-red-600 mt-1">Invalid JSON: {jsonError}</div>
+              <div className="text-[10.5px] text-risk-700 mt-1">Invalid JSON: {jsonError}</div>
             )}
           </div>
         )}
@@ -225,9 +233,9 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
               variant="ghost" size="sm"
               onClick={onCancel}
               data-testid="action-preview-cancel"
-              className="h-7 text-[11px] gap-1 text-gray-600 hover:text-red-700"
+              className="h-7 text-[11px] gap-1 text-ink-700 hover:text-risk-700"
             >
-              <X className="h-3 w-3" />
+              <X className="size-3" />
               Cancel
             </Button>
             <Button
@@ -236,16 +244,17 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
               data-testid="action-preview-edit"
               className="h-7 text-[11px] gap-1"
             >
-              <Pencil className="h-3 w-3" />
+              <Pencil className="size-3" />
               {editing ? 'Review' : 'Edit'}
             </Button>
+            {/* Apply is the card's one primary — ink acts. */}
             <Button
               size="sm"
               onClick={apply}
               data-testid="action-preview-apply"
-              className="h-7 text-[11px] gap-1 bg-amber-600 hover:bg-amber-700 text-white"
+              className="h-7 text-[11px] gap-1"
             >
-              <Check className="h-3 w-3" />
+              <Check className="size-3" />
               Apply
             </Button>
           </div>
@@ -253,8 +262,8 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
 
         {/* Running state — disabled spinner row */}
         {isRunning && (
-          <div className="flex items-center justify-end gap-1.5 pt-1 text-amber-700 text-[11px]">
-            <Loader2 className="h-3 w-3 animate-spin" />
+          <div className="flex items-center justify-end gap-1.5 pt-1 text-ink-500 text-[11px]">
+            <Loader2 className="size-3 animate-spin" />
             Applying…
           </div>
         )}

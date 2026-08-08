@@ -18,6 +18,10 @@ import {
   Search, CheckCircle2, Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { StatusPill, MeaningDot } from '@/components/ui/status-pill'
+import { CountBadge, EmptyState } from '@/components/ui/primitives'
+import type { Meaning } from '@/lib/status'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
 
 type Bucket = 'all' | 'open' | 'due_soon' | 'overdue' | 'completed'
@@ -80,28 +84,24 @@ function daysUntil(iso: string | null): number | null {
 }
 
 function dueLabel(iso: string | null, status: string): { text: string; tone: string } {
-  if (!iso) return { text: 'No due date', tone: 'text-muted-foreground' }
+  if (!iso) return { text: 'No due date', tone: 'text-ink-400' }
   const d = daysUntil(iso)
-  if (status === 'COMPLETED') return { text: new Date(iso).toLocaleDateString(), tone: 'text-emerald-700' }
-  if (d == null) return { text: new Date(iso).toLocaleDateString(), tone: 'text-gray-700' }
-  if (d < 0)  return { text: `${-d}d overdue`, tone: 'text-red-700 font-medium' }
-  if (d === 0) return { text: 'Due today',     tone: 'text-amber-700 font-medium' }
-  if (d === 1) return { text: 'Due tomorrow',  tone: 'text-amber-700 font-medium' }
-  if (d <= 14) return { text: `Due in ${d}d`,  tone: 'text-amber-700 font-medium' }
-  return { text: `Due in ${d}d`, tone: 'text-gray-600' }
+  // A completed obligation is discharged — binding, not "on time".
+  if (status === 'COMPLETED') return { text: new Date(iso).toLocaleDateString(), tone: 'text-brand-700' }
+  if (d == null) return { text: new Date(iso).toLocaleDateString(), tone: 'text-ink-700' }
+  if (d < 0)  return { text: `${-d}d overdue`, tone: 'text-risk-700 font-medium' }
+  if (d === 0) return { text: 'Due today',     tone: 'text-attention-700 font-medium' }
+  if (d === 1) return { text: 'Due tomorrow',  tone: 'text-attention-700 font-medium' }
+  if (d <= 14) return { text: `Due in ${d}d`,  tone: 'text-attention-700 font-medium' }
+  return { text: `Due in ${d}d`, tone: 'text-ink-500' }
 }
 
-const SEVERITY_PILL: Record<string, string> = {
-  high:   'bg-red-50 border-red-200 text-red-700',
-  medium: 'bg-amber-50 border-amber-200 text-amber-700',
-  low:    'bg-gray-50 border-gray-200 text-gray-600',
-}
-
-const STATUS_PILL: Record<string, { bg: string; label: string }> = {
-  OPEN:      { bg: 'bg-blue-50 border-blue-200 text-blue-700',         label: 'Open' },
-  COMPLETED: { bg: 'bg-emerald-50 border-emerald-200 text-emerald-700', label: 'Completed' },
-  OVERDUE:   { bg: 'bg-red-50 border-red-200 text-red-700',             label: 'Overdue' },
-  WAIVED:    { bg: 'bg-gray-100 border-gray-200 text-gray-600',         label: 'Waived' },
+// Severity is exposure, so it tiers the same way the risk meter does: high is
+// real risk, medium is the owner's turn to act, low is just a fact.
+const SEVERITY_MEANING: Record<string, Meaning> = {
+  high:   'risk',
+  medium: 'turn',
+  low:    'neutral',
 }
 
 export function ObligationsPage() {
@@ -128,9 +128,9 @@ export function ObligationsPage() {
   return (
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="obligations-page">
       <div className="flex items-center justify-between gap-4 mb-1">
-        <div className="flex items-center gap-3">
-          <ListTodo className="h-5 w-5 text-blue-600" />
-          <h1 className="text-2xl font-semibold text-gray-900">Obligations</h1>
+        <div className="flex items-center gap-2">
+          <ListTodo className="size-4 text-ink-400" />
+          <h1 className="text-title text-ink-950">Obligations</h1>
         </div>
         <Button
           variant="outline"
@@ -142,27 +142,26 @@ export function ObligationsPage() {
             document.body.appendChild(a); a.click(); a.remove()
             URL.revokeObjectURL(url)
           }}
-          className="gap-1.5"
           data-testid="export-obligations-btn"
         >
-          <Download className="h-4 w-4" />
+          <Download />
           Export CSV
         </Button>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
+      <p className="text-body text-ink-500 mb-5">
         Every commitment extracted from your executed contracts — payments, SLAs, renewals, audits, and reports.
       </p>
 
       {/* Stats strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-        <StatCard label="Open"        value={stats?.open ?? 0}         tone="blue"   data-testid="stat-open" />
-        <StatCard label="Due in 30d"  value={stats?.dueSoon ?? 0}      tone="amber"  data-testid="stat-due-soon" />
-        <StatCard label="Overdue"     value={stats?.overdue ?? 0}      tone="red"    data-testid="stat-overdue" />
-        <StatCard label="Completed (30d)" value={stats?.completedRecent ?? 0} tone="emerald" data-testid="stat-completed" />
+        <StatCard label="Open"        value={stats?.open ?? 0}         meaning="inflight" data-testid="stat-open" />
+        <StatCard label="Due in 30d"  value={stats?.dueSoon ?? 0}      meaning="turn"     data-testid="stat-due-soon" />
+        <StatCard label="Overdue"     value={stats?.overdue ?? 0}      meaning="risk"     data-testid="stat-overdue" />
+        <StatCard label="Completed (30d)" value={stats?.completedRecent ?? 0} meaning="binding" data-testid="stat-completed" />
       </div>
 
       {/* Filter tabs + search */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-gray-200 pb-2">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-paper-200 pb-2">
         <div className="flex items-center gap-1 -mb-2 overflow-x-auto">
           {BUCKETS.map(b => {
             const isActive = bucket === b.key
@@ -173,31 +172,31 @@ export function ObligationsPage() {
                 type="button"
                 onClick={() => setBucket(b.key)}
                 data-testid={`bucket-${b.key}`}
-                className={`px-3 py-2 text-sm border-b-2 transition-colors whitespace-nowrap ${
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-[13px] border-b-2 transition-colors whitespace-nowrap ${
                   isActive
-                    ? 'border-blue-600 text-blue-700 font-medium'
-                    : 'border-transparent text-gray-500 hover:text-gray-800'
+                    ? 'border-ink-950 text-ink-950 font-medium'
+                    : 'border-transparent text-ink-500 hover:text-ink-950'
                 }`}
               >
                 {b.label}
                 {count != null && count > 0 && (
-                  <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full ${
-                    isActive ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
-                  }`}>{count}</span>
+                  // Bucket counts are informational — none of them is "your
+                  // turn", so none of them earns a meaning colour.
+                  <CountBadge tone={isActive ? 'ink' : 'neutral'}>{count}</CountBadge>
                 )}
               </button>
             )
           })}
         </div>
         <div className="relative">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
-          <input
+          <Search className="absolute left-2.5 top-2 size-4 text-ink-400" />
+          <Input
             type="search"
             placeholder="Search description or contract"
             value={q}
             onChange={e => setQ(e.target.value)}
             data-testid="obligations-search"
-            className="pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-md focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400 w-full sm:w-72"
+            className="pl-8 w-full sm:w-72"
           />
         </div>
       </div>
@@ -205,123 +204,125 @@ export function ObligationsPage() {
       {/* Table */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
-          <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+          <Loader2 className="size-5 animate-spin text-ink-400" />
         </div>
       ) : isError ? (
-        <div className="flex items-start gap-2 p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 mt-0.5" />
+        <div className="flex items-start gap-2 p-4 rounded-md bg-risk-50 border border-risk-200 text-body text-risk-700">
+          <AlertCircle className="size-4 mt-0.5" />
           Failed to load obligations.
         </div>
       ) : items.length === 0 ? (
-        <div className="text-center py-16 px-6 border border-dashed border-gray-200 rounded-xl" data-testid="obligations-empty">
-          <ListTodo className="h-8 w-8 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">
-            {q
-              ? `No obligations match "${q}".`
-              : bucket === 'completed'
-                ? 'No obligations completed in the last 30 days.'
-                : bucket === 'overdue'
-                  ? 'Nothing overdue — well done.'
-                  : bucket === 'due_soon'
-                    ? 'Nothing due in the next 30 days.'
-                    : 'No obligations extracted yet.'}
-          </p>
-          <p className="text-xs text-gray-400">
-            Obligations are auto-extracted when a contract is signed; you can also run extraction manually from any contract page.
-          </p>
+        <div data-testid="obligations-empty">
+          <EmptyState
+            icon={<ListTodo />}
+            title={
+              q
+                ? `No obligations match "${q}".`
+                : bucket === 'completed'
+                  ? 'No obligations completed in the last 30 days.'
+                  : bucket === 'overdue'
+                    ? 'Nothing overdue — well done.'
+                    : bucket === 'due_soon'
+                      ? 'Nothing due in the next 30 days.'
+                      : 'No obligations extracted yet.'
+            }
+            description="Obligations are auto-extracted when a contract is signed; you can also run extraction manually from any contract page."
+          />
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <div className="px-5 py-2 text-xs text-gray-500 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-            <span>{total} {total === 1 ? 'obligation' : 'obligations'}</span>
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <div className="px-5 py-2 text-[11px] text-ink-500 bg-paper-50 border-b border-paper-200 flex items-center justify-between">
+            <span className="tabular-nums">{total} {total === 1 ? 'obligation' : 'obligations'}</span>
           </div>
           <div className="overflow-x-auto">
-          <table className="w-full text-sm" data-testid="obligations-table">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+          <table className="w-full text-[13px]" data-testid="obligations-table">
+            <thead className="bg-paper-50 text-eyebrow uppercase text-ink-500">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Description</th>
-                <th className="text-left px-4 py-3 font-medium">Contract</th>
-                <th className="text-left px-4 py-3 font-medium">Due</th>
-                <th className="text-left px-4 py-3 font-medium">Severity</th>
-                <th className="text-left px-4 py-3 font-medium">Status</th>
-                <th className="text-right px-4 py-3 font-medium"></th>
+                <th className="text-left px-4 py-2 font-semibold">Description</th>
+                <th className="text-left px-4 py-2 font-semibold">Contract</th>
+                <th className="text-left px-4 py-2 font-semibold">Due</th>
+                <th className="text-left px-4 py-2 font-semibold">Severity</th>
+                <th className="text-left px-4 py-2 font-semibold">Status</th>
+                <th className="text-right px-4 py-2 font-semibold"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-paper-200">
               {items.map(o => {
                 const TypeIcon = TYPE_ICON[o.type] ?? Bell
                 const due = dueLabel(o.dueDate, o.status)
-                const sevPill = SEVERITY_PILL[o.severity] ?? SEVERITY_PILL.medium
-                const statusPill = STATUS_PILL[o.status] ?? STATUS_PILL.OPEN
+                const sevMeaning = SEVERITY_MEANING[o.severity] ?? 'turn'
                 return (
-                  <tr key={o.id} className="hover:bg-gray-50" data-testid={`obligation-row-${o.id}`}>
-                    <td className="px-4 py-3 max-w-[380px]">
+                  <tr key={o.id} className="hover:bg-paper-50" data-testid={`obligation-row-${o.id}`}>
+                    <td className="px-4 py-2 max-w-[380px]">
                       <div className="flex items-start gap-2">
-                        <TypeIcon className="h-4 w-4 text-gray-400 mt-0.5 flex-shrink-0" />
+                        <TypeIcon className="size-3.5 text-ink-400 mt-0.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
-                          <div className="font-medium text-gray-900 truncate" title={o.description}>
+                          <div className="font-medium text-ink-950 truncate" title={o.description}>
                             {o.description}
                           </div>
-                          <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-1.5">
-                            <span className="uppercase font-mono tracking-wider text-[10px]">{o.type}</span>
+                          <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5">
+                            <span className="uppercase font-mono tracking-[0.08em] text-[10px]">{o.type}</span>
                             <span>· {o.owner}</span>
                             {o.sectionRef && <span className="font-mono">§{o.sectionRef}</span>}
                             {o.recurrence !== 'one-time' && o.recurrence !== 'unknown' && (
-                              <span className="text-blue-700">↻ {o.recurrence}</span>
+                              // Recurrence is a property of the obligation, not a
+                              // state — it gets no meaning colour.
+                              <span className="text-ink-700">↻ {o.recurrence}</span>
                             )}
                           </div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-2">
                       {o.contract ? (
                         <Link
                           to={`/contracts/${o.contract.id}`}
-                          className="text-xs hover:text-blue-600 block max-w-[200px] truncate"
+                          className="text-[11.5px] block max-w-[200px] truncate hover:underline underline-offset-2 decoration-paper-300"
                           title={o.contract.title}
                         >
-                          <span className="font-medium text-gray-800">{o.contract.title}</span>
+                          <span className="font-medium text-ink-950">{o.contract.title}</span>
                           {o.contract.counterpartyName && (
-                            <div className="text-gray-500">{o.contract.counterpartyName}</div>
+                            <div className="text-ink-500">{o.contract.counterpartyName}</div>
                           )}
                         </Link>
                       ) : (
-                        <span className="text-xs text-gray-400">(deleted)</span>
+                        <span className="text-[11.5px] text-ink-400">(deleted)</span>
                       )}
                     </td>
-                    <td className={`px-4 py-3 text-xs ${due.tone}`}>
+                    <td className={`px-4 py-2 text-[11.5px] tabular-nums ${due.tone}`}>
                       {due.text}
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border ${sevPill}`}>
+                    <td className="px-4 py-2">
+                      <StatusPill meaning={sevMeaning} className="capitalize">
                         {o.severity}
-                      </span>
+                      </StatusPill>
                     </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border ${statusPill.bg}`}>
-                        {statusPill.label}
-                      </span>
+                    <td className="px-4 py-2">
+                      <StatusPill status={o.status} />
                     </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-3">
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-2">
                         {o.status === 'OPEN' && (
-                          <button
+                          // Completing an obligation discharges it — a binding
+                          // act, so the brand green is earned here.
+                          <Button
                             type="button"
+                            variant="brand"
+                            size="xs"
                             onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
                             data-testid={`complete-btn-${o.id}`}
-                            className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-800 font-medium"
                           >
-                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            <CheckCircle2 />
                             Complete
-                          </button>
+                          </Button>
                         )}
                         {o.contract?.id && (
                           <Link
                             to={`/contracts/${o.contract.id}`}
-                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
+                            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
                           >
                             Open
-                            <ArrowRight className="h-3.5 w-3.5" />
+                            <ArrowRight className="size-3.5" />
                           </Link>
                         )}
                       </div>
@@ -352,22 +353,23 @@ export function ObligationsPage() {
   )
 }
 
-function StatCard({ label, value, tone, ...rest }: {
+// The figure stays ink; the meaning rides on the dot beside the label. Four
+// large coloured numbers would put four competing accents in one strip.
+function StatCard({ label, value, meaning, ...rest }: {
   label: string
   value: number
-  tone: 'blue' | 'amber' | 'red' | 'emerald'
+  meaning: Meaning
   'data-testid'?: string
 }) {
-  const toneClass = {
-    blue:    'text-blue-700',
-    amber:   'text-amber-700',
-    red:     'text-red-700',
-    emerald: 'text-emerald-700',
-  }[tone]
   return (
-    <div className="border border-gray-200 rounded-xl p-3 bg-white" {...rest}>
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className={`text-2xl font-semibold mt-0.5 ${toneClass}`}>{value}</div>
+    <div className="border border-paper-200 rounded-card p-3 bg-card" {...rest}>
+      <div className="flex items-center gap-1.5 text-[11px] text-ink-500">
+        <MeaningDot meaning={meaning} label={label} />
+        {label}
+      </div>
+      <div className="text-[24px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-ink-950 mt-1.5">
+        {value}
+      </div>
     </div>
   )
 }

@@ -15,6 +15,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { StatusPill } from '@/components/ui/status-pill'
 import {
   Briefcase, Plus, FileText, ClipboardList, MessageSquare,
   Search, X, CheckCircle2,
@@ -64,8 +66,9 @@ export function MattersPage() {
     <div className="px-6 py-5 max-w-6xl mx-auto" data-testid="matters-page">
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <Briefcase className="h-4 w-4 text-indigo-600" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            {/* Indigo belongs to the machine; a matter is a human folder. */}
+            <Briefcase className="size-4 text-ink-400" />
             Matters
           </h1>
           <p className="text-[12px] text-muted-foreground mt-1">
@@ -79,14 +82,14 @@ export function MattersPage() {
 
       <div className="flex items-center gap-2 mb-4">
         <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-          <input
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-ink-400" />
+          <Input
             type="text"
             placeholder="Search by name, counterparty, tag…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             data-testid="matters-search"
-            className="w-full pl-8 pr-2 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="pl-8"
           />
         </div>
         <select
@@ -94,7 +97,7 @@ export function MattersPage() {
           onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}
           data-testid="matters-status-filter"
           aria-label="Filter matters by status"
-          className="text-sm rounded-md border border-border bg-background px-2 py-1.5"
+          className="h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-2.5 focus:outline-none focus-visible:border-brand-700"
         >
           <option value="OPEN">Open only</option>
           <option value="all">All</option>
@@ -103,9 +106,9 @@ export function MattersPage() {
         </select>
       </div>
 
-      {isLoading && <div className="text-sm text-muted-foreground py-6">Loading…</div>}
+      {isLoading && <div className="text-dense text-muted-foreground py-6">Loading…</div>}
       {filtered.length === 0 && !isLoading && (
-        <div className="px-4 py-10 text-center text-sm text-muted-foreground border border-dashed border-gray-300 rounded-lg">
+        <div className="px-4 py-10 text-center text-dense text-muted-foreground border border-dashed border-paper-300 rounded-card">
           No matters match that filter. Create one to start grouping contracts under a negotiation.
         </div>
       )}
@@ -115,35 +118,30 @@ export function MattersPage() {
           <li
             key={m.id}
             data-testid={`matter-row-${m.id}`}
-            className="border border-border rounded-lg bg-card hover:border-indigo-300 hover:bg-indigo-50/30 transition-colors"
+            className="border border-border rounded-card bg-card hover:border-paper-300 hover:bg-paper-50 transition-colors"
           >
-            <Link to={`/matters/${m.id}`} className="block px-4 py-3">
+            <Link to={`/matters/${m.id}`} className="block px-4 py-2.5">
               <div className="flex items-center gap-2 flex-wrap mb-1">
-                <span className="font-medium text-[14px] text-gray-900 truncate">{m.name}</span>
-                <span className={
-                  'text-[10px] uppercase tracking-wider font-medium rounded px-1.5 py-0.5 border ' +
-                  (m.status === 'OPEN'     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    : m.status === 'CLOSED' ? 'bg-gray-50 text-gray-600 border-gray-200'
-                    :                         'bg-amber-50 text-amber-700 border-amber-200')
-                }>
-                  {m.status}
-                </span>
+                <span className="font-medium text-body text-ink-950 truncate">{m.name}</span>
+                <StatusPill status={m.status} />
                 {m.counterpartyName && (
                   <span className="text-[11px] text-muted-foreground">
                     · {m.counterpartyName}
                   </span>
                 )}
+                {/* Tags were indigo; a user-authored tag is not machine output,
+                    so it reads as a neutral chip. */}
                 {m.tags.slice(0, 3).map(t => (
-                  <span key={t} className="text-[10px] font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5">#{t}</span>
+                  <span key={t} className="text-[10px] font-mono text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-1.5">#{t}</span>
                 ))}
               </div>
               {m.description && (
                 <div className="text-[12px] text-muted-foreground truncate">{m.description}</div>
               )}
-              <div className="mt-1.5 flex items-center gap-4 text-[11px] text-gray-500">
-                <span className="flex items-center gap-1"><FileText className="h-3 w-3" />{m.contractCount} contract{m.contractCount === 1 ? '' : 's'}</span>
-                <span className="flex items-center gap-1"><ClipboardList className="h-3 w-3" />{m.requestCount} request{m.requestCount === 1 ? '' : 's'}</span>
-                <span className="flex items-center gap-1"><MessageSquare className="h-3 w-3" />{m.threadCount} thread{m.threadCount === 1 ? '' : 's'}</span>
+              <div className="mt-1.5 flex items-center gap-4 text-[11px] tabular-nums text-ink-500">
+                <span className="flex items-center gap-1"><FileText className="size-3" />{m.contractCount} contract{m.contractCount === 1 ? '' : 's'}</span>
+                <span className="flex items-center gap-1"><ClipboardList className="size-3" />{m.requestCount} request{m.requestCount === 1 ? '' : 's'}</span>
+                <span className="flex items-center gap-1"><MessageSquare className="size-3" />{m.threadCount} thread{m.threadCount === 1 ? '' : 's'}</span>
                 <span className="ml-auto">
                   {m.ownerName ?? 'unassigned'}
                 </span>
@@ -177,13 +175,13 @@ function CreateMatterDrawer({ onClose, onCreated }: { onClose: () => void; onCre
 
   return (
     <div className="fixed inset-0 z-50 flex" data-testid="matter-create-drawer">
-      <button aria-label="Close" onClick={onClose} className="flex-1 bg-black/30" />
+      <button aria-label="Close" onClick={onClose} className="flex-1 bg-ink-950/30" />
       <div className="w-[520px] max-w-[90vw] bg-card border-l border-border flex flex-col">
         <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <div className="font-semibold text-sm flex items-center gap-1.5">
-            <Briefcase className="h-3.5 w-3.5 text-indigo-600" /> New matter
+          <div className="text-section flex items-center gap-1.5">
+            <Briefcase className="size-3.5 text-ink-400" /> New matter
           </div>
-          <Button size="icon" variant="ghost" onClick={onClose} className="h-7 w-7"><X className="h-3.5 w-3.5" /></Button>
+          <Button size="icon-xs" variant="ghost" onClick={onClose}><X className="size-3.5" /></Button>
         </div>
         <div className="p-4 space-y-3 overflow-y-auto flex-1">
           <Field label="Name">
@@ -230,21 +228,24 @@ function CreateMatterDrawer({ onClose, onCreated }: { onClose: () => void; onCre
             data-testid="matter-create-submit"
             className="gap-1"
           >
-            <CheckCircle2 className="h-3.5 w-3.5" />
+            <CheckCircle2 className="size-3.5" />
             {create.isPending ? 'Creating…' : 'Create matter'}
           </Button>
         </div>
-        {err && <div className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 mx-4 mb-3">{err}</div>}
+        {err && <div className="text-[11px] text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-2 py-1 mx-4 mb-3">{err}</div>}
       </div>
     </div>
   )
 }
 
-const inputCls = 'w-full text-sm rounded-md border border-border bg-background px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20'
+const inputCls =
+  'w-full text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] py-1.5 ' +
+  'placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 ' +
+  'focus-visible:ring-[3px] focus-visible:ring-brand-700/12'
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[11px] font-medium text-muted-foreground mb-1">{label}</div>
+      <div className="text-[11px] font-medium text-ink-700 mb-1">{label}</div>
       {children}
     </div>
   )

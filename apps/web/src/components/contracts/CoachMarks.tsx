@@ -60,17 +60,19 @@ export function CoachMarks() {
       aria-live="polite"
       className="fixed bottom-6 right-[400px] z-40 pointer-events-auto"
     >
-      <div className="bg-indigo-600 text-white rounded-xl shadow-lg px-4 py-3 max-w-xs flex items-start gap-2.5 animate-pulse-once">
-        <Sparkles className="h-4 w-4 text-indigo-200 mt-0.5 shrink-0" />
+      {/* The one coach mark is an "ask draftLegal" affordance, so it keeps the
+          machine accent rather than becoming generic chrome. */}
+      <div className="bg-assist-600 text-white rounded-card shadow-e2 px-4 py-3 max-w-xs flex items-start gap-2.5 animate-pulse-once">
+        <Sparkles className="size-4 text-assist-200 mt-0.5 shrink-0" />
         <div className="flex-1 text-[12.5px] leading-relaxed">
-          I'm focused on this contract — ask me anything or press <kbd className="px-1 py-0.5 rounded bg-indigo-500/40 text-[10.5px] font-mono">⌘K</kbd>
+          I'm focused on this contract — ask me anything or press <kbd className="px-1 py-0.5 rounded-chip bg-assist-700 text-[10.5px] font-mono">⌘K</kbd>
         </div>
         <button
           onClick={dismiss}
-          className="text-indigo-100 hover:text-white p-0.5"
+          className="text-assist-200 hover:text-white p-0.5"
           aria-label="Dismiss"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="size-3.5" />
         </button>
       </div>
       <style>{`

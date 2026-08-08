@@ -18,16 +18,13 @@ import {
 } from 'lucide-react'
 import type { User } from '@clm/types'
 import { SystemRole } from '@clm/types'
+import { StatusPill } from '@/components/ui/status-pill'
+import { Card, EmptyState } from '@/components/ui/primitives'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const STATUS_STYLES: Record<string, string> = {
-  ACTIVE: 'bg-green-100 text-green-700',
-  INVITED: 'bg-yellow-100 text-yellow-700',
-  DEACTIVATED: 'bg-red-100 text-red-700',
-}
-
-const ROLE_STYLES = 'bg-blue-50 text-blue-700 border border-blue-200'
+// A role is metadata, not a state and not an action — so it stays neutral.
+const ROLE_STYLES = 'bg-paper-100 text-ink-700 border border-paper-200'
 
 const ALL_ROLES = Object.values(SystemRole)
 
@@ -147,16 +144,16 @@ export function AdminUsersPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <Users className="h-5 w-5" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <Users className="size-5" />
             User Management
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-dense text-ink-500 mt-1">
             Manage users, roles, and permissions for your organization.
           </p>
         </div>
         <Button onClick={() => setShowInviteModal(true)} className="gap-2">
-          <UserPlus className="h-4 w-4" />
+          <UserPlus className="size-4" />
           Invite User
         </Button>
       </div>
@@ -172,7 +169,7 @@ export function AdminUsersPage() {
 
       {/* Search */}
       <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-400" />
         <Input
           placeholder="Search users..."
           value={search}
@@ -184,113 +181,116 @@ export function AdminUsersPage() {
       {/* Users table */}
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+          <div className="size-5 border-2 border-paper-300 border-t-ink-950 rounded-full animate-spin" />
         </div>
       ) : filteredUsers.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
-          <Users className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-600 font-medium">No users found</p>
-          <p className="text-sm text-gray-400 mt-1">
-            {search ? 'Try a different search term.' : 'Invite your first team member to get started.'}
-          </p>
-        </div>
+        <EmptyState
+          icon={<Users />}
+          title="No users found"
+          description={search ? 'Try a different search term.' : 'Invite your first team member to get started.'}
+        />
       ) : (
-        <div className="bg-white rounded-xl border shadow-sm">
+        <Card className="overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b bg-gray-50">
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+              <tr className="border-b border-paper-200 bg-paper-50">
+                <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2">
                   Name
                 </th>
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+                <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2">
                   Email
                 </th>
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+                <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2">
                   Status
                 </th>
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+                <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2">
                   Roles
                 </th>
-                <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+                <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2">
                   Last Active
                 </th>
-                <th className="text-right text-xs font-semibold text-gray-500 uppercase tracking-wider px-5 py-3 w-20">
+                <th className="text-right text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-5 py-2 w-20">
                   Actions
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y">
+            <tbody className="divide-y divide-paper-200">
               {filteredUsers.map(user => (
-                <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-5 py-4 text-sm font-medium text-gray-900">
+                <tr key={user.id} className="hover:bg-paper-50 transition-colors">
+                  <td className="px-5 py-2 text-[13px] font-medium text-ink-950">
                     {user.name}
                   </td>
-                  <td className="px-5 py-4 text-sm text-gray-600">{user.email}</td>
-                  <td className="px-5 py-4">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                        STATUS_STYLES[user.status] ?? 'bg-gray-100 text-gray-700'
-                      }`}
-                    >
-                      {user.status}
-                    </span>
+                  <td className="px-5 py-2 text-[13px] text-ink-700">{user.email}</td>
+                  <td className="px-5 py-2">
+                    {/*
+                      ACTIVE is shared with ObligationStatus, where it means "in
+                      flight". A live seat isn't in flight — it's the account
+                      equivalent of "connected", so it reads as binding here.
+                    */}
+                    <StatusPill
+                      status={user.status}
+                      meaning={(user.status as string) === 'ACTIVE' ? 'binding' : undefined}
+                    />
                   </td>
-                  <td className="px-5 py-4">
+                  <td className="px-5 py-2">
                     <div className="flex flex-wrap gap-1">
                       {user.roles.map(role => (
                         <span
                           key={role}
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium ${ROLE_STYLES}`}
+                          className={`inline-flex items-center px-2 py-0.5 rounded-chip text-[11px] font-medium ${ROLE_STYLES}`}
                         >
                           {role}
                         </span>
                       ))}
                     </div>
                   </td>
-                  <td className="px-5 py-4 text-sm text-gray-500">
+                  <td className="px-5 py-2 text-[13px] tabular-nums text-ink-500">
                     {user.lastActiveAt
                       ? new Date(user.lastActiveAt).toLocaleDateString()
                       : 'Never'}
                   </td>
-                  <td className="px-5 py-4 text-right">
+                  <td className="px-5 py-2 text-right">
                     <button
                       onClick={e => handleActionClick(user.id, e.currentTarget)}
-                      className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                      className="p-1.5 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100 transition-colors"
                     >
-                      <MoreVertical className="h-4 w-4" />
+                      <MoreVertical className="size-4" />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </Card>
       )}
 
       {/* Action menu — rendered as portal so it's not clipped by table overflow */}
       {actionMenuUserId && activeUser && actionMenuAnchor && createPortal(
         <div
           data-action-menu
-          className="fixed w-48 bg-white rounded-lg border shadow-lg z-50 py-1"
+          className="fixed w-48 bg-popover rounded-md border border-paper-200 shadow-e2 z-50 py-1"
           style={{ top: actionMenuAnchor.top, right: actionMenuAnchor.right }}
         >
           <button
             onClick={() => handleChangeRoles(actionMenuUserId)}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+            className="w-full text-left px-4 py-2 text-dense text-ink-700 hover:bg-paper-100"
           >
             Change Roles
           </button>
           {(activeUser.status as string) === 'DEACTIVATED' ? (
+            // Restoring a seat is an ordinary admin action, not a binding legal
+            // event — ink, not brand.
             <button
               onClick={() => reactivateUser.mutate(actionMenuUserId)}
-              className="w-full text-left px-4 py-2 text-sm text-green-700 hover:bg-green-50"
+              className="w-full text-left px-4 py-2 text-dense text-ink-950 font-medium hover:bg-paper-100"
             >
               Reactivate
             </button>
           ) : (
+            // Cutting off access is destructive — risk earns its color here.
             <button
               onClick={() => deactivateUser.mutate(actionMenuUserId)}
-              className="w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50"
+              className="w-full text-left px-4 py-2 text-dense text-risk-700 hover:bg-risk-50"
             >
               Deactivate
             </button>
@@ -303,7 +303,7 @@ export function AdminUsersPage() {
       {roleDropdownUserId && roleUser && roleDropdownAnchor && createPortal(
         <div
           data-role-selector
-          className="fixed w-56 bg-white rounded-lg border shadow-lg z-50 p-3"
+          className="fixed w-56 bg-popover rounded-md border border-paper-200 shadow-e2 z-50 p-3"
           style={{ top: roleDropdownAnchor.top, right: roleDropdownAnchor.right }}
         >
           <RoleSelector
@@ -356,24 +356,24 @@ function RoleSelector({
 
   return (
     <>
-      <p className="text-xs font-semibold text-gray-500 mb-2">Select Roles</p>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-700 mb-2">Select Roles</p>
       <div className="space-y-1 max-h-48 overflow-y-auto">
         {ALL_ROLES.map(role => (
           <label
             key={role}
-            className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer"
+            className="flex items-center gap-2 px-2 py-1.5 rounded-chip hover:bg-paper-50 cursor-pointer"
           >
             <input
               type="checkbox"
               checked={selected.includes(role)}
               onChange={() => toggle(role)}
-              className="rounded border-gray-300 text-blue-600"
+              className="rounded-chip border-paper-300 accent-ink-950"
             />
-            <span className="text-sm text-gray-700">{role}</span>
+            <span className="text-dense text-ink-700">{role}</span>
           </label>
         ))}
       </div>
-      <div className="flex justify-end gap-2 mt-3 pt-2 border-t">
+      <div className="flex justify-end gap-2 mt-3 pt-2 border-t border-paper-200">
         <Button variant="outline" size="sm" onClick={onCancel}>
           Cancel
         </Button>
@@ -410,17 +410,19 @@ function InviteLinkBanner({
   }
 
   return (
-    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
-      <Link2 className="h-5 w-5 text-blue-500 mt-0.5 flex-shrink-0" />
+    // Info, not attention: the invitation is out and waiting on the invitee —
+    // in flight, someone else's turn.
+    <div className="bg-info-50 border border-info-200 rounded-card p-4 flex items-start gap-3">
+      <Link2 className="size-5 text-info-600 mt-0.5 flex-shrink-0" />
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-blue-900">
+        <p className="text-body font-semibold text-info-700">
           Invitation sent to {email}
         </p>
-        <p className="text-xs text-blue-700 mt-1">
+        <p className="text-dense text-ink-700 mt-1">
           Share this link with them to accept the invite:
         </p>
         <div className="flex items-center gap-2 mt-2">
-          <code className="text-xs bg-white border border-blue-200 rounded px-2 py-1.5 text-blue-800 truncate block flex-1">
+          <code className="font-mono text-[11px] bg-card border border-info-200 rounded-chip px-2 py-1.5 text-ink-950 truncate block flex-1">
             {inviteUrl}
           </code>
           <Button
@@ -431,12 +433,13 @@ function InviteLinkBanner({
           >
             {copied ? (
               <>
-                <Check className="h-3.5 w-3.5 text-green-600" />
+                {/* Clipboard confirmation is a neutral fact, not a binding event. */}
+                <Check className="size-3.5 text-ink-500" />
                 Copied
               </>
             ) : (
               <>
-                <Copy className="h-3.5 w-3.5" />
+                <Copy className="size-3.5" />
                 Copy
               </>
             )}
@@ -445,9 +448,9 @@ function InviteLinkBanner({
       </div>
       <button
         onClick={onDismiss}
-        className="p-1 rounded text-blue-400 hover:text-blue-600 flex-shrink-0"
+        className="p-1 rounded-chip text-ink-400 hover:text-ink-700 flex-shrink-0"
       >
-        <X className="h-4 w-4" />
+        <X className="size-4" />
       </button>
     </div>
   )
@@ -488,23 +491,23 @@ function InviteUserModal({
   const displayError = error || formError
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4">
+    <div className="fixed inset-0 bg-ink-950/50 flex items-center justify-center z-50">
+      <div className="bg-card rounded-card border border-paper-200 shadow-e3 w-full max-w-md mx-4">
         {/* Modal header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold text-gray-900">Invite User</h2>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-paper-200">
+          <h2 className="text-section text-ink-950">Invite User</h2>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+            className="p-1 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Modal body */}
-        <div className="px-6 py-4 space-y-4">
+        <div className="px-5 py-4 space-y-4">
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Email *</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Email *</Label>
             <Input
               type="email"
               placeholder="colleague@company.com"
@@ -513,7 +516,7 @@ function InviteUserModal({
             />
           </div>
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Name *</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Name *</Label>
             <Input
               placeholder="Full name"
               value={name}
@@ -521,40 +524,40 @@ function InviteUserModal({
             />
           </div>
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Roles *</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Roles *</Label>
             <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
               {ALL_ROLES.map(role => (
                 <label
                   key={role}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded border border-gray-200 hover:bg-gray-50 cursor-pointer"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-chip border border-paper-200 hover:bg-paper-50 cursor-pointer"
                 >
                   <input
                     type="checkbox"
                     checked={selectedRoles.includes(role)}
                     onChange={() => toggleRole(role)}
-                    className="rounded border-gray-300 text-blue-600"
+                    className="rounded-chip border-paper-300 accent-ink-950"
                   />
-                  <span className="text-xs text-gray-700">{role}</span>
+                  <span className="text-dense text-ink-700">{role}</span>
                 </label>
               ))}
             </div>
           </div>
 
           {displayError && (
-            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-              <p className="text-sm text-red-700">{displayError}</p>
+            <div className="flex items-center gap-2 p-3 bg-risk-50 border border-risk-200 rounded-md">
+              <AlertCircle className="size-4 text-risk-600 flex-shrink-0" />
+              <p className="text-dense text-risk-700">{displayError}</p>
             </div>
           )}
         </div>
 
         {/* Modal footer */}
-        <div className="flex justify-end gap-2 px-6 py-4 border-t">
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-paper-200">
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
           <Button onClick={handleSubmit} disabled={isPending} className="gap-2">
-            <UserPlus className="h-4 w-4" />
+            <UserPlus className="size-4" />
             {isPending ? 'Inviting...' : 'Send Invite'}
           </Button>
         </div>

@@ -16,6 +16,7 @@ import {
   Database,
 } from 'lucide-react'
 import { AiConfigTab } from '@/components/admin/AiConfigTab'
+import { Card, EmptyState, Eyebrow } from '@/components/ui/primitives'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,13 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 function isValidHex(value: string): boolean {
   return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim())
 }
+
+/*
+ * The *customer's* brand color, not ours — this is tenant data, so it stays a
+ * literal rather than a design-system token. Named here so no raw hex sits in a
+ * style prop.
+ */
+const DEFAULT_BRAND_HEX = '#3B82F6'
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -84,24 +92,23 @@ export function AdminOrgPage() {
   }
 
   return (
-    <div className="h-full flex bg-gray-50">
+    <div className="h-full flex bg-paper-50">
       {/* Sidebar tabs */}
-      <aside className="w-52 border-r bg-white flex-shrink-0 p-4">
-        <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">
-          Organization
-        </p>
+      <aside className="w-52 border-r border-paper-200 bg-card flex-shrink-0 p-4">
+        <Eyebrow className="mb-3">Organization</Eyebrow>
         <nav className="space-y-0.5">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+              // Selected nav is an action, not a status — ink, never info.
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-dense transition-colors ${
                 activeTab === id
-                  ? 'bg-blue-600 text-white font-medium'
-                  : 'text-gray-600 hover:bg-gray-100'
+                  ? 'bg-ink-950 text-white font-medium'
+                  : 'text-ink-700 hover:bg-paper-100'
               }`}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="size-4" />
               {label}
             </button>
           ))}
@@ -114,15 +121,15 @@ export function AdminOrgPage() {
         {activeTab === 'general' && (
           <div className="max-w-2xl space-y-6">
             <div>
-              <h1 className="text-xl font-semibold text-gray-900">Organization Settings</h1>
-              <p className="text-sm text-gray-500 mt-1">
+              <h1 className="text-title text-ink-950">Organization Settings</h1>
+              <p className="text-dense text-ink-500 mt-1">
                 Manage your organization profile and branding.
               </p>
             </div>
 
-            <div className="bg-white rounded-xl border shadow-sm p-6 space-y-5">
+            <Card className="p-5 space-y-4">
               <div>
-                <Label className="text-xs text-gray-500 mb-1.5 block">Organization Name</Label>
+                <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Organization Name</Label>
                 <Input
                   value={orgName}
                   onChange={e => setOrgName(e.target.value)}
@@ -131,10 +138,10 @@ export function AdminOrgPage() {
               </div>
 
               <div>
-                <Label className="text-xs text-gray-500 mb-1.5 block">Logo</Label>
+                <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Logo</Label>
                 <div className="flex items-start gap-3">
                   {/* Preview — shows uploaded/URLed logo or a subtle placeholder */}
-                  <div className="w-16 h-16 rounded-lg border border-gray-200 bg-gray-50 flex items-center justify-center overflow-hidden shrink-0">
+                  <div className="size-16 rounded-card border border-paper-200 bg-paper-50 flex items-center justify-center overflow-hidden shrink-0">
                     {logoUrl ? (
                       <img
                         src={logoUrl}
@@ -144,7 +151,7 @@ export function AdminOrgPage() {
                         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
                       />
                     ) : (
-                      <Building2 className="h-6 w-6 text-gray-300" />
+                      <Building2 className="size-6 text-ink-400" />
                     )}
                   </div>
                   <div className="flex-1 space-y-1.5">
@@ -154,7 +161,7 @@ export function AdminOrgPage() {
                       placeholder="https://example.com/logo.png"
                       data-testid="logo-url"
                     />
-                    <p className="text-[11px] text-gray-400 leading-relaxed">
+                    <p className="text-[11px] text-ink-400 leading-relaxed">
                       Paste a URL to your logo (PNG or SVG). Direct file
                       upload lands in v1.1 — for now host on your own CDN
                       or intranet.
@@ -164,7 +171,7 @@ export function AdminOrgPage() {
               </div>
 
               <div>
-                <Label className="text-xs text-gray-500 mb-1.5 block">Brand Color</Label>
+                <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Brand Color</Label>
                 {/*
                   B.6.24 — native color picker + synced hex input. The
                   picker is the primary affordance (click the swatch to
@@ -177,15 +184,15 @@ export function AdminOrgPage() {
                   <label className="relative inline-block cursor-pointer">
                     <input
                       type="color"
-                      value={isValidHex(brandColor) ? brandColor : '#3b82f6'}
+                      value={isValidHex(brandColor) ? brandColor : DEFAULT_BRAND_HEX}
                       onChange={e => setBrandColor(e.target.value)}
                       data-testid="brand-color-picker"
                       aria-label="Pick brand color"
                       className="sr-only"
                     />
                     <span
-                      className="block w-10 h-10 rounded-lg border border-gray-200 shadow-sm"
-                      style={{ backgroundColor: isValidHex(brandColor) ? brandColor : '#3B82F6' }}
+                      className="block size-10 rounded-md border border-paper-200 shadow-e1"
+                      style={{ backgroundColor: isValidHex(brandColor) ? brandColor : DEFAULT_BRAND_HEX }}
                       aria-hidden
                     />
                   </label>
@@ -203,33 +210,35 @@ export function AdminOrgPage() {
               </div>
 
               <div>
-                <Label className="text-xs text-gray-500 mb-1.5 block">Subscription Tier</Label>
-                <div className="px-3 py-2 bg-gray-50 rounded-lg border text-sm text-gray-700">
+                <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Subscription Tier</Label>
+                <div className="px-3 py-2 bg-paper-50 rounded-md border border-paper-200 text-body text-ink-700">
                   {org?.subscriptionTier ?? 'FREE'}
                 </div>
               </div>
 
               {errorMsg && (
-                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-                  <p className="text-sm text-red-700">{errorMsg}</p>
+                <div className="flex items-center gap-2 p-3 bg-risk-50 border border-risk-200 rounded-md">
+                  <AlertCircle className="size-4 text-risk-600 flex-shrink-0" />
+                  <p className="text-dense text-risk-700">{errorMsg}</p>
                 </div>
               )}
 
               {successMsg && (
-                <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
-                  <Check className="h-4 w-4 text-green-500 flex-shrink-0" />
-                  <p className="text-sm text-green-700">{successMsg}</p>
+                // Neutral, not brand: saving a settings form is an acknowledgement,
+                // not a binding event. Emerald is reserved for approved/executed/signed.
+                <div className="flex items-center gap-2 p-3 bg-paper-100 border border-paper-200 rounded-md">
+                  <Check className="size-4 text-ink-500 flex-shrink-0" />
+                  <p className="text-dense text-ink-700">{successMsg}</p>
                 </div>
               )}
 
-              <div className="flex justify-end pt-2 border-t">
+              <div className="flex justify-end pt-2 border-t border-paper-200">
                 <Button onClick={handleSave} disabled={saveOrg.isPending} className="gap-2">
-                  <Save className="h-4 w-4" />
+                  <Save className="size-4" />
                   {saveOrg.isPending ? 'Saving...' : 'Save Changes'}
                 </Button>
               </div>
-            </div>
+            </Card>
           </div>
         )}
 
@@ -254,11 +263,8 @@ export function AdminOrgPage() {
 function PlaceholderTab({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
   return (
     <div className="max-w-2xl">
-      <h1 className="text-xl font-semibold text-gray-900 mb-6">{title}</h1>
-      <div className="bg-white rounded-xl border shadow-sm p-6 text-center py-16">
-        <Icon className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-        <p className="text-gray-500">Coming soon</p>
-      </div>
+      <h1 className="text-title text-ink-950 mb-6">{title}</h1>
+      <EmptyState icon={<Icon />} title="Coming soon" className="py-16" />
     </div>
   )
 }

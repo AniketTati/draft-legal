@@ -11,6 +11,7 @@ import {
   AlertCircle, Check, Loader2, Mail, AtSign, FileSignature,
   CheckCircle2, AlertTriangle, Clock,
 } from 'lucide-react'
+import { Eyebrow, EmptyState } from '@/components/ui/primitives'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,14 +26,13 @@ const FIELD_TYPES = [
 
 const CONTRACT_TYPES = ['', 'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'OTHER']
 
-const FIELD_TYPE_COLORS: Record<string, string> = {
-  text:        'bg-blue-50 text-blue-700 border-blue-200',
-  number:      'bg-purple-50 text-purple-700 border-purple-200',
-  date:        'bg-green-50 text-green-700 border-green-200',
-  boolean:     'bg-amber-50 text-amber-700 border-amber-200',
-  select:      'bg-orange-50 text-orange-700 border-orange-200',
-  multiselect: 'bg-pink-50 text-pink-700 border-pink-200',
-}
+/*
+ * The six field types used to own six hues — blue, purple, green, amber, orange,
+ * pink — which spent most of the meaning palette on a data type. A field being a
+ * date is not "binding" and a boolean is not "your turn". Type is a machine-side
+ * label, so it reads as one mono neutral chip and the word does the work.
+ */
+const FIELD_TYPE_CHIP = 'bg-paper-100 text-ink-700 border-paper-200 font-mono'
 
 type Tab = 'custom-fields' | 'general' | 'notifications'
 
@@ -170,10 +170,10 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="h-full flex bg-gray-50">
+    <div className="h-full flex bg-paper-50">
       {/* Settings sidebar */}
-      <aside className="w-52 border-r bg-white flex-shrink-0 p-4">
-        <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">Settings</p>
+      <aside className="w-52 border-r border-paper-200 bg-card flex-shrink-0 p-4">
+        <Eyebrow className="mb-3">Settings</Eyebrow>
         <nav className="space-y-0.5">
           {[
             { id: 'custom-fields', icon: Layers, label: 'Custom Fields' },
@@ -183,13 +183,14 @@ export function SettingsPage() {
             <button
               key={id}
               onClick={() => setActiveTab(id as Tab)}
-              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors ${
+              // Selected nav is an action, not a status — ink, never info.
+              className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-dense transition-colors ${
                 activeTab === id
-                  ? 'bg-blue-600 text-white font-medium'
-                  : 'text-gray-600 hover:bg-gray-100'
+                  ? 'bg-ink-950 text-white font-medium'
+                  : 'text-ink-700 hover:bg-paper-100'
               }`}
             >
-              <Icon className="h-4 w-4" />
+              <Icon className="size-4" />
               {label}
             </button>
           ))}
@@ -204,43 +205,45 @@ export function SettingsPage() {
           <div className="max-w-3xl space-y-6">
             <div className="flex items-start justify-between">
               <div>
-                <h1 className="text-xl font-semibold text-gray-900">Custom Fields</h1>
-                <p className="text-sm text-gray-500 mt-1">
+                <h1 className="text-title text-ink-950">Custom Fields</h1>
+                <p className="text-dense text-ink-500 mt-1">
                   Define extra fields for your contracts. Values are stored on each contract and fully searchable.
                 </p>
               </div>
               <Button onClick={() => setShowNewForm(true)} className="gap-2">
-                <Plus className="h-4 w-4" /> Add Field
+                <Plus className="size-4" /> Add Field
               </Button>
             </div>
 
             {/* Filter by type */}
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Show fields for:</span>
+              <span className="text-dense text-ink-500">Show fields for:</span>
               <div className="relative">
                 <select
                   value={filterType}
                   onChange={e => setFilterType(e.target.value)}
                   aria-label="Filter fields by contract type"
-                  className="appearance-none pl-3 pr-7 py-1.5 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
                 >
                   <option value="">All contract types</option>
                   {CONTRACT_TYPES.filter(Boolean).map(t => (
                     <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
                   ))}
                 </select>
-                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+                <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 size-3.5 text-ink-400 pointer-events-none" />
               </div>
             </div>
 
             {/* New field form */}
             {showNewForm && (
-              <div className="bg-white rounded-xl border-2 border-blue-200 shadow-sm p-5 space-y-4">
-                <h3 className="text-sm font-semibold text-gray-800">New Custom Field</h3>
+              // Border, not a colored wash: the open form is emphasised by being a
+              // lifted surface, not by a hue that would have to mean something.
+              <div className="bg-card rounded-card border border-paper-300 shadow-e1 p-5 space-y-4">
+                <h3 className="text-section text-ink-950">New Custom Field</h3>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-xs text-gray-500 mb-1.5 block">Field Label *</Label>
+                    <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Field Label *</Label>
                     <Input
                       placeholder="e.g. Survival Period"
                       value={newField.fieldLabel}
@@ -251,31 +254,31 @@ export function SettingsPage() {
                     />
                   </div>
                   <div>
-                    <Label className="text-xs text-gray-500 mb-1.5 block">Field Key * (snake_case)</Label>
+                    <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Field Key * (snake_case)</Label>
                     <Input
                       placeholder="e.g. survival_period"
                       value={newField.fieldKey}
                       onChange={e => setNewField(f => ({ ...f, fieldKey: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') }))}
-                      className="font-mono text-sm"
+                      className="font-mono text-[13px]"
                     />
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-xs text-gray-500 mb-1.5 block">Field Type *</Label>
+                    <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Field Type *</Label>
                     <div className="grid grid-cols-3 gap-1.5">
                       {FIELD_TYPES.map(({ value, label, icon: Icon }) => (
                         <button
                           key={value}
                           onClick={() => setNewField(f => ({ ...f, fieldType: value }))}
-                          className={`flex flex-col items-center gap-1 p-2 rounded-lg border text-xs transition-colors ${
+                          className={`flex flex-col items-center gap-1 p-2 rounded-md border text-dense transition-colors ${
                             newField.fieldType === value
-                              ? 'border-blue-500 bg-blue-50 text-blue-700'
-                              : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+                              ? 'border-ink-950 bg-paper-100 text-ink-950'
+                              : 'border-paper-200 text-ink-700 hover:bg-paper-50'
                           }`}
                         >
-                          <Icon className="h-3.5 w-3.5" />
+                          <Icon className="size-3.5" />
                           {label}
                         </button>
                       ))}
@@ -283,20 +286,20 @@ export function SettingsPage() {
                   </div>
                   <div className="space-y-3">
                     <div>
-                      <Label className="text-xs text-gray-500 mb-1.5 block">Contract Type (optional)</Label>
+                      <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Contract Type (optional)</Label>
                       <div className="relative">
                         <select
                           value={newField.contractType}
                           onChange={e => setNewField(f => ({ ...f, contractType: e.target.value }))}
                           aria-label="Contract type for new field"
-                          className="w-full appearance-none pl-3 pr-7 py-2 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          className="w-full appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
                         >
                           <option value="">All types (global)</option>
                           {CONTRACT_TYPES.filter(Boolean).map(t => (
                             <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
                           ))}
                         </select>
-                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 size-3.5 text-ink-400 pointer-events-none" />
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -305,9 +308,9 @@ export function SettingsPage() {
                         id="required"
                         checked={newField.required}
                         onChange={e => setNewField(f => ({ ...f, required: e.target.checked }))}
-                        className="rounded border-gray-300 text-blue-600"
+                        className="rounded-chip border-paper-300 accent-ink-950"
                       />
-                      <label htmlFor="required" className="text-sm text-gray-600">Required field</label>
+                      <label htmlFor="required" className="text-body text-ink-700">Required field</label>
                     </div>
                   </div>
                 </div>
@@ -315,12 +318,12 @@ export function SettingsPage() {
                 {/* Options for select/multiselect */}
                 {(newField.fieldType === 'select' || newField.fieldType === 'multiselect') && (
                   <div>
-                    <Label className="text-xs text-gray-500 mb-1.5 block">Options *</Label>
+                    <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Options *</Label>
                     <div className="flex flex-wrap gap-1.5 mb-2">
                       {newField.options.map(opt => (
-                        <span key={opt} className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-100 rounded-full text-xs">
+                        <span key={opt} className="inline-flex items-center gap-1 px-2.5 py-0.5 border border-paper-200 bg-paper-100 text-ink-950 rounded-full text-[11.5px]">
                           {opt}
-                          <button onClick={() => setNewField(f => ({ ...f, options: f.options.filter(o => o !== opt) }))} className="text-gray-400 hover:text-gray-600">×</button>
+                          <button onClick={() => setNewField(f => ({ ...f, options: f.options.filter(o => o !== opt) }))} className="text-ink-400 hover:text-ink-700">×</button>
                         </span>
                       ))}
                     </div>
@@ -338,7 +341,7 @@ export function SettingsPage() {
                 )}
 
                 <div>
-                  <Label className="text-xs text-gray-500 mb-1.5 block">Help Text (optional)</Label>
+                  <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Help Text (optional)</Label>
                   <Input
                     placeholder="Shown below the field in the contract form"
                     value={newField.helpText}
@@ -347,18 +350,18 @@ export function SettingsPage() {
                 </div>
 
                 {formError && (
-                  <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                    <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-                    <p className="text-sm text-red-700">{formError}</p>
+                  <div className="flex items-center gap-2 p-3 bg-risk-50 border border-risk-200 rounded-md">
+                    <AlertCircle className="size-4 text-risk-600 flex-shrink-0" />
+                    <p className="text-dense text-risk-700">{formError}</p>
                   </div>
                 )}
 
-                <div className="flex items-center justify-end gap-2 pt-2 border-t">
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-paper-200">
                   <Button variant="outline" onClick={() => { setShowNewForm(false); setNewField({ ...EMPTY_FIELD }); setFormError('') }}>
                     Cancel
                   </Button>
                   <Button onClick={handleSubmit} disabled={createField.isPending} className="gap-2">
-                    {createField.isPending ? 'Saving…' : <><Check className="h-4 w-4" /> Save Field</>}
+                    {createField.isPending ? 'Saving…' : <><Check className="size-4" /> Save Field</>}
                   </Button>
                 </div>
               </div>
@@ -367,57 +370,61 @@ export function SettingsPage() {
             {/* Field list */}
             {isLoading ? (
               <div className="flex justify-center py-12">
-                <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+                <div className="size-5 border-2 border-paper-300 border-t-ink-950 rounded-full animate-spin" />
               </div>
             ) : defs.length === 0 ? (
-              <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
-                <Layers className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-                <p className="text-gray-600 font-medium">No custom fields yet</p>
-                <p className="text-sm text-gray-400 mt-1">Add fields like "Survival Period" or "Auto-Renewal Notice Days" to capture org-specific data</p>
-                <Button onClick={() => setShowNewForm(true)} variant="outline" className="mt-4 gap-2">
-                  <Plus className="h-4 w-4" /> Add your first field
-                </Button>
-              </div>
+              <EmptyState
+                icon={<Layers />}
+                title="No custom fields yet"
+                description={'Add fields like "Survival Period" or "Auto-Renewal Notice Days" to capture org-specific data'}
+                action={
+                  <Button onClick={() => setShowNewForm(true)} variant="outline" className="gap-2">
+                    <Plus className="size-4" /> Add your first field
+                  </Button>
+                }
+              />
             ) : (
-              <div className="bg-white rounded-xl border shadow-sm divide-y">
+              <div className="bg-card rounded-card border border-paper-200 divide-y divide-paper-200 overflow-hidden">
                 {/* Group by contract type */}
                 {Array.from(new Set(defs.map((d: any) => d.contractType ?? ''))).map(group => {
                   const groupDefs = defs.filter((d: any) => (d.contractType ?? '') === group)
                   return (
                     <div key={String(group)}>
-                      <div className="px-5 py-2 bg-gray-50 border-b">
-                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                      <div className="px-5 py-2 bg-paper-50 border-b border-paper-200">
+                        <Eyebrow>
                           {group ? String(group).replace(/_/g, ' ') : 'Global (all contract types)'}
-                        </span>
+                        </Eyebrow>
                       </div>
                       {groupDefs.map((def: any) => (
-                        <div key={def.id} className="flex items-center gap-4 px-5 py-4 hover:bg-gray-50">
-                          <GripVertical className="h-4 w-4 text-gray-300 flex-shrink-0" />
+                        <div key={def.id} className="flex items-center gap-4 px-5 py-2 hover:bg-paper-50">
+                          <GripVertical className="size-4 text-ink-400 flex-shrink-0" />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <p className="text-sm font-medium text-gray-900">{def.fieldLabel}</p>
+                              <p className="text-body font-medium text-ink-950">{def.fieldLabel}</p>
+                              {/* A required flag is a schema constraint, not legal
+                                  exposure — red would have overstated it. */}
                               {def.required && (
-                                <span className="text-[10px] font-bold text-red-500 uppercase">Required</span>
+                                <span className="text-[10px] font-bold text-ink-500 uppercase tracking-[0.08em]">Required</span>
                               )}
                             </div>
                             <div className="flex items-center gap-2 mt-1">
-                              <span className="font-mono text-[11px] text-gray-400">{def.fieldKey}</span>
-                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${FIELD_TYPE_COLORS[def.fieldType] ?? 'bg-gray-50 text-gray-500 border-gray-200'}`}>
+                              <span className="font-mono text-[11px] text-ink-400">{def.fieldKey}</span>
+                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded-chip border text-[10px] ${FIELD_TYPE_CHIP}`}>
                                 {def.fieldType}
                               </span>
                               {def.options?.length > 0 && (
-                                <span className="text-[11px] text-gray-400">{def.options.join(' · ')}</span>
+                                <span className="text-[11px] text-ink-400">{def.options.join(' · ')}</span>
                               )}
                             </div>
                             {def.helpText && (
-                              <p className="text-xs text-gray-400 mt-0.5 italic">{def.helpText}</p>
+                              <p className="text-dense text-ink-400 mt-0.5 italic">{def.helpText}</p>
                             )}
                           </div>
                           <button
                             onClick={() => deleteField.mutate(def.id)}
-                            className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                            className="p-2 rounded-md text-ink-400 hover:text-risk-700 hover:bg-risk-50 transition-colors"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Trash2 className="size-4" />
                           </button>
                         </div>
                       ))}
@@ -523,86 +530,86 @@ function GeneralTab() {
     <div className="max-w-2xl space-y-6" data-testid="general-tab">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">General</h1>
-          <p className="text-sm text-gray-500 mt-1">Your profile and display preferences.</p>
+          <h1 className="text-title text-ink-950">General</h1>
+          <p className="text-dense text-ink-500 mt-1">Your profile and display preferences.</p>
         </div>
         <SaveBadge state={savedFlash} />
       </div>
 
       {/* Profile */}
-      <section className="bg-white rounded-xl border shadow-sm p-6 space-y-4" data-testid="general-profile">
-        <h2 className="text-sm font-semibold text-gray-800">Profile</h2>
+      <section className="bg-card rounded-card border border-paper-200 p-5 space-y-4" data-testid="general-profile">
+        <h2 className="text-section text-ink-950">Profile</h2>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Display name</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Display name</Label>
             <Input
               value={name}
               onChange={e => setName(e.target.value)}
               data-testid="general-name-input"
               placeholder="Your name"
             />
-            <p className="text-[11px] text-gray-400 mt-1">Shown on contracts you own and in the activity feed.</p>
+            <p className="text-[11px] text-ink-400 mt-1">Shown on contracts you own and in the activity feed.</p>
           </div>
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Email</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Email</Label>
             <div
-              className="flex h-9 items-center rounded-md border border-input bg-gray-50 px-3 text-sm text-gray-700 select-text"
+              className="flex h-8 items-center rounded-md border border-input bg-paper-50 px-3 text-[13px] text-ink-700 select-text"
               data-testid="general-email-readonly"
             >
               {user?.email ?? '—'}
             </div>
-            <p className="text-[11px] text-gray-400 mt-1">Contact your admin to change.</p>
+            <p className="text-[11px] text-ink-400 mt-1">Contact your admin to change.</p>
           </div>
         </div>
         <div className="flex items-center gap-2 pt-1">
           <Button onClick={onSaveProfile} disabled={save.isPending || name.trim() === (me?.name ?? user?.name ?? '')} data-testid="general-save-profile" size="sm">
-            {save.isPending ? <><Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" /> Saving…</> : 'Save profile'}
+            {save.isPending ? <><Loader2 className="size-3.5 animate-spin mr-1.5" /> Saving…</> : 'Save profile'}
           </Button>
-          {errorMsg && <span className="text-xs text-red-600">{errorMsg}</span>}
+          {errorMsg && <span className="text-[11.5px] text-risk-700">{errorMsg}</span>}
         </div>
       </section>
 
       {/* Workspace */}
-      <section className="bg-white rounded-xl border shadow-sm p-6 space-y-4" data-testid="general-workspace">
-        <h2 className="text-sm font-semibold text-gray-800">Workspace</h2>
+      <section className="bg-card rounded-card border border-paper-200 p-5 space-y-4" data-testid="general-workspace">
+        <h2 className="text-section text-ink-950">Workspace</h2>
         {orgName && (
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Organization</Label>
-            <div className="flex h-9 items-center rounded-md border border-input bg-gray-50 px-3 text-sm text-gray-700 select-text">
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Organization</Label>
+            <div className="flex h-8 items-center rounded-md border border-input bg-paper-50 px-3 text-[13px] text-ink-700 select-text">
               {orgName}
             </div>
           </div>
         )}
         <div className="grid grid-cols-3 gap-4">
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Default currency</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Default currency</Label>
             <select
               value={prefs.currency}
               onChange={e => onPrefChange({ ...prefs, currency: e.target.value })}
               data-testid="general-currency"
-              className="w-full h-9 text-sm border border-gray-200 rounded-md px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
             >
               {CURRENCY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Date format</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Date format</Label>
             <select
               value={prefs.dateFormat}
               onChange={e => onPrefChange({ ...prefs, dateFormat: e.target.value as GeneralPrefs['dateFormat'] })}
               data-testid="general-date-format"
-              className="w-full h-9 text-sm border border-gray-200 rounded-md px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
             >
               {DATE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div>
-            <Label className="text-xs text-gray-500 mb-1.5 block">Timezone</Label>
+            <Label className="text-[11.5px] font-semibold text-ink-950 mb-1.5 block">Timezone</Label>
             <select
               value={prefs.timezone}
               onChange={e => onPrefChange({ ...prefs, timezone: e.target.value })}
               data-testid="general-timezone"
-              className="w-full h-9 text-sm border border-gray-200 rounded-md px-2 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
             >
               {COMMON_TIMEZONES.map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
               {!COMMON_TIMEZONES.includes(prefs.timezone) && (
@@ -611,7 +618,7 @@ function GeneralTab() {
             </select>
           </div>
         </div>
-        <p className="text-[11px] text-gray-400">Used for date display, currency formatting and digest delivery time.</p>
+        <p className="text-[11px] text-ink-400">Used for date display, currency formatting and digest delivery time.</p>
       </section>
     </div>
   )
@@ -676,47 +683,47 @@ function NotificationsTab() {
     <div className="max-w-2xl space-y-6" data-testid="notifications-tab">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Notifications</h1>
-          <p className="text-sm text-gray-500 mt-1">Pick what reaches you and how often.</p>
+          <h1 className="text-title text-ink-950">Notifications</h1>
+          <p className="text-dense text-ink-500 mt-1">Pick what reaches you and how often.</p>
         </div>
         <SaveBadge state={savedFlash} />
       </div>
 
-      <section className="bg-white rounded-xl border shadow-sm divide-y" data-testid="notifications-triggers">
+      <section className="bg-card rounded-card border border-paper-200 divide-y divide-paper-200 overflow-hidden" data-testid="notifications-triggers">
         <div className="p-4 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-800">Email me when…</h2>
-          <span className="text-[11px] text-gray-400">All toggles persist immediately</span>
+          <h2 className="text-section text-ink-950">Email me when…</h2>
+          <span className="text-[11px] text-ink-400">All toggles persist immediately</span>
         </div>
         {triggers.map(({ key, icon: Icon, title, body }) => (
           <label
             key={key}
-            className="flex items-start gap-3 p-4 cursor-pointer hover:bg-gray-50 transition-colors"
+            className="flex items-start gap-3 p-4 cursor-pointer hover:bg-paper-50 transition-colors"
             data-testid={`notif-${key}-row`}
           >
-            <span className="h-9 w-9 rounded-lg bg-gray-50 flex items-center justify-center flex-shrink-0">
-              <Icon className="h-4 w-4 text-gray-500" />
+            <span className="size-9 rounded-md bg-paper-100 flex items-center justify-center flex-shrink-0">
+              <Icon className="size-4 text-ink-500" />
             </span>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-900">{title}</p>
-              <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{body}</p>
+              <p className="text-body font-medium text-ink-950">{title}</p>
+              <p className="text-dense text-ink-500 mt-0.5 leading-relaxed">{body}</p>
             </div>
             <input
               type="checkbox"
               checked={!!prefs[key]}
               onChange={e => update({ [key]: e.target.checked } as Partial<NotificationPrefs>)}
               data-testid={`notif-${key}-toggle`}
-              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-2 focus:ring-blue-500/30"
+              className="mt-1 size-4 rounded-chip border-paper-300 accent-ink-950 focus:ring-[3px] focus:ring-brand-700/12"
             />
           </label>
         ))}
       </section>
 
-      <section className="bg-white rounded-xl border shadow-sm p-4 space-y-3" data-testid="notifications-digest">
+      <section className="bg-card rounded-card border border-paper-200 p-4 space-y-3" data-testid="notifications-digest">
         <div className="flex items-center gap-2">
-          <Clock className="h-4 w-4 text-gray-500" />
-          <h2 className="text-sm font-semibold text-gray-800">Delivery cadence</h2>
+          <Clock className="size-4 text-ink-500" />
+          <h2 className="text-section text-ink-950">Delivery cadence</h2>
         </div>
-        <p className="text-xs text-gray-500">How often we should batch and send the notifications you've chosen.</p>
+        <p className="text-dense text-ink-500">How often we should batch and send the notifications you've chosen.</p>
         <div className="grid grid-cols-3 gap-2">
           {[
             { value: 'real-time', label: 'Real-time',     hint: 'As things happen' },
@@ -728,14 +735,15 @@ function NotificationsTab() {
               onClick={() => update({ digest: opt.value as NotificationPrefs['digest'] })}
               data-testid={`notif-digest-${opt.value}`}
               aria-pressed={prefs.digest === opt.value}
-              className={`p-3 rounded-lg border text-left transition-colors ${
+              // Selection is an action — ink, not a colored wash.
+              className={`p-3 rounded-md border text-left transition-colors ${
                 prefs.digest === opt.value
-                  ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/20'
-                  : 'border-gray-200 hover:bg-gray-50'
+                  ? 'border-ink-950 bg-paper-100'
+                  : 'border-paper-200 hover:bg-paper-50'
               }`}
             >
-              <p className={`text-sm font-medium ${prefs.digest === opt.value ? 'text-blue-700' : 'text-gray-900'}`}>{opt.label}</p>
-              <p className="text-[11px] text-gray-500 mt-0.5">{opt.hint}</p>
+              <p className={`text-body font-medium ${prefs.digest === opt.value ? 'text-ink-950' : 'text-ink-700'}`}>{opt.label}</p>
+              <p className="text-[11px] text-ink-500 mt-0.5">{opt.hint}</p>
             </button>
           ))}
         </div>
@@ -751,15 +759,20 @@ function SaveBadge({ state }: { state: 'idle' | 'saving' | 'saved' | 'error' }) 
     <span
       data-testid="settings-save-badge"
       data-state={state}
-      className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full ${
-        state === 'saving' ? 'bg-gray-100 text-gray-600' :
-        state === 'saved' ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200' :
-        'bg-red-50 text-red-700 ring-1 ring-red-200'
+      /*
+       * "Saved" stays neutral. Emerald is the binding color — approved, executed,
+       * signed — and a preferences write is an acknowledgement, not a legal event.
+       * Only the failure earns a meaning color here.
+       */
+      className={`inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 rounded-full ${
+        state === 'saving' ? 'bg-paper-100 text-ink-500' :
+        state === 'saved' ? 'bg-paper-100 text-ink-950 ring-1 ring-paper-200' :
+        'bg-risk-50 text-risk-700 ring-1 ring-risk-200'
       }`}
     >
-      {state === 'saving' ? <><Loader2 className="h-3 w-3 animate-spin" /> Saving…</> :
-       state === 'saved'  ? <><Check className="h-3 w-3" /> Saved</> :
-                            <><AlertCircle className="h-3 w-3" /> Could not save</>}
+      {state === 'saving' ? <><Loader2 className="size-3 animate-spin" /> Saving…</> :
+       state === 'saved'  ? <><Check className="size-3" /> Saved</> :
+                            <><AlertCircle className="size-3" /> Could not save</>}
     </span>
   )
 }

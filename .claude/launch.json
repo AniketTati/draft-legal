@@ -1,6 +1,7 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["--filter", "web", "dev"], "port": 5173 }
+    { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["--filter", "web", "dev"], "port": 5173 },
+    { "name": "web-built", "runtimeExecutable": "pnpm", "runtimeArgs": ["--filter", "web", "preview"], "port": 4173 }
   ]
 }

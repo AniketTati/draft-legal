@@ -28,6 +28,7 @@ import {
   Bold, Italic, Underline as UnderlineIcon, Heading2, Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
 import {
   RiskHighlights,
   updateRiskHighlights,
@@ -170,33 +171,32 @@ export function DocumentCanvas({
   // canvas during analysis.
   if (state.kind === 'loading') {
     return (
-      <div className={cn('flex flex-col items-center justify-center h-full bg-gray-50', className)}>
-        <Loader2 className="h-6 w-6 text-gray-300 animate-spin mb-3" />
-        <p className="text-sm text-gray-500">Preparing document…</p>
+      <div className={cn('flex flex-col items-center justify-center h-full bg-paper-50', className)}>
+        <Loader2 className="size-6 text-ink-400 animate-spin mb-3" />
+        <p className="text-body text-ink-500">Preparing document…</p>
       </div>
     )
   }
 
   if (state.kind === 'analysis_failed') {
     return (
-      <div className={cn('flex flex-col items-center justify-center h-full bg-gray-50', className)}>
-        <div className="max-w-md mx-auto text-center bg-white rounded-xl border border-amber-200 shadow-sm p-8">
-          <FileWarning className="h-8 w-8 text-amber-500 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-gray-800">Document extraction failed</p>
+      <div className={cn('flex flex-col items-center justify-center h-full bg-paper-50', className)}>
+        {/* A document that never got extracted is the same event the repository
+            row calls Failed, so it wears risk here too rather than amber. */}
+        <div className="max-w-md mx-auto text-center bg-card rounded-card border border-risk-200 shadow-e1 p-8">
+          <FileWarning className="size-6 text-risk-600 mx-auto mb-3" />
+          <p className="text-body font-semibold text-ink-950">Document extraction failed</p>
           {state.reason && (
-            <p className="text-xs text-gray-500 mt-2 leading-relaxed">{state.reason}</p>
+            <p className="text-dense text-ink-500 mt-2 leading-relaxed">{state.reason}</p>
           )}
-          <p className="text-xs text-gray-500 mt-3">
+          <p className="text-dense text-ink-500 mt-3">
             The contract is still uploaded — you can view the original PDF from <span className="font-medium">Actions</span>,
             or retry analysis.
           </p>
           {state.onReanalyze && (
-            <button
-              onClick={state.onReanalyze}
-              className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-amber-600 text-white text-xs font-medium hover:bg-amber-700"
-            >
+            <Button onClick={state.onReanalyze} className="mt-4">
               Retry analysis
-            </button>
+            </Button>
           )}
         </div>
       </div>
@@ -205,11 +205,11 @@ export function DocumentCanvas({
 
   if (state.kind === 'empty') {
     return (
-      <div className={cn('flex flex-col items-center justify-center h-full bg-gray-50', className)}>
+      <div className={cn('flex flex-col items-center justify-center h-full bg-paper-50', className)}>
         <div className="text-center">
-          <AlertTriangle className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-          <p className="text-sm text-gray-500">No content yet.</p>
-          <p className="text-xs text-gray-400 mt-1">Upload a PDF or draft from a template.</p>
+          <AlertTriangle className="size-6 text-ink-400 mx-auto mb-3" />
+          <p className="text-body text-ink-500">No content yet.</p>
+          <p className="text-dense text-ink-400 mt-1">Upload a PDF or draft from a template.</p>
         </div>
       </div>
     )
@@ -250,7 +250,7 @@ export function DocumentCanvas({
   return (
     <div
       ref={scrollRef}
-      className={cn('h-full overflow-auto bg-gray-50', className)}
+      className={cn('h-full overflow-auto bg-paper-50', className)}
       onClick={onClickDocument}
       onKeyDown={onKeyDownDocument}
     >
@@ -258,9 +258,10 @@ export function DocumentCanvas({
         className={cn(
           'document-canvas',
           riskTone === 'amber' && 'document-canvas--tone-amber',
-          'mx-auto my-8 bg-white',
-          'shadow-[0_0_0_1px_rgba(0,0,0,0.04),0_2px_8px_rgba(0,0,0,0.04)]',
-          'rounded-sm',
+          // The page is the one surface allowed a drop shadow on paper.
+          'mx-auto my-8 bg-card',
+          'shadow-page',
+          'rounded-paper',
           'w-[min(820px,calc(100%-3rem))]',
           'min-h-[1056px]', // 11in @ 96dpi — simulated page
           'px-[2.5cm] py-[2cm]',
@@ -280,28 +281,28 @@ export function DocumentCanvas({
         <BubbleMenu
           editor={editor}
           updateDelay={100}
-          className="inline-flex items-center gap-0.5 rounded-lg border border-gray-200 bg-white p-1 shadow-lg"
+          className="inline-flex items-center gap-0.5 rounded-md border border-paper-200 bg-popover p-1 shadow-e2"
         >
           <MenuButton
             active={editor.isActive('bold')}
             onClick={() => editor.chain().focus().toggleBold().run()}
             title="Bold (⌘B)"
           >
-            <Bold className="h-3.5 w-3.5" strokeWidth={2.5} />
+            <Bold className="size-3.5" strokeWidth={2.5} />
           </MenuButton>
           <MenuButton
             active={editor.isActive('italic')}
             onClick={() => editor.chain().focus().toggleItalic().run()}
             title="Italic (⌘I)"
           >
-            <Italic className="h-3.5 w-3.5" />
+            <Italic className="size-3.5" />
           </MenuButton>
           <MenuButton
             active={editor.isActive('underline')}
             onClick={() => editor.chain().focus().toggleUnderline().run()}
             title="Underline (⌘U)"
           >
-            <UnderlineIcon className="h-3.5 w-3.5" />
+            <UnderlineIcon className="size-3.5" />
           </MenuButton>
           <MenuSeparator />
           <MenuButton
@@ -309,7 +310,7 @@ export function DocumentCanvas({
             onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
             title="Heading 2"
           >
-            <Heading2 className="h-3.5 w-3.5" />
+            <Heading2 className="size-3.5" />
           </MenuButton>
           <MenuSeparator />
           <MenuButton
@@ -320,11 +321,11 @@ export function DocumentCanvas({
             }}
             // U.2.2 / decision 14a — icon-only ✨, indigo accent.
             title="Ask about this selection · ⌘K"
-            className="text-indigo-600 hover:bg-indigo-50"
+            className="text-assist-600 hover:bg-assist-50"
             data-testid="bubble-menu-ai-btn"
             aria-label="Ask AI about this selection"
           >
-            <Sparkles className="h-3.5 w-3.5" />
+            <Sparkles className="size-3.5" />
           </MenuButton>
         </BubbleMenu>
       )}
@@ -354,10 +355,10 @@ function MenuButton({
       aria-pressed={active}
       {...rest}
       className={cn(
-        'inline-flex items-center justify-center w-7 h-7 rounded transition-colors',
+        'inline-flex items-center justify-center size-7 rounded-chip transition-colors',
         active
-          ? 'bg-gray-100 text-gray-900'
-          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+          ? 'bg-paper-100 text-ink-950'
+          : 'text-ink-700 hover:bg-paper-100 hover:text-ink-950',
         className,
       )}
     >
@@ -367,5 +368,5 @@ function MenuButton({
 }
 
 function MenuSeparator() {
-  return <div className="mx-0.5 h-5 w-px bg-gray-200" aria-hidden />
+  return <div className="mx-0.5 h-5 w-px bg-paper-200" aria-hidden />
 }

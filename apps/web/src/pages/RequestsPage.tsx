@@ -5,6 +5,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NewRequestModal } from '@/components/requests/NewRequestModal'
 import { RequestDetailPanel } from '@/components/requests/RequestDetailPanel'
+import { StatusPill } from '@/components/ui/status-pill'
+import { Chip, CountBadge, EmptyState } from '@/components/ui/primitives'
+import { AssistChip } from '@/components/ui/assist'
 import { Plus, Search, ClipboardList, Loader2, ChevronRight } from 'lucide-react'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -18,34 +21,22 @@ const STATUS_TABS = [
   { value: 'REJECTED',        label: 'Rejected' },
 ]
 
-const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  SUBMITTED:        { label: 'Submitted',       cls: 'bg-blue-50 text-blue-700' },
-  IN_REVIEW:        { label: 'In Review',        cls: 'bg-amber-50 text-amber-700' },
-  ACCEPTED:         { label: 'Accepted',         cls: 'bg-green-50 text-green-700' },
-  REJECTED:         { label: 'Rejected',         cls: 'bg-red-50 text-red-600' },
-  MORE_INFO_NEEDED: { label: 'More Info',        cls: 'bg-orange-50 text-orange-700' },
-  COMPLETED:        { label: 'Completed',        cls: 'bg-gray-100 text-gray-500' },
+/** Colour comes from lib/status; the wording stays as this list has spelled it. */
+const STATUS_LABEL: Record<string, string> = {
+  SUBMITTED:        'Submitted',
+  IN_REVIEW:        'In Review',
+  ACCEPTED:         'Accepted',
+  REJECTED:         'Rejected',
+  MORE_INFO_NEEDED: 'More Info',
+  COMPLETED:        'Completed',
 }
 
+// Priority is urgency: high is the assignee's turn, urgent is exposure.
 const PRIORITY_CLS: Record<string, string> = {
-  LOW:    'bg-gray-100 text-gray-500',
-  MEDIUM: 'bg-blue-50 text-blue-600',
-  HIGH:   'bg-amber-50 text-amber-700',
-  URGENT: 'bg-red-50 text-red-600',
-}
-
-const TYPE_CLS: Record<string, string> = {
-  NDA:              'bg-purple-100 text-purple-700',
-  MSA:              'bg-blue-100 text-blue-700',
-  SOW:              'bg-cyan-100 text-cyan-700',
-  SLA:              'bg-teal-100 text-teal-700',
-  VENDOR_AGREEMENT: 'bg-orange-100 text-orange-700',
-  EMPLOYMENT:       'bg-pink-100 text-pink-700',
-  PARTNERSHIP:      'bg-indigo-100 text-indigo-700',
-  LICENSE:          'bg-violet-100 text-violet-700',
-  DATA_PROCESSING:  'bg-green-100 text-green-700',
-  ORDER_FORM:       'bg-yellow-100 text-yellow-700',
-  OTHER:            'bg-gray-100 text-gray-600',
+  LOW:    'bg-paper-100 text-ink-500',
+  MEDIUM: 'bg-paper-100 text-ink-700',
+  HIGH:   'bg-attention-100 text-attention-700',
+  URGENT: 'bg-risk-100 text-risk-700',
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -94,12 +85,12 @@ export function RequestsPage() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100 bg-white gap-4">
+      <div className="flex items-start justify-between px-6 py-4 border-b border-paper-200 bg-card gap-4">
         <div className="min-w-0">
-          <h1 className="text-lg font-semibold text-gray-900">Contract Requests</h1>
+          <h1 className="text-title text-ink-950">Contract Requests</h1>
           {/* B.6.16 — one-sentence explainer so first-time visitors
               understand what a "request" is before they hunt. */}
-          <p className="text-xs text-gray-500 mt-0.5 max-w-xl">
+          <p className="text-dense text-ink-500 mt-1 max-w-xl">
             Ask Legal to draft a contract. Fill out what you need —
             type, counterparty, timeline — and they'll produce the
             first version for you.
@@ -109,14 +100,14 @@ export function RequestsPage() {
           size="sm"
           onClick={() => setShowNew(true)}
           data-testid="requests-create-btn"
-          className="gap-1.5 shrink-0"
+          className="shrink-0"
         >
-          <Plus className="h-4 w-4" /> New Request
+          <Plus /> New Request
         </Button>
       </div>
 
       {/* Tabs — B.6.16 adds inline counts so users see where work is */}
-      <div className="flex items-center gap-1 px-6 pt-3 border-b border-gray-100 bg-white">
+      <div className="flex items-center gap-1 px-6 pt-3 border-b border-paper-200 bg-card">
         {STATUS_TABS.map(tab => {
           // For the "All" tab the count is the sum; otherwise look up
           // the specific status.
@@ -127,19 +118,15 @@ export function RequestsPage() {
               key={tab.value}
               onClick={() => setActiveTab(tab.value)}
               data-testid={`requests-tab-${tab.value || 'all'}`}
-              className={`px-3 py-2 text-xs font-medium rounded-t-lg transition-colors border-b-2 -mb-px inline-flex items-center gap-1.5 ${
+              className={`px-3 py-2 text-[13px] font-medium transition-colors border-b-2 -mb-px inline-flex items-center gap-1.5 ${
                 isActive
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-ink-950 text-ink-950'
+                  : 'border-transparent text-ink-500 hover:text-ink-950'
               }`}
             >
               <span>{tab.label}</span>
               {count > 0 && (
-                <span className={`tabular-nums rounded-full px-1.5 text-[10px] font-semibold ${
-                  isActive ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
-                }`}>
-                  {count}
-                </span>
+                <CountBadge tone={isActive ? 'ink' : 'neutral'}>{count}</CountBadge>
               )}
             </button>
           )
@@ -147,41 +134,39 @@ export function RequestsPage() {
       </div>
 
       {/* Search */}
-      <div className="px-6 py-3 bg-white border-b border-gray-100">
+      <div className="px-6 py-3 bg-card border-b border-paper-200">
         <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-ink-400" />
           <Input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search requests…"
-            className="pl-9 h-8 text-sm"
+            className="pl-9"
           />
         </div>
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-auto bg-gray-50">
+      <div className="flex-1 overflow-auto bg-paper-50">
         {isLoading ? (
-          <div className="flex items-center justify-center h-48 gap-2 text-gray-400 text-sm">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          <div className="flex items-center justify-center h-48 gap-2 text-ink-400 text-dense">
+            <Loader2 className="size-4 animate-spin" /> Loading…
           </div>
         ) : requests.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 gap-3">
-            <ClipboardList className="h-10 w-10 text-gray-200" />
-            <p className="text-sm text-gray-400">
-              {debouncedSearch ? 'No requests match your search' : 'No requests found'}
-            </p>
-            {!activeTab && !debouncedSearch && (
-              <Button size="sm" variant="outline" onClick={() => setShowNew(true)} className="gap-1.5 mt-1">
-                <Plus className="h-3.5 w-3.5" /> Submit your first request
-              </Button>
-            )}
+          <div className="mx-6 my-4">
+            <EmptyState
+              icon={<ClipboardList />}
+              title={debouncedSearch ? 'No requests match your search' : 'No requests found'}
+              action={!activeTab && !debouncedSearch ? (
+                <Button size="sm" variant="outline" onClick={() => setShowNew(true)}>
+                  <Plus /> Submit your first request
+                </Button>
+              ) : undefined}
+            />
           </div>
         ) : (
-          <div className="divide-y divide-gray-100 bg-white mx-6 my-4 rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="divide-y divide-paper-200 bg-card mx-6 my-4 rounded-card border border-paper-200 overflow-hidden">
             {requests.map(req => {
-              const badge   = STATUS_BADGE[req.status] ?? STATUS_BADGE.SUBMITTED
-              const typeCls = TYPE_CLS[req.type] ?? TYPE_CLS.OTHER
               const priCls  = PRIORITY_CLS[req.priority] ?? PRIORITY_CLS.MEDIUM
               const isClassifying = req.status === 'SUBMITTED' && !req.metadata?._aiClassification
 
@@ -191,29 +176,34 @@ export function RequestsPage() {
                   data-testid={`request-row-${req.id}`}
                   data-request-title={req.title}
                   onClick={() => setSelected(req)}
-                  className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-gray-50 transition-colors group"
+                  className="w-full flex items-center gap-4 px-5 py-2.5 text-left hover:bg-paper-50 transition-colors group"
                 >
-                  {/* Type dot */}
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${typeCls.split(' ')[0].replace('bg-', 'bg-').replace('-100', '-400')}`} />
+                  {/* Row marker. It used to be tinted by contract type; type is a
+                      fact about the document and carries no meaning colour here. */}
+                  <div className="size-1.5 rounded-full flex-shrink-0 bg-paper-300" />
 
                   {/* Main content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className="text-sm font-medium text-gray-900 truncate">{req.title}</p>
+                      <p className="text-[13px] font-medium text-ink-950 truncate">{req.title}</p>
                       {isClassifying && (
-                        <span className="flex items-center gap-1 text-[10px] text-blue-500 bg-blue-50 rounded-full px-1.5 py-0.5 flex-shrink-0">
-                          <Loader2 className="h-2.5 w-2.5 animate-spin" /> Classifying
-                        </span>
+                        // The machine is mid-work on this row.
+                        <AssistChip
+                          icon={<Loader2 className="size-2.5 animate-spin" />}
+                          className="flex-shrink-0"
+                        >
+                          Classifying
+                        </AssistChip>
                       )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                       {req.requestNumber && (
-                        <span className="text-[10px] font-mono text-gray-400">{req.requestNumber}</span>
+                        <span className="text-[10px] font-mono text-ink-400">{req.requestNumber}</span>
                       )}
                       {req.counterpartyName && (
-                        <span className="text-xs text-gray-400">{req.counterpartyName}</span>
+                        <span className="text-[11px] text-ink-500">{req.counterpartyName}</span>
                       )}
-                      <span className="text-xs text-gray-300">
+                      <span className="text-[11px] tabular-nums text-ink-400">
                         {new Date(req.createdAt).toLocaleDateString()}
                       </span>
                     </div>
@@ -221,16 +211,12 @@ export function RequestsPage() {
 
                   {/* Badges */}
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${typeCls}`}>
-                      {req.type.replace(/_/g, ' ')}
-                    </span>
+                    <Chip>{req.type.replace(/_/g, ' ')}</Chip>
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${priCls}`}>
                       {req.priority}
                     </span>
-                    <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${badge.cls}`}>
-                      {badge.label}
-                    </span>
-                    <ChevronRight className="h-4 w-4 text-gray-300 group-hover:text-gray-500 transition-colors" />
+                    <StatusPill status={req.status}>{STATUS_LABEL[req.status]}</StatusPill>
+                    <ChevronRight className="size-4 text-ink-400 group-hover:text-ink-700 transition-colors" />
                   </div>
                 </button>
               )

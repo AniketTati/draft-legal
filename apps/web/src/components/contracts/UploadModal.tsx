@@ -135,18 +135,18 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[90vh]">
-        <div className="flex items-center justify-between p-5 border-b flex-shrink-0">
-          <h2 className="text-lg font-semibold">Upload Contracts</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="h-5 w-5" />
+      <div className="bg-card rounded-card shadow-e3 w-full max-w-2xl flex flex-col max-h-[90vh]">
+        <div className="flex items-center justify-between p-5 border-b border-paper-200 flex-shrink-0">
+          <h2 className="text-section text-ink-950">Upload Contracts</h2>
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <X className="size-4" />
           </button>
         </div>
 
         <div className="flex flex-1 min-h-0">
           {/* File list sidebar */}
           {entries.length > 0 && (
-            <div className="w-52 border-r flex-shrink-0 flex flex-col">
+            <div className="w-52 border-r border-paper-200 flex-shrink-0 flex flex-col">
               <div className="flex-1 overflow-y-auto py-2 space-y-0.5 px-2">
                 {entries.map((e, i) => (
                   // P50 a11y — outer is a div with click handler so the
@@ -154,20 +154,23 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                   // entry name itself is a real <button> for keyboard a11y.
                   <div
                     key={i}
-                    className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-left text-xs transition-colors ${
-                      i === activeIdx ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50 text-gray-700'
+                    className={`w-full flex items-center gap-2 px-2 py-2 rounded-md text-left text-dense transition-colors ${
+                      i === activeIdx ? 'bg-paper-100 text-ink-950' : 'hover:bg-paper-50 text-ink-700'
                     }`}
                   >
                     <span className="flex-shrink-0">
-                      {e.status === 'done' && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />}
-                      {e.status === 'uploading' && <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />}
-                      {e.status === 'error' && <AlertCircle className="h-3.5 w-3.5 text-red-500" />}
-                      {e.status === 'pending' && <FileText className="h-3.5 w-3.5 text-gray-400" />}
+                      {/* A finished upload produces a DRAFT, which lib/status
+                          calls neutral — so the tick is a neutral fact, not the
+                          binding green. Only the failure keeps a meaning. */}
+                      {e.status === 'done' && <CheckCircle2 className="size-3.5 text-ink-500" />}
+                      {e.status === 'uploading' && <Loader2 className="size-3.5 text-info-600 animate-spin" />}
+                      {e.status === 'error' && <AlertCircle className="size-3.5 text-risk-600" />}
+                      {e.status === 'pending' && <FileText className="size-3.5 text-ink-400" />}
                     </span>
                     <button
                       type="button"
                       onClick={() => setActiveIdx(i)}
-                      className="truncate font-medium leading-tight text-left flex-1 min-w-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-400 rounded"
+                      className="truncate font-medium leading-tight text-left flex-1 min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 rounded-md"
                     >
                       {e.title || e.file.name}
                     </button>
@@ -176,18 +179,18 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                         type="button"
                         onClick={() => remove(i)}
                         aria-label={`Remove ${e.title || e.file.name}`}
-                        className="ml-auto text-gray-300 hover:text-gray-500 flex-shrink-0"
+                        className="ml-auto text-ink-400 hover:text-ink-700 flex-shrink-0"
                       >
-                        <X className="h-3 w-3" />
+                        <X className="size-3" />
                       </button>
                     )}
                   </div>
                 ))}
               </div>
-              <div className="p-2 border-t">
-                <div {...getRootProps()} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed border-gray-300 text-xs text-gray-500 hover:border-blue-400 hover:text-blue-600 cursor-pointer transition-colors">
+              <div className="p-2 border-t border-paper-200">
+                <div {...getRootProps()} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-md border border-dashed border-paper-300 text-dense text-ink-500 hover:border-ink-950 hover:text-ink-950 cursor-pointer transition-colors">
                   <input {...getInputProps()} />
-                  <Plus className="h-3.5 w-3.5" /> Add files
+                  <Plus className="size-3.5" /> Add files
                 </div>
               </div>
             </div>
@@ -199,37 +202,37 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
               <div
                 {...getRootProps()}
                 data-testid="upload-modal-dropzone"
-                className={`h-full min-h-48 border-2 border-dashed rounded-xl flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${
-                  isDragActive ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
+                className={`h-full min-h-48 border-2 border-dashed rounded-card flex flex-col items-center justify-center gap-3 cursor-pointer transition-colors ${
+                  isDragActive ? 'border-ink-950 bg-paper-100' : 'border-paper-300 hover:border-ink-950 hover:bg-paper-50'
                 }`}
               >
                 <input {...getInputProps()} data-testid="upload-modal-input" />
-                <Upload className="h-10 w-10 text-gray-300" />
+                <Upload className="size-6 text-ink-400" />
                 <div className="text-center">
-                  <p className="text-sm font-medium text-gray-600">
+                  <p className="text-body font-medium text-ink-700">
                     {isDragActive ? 'Drop files here' : 'Drag & drop or click to browse'}
                   </p>
-                  <p className="text-xs text-gray-400 mt-1">PDF, DOCX, or TXT · up to 50 MB each · multiple files supported</p>
+                  <p className="text-dense text-ink-400 mt-1">PDF, DOCX, or TXT · up to 50 MB each · multiple files supported</p>
                 </div>
               </div>
             ) : activeEntry ? (
               <div className="space-y-4">
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <FileText className="h-4 w-4 text-gray-400" />
+                <div className="flex items-center gap-2 text-body text-ink-500">
+                  <FileText className="size-4 text-ink-400" />
                   <span className="truncate">{activeEntry.file.name}</span>
-                  <span className="text-gray-300">·</span>
-                  <span>{(activeEntry.file.size / 1024).toFixed(0)} KB</span>
+                  <span className="text-paper-300">·</span>
+                  <span className="tabular-nums">{(activeEntry.file.size / 1024).toFixed(0)} KB</span>
                 </div>
 
                 {activeEntry.status === 'error' && (
-                  <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 rounded-lg p-3">
-                    <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                  <div className="flex items-center gap-2 text-body text-risk-700 bg-risk-50 border border-risk-200 rounded-md p-3">
+                    <AlertCircle className="size-4 flex-shrink-0" />
                     <span>{activeEntry.error}</span>
                   </div>
                 )}
                 {activeEntry.status === 'done' && (
-                  <div className="flex items-center gap-2 text-sm text-emerald-700 bg-emerald-50 rounded-lg p-3">
-                    <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  <div className="flex items-center gap-2 text-body text-ink-950 bg-paper-100 border border-paper-200 rounded-md p-3">
+                    <CheckCircle2 className="size-4 flex-shrink-0 text-ink-500" />
                     <span>Uploaded — AI analysis queued in background</span>
                   </div>
                 )}
@@ -252,7 +255,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                     value={activeEntry.type}
                     onChange={e => update(activeIdx, { type: e.target.value })}
                     disabled={activeEntry.status !== 'pending'}
-                    className="w-full mt-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                    className="w-full mt-1 h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 disabled:opacity-60"
                   >
                     {CONTRACT_TYPES.map(t => (
                       <option key={t} value={t}>{t.replace('_', ' ')}</option>
@@ -272,25 +275,25 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                 </div>
 
                 {/* ── Link to parent contract ─────────────────────────────── */}
-                <div className="border rounded-lg p-3 bg-gray-50 space-y-3">
+                <div className="border border-paper-200 rounded-md p-3 bg-paper-50 space-y-3">
                   <div className="flex items-center gap-2">
-                    <Link className="h-3.5 w-3.5 text-gray-400" />
-                    <span className="text-xs font-medium text-gray-600">Link to existing contract</span>
-                    <span className="text-xs text-gray-400">(optional)</span>
+                    <Link className="size-3.5 text-ink-400" />
+                    <span className="text-dense font-medium text-ink-700">Link to existing contract</span>
+                    <span className="text-dense text-ink-400">(optional)</span>
                   </div>
 
                   {activeEntry.parentContractId ? (
                     <div className="flex items-center gap-2">
-                      <span className="flex-1 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-2 py-1.5 truncate">
+                      <span className="flex-1 text-dense text-ink-950 bg-paper-100 border border-paper-200 rounded-chip px-2 py-1.5 truncate">
                         {(parentSearchResults as any[])?.find((c: any) => c.id === activeEntry.parentContractId)?.title
                           ?? `Contract ${activeEntry.parentContractId.slice(0, 8)}…`}
                       </span>
                       <button
                         onClick={() => update(activeIdx, { parentContractId: '', relationshipType: '' })}
-                        className="text-gray-400 hover:text-gray-600"
+                        className="text-ink-400 hover:text-ink-700"
                         disabled={activeEntry.status !== 'pending'}
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <X className="size-3.5" />
                       </button>
                     </div>
                   ) : (
@@ -300,21 +303,20 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                         value={parentSearch}
                         onChange={e => setParentSearch(e.target.value)}
                         disabled={activeEntry.status !== 'pending'}
-                        className="text-xs"
                       />
                       {showParentDropdown && (
-                        <div className="absolute z-10 top-full mt-1 left-0 right-0 bg-white border rounded-lg shadow-lg overflow-hidden">
+                        <div className="absolute z-10 top-full mt-1 left-0 right-0 bg-popover border border-paper-200 rounded-md shadow-e2 overflow-hidden">
                           {(parentSearchResults as any[]).map((c: any) => (
                             <button
                               key={c.id}
-                              className="w-full text-left px-3 py-2 text-xs hover:bg-gray-50 border-b last:border-0"
+                              className="w-full text-left px-3 py-2 text-dense hover:bg-paper-100 border-b border-paper-100 last:border-0"
                               onClick={() => {
                                 update(activeIdx, { parentContractId: c.id, relationshipType: 'amendment' })
                                 setParentSearch('')
                               }}
                             >
-                              <span className="font-medium text-gray-800">{c.title}</span>
-                              <span className="ml-2 text-gray-400">{c.type}</span>
+                              <span className="font-medium text-ink-950">{c.title}</span>
+                              <span className="ml-2 text-ink-400">{c.type}</span>
                             </button>
                           ))}
                         </div>
@@ -328,7 +330,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                         value={activeEntry.relationshipType}
                         onChange={e => update(activeIdx, { relationshipType: e.target.value })}
                         disabled={activeEntry.status !== 'pending'}
-                        className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-60"
+                        className="w-full h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 disabled:opacity-60"
                       >
                         <option value="">Select relationship…</option>
                         {RELATIONSHIP_TYPES.map(r => (
@@ -343,25 +345,25 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-3 px-5 py-4 border-t bg-gray-50 rounded-b-xl flex-shrink-0">
+        <div className="flex items-center justify-between gap-3 px-5 py-3.5 border-t border-paper-200 bg-paper-50 rounded-b-card flex-shrink-0">
           {allDone ? (
             <>
-              <p className="text-xs text-emerald-600 font-medium flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
+              <p className="text-dense text-ink-950 font-medium flex items-center gap-1.5">
+                <CheckCircle2 className="size-3.5 text-ink-500" />
                 {entries.length} contract{entries.length > 1 ? 's' : ''} uploaded successfully
               </p>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={onClose}>Close</Button>
                 {uploadedIds.length === 1 && (
                   <Button onClick={() => { onClose(); navigate(`/contracts/${uploadedIds[0]}`) }}>
-                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />View Contract
+                    <ExternalLink className="size-3.5 mr-1.5" />View Contract
                   </Button>
                 )}
               </div>
             </>
           ) : (
             <>
-              <p className="text-xs text-gray-500">
+              <p className="text-dense text-ink-500">
                 {entries.length === 0
                   ? 'No files selected'
                   : `${entries.length} file${entries.length > 1 ? 's' : ''} queued`}
@@ -374,7 +376,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                   data-testid="upload-modal-submit"
                 >
                   {anyUploading
-                    ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" /> Uploading…</>
+                    ? <><Loader2 className="size-3.5 animate-spin mr-1.5" /> Uploading…</>
                     : `Upload ${entries.length > 1 ? `${entries.length} contracts` : 'contract'}`}
                 </Button>
               </div>

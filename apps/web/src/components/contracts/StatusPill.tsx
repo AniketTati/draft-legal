@@ -14,6 +14,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Circle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { MEANING_CLASS, statusMeaning } from '@/lib/status'
+import { Eyebrow } from '@/components/ui/primitives'
 
 // Happy-path lifecycle — kept parallel to StatusStepper's STEPS so the
 // popover shows the same sequence.
@@ -26,30 +28,14 @@ const STEPS: Array<{ key: string; label: string; groupWith?: string[] }> = [
   { key: 'EXECUTED', label: 'Executed' },
 ]
 
-const OFF_PATH: Record<string, { label: string; tone: 'red' | 'amber' | 'gray' }> = {
-  EXPIRED:    { label: 'Expired',    tone: 'amber' },
-  TERMINATED: { label: 'Terminated', tone: 'red' },
-  ARCHIVED:   { label: 'Archived',   tone: 'gray' },
-  REJECTED:   { label: 'Rejected',   tone: 'red' },
-}
-
-// Status → dot color. Kept restrained (3 families) so the pill doesn't
-// become a rainbow when everything is colored.
-function dotTone(status: string): { dot: string; text: string } {
-  if (status in OFF_PATH) {
-    const t = OFF_PATH[status].tone
-    if (t === 'red')   return { dot: 'bg-red-500',    text: 'text-red-700'    }
-    if (t === 'amber') return { dot: 'bg-amber-500',  text: 'text-amber-700'  }
-    return { dot: 'bg-gray-400', text: 'text-gray-600' }
-  }
-  if (status === 'APPROVED' || status === 'EXECUTED') {
-    return { dot: 'bg-emerald-500', text: 'text-emerald-700' }
-  }
-  if (status === 'PENDING_REVIEW' || status === 'UNDER_NEGOTIATION' || status === 'PENDING_APPROVAL' || status === 'PENDING_SIGNATURE') {
-    return { dot: 'bg-blue-500', text: 'text-blue-700' }
-  }
-  // DRAFT and anything else
-  return { dot: 'bg-gray-400', text: 'text-gray-700' }
+// Off-path terminal states. These only carry a LABEL now — the color comes
+// from lib/status like every other status, so "Expired" reads as risk here and
+// in the queue rather than amber in one place and red in the other.
+const OFF_PATH: Record<string, { label: string }> = {
+  EXPIRED:    { label: 'Expired'    },
+  TERMINATED: { label: 'Terminated' },
+  ARCHIVED:   { label: 'Archived'   },
+  REJECTED:   { label: 'Rejected'   },
 }
 
 function resolveIndex(status: string): number {
@@ -92,7 +78,7 @@ export function StatusPill({ status, className }: { status: string; className?: 
     }
   }, [open])
 
-  const tone = dotTone(status)
+  const tone = MEANING_CLASS[statusMeaning(status)]
   const label = currentLabel(status)
   const currentIdx = resolveIndex(status)
   const isOffPath = status in OFF_PATH
@@ -106,14 +92,15 @@ export function StatusPill({ status, className }: { status: string; className?: 
         aria-label={`Contract status: ${label}. Click to see lifecycle.`}
         aria-expanded={open}
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
-          'hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-          tone.text,
+          'inline-flex items-center gap-[7px] rounded-full border border-paper-200 bg-paper-100 py-0.5 pl-2 pr-2.5',
+          'text-[11.5px] font-medium transition-colors',
+          'hover:border-paper-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:ring-offset-1',
+          tone.fg,
         )}
       >
-        <span className={cn('h-1.5 w-1.5 rounded-full', tone.dot)} aria-hidden />
+        <span className={cn('size-1.5 shrink-0 rounded-full', tone.dot)} aria-hidden />
         <span>{label}</span>
-        <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} aria-hidden />
+        <ChevronDown className={cn('size-3 text-ink-400 transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
 
       {open && (
@@ -121,18 +108,18 @@ export function StatusPill({ status, className }: { status: string; className?: 
           ref={popRef}
           role="dialog"
           aria-label="Contract lifecycle"
-          className="absolute z-50 left-0 top-full mt-2 w-64 rounded-lg border bg-white p-3 shadow-lg"
+          className="absolute z-50 left-0 top-full mt-2 w-64 rounded-card border border-paper-200 bg-popover p-3 shadow-e2"
         >
-          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">Lifecycle</div>
+          <Eyebrow className="mb-2.5">Lifecycle</Eyebrow>
 
           {isOffPath ? (
             // Off-path: just show the current state and a note.
             <div className="space-y-1">
-              <div className={cn('flex items-center gap-2 text-sm font-medium', tone.text)}>
-                <span className={cn('h-2 w-2 rounded-full', tone.dot)} aria-hidden />
+              <div className={cn('flex items-center gap-2 text-dense font-medium', tone.fg)}>
+                <span className={cn('size-2 rounded-full', tone.dot)} aria-hidden />
                 {label}
               </div>
-              <p className="text-xs text-gray-500 pl-4">
+              <p className="text-dense text-ink-500 pl-4">
                 This contract is off the active lifecycle. No further automatic transitions.
               </p>
             </div>
@@ -146,25 +133,29 @@ export function StatusPill({ status, className }: { status: string; className?: 
                     <div className="relative flex flex-col items-center">
                       <div
                         className={cn(
-                          'flex h-4 w-4 items-center justify-center rounded-full border',
-                          done    && 'bg-blue-600 border-blue-600 text-white',
-                          current && 'bg-white border-blue-600 text-blue-600',
-                          !done && !current && 'bg-white border-gray-300 text-gray-300',
+                          'flex size-4 items-center justify-center rounded-full border',
+                          // A passed stage is settled, so it reads binding. The
+                          // current node borrows the status's own meaning —
+                          // in flight while signing, binding once executed —
+                          // rather than painting every "here" the same color.
+                          done    && 'bg-brand-700 border-brand-700 text-white',
+                          current && ['bg-card border-current', tone.fg],
+                          !done && !current && 'bg-card border-paper-300 text-paper-300',
                         )}
                       >
                         {done ? (
-                          <Check className="h-2.5 w-2.5" strokeWidth={3.5} />
+                          <Check className="size-2.5" strokeWidth={3.5} />
                         ) : (
-                          <Circle className={cn('h-1.5 w-1.5', current && 'fill-current')} strokeWidth={0} />
+                          <Circle className={cn('size-1.5', current && 'fill-current')} strokeWidth={0} />
                         )}
                       </div>
                       {i < STEPS.length - 1 && (
-                        <span className={cn('w-px flex-1 min-h-[14px] mt-1', done ? 'bg-blue-500/40' : 'bg-gray-200')} aria-hidden />
+                        <span className={cn('w-px flex-1 min-h-[14px] mt-1', done ? 'bg-brand-200' : 'bg-paper-200')} aria-hidden />
                       )}
                     </div>
                     <span className={cn(
-                      'text-sm leading-4 pt-[1px]',
-                      current ? 'text-gray-900 font-medium' : done ? 'text-gray-600' : 'text-gray-400',
+                      'text-dense leading-4 pt-[1px]',
+                      current ? 'text-ink-950 font-medium' : done ? 'text-ink-700' : 'text-ink-400',
                     )}>
                       {step.label}
                     </span>

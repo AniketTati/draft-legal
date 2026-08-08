@@ -86,8 +86,8 @@ export function AcceptInvitePage() {
     return (
       <Shell>
         <div className="flex flex-col items-center justify-center py-8 gap-3" data-testid="invite-loading">
-          <Loader2 className="h-5 w-5 text-gray-400 animate-spin" />
-          <p className="text-sm text-muted-foreground">Validating invite…</p>
+          <Loader2 className="size-5 text-ink-400 animate-spin" />
+          <p className="text-body text-ink-500">Validating invite…</p>
         </div>
       </Shell>
     )
@@ -99,15 +99,16 @@ export function AcceptInvitePage() {
     return (
       <Shell>
         <div className="flex flex-col items-center text-center gap-3 py-4" data-testid="invite-invalid">
-          <div className="h-12 w-12 rounded-full bg-red-50 flex items-center justify-center">
-            <AlertCircle className="h-6 w-6 text-red-500" />
+          {/* Expiry is one of the meanings risk is actually for. */}
+          <div className="size-12 rounded-full bg-risk-50 flex items-center justify-center">
+            <AlertCircle className="size-6 text-risk-600" />
           </div>
-          <h1 className="text-lg font-semibold text-gray-900">Invalid or expired invite</h1>
-          <p className="text-sm text-muted-foreground max-w-xs">
+          <h1 className="text-title text-ink-950">Invalid or expired invite</h1>
+          <p className="text-body text-ink-500 max-w-xs">
             This invite link is no longer valid. It may have been used already,
             expired, or the URL is incorrect. Ask your admin to send a new one.
           </p>
-          <Link to="/login" className="text-sm text-primary hover:underline mt-2">
+          <Link to="/login" className="text-body text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700 mt-2">
             Go to sign in
           </Link>
         </div>
@@ -121,32 +122,34 @@ export function AcceptInvitePage() {
   return (
     <Shell>
       <div data-testid="invite-valid">
-        <h1 className="text-2xl font-semibold text-foreground">Accept Invite</h1>
-        <p className="text-sm text-muted-foreground mt-1">Set up your account to join draftLegal</p>
+        <h1 className="text-title text-ink-950">Accept Invite</h1>
+        <p className="text-body text-ink-500 mt-1">Set up your account to join draftLegal</p>
 
         {/* Inviter context — F-09 explicit ask: tell the user what
-            they're accepting into BEFORE they fill the form */}
-        <div className="mt-4 rounded-lg border border-border bg-gray-50/60 px-3.5 py-3 space-y-1.5">
-          <div className="flex items-center gap-2 text-[12.5px] text-gray-700">
-            <Building2 className="h-3.5 w-3.5 text-blue-600" />
+            they're accepting into BEFORE they fill the form. Both icons are
+            quiet ink: they label facts, they don't carry a state. */}
+        <div className="mt-4 rounded-md border border-paper-200 bg-paper-50 px-3.5 py-3 space-y-1.5">
+          <div className="flex items-center gap-2 text-dense text-ink-700">
+            <Building2 className="size-3.5 text-ink-400" />
             <span>You're joining</span>
-            <span className="font-semibold text-gray-900" data-testid="invite-org">{data.orgName}</span>
+            <span className="font-semibold text-ink-950" data-testid="invite-org">{data.orgName}</span>
           </div>
-          <div className="flex items-center gap-2 text-[12.5px] text-gray-700">
-            <Mail className="h-3.5 w-3.5 text-gray-400" />
+          <div className="flex items-center gap-2 text-dense text-ink-700">
+            <Mail className="size-3.5 text-ink-400" />
             <span>as</span>
-            <span className="font-mono text-gray-900" data-testid="invite-email">{data.email}</span>
+            <span className="font-mono text-ink-950" data-testid="invite-email">{data.email}</span>
           </div>
         </div>
 
         {success ? (
-          <div className="mt-5 text-sm px-3 py-2 rounded bg-green-50 text-green-700 border border-green-200">
+          // Accepted — the invite is now binding, which is what brand means.
+          <div className="mt-5 text-body px-3 py-2 rounded-md bg-brand-50 text-brand-700 border border-brand-200">
             Invite accepted! Redirecting to login…
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="mt-5 space-y-4">
             <div className="space-y-1.5">
-              <Label htmlFor="invite-name">Your name <span className="text-muted-foreground font-normal">(optional)</span></Label>
+              <Label htmlFor="invite-name">Your name <span className="text-ink-500 font-normal">(optional)</span></Label>
               <Input
                 id="invite-name"
                 type="text"
@@ -184,18 +187,18 @@ export function AcceptInvitePage() {
             </div>
 
             {error && (
-              <p className="text-sm text-destructive" data-testid="invite-error">{error}</p>
+              <p className="text-body text-risk-700" data-testid="invite-error">{error}</p>
             )}
 
-            <Button type="submit" className="w-full" disabled={acceptInvite.isPending}>
+            <Button type="submit" size="md" className="w-full" disabled={acceptInvite.isPending}>
               {acceptInvite.isPending ? 'Accepting…' : 'Accept invite'}
             </Button>
           </form>
         )}
 
-        <p className="text-sm text-center text-muted-foreground mt-5">
+        <p className="text-body text-center text-ink-500 mt-5">
           Already have an account?{' '}
-          <Link to="/login" className="text-primary hover:underline">
+          <Link to="/login" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">
             Sign in
           </Link>
         </p>
@@ -208,8 +211,8 @@ export function AcceptInvitePage() {
 // consistent with the same card framing.
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-sm space-y-6 p-8 border border-border rounded-lg bg-card shadow-sm">
+    <div className="min-h-screen flex items-center justify-center bg-paper-50">
+      <div className="w-full max-w-sm space-y-6 p-8 border border-paper-200 rounded-card bg-card shadow-e1">
         {children}
       </div>
     </div>

@@ -4,6 +4,7 @@ import { LogOut, User, ChevronDown, Search, Settings } from 'lucide-react'
 import { useAuthStore } from '@/store/auth'
 import { NotificationBell } from '@/components/approvals/NotificationBell'
 import { GlobalSearch } from '@/components/common/GlobalSearch'
+import { Kbd } from '@/components/ui/primitives'
 
 // U.8 — derive a 1- or 2-letter avatar initial from the user's display
 // name. "Maya Goldberg" → "MG"; "alex" → "A"; "" → "?".
@@ -57,7 +58,7 @@ export function Header(_props: HeaderProps) {
   const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 
   return (
-    <header className="h-14 border-b border-border bg-card flex items-center justify-between px-6 shrink-0">
+    <header className="h-header border-b border-border bg-card flex items-center justify-between px-6 shrink-0">
       {/* B.6.25 — global search affordance (left side of header). Click
           or press ⌘/ to open. Kept visually distinct from the AI
           assistant so users don't conflate "find" with "ask". */}
@@ -65,14 +66,14 @@ export function Header(_props: HeaderProps) {
         type="button"
         onClick={() => setSearchOpen(true)}
         data-testid="global-search-trigger"
-        className="inline-flex items-center gap-2 rounded-md border border-input bg-muted/40 px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[16rem]"
+        className="inline-flex h-8 items-center gap-2 rounded-md border border-paper-200 bg-paper-50 px-[11px] text-[12.5px] text-ink-400 hover:bg-paper-100 hover:text-ink-700 transition-colors min-w-[16rem]"
         aria-label="Open global search"
       >
-        <Search className="h-3.5 w-3.5" />
+        <Search className="size-3.5" />
         <span className="flex-1 text-left">Search contracts, counterparties…</span>
-        <kbd className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px]">
-          {isMac ? '⌘/' : 'Ctrl+/'}
-        </kbd>
+        {/* Kbd's own ground is paper-50 — on a paper-50 field it needs the card
+            surface behind it to stay legible. */}
+        <Kbd className="bg-card text-[10px]">{isMac ? '⌘/' : 'Ctrl+/'}</Kbd>
       </button>
       <div className="flex items-center gap-2">
         {/* U.4.3 — header agent-pill deleted. The right rail handles
@@ -85,38 +86,40 @@ export function Header(_props: HeaderProps) {
           <button
             onClick={() => setShowUserMenu(prev => !prev)}
             data-testid="user-menu-trigger"
-            className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-full pl-1 pr-2 py-1 hover:bg-accent"
+            className="flex items-center gap-2 text-[12.5px] text-ink-700 hover:text-ink-950 transition-colors rounded-full pl-1 pr-2 py-1 hover:bg-paper-100"
             aria-label="Account menu"
           >
+            {/* The avatar is a person, not a machine — indigo belongs to agent
+                surfaces only, so the initials read as neutral paper + ink. */}
             <span
               aria-hidden
-              className="h-7 w-7 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-[11px] font-semibold tracking-wide ring-1 ring-indigo-200"
+              className="size-7 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-[10.5px] font-semibold tracking-wide ring-1 ring-paper-200"
             >
               {initialsOf(user?.name)}
             </span>
             <span className="max-w-[8rem] truncate hidden sm:inline">{user?.name}</span>
-            <ChevronDown size={12} className="text-muted-foreground" />
+            <ChevronDown size={12} className="text-ink-400" />
           </button>
 
           {showUserMenu && (
             <div
               data-testid="user-menu"
-              className="absolute right-0 top-full mt-1.5 w-60 bg-card rounded-xl border border-border shadow-xl z-20 py-1 overflow-hidden"
+              className="absolute right-0 top-full mt-1.5 w-60 bg-card rounded-card border border-paper-200 shadow-e2 z-20 py-1 overflow-hidden"
               role="menu"
             >
               {/* Identity block — answers "am I logged in as the right person?" */}
               <div className="px-3 pt-3 pb-3 border-b border-border flex items-center gap-2.5">
                 <span
                   aria-hidden
-                  className="h-9 w-9 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-semibold tracking-wide ring-1 ring-indigo-200 shrink-0"
+                  className="size-9 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-dense font-semibold tracking-wide ring-1 ring-paper-200 shrink-0"
                 >
                   {initialsOf(user?.name)}
                 </span>
                 <div className="min-w-0">
-                  <p className="text-[13px] font-medium text-foreground truncate" data-testid="user-menu-name">
+                  <p className="text-[13px] font-medium text-ink-950 truncate" data-testid="user-menu-name">
                     {user?.name ?? 'Signed-in user'}
                   </p>
-                  <p className="text-[11px] text-muted-foreground truncate" data-testid="user-menu-email">
+                  <p className="text-[11px] text-ink-500 truncate" data-testid="user-menu-email">
                     {user?.email ?? ''}
                   </p>
                 </div>
@@ -127,25 +130,28 @@ export function Header(_props: HeaderProps) {
                   to="/profile"
                   onClick={() => setShowUserMenu(false)}
                   data-testid="user-menu-profile"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-ink-700 hover:text-ink-950 hover:bg-paper-100 transition-colors"
                   role="menuitem"
                 >
-                  <User size={14} className="text-muted-foreground" />
+                  <User size={14} className="text-ink-400" />
                   Profile
                 </Link>
                 <Link
                   to="/settings"
                   onClick={() => setShowUserMenu(false)}
                   data-testid="user-menu-settings"
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                  className="flex items-center gap-2 px-3 py-2 text-[12.5px] text-ink-700 hover:text-ink-950 hover:bg-paper-100 transition-colors"
                   role="menuitem"
                 >
-                  <Settings size={14} className="text-muted-foreground" />
+                  <Settings size={14} className="text-ink-400" />
                   Settings
                 </Link>
               </div>
 
               <div className="border-t border-border py-1">
+                {/* Red survives here: sign-out is the one item in this menu you
+                    do not want to hit by accident. It is the marked exit, not
+                    decoration. */}
                 <button
                   onClick={() => {
                     setShowUserMenu(false)
@@ -157,7 +163,7 @@ export function Header(_props: HeaderProps) {
                     window.location.href = '/login'
                   }}
                   data-testid="user-menu-logout"
-                  className="w-full flex items-center gap-2 px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 transition-colors"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[12.5px] text-risk-700 hover:bg-risk-50 transition-colors"
                   role="menuitem"
                 >
                   <LogOut size={14} />

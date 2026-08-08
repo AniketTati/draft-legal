@@ -52,10 +52,16 @@ const MODEL_TIERS = ['reasoning', 'default', 'fast'] as const
 
 const TRIGGER_TYPES = ['mention', 'chip', 'button'] as const
 
+/*
+ * Provenance, not meaning. Indigo belongs to text the model wrote, and a skill
+ * definition is written by an admin, so "Org" can't keep it; emerald means
+ * binding, which "You" never was. All three are neutral now and separate by
+ * weight instead of hue — quiet default, outlined org, inverted for your own.
+ */
 const OWNER_BADGE: Record<SkillRow['ownerType'], { label: string; cls: string }> = {
-  built_in: { label: 'Built-in', cls: 'bg-gray-100 text-gray-700 border-gray-200' },
-  org:      { label: 'Org',      cls: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
-  user:     { label: 'You',      cls: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  built_in: { label: 'Built-in', cls: 'bg-paper-100 text-ink-500 border-paper-200' },
+  org:      { label: 'Org',      cls: 'bg-card text-ink-700 border-paper-300' },
+  user:     { label: 'You',      cls: 'bg-ink-950 text-white border-ink-950' },
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -94,11 +100,15 @@ export function AdminSkillsPage() {
     <div className="px-6 py-5 max-w-5xl mx-auto" data-testid="admin-skills-page">
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-blue-600" />
+          {/*
+            Sparkles stays neutral: this is the admin surface that *configures*
+            the agent, not a surface the agent wrote, so it gets no assist mark.
+          */}
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <Sparkles className="size-4 text-ink-700" />
             Skills
           </h1>
-          <p className="text-[12px] text-muted-foreground mt-1">
+          <p className="text-dense text-ink-500 mt-1">
             Reusable agent workflows. Built-ins ship with the product;
             org skills are created by admins and shared with everyone.
           </p>
@@ -109,63 +119,63 @@ export function AdminSkillsPage() {
           size="sm"
           className="gap-1"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="size-3.5" />
           New org skill
         </Button>
       </div>
 
       <div className="flex items-center gap-2 mb-4">
         <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+          <Search className="absolute left-2.5 top-2.5 size-3.5 text-ink-400" />
           <input
             type="text"
             placeholder="Search by slug, name, description"
             value={search}
             onChange={e => setSearch(e.target.value)}
             data-testid="admin-skills-search"
-            className="w-full pl-8 pr-2 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-input bg-card text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
           />
         </div>
         <select
           value={scopeFilter}
           onChange={e => setScopeFilter(e.target.value)}
           data-testid="admin-skills-scope-filter"
-          className="text-sm rounded-md border border-border bg-background px-2 py-1.5"
+          className="text-[13px] rounded-md border border-input bg-card text-ink-950 px-2 py-1.5"
         >
           <option value="all">All scopes</option>
           {CONTEXT_SCOPES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
       </div>
 
-      {listQ.isLoading && <div className="text-sm text-muted-foreground py-6">Loading…</div>}
+      {listQ.isLoading && <div className="text-dense text-muted-foreground py-6">Loading…</div>}
       {listQ.error && (
-        <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-3">
-          <AlertCircle className="h-4 w-4" /> Failed to load skills.
+        <div className="flex items-center gap-2 text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md p-3">
+          <AlertCircle className="size-4" /> Failed to load skills.
         </div>
       )}
 
-      <div className="divide-y divide-border border border-border rounded-lg overflow-hidden bg-card">
+      <div className="divide-y divide-border border border-border rounded-card overflow-hidden bg-card">
         {filtered.map(s => (
           <div
             key={s.id}
             data-testid={`admin-skill-row-${s.slug.slice(1)}`}
             className="px-4 py-3 flex items-start gap-3 hover:bg-muted/30 transition-colors"
           >
-            <Sparkles className="h-4 w-4 mt-0.5 text-blue-600 flex-shrink-0" />
+            <Sparkles className="size-4 mt-0.5 text-ink-400 flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-[12px] text-blue-700">{s.slug}</span>
-                <span className="text-[12px] font-medium text-gray-900">{s.name}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded border ${OWNER_BADGE[s.ownerType].cls}`}>
+                <span className="font-mono text-[12px] text-ink-700">{s.slug}</span>
+                <span className="text-[12px] font-medium text-ink-950">{s.name}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-chip border ${OWNER_BADGE[s.ownerType].cls}`}>
                   {OWNER_BADGE[s.ownerType].label}
                 </span>
                 <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-                  <Tag className="h-2.5 w-2.5" />
+                  <Tag className="size-2.5" />
                   {s.contextScope}
                 </span>
-                <span className="text-[10px] text-muted-foreground font-mono">v{s.version}</span>
+                <span className="text-[10px] text-muted-foreground font-mono tabular-nums">v{s.version}</span>
               </div>
-              <div className="text-[11.5px] text-gray-600 mt-0.5">{s.description}</div>
+              <div className="text-[11.5px] text-ink-500 mt-0.5">{s.description}</div>
               <div className="text-[10.5px] text-muted-foreground mt-1 flex items-center gap-2">
                 <span>Tools: <span className="font-mono">{s.allowedTools.join(', ') || '—'}</span></span>
               </div>
@@ -177,13 +187,13 @@ export function AdminSkillsPage() {
               data-testid={`admin-skill-edit-${s.slug.slice(1)}`}
               className="gap-1"
             >
-              <Pencil className="h-3 w-3" />
+              <Pencil className="size-3" />
               Edit
             </Button>
           </div>
         ))}
         {filtered.length === 0 && !listQ.isLoading && (
-          <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+          <div className="px-4 py-10 text-center text-dense text-muted-foreground">
             No skills match that filter.
           </div>
         )}
@@ -233,18 +243,20 @@ function SkillEditDrawer({ skillId, onClose, onSaved }: {
 
   return (
     <Drawer onClose={onClose} testId="admin-skill-edit-drawer">
-      {isLoading && <div className="p-4 text-sm text-muted-foreground">Loading…</div>}
+      {isLoading && <div className="p-4 text-dense text-muted-foreground">Loading…</div>}
       {error && (
-        <div className="p-4 text-sm text-red-700 flex items-center gap-2">
-          <AlertCircle className="h-4 w-4" /> Failed to load skill.
+        <div className="p-4 text-dense text-risk-700 flex items-center gap-2">
+          <AlertCircle className="size-4" /> Failed to load skill.
         </div>
       )}
       {detail && form && (
         <>
           <DrawerHeader title={`Edit ${detail.slug}`} onClose={onClose} />
           {hidden && (
-            <div className="mx-4 mt-3 text-[11px] flex items-center gap-1.5 text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
-              <Lock className="h-3 w-3" /> You don't have permission to view this prompt (admin role required).
+            // Neutral, not attention: nothing here is waiting on this user — they
+            // simply lack the role. The lock carries the message.
+            <div className="mx-4 mt-3 text-[11px] flex items-center gap-1.5 text-ink-700 bg-paper-100 border border-paper-200 rounded-md px-2 py-1.5">
+              <Lock className="size-3" /> You don't have permission to view this prompt (admin role required).
             </div>
           )}
           <div className="p-4 space-y-3 overflow-y-auto flex-1">
@@ -289,10 +301,11 @@ function SkillEditDrawer({ skillId, onClose, onSaved }: {
               </Field>
             </div>
             <Field label="Triggers">
-              <div className="flex gap-3 text-sm">
+              <div className="flex gap-3 text-[13px]">
                 {TRIGGER_TYPES.map(t => (
                   <label key={t} className="flex items-center gap-1.5">
                     <input
+                      className="rounded-chip border-paper-300 accent-ink-950"
                       type="checkbox"
                       checked={(form.triggerTypes ?? []).includes(t)}
                       onChange={e => {
@@ -353,13 +366,13 @@ function SkillEditDrawer({ skillId, onClose, onSaved }: {
               data-testid="admin-skill-edit-save"
               className="gap-1"
             >
-              <Save className="h-3 w-3" />
+              <Save className="size-3" />
               {save.isPending ? 'Saving…' : 'Save changes'}
             </Button>
           </DrawerFooter>
           {save.error && (
-            <div className="mx-4 mb-3 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 flex items-center gap-1.5">
-              <AlertCircle className="h-3 w-3" />
+            <div className="mx-4 mb-3 text-[11px] text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-2 py-1.5 flex items-center gap-1.5">
+              <AlertCircle className="size-3" />
               {(save.error as Error).message}
             </div>
           )}
@@ -490,13 +503,13 @@ function SkillCreateDrawer({ onClose, onCreated }: {
           data-testid="admin-skill-create-submit"
           className="gap-1"
         >
-          <Plus className="h-3 w-3" />
+          <Plus className="size-3" />
           {create.isPending ? 'Creating…' : 'Create'}
         </Button>
       </DrawerFooter>
       {err && (
-        <div className="mx-4 mb-3 text-[11px] text-red-700 bg-red-50 border border-red-200 rounded-md px-2 py-1.5 flex items-center gap-1.5">
-          <AlertCircle className="h-3 w-3" />
+        <div className="mx-4 mb-3 text-[11px] text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-2 py-1.5 flex items-center gap-1.5">
+          <AlertCircle className="size-3" />
           {err}
         </div>
       )}
@@ -506,12 +519,12 @@ function SkillCreateDrawer({ onClose, onCreated }: {
 
 // ─── Shared bits ──────────────────────────────────────────────────────────────
 
-const inputCls = 'w-full text-sm rounded-md border border-border bg-background px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500'
+const inputCls = 'w-full text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] py-1.5 placeholder:text-ink-400 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="text-[11px] font-medium text-muted-foreground mb-1">{label}</div>
+      <div className="text-[11.5px] font-semibold text-ink-950 mb-1.5">{label}</div>
       {children}
     </div>
   )
@@ -527,9 +540,9 @@ function Drawer({ onClose, testId, children }: {
       <button
         aria-label="Close drawer"
         onClick={onClose}
-        className="flex-1 bg-black/30"
+        className="flex-1 bg-ink-950/30"
       />
-      <div className="w-[520px] max-w-[90vw] bg-card border-l border-border flex flex-col overflow-hidden">
+      <div className="w-[520px] max-w-[90vw] bg-card border-l border-border shadow-e3 flex flex-col overflow-hidden">
         {children}
       </div>
     </div>
@@ -539,12 +552,12 @@ function Drawer({ onClose, testId, children }: {
 function DrawerHeader({ title, onClose }: { title: string; onClose: () => void }) {
   return (
     <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-      <div className="font-semibold text-sm flex items-center gap-1.5">
-        <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+      <div className="text-section text-ink-950 flex items-center gap-1.5">
+        <Sparkles className="size-3.5 text-ink-400" />
         {title}
       </div>
-      <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7">
-        <X className="h-3.5 w-3.5" />
+      <Button variant="ghost" size="icon" onClick={onClose} className="size-7">
+        <X className="size-3.5" />
       </Button>
     </div>
   )

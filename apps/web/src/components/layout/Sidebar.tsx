@@ -30,6 +30,7 @@ import {
   PanelLeftOpen,
 } from 'lucide-react'
 import { usePermission } from '@/lib/permissions'
+import { CountBadge } from '@/components/ui/primitives'
 import type { LucideIcon } from 'lucide-react'
 
 // ─── Nav structure ─────────────────────────────────────────────────────────────
@@ -117,9 +118,12 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ]
 
-const BADGE_STYLES: Record<string, string> = {
-  pendingApprovals: 'bg-blue-100 text-blue-700',
-  openRequests:     'bg-amber-100 text-amber-700',
+// "Your turn" is the only count that earns color. Pending approvals sit in the
+// signed-in user's own queue, so they are genuinely blocking them; open requests
+// are a workload figure for the team, so they stay an informational count.
+const BADGE_TONE: Record<string, 'neutral' | 'attention'> = {
+  pendingApprovals: 'attention',
+  openRequests:     'neutral',
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
@@ -205,7 +209,7 @@ export function Sidebar() {
       data-collapsed={collapsed ? 'true' : 'false'}
       className={cn(
         'border-r border-border bg-card flex flex-col shrink-0 transition-[width] duration-150',
-        collapsed ? 'w-14' : 'w-14 lg:w-60',
+        collapsed ? 'w-nav-collapsed' : 'w-nav-collapsed lg:w-nav',
       )}
     >
       {/*
@@ -214,7 +218,7 @@ export function Sidebar() {
         user's muscle-memory "click the logo to go home" works.
       */}
       <div className={cn(
-        'h-14 flex items-center border-b border-border',
+        'h-header flex items-center border-b border-border',
         collapsed ? 'justify-center' : 'justify-center lg:justify-start lg:px-5',
       )}>
         <NavLink
@@ -222,7 +226,7 @@ export function Sidebar() {
           data-testid="logo-home-link"
           aria-label="draftLegal — go to dashboard"
           title="draftLegal — Dashboard"
-          className="hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-emerald-500/40 rounded"
+          className="hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring/35 rounded-md"
         >
           <span className={showMark}><Wordmark size="xl" kind="mark" /></span>
           <span className={showLabel}><Wordmark size="2xl" kind="full" /></span>
@@ -234,15 +238,17 @@ export function Sidebar() {
         {[...NAV_SECTIONS, ...(canAdmin ? [ADMIN_SECTION] : [])].map((section, i) => (
           <div key={i} className="mb-1">
             {section.label && (
-              <p className={cn('px-3 pt-4 pb-1.5 text-[10px] font-bold text-muted-foreground/50 uppercase tracking-widest', showLabelB)}>
+              <p className={cn('px-3 pt-4 pb-1.5 text-[9.5px] font-bold text-ink-400 uppercase tracking-[0.12em]', showLabelB)}>
                 {section.label}
               </p>
             )}
             <div className="space-y-0.5">
               {section.items.map(({ to, icon: Icon, label, badge, staticBadge }) => {
                 const count = badge ? badgeCounts[badge] : 0
-                // U.2.1 / decision 14a — Assistant gets the indigo accent;
-                // every other route stays on the product blue.
+                // U.2.1 / decision 14a — Assistant keeps the assist accent at
+                // rest, as the "Ask draftLegal" affordance. But assist is
+                // machine-authored only, never a UI accent: the ACTIVE nav item
+                // is an action, so it goes ink like every other route.
                 const isAssistant = to === '/agent'
                 // U13 — coming-soon items shouldn't be reachable via keyboard
                 // tab order or screen-reader navigation; the nav stays in DOM
@@ -261,29 +267,23 @@ export function Sidebar() {
                     title={label}
                     className={({ isActive }) =>
                       cn(
-                        'flex items-center gap-3 py-2 rounded-md text-sm font-medium transition-colors relative',
+                        'flex items-center gap-3 py-2 rounded-md text-[12.5px] font-medium transition-colors relative',
                         layoutCls,
                         collapsed ? 'px-2' : 'px-2 lg:px-3',
                         isActive
-                          ? isAssistant
-                            ? 'bg-indigo-600 text-white'
-                            : 'bg-primary text-primary-foreground'
+                          ? 'bg-ink-950 text-white'
                           : isAssistant
-                            ? 'text-indigo-700 hover:bg-indigo-50'
-                            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                            ? 'text-assist-700 hover:bg-assist-50'
+                            : 'text-ink-700 hover:bg-paper-100 hover:text-ink-950'
                       )
                     }
                   >
                     <Icon size={16} className="shrink-0" />
                     <span className={cn('flex-1', showLabel)}>{label}</span>
                     {badge && count > 0 && (
-                      <span className={cn(
-                        'h-5 min-w-5 items-center justify-center rounded-full text-xs font-semibold px-1.5',
-                        showLabelF,
-                        BADGE_STYLES[badge],
-                      )}>
+                      <CountBadge tone={BADGE_TONE[badge] ?? 'neutral'} className={showLabelF}>
                         {count > 99 ? '99+' : count}
-                      </span>
+                      </CountBadge>
                     )}
                     {/* Compact badge dot on collapsed sidebar so users still see "there's something here" */}
                     {badge && count > 0 && (
@@ -292,14 +292,16 @@ export function Sidebar() {
                         className={cn(
                           'absolute top-1 right-1 h-2 w-2 rounded-full',
                           collapsed ? 'inline' : 'lg:hidden',
-                          badge === 'pendingApprovals' ? 'bg-blue-500' : 'bg-amber-500',
+                          BADGE_TONE[badge] === 'attention' ? 'bg-attention-600' : 'bg-ink-400',
                         )}
                       />
                     )}
                     {staticBadge === 'soon' && (
+                      // "Soon" blocks nobody, so it is a neutral fact rather
+                      // than an attention badge.
                       <span
                         data-testid={`badge-soon-${to.replace(/^\//, '')}`}
-                        className={cn('text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200', showLabelI)}
+                        className={cn('text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-chip bg-paper-100 text-ink-500 border border-paper-200', showLabelI)}
                       >
                         Soon
                       </span>
@@ -319,12 +321,12 @@ export function Sidebar() {
           title="Settings"
           className={({ isActive }) =>
             cn(
-              'flex items-center gap-3 py-2 rounded-md text-sm font-medium transition-colors',
+              'flex items-center gap-3 py-2 rounded-md text-[12.5px] font-medium transition-colors',
               layoutCls,
               collapsed ? 'px-2' : 'px-2 lg:px-3',
               isActive
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+                ? 'bg-ink-950 text-white'
+                : 'text-ink-700 hover:bg-paper-100 hover:text-ink-950'
             )
           }
         >
@@ -341,7 +343,7 @@ export function Sidebar() {
           aria-label={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
           title={collapsed ? 'Expand sidebar (⌘\\)' : 'Collapse sidebar (⌘\\)'}
           className={cn(
-            'hidden lg:flex w-full items-center gap-3 py-2 rounded-md text-xs font-medium text-muted-foreground/70 hover:bg-accent hover:text-accent-foreground transition-colors',
+            'hidden lg:flex w-full items-center gap-3 py-2 rounded-md text-dense font-medium text-ink-500 hover:bg-paper-100 hover:text-ink-950 transition-colors',
             layoutCls,
             collapsed ? 'px-2' : 'px-2 lg:px-3',
           )}
