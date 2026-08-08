@@ -63,8 +63,11 @@ async def chat(req: ChatRequest):
     # method", surfaced to users as an empty stream. Now we silently
     # swap to whichever provider IS configured (logs a warning so the
     # operator still sees the fallback).
-    resolved_provider = resolve_provider(req.provider)
-    if resolved_provider != req.provider:
+    # docs/37 E12 — under replay there is no provider and no key; validating
+    # one would reinstate the key requirement this seam exists to remove.
+    from app.replay import mode as _replay_mode
+    resolved_provider = req.provider if _replay_mode() == "replay" else resolve_provider(req.provider)
+    if _replay_mode() != "replay" and resolved_provider != req.provider:
         # Caller requested an unconfigured provider — pick a sensible
         # model id for the actual provider rather than passing through
         # the (now wrong) one (e.g. claude-sonnet-4-6 → openai breaks).
@@ -83,11 +86,13 @@ async def chat(req: ChatRequest):
             req.model_id = model_for(resolved_provider, tier="smart")
     req.provider = resolved_provider
 
-    # Validate provider + model before starting the stream
-    try:
-        get_model_option(req.provider, req.model_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Validate provider + model before starting the stream. Skipped under
+    # replay: the recorded response is served without a provider at all.
+    if _replay_mode() != "replay":
+        try:
+            get_model_option(req.provider, req.model_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     session_id = req.session_id or str(uuid.uuid4())
 

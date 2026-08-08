@@ -34,6 +34,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from .config import settings
 from .providers import build_llm
 from .tracing import get_callback
+# docs/37 E12 — record/replay seam. Inert unless AGENT_REPLAY_MODE is set.
+from app.replay import wrap as _replay_wrap, mode as _replay_mode
 
 Tier = Literal["reasoning", "default", "fast", "embed", "rerank", "vision_ocr"]
 Source = Literal["platform", "byok"]
@@ -226,6 +228,19 @@ async def resolve_llm(
 
     Raises RuntimeError if no provider has a key for the tier.
     """
+    # docs/37 E12 — replay short-circuits HERE, above provider and key
+    # resolution, not at build_llm. Placing it deeper looked natural and was
+    # wrong: with no API key the service raised "No LLM API key found" before
+    # the router was ever consulted, so replay still needed a key — which
+    # defeats the entire point of a tier that runs free, keyless, on fork PRs.
+    # Caught by blanking every key and watching a replay run 500.
+    if _replay_mode() == "replay":
+        return ResolvedLlm(
+            llm=_replay_wrap(None, thread_id),
+            provider="replay", model="replay", source="platform",
+            tier=tier, callbacks=[],
+        )
+
     # A caller that supplies an org expects that org's configuration to be
     # consulted. If we can't reach Node to do that, we silently serve the
     # platform key — which is precisely the BYOK bypass, wearing a different
@@ -343,6 +358,12 @@ def _build_resolved(
         provider_override=provider_override, model_override=model_override,
     )
     llm = build_llm(provider, model, streaming=streaming, api_key=api_key)
+    # docs/37 E12 — the record/replay seam. build_llm has exactly ONE caller,
+    # which is why a single line here covers every LLM call in the service.
+    # Inert unless AGENT_REPLAY_MODE is set, so production is untouched; in
+    # replay it never reaches the network, and a missing fixture raises rather
+    # than silently falling back to a live call.
+    llm = _replay_wrap(llm, thread_id)   # record mode wraps the real client
     handler = get_callback(
         trace_name=trace_name,
         org_id=org_id,

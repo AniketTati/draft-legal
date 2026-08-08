@@ -1,0 +1,9 @@
+{
+  "session_id": "replay:uses-a-tool",
+  "calls": [
+    {
+      "content": "",
+      "tool_calls": []
+    }
+  ]
+}

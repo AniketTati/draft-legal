@@ -1,0 +1,9 @@
+{
+  "session_id": "replay:says-ok",
+  "calls": [
+    {
+      "content": "OK",
+      "tool_calls": []
+    }
+  ]
+}

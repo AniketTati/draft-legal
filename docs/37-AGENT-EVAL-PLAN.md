@@ -634,6 +634,50 @@ bug and is fixed:
 
 ---
 
+## E12 — the replay seam ⚠️ PARTIALLY BUILT 2026-08-08
+
+**Working:** `apps/agents/app/replay.py`. `AGENT_REPLAY_MODE=record` captures
+real model responses to `apps/agents/evals/replay/<session>.json`;
+`AGENT_REPLAY_MODE=replay` serves them back. **Verified: a recorded turn
+replays identically three times in 6-8 ms with EVERY model API key unset**, and
+a missing fixture fails loudly naming the expected path rather than falling
+back to a live call.
+
+**Keyed on `(session_id, call_index)`, not a hash of the messages.** Hashing was
+the obvious design and is wrong here: the system prompt is in every message
+list, so editing one line of a 240-line prompt would invalidate every fixture
+and force a full re-record — making replay annoying enough that people stop
+using it. Call-order keying means a prompt edit invalidates nothing (consistent
+with ADR-01: tier 2 is deliberately blind to prompt regressions) while still
+catching the code making a different NUMBER or ORDER of model calls, which is a
+real behavioural change. Callers key by choosing a stable `sessionId`; nothing
+else needed plumbing, because session_id already reaches the router as
+`thread_id`.
+
+**A design error worth recording.** The seam was first placed at `build_llm` —
+the single chokepoint, which looked obviously right. It was too deep: with no
+API key the service raises *"No LLM API key found"* before the router is
+consulted at all, so replay still required a key, which defeats the entire
+point of a tier that runs free and keyless on fork PRs. Caught by blanking
+every key and watching a replay run 500. It now short-circuits in `resolve_llm`
+above provider and key resolution, and `chat.py` skips provider validation
+under replay.
+
+**NOT working, and not yet diagnosed: recording a TOOL-CALLING turn.** A
+recorded turn that should call `contract_search` captured `content: ""` with no
+tool calls, and the live stream produced no tokens and no tool call. The
+`ReplayChatModel` itself is fine in isolation (verified: loads the fixture,
+streams `O`/`K`, raises on a missing one), so the fault is in
+`RecordingChatModel._astream` — most likely that `bind_tools` on the inner
+model returns a `RunnableBinding` whose streamed tool-call chunks are not being
+merged the way `_capture` expects. **Until this is fixed, replay covers
+prose-only turns only** — which is a small fraction of what tier 2 needs, since
+tool dispatch is the main thing worth testing deterministically.
+
+**Effort remaining:** ~1 day for the tool-call path, then tier-2 cases.
+
+---
+
 ## Ordering
 
 **Wave A — make it able to fail (2 days).** E1 gate, E4 empty-expectations,
