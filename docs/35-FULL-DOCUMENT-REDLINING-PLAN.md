@@ -7,7 +7,17 @@ counterparty can open in Word with real tracked changes.
 This is gap #1 from the agent audit — the capability every serious competitor
 ships and the one in-house teams name first. Estimated 4–6 weeks.
 
-**Status:** Phases 0–3 complete and verified. Phase 4 (tracked-changes DOCX) not started.
+**Status:** All five phases built and verified. Phases 0–3 are deployed to
+production (2026-08-08 — the first successful deploy since 2026-08-02, unblocked
+by W0-7 in `docs/34`). Phase 4 is on `feat/redline-phase4`.
+
+**The one check nobody has run:** opening the generated `.docx` in Microsoft Word
+and in Google Docs and driving Accept All / Reject All by hand. Neither
+application exists on the development machine, so every Phase 4 assertion is
+structural — XML validity, byte-level checks, and simulated resolution. That is a
+proxy for the question that actually decides whether this feature works. It is
+~20 minutes on a machine with Word and it should happen before a generated file
+goes to a real counterparty.
 
 ---
 
@@ -409,9 +419,23 @@ so, and clauses the rewriter failed on are named individually. An omitted clause
 reads as "no change needed", which is the silent miss this feature exists to
 remove.
 
-### Phase 4 — Tracked-changes DOCX (~2 weeks)
+### Phase 4 — Tracked-changes DOCX ✅ built
 
-The part with no foundation to build on.
+The part with no foundation to build on. Shipped as `docx` + `parse5`:
+`lib/diff.ts`, `lib/html-to-docx.ts`, `lib/revision-author.ts`,
+`lib/docx-export.ts`, `GET /contracts/:id/versions/:v1Id/redline-docx/:v2Id`,
+and a "Word (tracked)" action in `CompareMode`.
+
+Checks: `scripts/redline/p4-docx.mjs` **24/24** (0/4 before) and
+`scripts/redline/p4-ui-verify.mjs` **12/12**, the latter intercepting the real
+browser download and unzipping what arrived — a missing auth header, a wrong
+MIME type and an anchor that never fires all look identical in the DOM.
+
+Estimated at ~2 weeks; took roughly a day, because the spike settled the library
+question up front and the htmldiff work it was thought to depend on turned out
+not to be a blocker (measured below).
+
+The original plan for it follows.
 
 - Add a real dependency — `docx` (has `TrackedChanges` support) or
   `jszip` + hand-written WordprocessingML. Decide by spike, not by preference.
