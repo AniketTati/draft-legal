@@ -141,7 +141,16 @@ export function DashboardPage() {
 
   // KPI icon tints: a headline count is a fact, not a state, so the icons are
   // quiet ink. "Expiring Soon" is the exception — expiry is real exposure.
-  const cards = [
+  const cards: Array<{
+    label: string
+    /** Optional qualifier rendered beside the label (e.g. the time window). */
+    hint?: string
+    value: number | undefined
+    icon: typeof FileText
+    color: string
+    bg: string
+    to: string
+  }> = [
     {
       label: 'Active Contracts',
       value: stats?.activeContracts,
@@ -172,30 +181,40 @@ export function DashboardPage() {
       to: '/approvals',
     },
     {
+      // The server counts contracts expiring inside NINETY days
+      // (dashboard.ts: `expiryDate: { gte: now, lte: in90Days }`), but this card
+      // deep-linked to a 30-day filter. A user clicking 61 landed on a list of
+      // about twenty and had no way to tell which number was the lie. The
+      // window is now stated on the card and matched by the link. (The label
+      // string itself is load-bearing — the card's data-testid is derived from
+      // it — so the window rides beside it rather than inside it.)
       label: 'Expiring Soon',
+      hint: '90d',
       value: stats?.expiringSoon,
       icon: AlertCircle,
       // Dim the red when count is zero so we don't cry-wolf about
       // a category that's actually empty.
       color: (stats?.expiringSoon ?? 0) > 0 ? 'text-risk-600' : 'text-ink-500',
       bg: (stats?.expiringSoon ?? 0) > 0 ? 'bg-risk-50' : 'bg-paper-100',
-      // B.6.5 — deep-link with the same 30-day window the KPI count
-      // uses on the server. ContractsPage reads this on mount and
-      // shows a dismissable "Expiring by <date>" chip so the user
-      // understands why the list is scoped.
+      // B.6.5 — ContractsPage reads this on mount and shows a dismissable
+      // "Expiring by <date>" chip so the user understands why the list is
+      // scoped.
       to: (() => {
         const d = new Date()
-        d.setDate(d.getDate() + 30)
-        return `/contracts?expiryDateTo=${d.toISOString().slice(0, 10)}&filterLabel=Expiring+within+30+days`
+        d.setDate(d.getDate() + 90)
+        return `/contracts?expiryDateTo=${d.toISOString().slice(0, 10)}&filterLabel=Expiring+within+90+days`
       })(),
     },
   ]
 
   return (
     <div className="p-6 space-y-6">
-      {/* Greeting — the "Your day" heading: 22/600, one line of summary under it. */}
+      {/* Greeting — the "Your day" heading, one line of summary under it.
+          `text-title`, not a bespoke 22px: 22 is not a step in the type scale,
+          and the other 46 page headings in the product are all text-title, so
+          the dashboard was the one h1 that didn't match its own siblings. */}
       <div>
-        <h1 className="text-[22px] font-semibold leading-[1.25] tracking-[-0.02em] text-ink-950">
+        <h1 className="text-title text-ink-950">
           Welcome back, {user?.name?.split(' ')[0]}
         </h1>
         <p className="text-body text-ink-700 mt-1.5">
@@ -249,7 +268,7 @@ export function DashboardPage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" data-testid="dashboard-kpi-cards">
-        {cards.map(({ label, value, icon: Icon, color, bg, to }) => {
+        {cards.map(({ label, hint, value, icon: Icon, color, bg, to }) => {
           // P18 — derive a stable testid slug per card so probes can
           // target each KPI deterministically (label varies by role).
           const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
@@ -263,7 +282,10 @@ export function DashboardPage() {
               className="rounded-card border border-paper-200 bg-card p-5 space-y-3 text-left transition-colors hover:border-paper-300 hover:bg-paper-50 group"
             >
               <div className="flex items-center justify-between">
-                <span className="text-[11px] text-ink-500">{label}</span>
+                <span className="text-[11px] text-ink-500">
+                  {label}
+                  {hint && <span className="text-ink-400"> · {hint}</span>}
+                </span>
                 <div className={`p-1.5 rounded-chip ${bg}`}>
                   <Icon size={16} className={color} />
                 </div>
@@ -443,6 +465,11 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
   // the viewer is the blocker — the query behind it is already scoped to this
   // user — so it states `turn` outright instead of asking a status map that is
   // deliberately viewer-neutral (see the header comment in lib/status.ts).
+  // Blocked on this user right now vs. on the horizon. Approvals and assigned
+  // requests cannot move without them; an expiry ninety days out can.
+  const blockedOnYou = yourDay.approvalsWaiting + yourDay.requestsWaiting
+  const upcoming = Math.max(0, yourDay.total - blockedOnYou)
+
   const chips: Array<{
     key: string
     icon: typeof CheckSquare
@@ -518,12 +545,24 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
         <div>
           {/* The one eyebrow in the product allowed a meaning colour — but only
               when something is actually blocked on the user. */}
-          <p className={`text-eyebrow uppercase ${yourDay.total > 0 ? MEANING_CLASS.turn.fg : 'text-ink-500'}`}>
+          <p className={`text-eyebrow uppercase ${blockedOnYou > 0 ? MEANING_CLASS.turn.fg : 'text-ink-500'}`}>
             {yourDay.total > 0 ? 'Your day' : 'In progress'}
           </p>
+          {/* `total` folds four different urgencies into one figure, and on a
+              real portfolio the 90-day expiry count dominates it: "74 items
+              need your attention" was 8 decisions hiding behind 66 things that
+              merely happen this quarter. Split it, so the number that means
+              "act now" stays believable. */}
           <p className="text-dense text-ink-500 mt-1">
-            {yourDay.total > 0
-              ? `${yourDay.total} item${yourDay.total === 1 ? '' : 's'} need${yourDay.total === 1 ? 's' : ''} your attention.`
+            {blockedOnYou > 0 ? (
+              <>
+                <span className="font-medium text-ink-950">
+                  {blockedOnYou} {blockedOnYou === 1 ? 'item needs' : 'items need'} your decision
+                </span>
+                {upcoming > 0 && ` · ${upcoming} more coming up`}
+              </>
+            ) : yourDay.total > 0
+              ? `Nothing is blocked on you — ${yourDay.total} item${yourDay.total === 1 ? '' : 's'} coming up.`
               : "Nothing is blocking on you — just your ongoing drafts."}
           </p>
         </div>

@@ -30,7 +30,7 @@
  * the user's last choice.
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2 } from 'lucide-react'
+import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 // One glyph for the machine: the diamond replaces every sparkle in the rail.
 import { AssistMark } from '@/components/ui/assist'
@@ -103,6 +103,10 @@ interface RailMessage {
   streaming?: boolean
   // Terminal-state error captured from the SSE envelope.
   error?: string
+  // The user interrupted this turn. The prose is kept but must never read as
+  // a complete answer — an incomplete analysis a lawyer mistakes for a
+  // finished one is the same class of harm as a fabricated one.
+  stopped?: boolean
   // Tool invocations attached to this assistant turn (D.1.4a+).
   toolCalls?: RailToolCall[]
   // D.3.1 — write-tool proposals awaiting user confirmation. Separate from
@@ -204,6 +208,9 @@ export function SideAgentRail() {
   // Abort controller so clicking "new thread" mid-stream doesn't keep
   // piping tokens into a discarded conversation.
   const abortRef = useRef<AbortController | null>(null)
+  // Distinguishes a user-requested Stop from the abort that "new thread" /
+  // "load thread" fire. A Stop keeps the partial answer; the others discard it.
+  const stopRequestedRef = useRef(false)
 
   // D.1.2 — route-aware context chip. The rail knows what page the user is
   // on and surfaces it above the composer so "summarise risks" means
@@ -451,7 +458,14 @@ export function SideAgentRail() {
     // works, just the turn won't show up in the thread picker (D.1.6b).
     if (threadIdRef.current === null) {
       try {
-        const body: Record<string, unknown> = {}
+        // Title the thread from the question that opened it. This call used
+        // to send no title at all, so the server fell back to its 'New chat'
+        // default and EVERY rail-started conversation was named "New chat" —
+        // a picker of identical rows the user cannot tell apart. The text is
+        // in hand here (`clean`), so there is no reason to defer it.
+        const body: Record<string, unknown> = {
+          title: clean.length > 60 ? clean.slice(0, 57) + '…' : clean,
+        }
         if (context?.type === 'contract' && context.id) {
           body.scopeType = 'contract'
           body.scopeId = context.id
@@ -771,6 +785,28 @@ export function SideAgentRail() {
       }
     } catch (e: any) {
       if (e?.name === 'AbortError') {
+        if (stopRequestedRef.current) {
+          // The user pressed Stop. Everything the model had already said is
+          // theirs to keep — discarding it would punish them for interrupting,
+          // which is exactly the thing that makes people afraid to interrupt.
+          // Mark the turn stopped so the transcript never implies the answer
+          // finished on its own.
+          stopRequestedRef.current = false
+          setMessages(prev => prev.map(m =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  streaming: false,
+                  stopped: true,
+                  // A tool left mid-flight is not a success. Say so.
+                  toolCalls: (m.toolCalls ?? []).map(tc =>
+                    tc.status === 'running' ? { ...tc, status: 'error' as const, resultPreview: 'Stopped by user before this tool returned.' } : tc,
+                  ),
+                }
+              : m,
+          ))
+          return
+        }
         // User hit "new thread" mid-stream — drop the partial assistant turn.
         setMessages(prev => prev.filter(m => m.id !== assistantId))
         return
@@ -928,6 +964,23 @@ export function SideAgentRail() {
         return { ...m, pendingActions: pending }
       }))
     }
+  }
+
+  /**
+   * CONTROL — interrupt a run in progress.
+   *
+   * Until now the rail had an AbortController that only ever fired on
+   * "new thread" / "load thread": a user watching a slow multi-tool run had
+   * no way to say "stop, that's not what I meant" short of reloading the
+   * page. Long agent runs are exactly where interruption matters most.
+   *
+   * Bound to the Stop button (which replaces Send while streaming) and to
+   * Escape anywhere in the rail.
+   */
+  function stopStreaming() {
+    if (!abortRef.current) return
+    stopRequestedRef.current = true
+    abortRef.current.abort()
   }
 
   function newThread() {
@@ -1296,6 +1349,15 @@ export function SideAgentRail() {
       data-testid="side-agent-rail"
       data-state="expanded"
       data-streaming={isStreaming ? 'true' : 'false'}
+      // CONTROL — Esc anywhere in the rail interrupts a run. The composer is
+      // excluded because it owns its own Escape (closing the @/ popovers
+      // first); it calls stopStreaming itself once no popover is open.
+      onKeyDown={e => {
+        if (e.key === 'Escape' && streaming && e.target !== composerRef.current) {
+          e.preventDefault()
+          stopStreaming()
+        }
+      }}
       // U.8 (revert): rail is ALWAYS an in-flex column when open — never
       // a modal overlay. The drawer-with-backdrop mode at narrow widths
       // looked clever but blocked interaction with the page underneath
@@ -1577,6 +1639,11 @@ export function SideAgentRail() {
           onSubmit={e => {
             e.preventDefault()
             sendMessage(composer)
+            // KEYBOARD — focus returns to the composer after a send. Clicking
+            // the Send button left focus on a button that then swapped itself
+            // for Stop, so the next keystroke went nowhere and Esc-to-stop
+            // (handled on the textarea) could not fire.
+            composerRef.current?.focus()
           }}
         >
           {/* U.3.2 — /-slash quick-action menu. Replaces the deleted
@@ -1737,30 +1804,58 @@ export function SideAgentRail() {
                   return
                 }
               }
+              // CONTROL — Esc interrupts the run. Placed after the popover
+              // handlers so an open menu still swallows Escape first.
+              if (e.key === 'Escape' && streaming) {
+                e.preventDefault()
+                stopStreaming()
+                return
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 e.currentTarget.form?.requestSubmit()
               }
             }}
-            disabled={streaming}
-            placeholder={streaming ? 'Generating…' : 'Ask anything · @ for skills · / for actions'}
+            // The composer stays live during a run so the user can draft the
+            // next question while the agent works. Sending is still gated on
+            // `streaming` inside sendMessage; the button says Stop, not Send.
+            placeholder={streaming ? 'Generating… Esc to stop' : 'Ask anything · @ for skills · / for actions'}
             rows={2}
             data-testid="side-agent-composer"
             className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-10 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 transition-colors disabled:opacity-60"
           />
-          <Button
-            type="submit"
-            size="icon"
-            disabled={composer.trim().length === 0 || streaming}
-            title="Send (Enter)"
-            data-testid="side-agent-send"
-            className="absolute right-1.5 bottom-1.5 size-7"
-          >
-            {streaming ? <Loader2 className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
-          </Button>
+          {/* One button, two jobs: Send when idle, Stop mid-run. A spinner
+              here used to be the only feedback and it was DISABLED, so the
+              affordance most needed during a slow run was the one thing the
+              user could not press. */}
+          {streaming ? (
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              onClick={stopStreaming}
+              title="Stop generating (Esc)"
+              aria-label="Stop generating"
+              data-testid="side-agent-stop"
+              className="absolute right-1.5 bottom-1.5 size-7"
+            >
+              <Square className="size-3 fill-current" />
+            </Button>
+          ) : (
+            <Button
+              type="submit"
+              size="icon"
+              disabled={composer.trim().length === 0}
+              title="Send (Enter)"
+              data-testid="side-agent-send"
+              className="absolute right-1.5 bottom-1.5 size-7"
+            >
+              <Send className="size-3.5" />
+            </Button>
+          )}
         </form>
         <div className="text-[10px] text-ink-400 mt-1.5 flex items-center justify-between">
-          <span>⌘K focus · Enter send · @ skills · / actions</span>
+          <span>{streaming ? 'Esc stop · ⌘K focus' : '⌘K focus · Enter send · @ skills · / actions'}</span>
           <span className="font-mono">v3</span>
         </div>
         {/* U.3.1 / decision 13 — read-only handoff. Always-visible footer
@@ -1984,10 +2079,25 @@ function MessageBubble({
           <span className="inline-block w-1.5 h-3 bg-ink-400 ml-0.5 animate-pulse align-middle" aria-hidden />
         )}
       </div>
+      {/* CONTROL — an interrupted turn says so. Without this the transcript
+          shows a truncated answer that reads as finished, which is the one
+          way a stop button can do harm. */}
+      {!isUser && msg.stopped && (
+        <div
+          data-testid="side-agent-stopped"
+          className="inline-flex items-center gap-1 text-[10.5px] text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5"
+        >
+          <Square className="size-2 fill-current text-ink-400" />
+          Stopped — this answer is incomplete
+        </div>
+      )}
       {/* P1 fix — render parsed action chips below the assistant bubble.
           U10 — and skeletons during streaming so the row reserves space
-          and the user anticipates what's coming. */}
-      {!isUser && onChipSelect && (chips.length > 0 || msg.streaming) && (
+          and the user anticipates what's coming. Gated on prose having
+          started: shown from the first instant of a turn, three grey pills
+          sat under a "thinking…" spinner promising follow-ups that were
+          still many tool calls away. */}
+      {!isUser && onChipSelect && !msg.stopped && (chips.length > 0 || (msg.streaming && (msg.content?.length ?? 0) > 0)) && (
         <ChipRow
           chips={chips}
           onSelect={(chip) => onChipSelect(chip.label)}
@@ -2011,21 +2121,38 @@ function MessageBubble({
 // single meaning-coloured mark, so the chip body is now neutral and only the
 // status icon carries colour — one coloured element per trace, and the four
 // tool states route through the same five meanings as every status in the app.
-function ToolCallChip({ call }: { call: RailToolCall }) {
+export function ToolCallChip({ call }: { call: RailToolCall }) {
   const [open, setOpen] = useState(false)
+
+  // A success-shaped envelope around an error payload is still a failure.
+  const payloadError = call.status === 'ok' ? readPayloadError(call.resultPreview) : null
+  const failed = call.status === 'error' || !!payloadError
+
+  const scope = call.status === 'ok' && !payloadError
+    ? summarizeResult(call.resultPreview, true)
+    : null
+  // A tool that found nothing did not fail — but it did not succeed at
+  // answering either. 'binding' (the approved/confirmed meaning) would say
+  // the agent has the goods. Neutral is the truthful reading, and it makes a
+  // fabricated follow-up visible: prose full of specifics above a trace that
+  // says "no passages".
+  const foundNothing = call.status === 'ok' && !payloadError && scope?.empty === true
 
   const meaning: Meaning = call.status === 'running'
     ? 'inflight'
-    : call.status === 'error'
+    : failed
       ? 'risk'
       // 'awaiting' is a pause, not a success and not work in progress —
       // it is the user's turn, and it never spins.
       : call.status === 'awaiting'
         ? 'turn'
-        : 'binding'
+        : foundNothing
+          ? 'neutral'
+          : 'binding'
   const StatusIcon = call.status === 'running' ? Loader2
-    : call.status === 'error' ? AlertTriangle
+    : failed ? AlertTriangle
     : call.status === 'awaiting' ? PauseCircle
+    : foundNothing ? CircleSlash
     : CheckCircle2
   const iconSpin = call.status === 'running' ? ' animate-spin' : ''
 
@@ -2059,7 +2186,29 @@ function ToolCallChip({ call }: { call: RailToolCall }) {
               {call.elapsedSec.toFixed(1)}s
             </span>
           )}
-          {call.status === 'ok' && resultLen > 0 && (
+          {/* "12 of 189 matched" where we can read it; the raw size only when
+              the payload has no countable collection. A byte count was the
+              only thing shown here, which answered a question nobody asks. */}
+          {call.status === 'ok' && scope && (
+            <span
+              data-testid={`tool-scope-${call.name}`}
+              className={`text-[10px] tabular-nums ${scope.empty ? 'text-ink-700 font-medium' : 'text-ink-500'}`}
+            >
+              {scope.text}
+            </span>
+          )}
+          {/* Name the failure on the collapsed row. A raw character count
+              ("221ch") over a green check was the only outward sign that a
+              tool had returned a 400. */}
+          {payloadError && (
+            <span
+              data-testid={`tool-error-${call.name}`}
+              className={`text-[10px] font-medium truncate ${MEANING_CLASS.risk.fg}`}
+            >
+              {payloadError.replace(/_/g, ' ')}
+            </span>
+          )}
+          {call.status === 'ok' && !scope && !payloadError && resultLen > 0 && (
             <span className="text-[10px] text-ink-400 tabular-nums">
               {call.truncated ? '>' : ''}{resultLen}ch
             </span>
@@ -2432,4 +2581,79 @@ function summarizeArgs(
   // Fallback — stringify; truncate.
   const s = JSON.stringify(args)
   return s.length > 60 ? s.slice(0, 60) + '…' : s
+}
+
+/**
+ * TOOL TRANSPARENCY — what the tool actually found, from its real payload.
+ *
+ * A character count ("1284ch") tells a lawyer nothing. What they need is the
+ * scope of the answer: how many records were considered, how many came back.
+ * Every read tool in the catalogue returns its rows under one of a small set
+ * of keys, and the search tools return `totalMatching` alongside the page
+ * they returned — so "12 of 189 matched" is available for free and was simply
+ * never read.
+ *
+ * The `empty` flag matters just as much. A tool that returned zero rows
+ * currently renders the identical green tick as one that returned sixty,
+ * so "I found nothing" and "I found the clause" look the same in the trace.
+ * That is the exact confusion that lets a fabricated answer pass review.
+ */
+/**
+ * A tool that handed back an error object did not succeed, whatever the
+ * transport said about it. The Python tools return `{"error": "..."}` as an
+ * ordinary return value rather than raising, so the call is recorded
+ * status=success and the chip painted itself `binding` — the approved /
+ * executed green check, sitting on top of a 400. The failure was legible
+ * only to someone who expanded the chip and read the raw JSON.
+ *
+ * Colour has to mean what the system says it means, so read the payload.
+ */
+export function readPayloadError(raw: unknown): string | null {
+  if (raw == null) return null
+  let json: unknown = raw
+  if (typeof json === 'string') {
+    try { json = JSON.parse(json) } catch { return null }
+  }
+  if (!json || typeof json !== 'object') return null
+  const err = (json as Record<string, unknown>).error
+  return typeof err === 'string' && err ? err : null
+}
+
+export function summarizeResult(
+  raw: unknown,
+  ok: boolean,
+): { text: string; empty: boolean } | null {
+  if (!ok || raw == null) return null
+  let json: unknown = raw
+  if (typeof json === 'string') {
+    try { json = JSON.parse(json) } catch { return null }
+  }
+  if (!json || typeof json !== 'object') return null
+  const obj = json as Record<string, unknown>
+
+  // Ordered so the most specific collection wins when a payload has several.
+  const COLLECTIONS = [
+    'citations', 'matches', 'results', 'items', 'contracts',
+    'obligations', 'approvals', 'positions', 'variants', 'rows', 'hits',
+  ] as const
+  const key = COLLECTIONS.find(k => Array.isArray(obj[k]))
+  if (!key) return null
+  const count = (obj[key] as unknown[]).length
+
+  const noun =
+    key === 'citations' ? (count === 1 ? 'passage' : 'passages') :
+    key === 'matches'   ? (count === 1 ? 'match'   : 'matches')  :
+    key === 'variants'  ? (count === 1 ? 'variant' : 'variants') :
+                          (count === 1 ? 'result'  : 'results')
+
+  // contract_search / portfolio_search report the size of the set they
+  // searched over, which is the number that makes the answer trustworthy.
+  const total = typeof obj.totalMatching === 'number' ? obj.totalMatching : null
+  if (total != null && total > count) {
+    return { text: `${count} of ${total.toLocaleString()} matched`, empty: count === 0 }
+  }
+  return {
+    text: count === 0 ? `no ${noun}` : `${count} ${noun}`,
+    empty: count === 0,
+  }
 }

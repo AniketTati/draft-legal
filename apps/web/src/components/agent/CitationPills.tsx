@@ -39,11 +39,19 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
     return (
       <div
         data-testid="citation-pills-empty"
+        data-contract-id={bundle.contractId}
         // Nothing is blocked on the user here — a miss is an informational
         // outcome, not "your turn", so it stays neutral rather than attention.
         className="text-[11px] text-ink-700 bg-paper-100 border border-paper-200 rounded-md px-2.5 py-1.5"
       >
-        {bundle.warning ?? 'No matching passages found in this contract.'}
+        {bundle.warning ?? (
+          <>
+            No passage in{' '}
+            <span className="font-medium text-ink-950">{bundle.title || 'this contract'}</span>{' '}
+            matches{bundle.query ? <> “<span className="font-mono">{bundle.query}</span>”</> : ' that search'}.
+            {' '}Anything stated about this clause below is unsupported by the document.
+          </>
+        )}
       </div>
     )
   }
@@ -64,7 +72,15 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
         <span className="font-mono text-[10.5px] text-ink-500 truncate">
           · {bundle.title}
         </span>
-        <span className="ml-auto text-[10px] text-ink-400 tabular-nums">
+        {/* What was searched for. The bundle has carried `query` all along
+            and never showed it, so a reader could not tell whether a thin
+            set of passages meant a thin contract or a narrow search. */}
+        {bundle.query && (
+          <span className="text-[10.5px] text-ink-400 truncate shrink" title={bundle.query}>
+            “{bundle.query}”
+          </span>
+        )}
+        <span className="ml-auto text-[10px] text-ink-400 tabular-nums shrink-0">
           {bundle.citations.length}
         </span>
       </div>

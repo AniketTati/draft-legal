@@ -9,15 +9,16 @@
  * — drills into the Contracts list pre-filtered (Step 3 will wire
  * the filter params on /contracts).
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
-  Cell, LineChart, Line, CartesianGrid, Legend,
+  Cell, LineChart, Line, CartesianGrid, Legend, LabelList,
 } from 'recharts'
 import { api } from '@/lib/api'
-import { MEANING_CLASS, statusMeaning, type Meaning } from '@/lib/status'
+import { MEANING_CLASS, statusMeaning, statusMeta, type Meaning } from '@/lib/status'
+import { Eyebrow } from '@/components/ui/primitives'
 import {
   BarChart2, FileText, CheckCircle2, AlertTriangle, CalendarClock,
   Loader2, TrendingUp, ArrowRight, Sparkles, Building2, Clock,
@@ -66,6 +67,24 @@ function formatDays(d: number | null): string {
   if (d == null) return '—'
   if (d < 1) return '<1d'
   return `${d.toFixed(1)}d`
+}
+/** Exact figure for the hover title — the card shows 6.38M, two rows can tie. */
+function formatMoneyExact(n: number, currency = 'USD'): string {
+  return `${currency} ${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+/**
+ * DATA_PROCESSING → "Data processing". An axis tick is prose, not a DB value.
+ *
+ * Short all-caps tokens keep their case: this is a legal product, and "Nda",
+ * "Msa" and "Sow" are not words. Anything four characters or under that arrived
+ * upper-case is treated as the acronym it is.
+ */
+function humanizeEnum(key: string): string {
+  return key
+    .split('_')
+    .map(w => (w.length <= 4 && w === w.toUpperCase() ? w : w.charAt(0) + w.slice(1).toLowerCase()))
+    .join(' ')
+    .replace(/^./, c => c.toUpperCase())
 }
 
 /*
@@ -171,35 +190,92 @@ export function AnalyticsPage() {
     queryFn:  () => api.get('/analytics/top-counterparties?limit=10').then(r => r.data),
   })
 
+  /*
+   * Every distribution arrives in whatever order the group-by came back in —
+   * i.e. physical row order. Plotted straight, a horizontal bar chart in
+   * arbitrary order is unreadable: the eye can't rank, and `.slice(0, 10)` on
+   * an unsorted array does not mean "top 10", it means "the ten the database
+   * happened to hand us first". That silently dropped SOW — the third-largest
+   * contract type in this org, 39 contracts — while keeping OTHER at 1.
+   * Rank first, then cut, and say out loud when anything was cut.
+   */
+  const statusRows = useMemo(() => {
+    /*
+     * Two contract statuses (PENDING_REVIEW and IN_REVIEW) resolve to the same
+     * label, "In review" — deliberately, because they mean the same thing to a
+     * reader. Plotted raw that printed the category twice, which reads as a
+     * data error and makes both bars unrankable. Rows that say the same thing
+     * are summed; the meaning is part of the merge key so two labels can never
+     * be fused into a bar whose colour is a lie.
+     */
+    const merged = new Map<string, { key: string; name: string; count: number }>()
+    for (const s of dists?.byStatus ?? []) {
+      const meta = statusMeta(s.key)
+      const id = `${meta.label}|${meta.meaning}`
+      const hit = merged.get(id)
+      if (hit) hit.count += s.count
+      else merged.set(id, { key: s.key, name: meta.label, count: s.count })
+    }
+    return [...merged.values()].sort((a, b) => b.count - a.count)
+  }, [dists])
+
+  const TYPE_LIMIT = 10
+  const typeRowsAll = useMemo(
+    () => (dists?.byType ?? [])
+      .map(t => ({ key: t.key, name: humanizeEnum(t.key), count: t.count }))
+      .sort((a, b) => b.count - a.count),
+    [dists],
+  )
+  const typeRows = typeRowsAll.slice(0, TYPE_LIMIT)
+  const typeHidden = typeRowsAll.length - typeRows.length
+
+  /*
+   * "Not scored" is not a risk level, so it does not get a bar beside the ones
+   * that are. Plotted in the same series it reads as a fifth band, and here it
+   * would be the second-tallest — 125 contracts the model never scored, shown
+   * as though that were a finding about their risk. It becomes a coverage note
+   * under the chart instead, which is the thing a reviewer actually needs to
+   * know before trusting the other four bars.
+   */
+  const riskRows = (dists?.byRisk ?? []).filter(r => r.key !== 'none')
+  const riskScored = riskRows.reduce((s, r) => s + r.count, 0)
+  const riskUnscored = (dists?.byRisk ?? []).find(r => r.key === 'none')?.count ?? 0
+
+  /*
+   * The last bucket in the series is the month we are standing in, so it is a
+   * partial count by construction. Left unmarked it reads as a collapse (or, as
+   * here, a spike) rather than as "3 days of data against 30".
+   */
+  const volumeRows = useMemo(() => {
+    const src = ts?.series ?? []
+    return src.map((p, i) => ({
+      ...p,
+      label: i === src.length - 1 ? `${p.label} ▸` : p.label,
+    }))
+  }, [ts])
+
   return (
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="analytics-page">
-      <div className="flex items-center justify-between mb-1 gap-4">
-        <div className="flex items-center gap-3">
-          <BarChart2 className="size-4 text-ink-400" />
-          <h1 className="text-title text-ink-950">Analytics</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* The "Window:" text was a bare span, so the control announced
-              itself as an unlabelled combobox. A real label also makes the
-              word a click target for the select. */}
-          <label htmlFor="analytics-window-select" className="text-[11px] text-ink-500">Window:</label>
-          <select
-            id="analytics-window-select"
-            value={windowDays}
-            onChange={e => setWindowDays(Number(e.target.value))}
-            data-testid="analytics-window"
-            className="h-8 rounded-md border border-input bg-card px-2.5 text-[13px] text-ink-950 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
-          >
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-            <option value={180}>Last 180 days</option>
-            <option value={365}>Last year</option>
-          </select>
-        </div>
+      <div className="flex items-center gap-3 mb-1">
+        <BarChart2 className="size-4 text-ink-400" />
+        <h1 className="text-title text-ink-950">Analytics</h1>
       </div>
       <p className="text-dense text-ink-500 mb-5">
         Portfolio KPIs, cycle time, and contract distribution at a glance.
       </p>
+
+      {/*
+        The window selector used to sit in the page header, beside the title,
+        which said it governed the page. It does not: it is a lookback for the
+        three throughput metrics only — every count in the strip below and every
+        chart on this page is the whole portfolio as of now. Changing "Last 90
+        days" to "Last 30 days" and watching 420 contracts not move is how a
+        user learns to distrust a dashboard. The two sections are now labelled
+        with their own scope, and the control lives on the section it steers.
+      */}
+      <Eyebrow className="mb-2">
+        Portfolio — as of now
+      </Eyebrow>
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
@@ -226,7 +302,16 @@ export function AnalyticsPage() {
           label="Pending approvals"
           value={summary?.pendingApprovals ?? 0}
           icon={Clock}
-          tone="turn"
+          /*
+           * This is every pending approval in the org, not the viewer's queue —
+           * lib/status is explicit that `turn` may only be used where the query
+           * is already scoped to the current user, because amber that means
+           * "somebody's turn" means nothing. The sidebar badge (8) is the one
+           * that speaks for this user; this card is inflight, like the pill on
+           * a contract awaiting someone else's approval.
+           */
+          tone="inflight"
+          subtitle="Org-wide, every approver"
           to="/approvals"
           loading={summaryLoading}
           data-testid="kpi-approvals"
@@ -235,9 +320,11 @@ export function AnalyticsPage() {
           label="Expiring (90d)"
           value={summary?.expiringSoon ?? 0}
           icon={CalendarClock}
-          // Not yet exposure — a 90-day runway is a renewal the user still has
-          // time to act on, so it reads as "your turn", not as risk.
-          tone="turn"
+          // Renewals grades its own horizons: this week is risk, next 30 is a
+          // turn, next 90 is neutral. This card links there, so it takes the
+          // same reading — a 90-day runway is a diary entry, not an alarm.
+          tone="neutral"
+          subtitle="Executed, expiry inside 90d"
           to="/renewals?bucket=next_90"
           loading={summaryLoading}
           data-testid="kpi-expiring"
@@ -247,18 +334,45 @@ export function AnalyticsPage() {
           value={summary?.highRiskOpen ?? 0}
           icon={AlertTriangle}
           tone="risk"
+          // Say the threshold out loud. The API counts score > 60 and excludes
+          // executed/expired/terminated; the contracts list bands "high" at 67
+          // and has no open-vs-closed filter, so the drill-through is a
+          // neighbourhood, not the same set. Naming the rule is the difference
+          // between a user calling that a discrepancy and calling it a bug.
+          subtitle="Score > 60, not executed"
           to="/contracts?riskBand=high"
           loading={summaryLoading}
           data-testid="kpi-high-risk"
         />
       </div>
 
-      {/* KPIs row 2: time-based metrics */}
+      {/* KPIs row 2: time-based metrics — the only section the window steers. */}
+      <div className="flex items-center justify-between gap-4 mb-2">
+        <Eyebrow className="flex-1">Throughput — decided in the window</Eyebrow>
+        <div className="flex items-center gap-2">
+          {/* The "Window:" text was a bare span, so the control announced
+              itself as an unlabelled combobox. A real label also makes the
+              word a click target for the select. */}
+          <label htmlFor="analytics-window-select" className="text-[11px] text-ink-500">Window:</label>
+          <select
+            id="analytics-window-select"
+            value={windowDays}
+            onChange={e => setWindowDays(Number(e.target.value))}
+            data-testid="analytics-window"
+            className="h-8 rounded-md border border-input bg-card px-2.5 text-[13px] text-ink-950 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
+          >
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={180}>Last 180 days</option>
+            <option value={365}>Last year</option>
+          </select>
+        </div>
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
         <MetricBar
           label="Cycle time"
           value={formatDays(summary?.cycleTimeAvgDays ?? null)}
-          subtitle={`Median ${formatDays(summary?.cycleTimeMedianDays ?? null)} · over last ${summary?.windowDays ?? 90} days`}
+          subtitle={`Median ${formatDays(summary?.cycleTimeMedianDays ?? null)} · created → executed`}
           icon={TrendingUp}
           tone="neutral"
         />
@@ -279,11 +393,19 @@ export function AnalyticsPage() {
         />
       </div>
 
+      <Eyebrow className="mb-2">Distribution — whole portfolio</Eyebrow>
+
       {/* Charts row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <ChartCard title="Monthly contract volume" data-testid="chart-volume">
+        <ChartCard
+          title="Monthly contract volume"
+          subtitle="Last 12 months · ▸ marks the month in progress"
+          empty={!volumeRows.length}
+          emptyLabel="No contracts created in the last 12 months."
+          data-testid="chart-volume"
+        >
           <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={ts?.series ?? []}>
+            <LineChart data={volumeRows}>
               <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} />
               <XAxis dataKey="label" tick={AXIS_TICK} stroke={PAINT.grid} />
               <YAxis tick={AXIS_TICK} stroke={PAINT.grid} allowDecimals={false} />
@@ -323,16 +445,28 @@ export function AnalyticsPage() {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Status distribution" data-testid="chart-status">
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart
-              data={(dists?.byStatus ?? []).map(s => ({ name: s.key.replace(/_/g, ' '), count: s.count, key: s.key }))}
-              layout="vertical"
-              margin={{ left: 100, right: 20 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} />
+        {/*
+          Eleven categories in a 250px plot: Recharts drops every category tick
+          that would collide, and it drops them by position, not by importance —
+          so the two tallest bars on this chart (189 executed, 131 draft) were
+          the ones rendering with no label at all. A bar chart whose largest bars
+          are anonymous is not a chart. interval={0} forces every tick, and the
+          height is derived from the row count so there is room for them.
+        */}
+        <ChartCard
+          title="Status distribution"
+          subtitle={`${statusRows.length} states · ${statusRows.reduce((s, r) => s + r.count, 0)} contracts`}
+          empty={!statusRows.length}
+          data-testid="chart-status"
+        >
+          <ResponsiveContainer width="100%" height={Math.max(250, statusRows.length * 26 + 40)}>
+            <BarChart data={statusRows} layout="vertical" margin={{ left: 8, right: 38, top: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} horizontal={false} />
               <XAxis type="number" tick={AXIS_TICK} stroke={PAINT.grid} allowDecimals={false} domain={[0, 'dataMax']} />
-              <YAxis type="category" dataKey="name" tick={AXIS_TICK} stroke={PAINT.grid} width={90} />
+              <YAxis
+                type="category" dataKey="name" tick={AXIS_TICK} stroke={PAINT.grid}
+                width={126} interval={0}
+              />
               <Tooltip
                 contentStyle={TOOLTIP_CONTENT}
                 labelStyle={TOOLTIP_LABEL}
@@ -342,9 +476,14 @@ export function AnalyticsPage() {
               <Bar dataKey="count" name="Contracts" isAnimationActive={false}>
                 {/* One source of truth: the bar takes the same meaning the
                     StatusPill would give this status. */}
-                {(dists?.byStatus ?? []).map((s, i) => (
+                {statusRows.map((s, i) => (
                   <Cell key={i} fill={MEANING_PAINT[statusMeaning(s.key)]} />
                 ))}
+                {/* The counts that matter here are small integers, and half of
+                    them draw as a two-pixel sliver. Printing the value beside
+                    the bar means the chart answers "how many" without a hover,
+                    which is the question a portfolio review actually asks. */}
+                <LabelList dataKey="count" position="right" fontSize={11} fill={PAINT.inkMuted} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -353,33 +492,68 @@ export function AnalyticsPage() {
 
       {/* Charts row 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        <ChartCard title="Risk distribution" data-testid="chart-risk">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={dists?.byRisk ?? []} layout="vertical" margin={{ left: 80 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} />
+        <ChartCard
+          title="Risk distribution"
+          subtitle={`${riskScored} scored contracts`}
+          empty={!riskScored && !riskUnscored}
+          data-testid="chart-risk"
+          footer={
+            riskUnscored > 0 ? (
+              <span className="flex items-center gap-2">
+                <span className="inline-block size-1.5 shrink-0 rounded-full bg-ink-350" />
+                <span>
+                  <span className="tabular-nums font-medium text-ink-700">{riskUnscored}</span> more
+                  {' '}({Math.round((riskUnscored / (riskScored + riskUnscored)) * 100)}% of the portfolio)
+                  {' '}carry no risk score and are not plotted.
+                </span>
+              </span>
+            ) : undefined
+          }
+        >
+          <ResponsiveContainer width="100%" height={Math.max(180, riskRows.length * 34 + 40)}>
+            <BarChart data={riskRows} layout="vertical" margin={{ left: 8, right: 38, top: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} horizontal={false} />
               <XAxis type="number" tick={AXIS_TICK} stroke={PAINT.grid} allowDecimals={false} />
-              <YAxis type="category" dataKey="label" tick={AXIS_TICK} stroke={PAINT.grid} />
+              <YAxis
+                type="category" dataKey="label" tick={AXIS_TICK} stroke={PAINT.grid}
+                width={110} interval={0}
+              />
               <Tooltip
                 contentStyle={TOOLTIP_CONTENT}
                 labelStyle={TOOLTIP_LABEL}
                 itemStyle={TOOLTIP_ITEM}
                 cursor={{ fill: 'rgba(23,22,26,0.04)' }}
               />
-              <Bar dataKey="count" name="Contracts">
-                {(dists?.byRisk ?? []).map((r, i) => (
+              <Bar dataKey="count" name="Contracts" isAnimationActive={false}>
+                {riskRows.map((r, i) => (
                   <Cell key={i} fill={RISK_PAINT[r.key] ?? PAINT.neutral} />
                 ))}
+                <LabelList dataKey="count" position="right" fontSize={11} fill={PAINT.inkMuted} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Contract types" data-testid="chart-types">
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={(dists?.byType ?? []).slice(0, 10)} layout="vertical" margin={{ left: 80 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} />
+        <ChartCard
+          title="Contract types"
+          subtitle={typeHidden > 0 ? `Top ${typeRows.length} of ${typeRowsAll.length}` : `${typeRowsAll.length} types`}
+          empty={!typeRows.length}
+          data-testid="chart-types"
+          footer={
+            typeHidden > 0
+              ? `${typeHidden} smaller ${typeHidden === 1 ? 'type is' : 'types are'} not shown: ` +
+                typeRowsAll.slice(TYPE_LIMIT).map(t => `${t.name} (${t.count})`).join(', ')
+              : undefined
+          }
+        >
+          <ResponsiveContainer width="100%" height={Math.max(180, typeRows.length * 26 + 40)}>
+            <BarChart data={typeRows} layout="vertical" margin={{ left: 8, right: 38, top: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} horizontal={false} />
               <XAxis type="number" tick={AXIS_TICK} stroke={PAINT.grid} allowDecimals={false} />
-              <YAxis type="category" dataKey="key" tick={AXIS_TICK} stroke={PAINT.grid} />
+              <YAxis
+                type="category" dataKey="name" tick={AXIS_TICK} stroke={PAINT.grid}
+                width={126} interval={0}
+              />
               <Tooltip
                 contentStyle={TOOLTIP_CONTENT}
                 labelStyle={TOOLTIP_LABEL}
@@ -388,7 +562,9 @@ export function AnalyticsPage() {
               />
               {/* Contract type carries no meaning — it is a category, so the
                   series stays neutral rather than borrowing someone's color. */}
-              <Bar dataKey="count" fill={PAINT.neutral} name="Contracts" />
+              <Bar dataKey="count" fill={PAINT.neutral} name="Contracts" isAnimationActive={false}>
+                <LabelList dataKey="count" position="right" fontSize={11} fill={PAINT.inkMuted} />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -419,7 +595,15 @@ export function AnalyticsPage() {
                 <tr key={cp.counterparty} className="hover:bg-paper-50">
                   <td className="px-5 py-2 font-medium text-ink-950">{cp.counterparty}</td>
                   <td className="px-5 py-2 text-right text-ink-700 tabular-nums">{cp.count}</td>
-                  <td className="px-5 py-2 text-right font-medium text-ink-950 tabular-nums">{formatMoney(cp.value, cp.currency)}</td>
+                  {/* Rounded to 2dp, so two counterparties a few thousand apart
+                      print the same figure and the sort looks arbitrary. The
+                      exact number is one hover away. */}
+                  <td
+                    className="px-5 py-2 text-right font-medium text-ink-950 tabular-nums"
+                    title={formatMoneyExact(cp.value, cp.currency)}
+                  >
+                    {formatMoney(cp.value, cp.currency)}
+                  </td>
                   <td className="px-5 py-2 text-right">
                     {cp.counterpartyId ? (
                       <Link
@@ -454,7 +638,7 @@ function KpiCard({ label, value, subtitle, icon: Icon, tone, to, loading, ...res
 }) {
   const m = MEANING_CLASS[tone]
   const card = (
-    <div className="border border-paper-200 rounded-card p-4 bg-card transition-colors hover:border-paper-300" {...rest}>
+    <div className="h-full border border-paper-200 rounded-card p-4 bg-card transition-colors hover:border-paper-300" {...rest}>
       <div className="flex items-start justify-between">
         <div className="text-[11px] text-ink-500">{label}</div>
         <div className={`size-6 rounded-md flex items-center justify-center ${m.wash} ${m.washFg}`}>
@@ -464,10 +648,12 @@ function KpiCard({ label, value, subtitle, icon: Icon, tone, to, loading, ...res
       <div className="text-[24px] font-semibold tracking-[-0.02em] mt-1 tabular-nums text-ink-950">
         {loading ? <Loader2 className="size-5 animate-spin text-ink-400" /> : value}
       </div>
-      {subtitle && <div className="text-[10.5px] text-ink-500 mt-0.5 truncate">{subtitle}</div>}
+      {/* Two lines, not an ellipsis: these subtitles carry the definition of the
+          number above them, and a truncated definition is worse than none. */}
+      {subtitle && <div className="text-[10.5px] text-ink-500 mt-0.5 leading-snug line-clamp-2">{subtitle}</div>}
     </div>
   )
-  return to ? <Link to={to} className="block">{card}</Link> : card
+  return to ? <Link to={to} className="block h-full">{card}</Link> : card
 }
 
 function MetricBar({ label, value, subtitle, icon: Icon, tone }: {
@@ -486,21 +672,48 @@ function MetricBar({ label, value, subtitle, icon: Icon, tone }: {
       <div className="flex-1 min-w-0">
         <div className="text-[11px] text-ink-500">{label}</div>
         <div className={`text-[20px] font-semibold tracking-[-0.015em] tabular-nums ${valueClass}`}>{value}</div>
-        <div className="text-[10.5px] text-ink-500 truncate">{subtitle}</div>
+        {/* Same reasoning as the KPI subtitle: this line defines the metric, and
+            "Approved ÷ (Approved + Rej…" defines nothing. */}
+        <div className="text-[10.5px] text-ink-500 leading-snug line-clamp-2">{subtitle}</div>
       </div>
     </div>
   )
 }
 
-function ChartCard({ title, children, ...rest }: {
+/**
+ * ChartCard — title, the plot, and (where it matters) what the plot leaves out.
+ *
+ * `footer` exists because the honest thing to say about a distribution is often
+ * not on the axes: which rows were cut, how many records were never scored. An
+ * `empty` state matters for the same reason — Recharts renders bare axes for an
+ * empty series, which looks like a working chart reporting zero rather than a
+ * page that has no data yet.
+ */
+function ChartCard({ title, subtitle, footer, empty, emptyLabel, children, ...rest }: {
   title:    string
+  subtitle?: string
+  footer?:  React.ReactNode
+  empty?:   boolean
+  emptyLabel?: string
   children: React.ReactNode
   'data-testid'?: string
 }) {
   return (
     <div className="bg-card border border-paper-200 rounded-card p-5" {...rest}>
-      <h3 className="text-section text-ink-950 mb-4">{title}</h3>
-      {children}
+      <div className="mb-4">
+        <h3 className="text-section text-ink-950">{title}</h3>
+        {subtitle && <p className="text-[11px] tabular-nums text-ink-500 mt-0.5">{subtitle}</p>}
+      </div>
+      {empty ? (
+        <div className="flex items-center justify-center h-[200px] text-dense text-ink-500">
+          {emptyLabel ?? 'Nothing to plot yet.'}
+        </div>
+      ) : (
+        children
+      )}
+      {!empty && footer && (
+        <p className="text-[11px] text-ink-500 mt-3 pt-3 border-t border-paper-100 leading-relaxed">{footer}</p>
+      )}
     </div>
   )
 }

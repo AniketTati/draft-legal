@@ -14,7 +14,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import {
   CalendarClock, DollarSign, Shield, RefreshCw, FileSearch, Bell,
-  Check, AlertTriangle, ArrowRight, Loader2, AlertCircle, ListTodo,
+  Check, AlertTriangle, Loader2, AlertCircle, ListTodo,
   Search, CheckCircle2, Download,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -128,7 +128,11 @@ const SEVERITY_MEANING: Record<string, Meaning> = {
 }
 
 export function ObligationsPage() {
-  const [bucket, setBucket] = useState<Bucket>('all')
+  // Landing on "All" sorted by due date ascending opened this page on a wall of
+  // obligations discharged last February, with the 120-days-late ones a long
+  // scroll below. A queue should open on the work: "Open" is every commitment
+  // still owed, oldest due date first, which is the order you drain them in.
+  const [bucket, setBucket] = useState<Bucket>('open')
   const [q, setQ] = useState('')
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
   const qc = useQueryClient()
@@ -145,8 +149,40 @@ export function ObligationsPage() {
     refetchInterval: 60_000,
   })
 
-  const items = data?.data ?? []
-  const total = data?.total ?? 0
+  /*
+   * The obligations whose STORED status is the literal 'OVERDUE'.
+   *
+   * The server's overdue bucket and its overdue KPI both compute
+   * `status = 'OPEN' AND dueDate < now`, so a row stored as OVERDUE is in
+   * neither: it is not OPEN, so it fails the bucket, and it is not COMPLETED,
+   * so it never leaves. Eight commitments up to 94 days late rendered a red
+   * "Overdue" pill on the All tab and matched no filter on the page whose whole
+   * job is to find them.
+   *
+   * The real fix is one line of server predicate (see the note in the handover);
+   * until then this page refuses to under-report lateness, and asks for the rows
+   * the bucket drops so both the count and the list are true.
+   */
+  const { data: storedOverdue } = useQuery<{ data: ApiObligation[]; total: number }>({
+    queryKey: ['obligations-list', 'stored-overdue', q],
+    queryFn:  () => api.get(`/obligations?status=OVERDUE${q ? `&q=${encodeURIComponent(q)}` : ''}&limit=100`).then(r => r.data),
+    refetchInterval: 60_000,
+  })
+  const storedOverdueRows  = storedOverdue?.data ?? []
+  // Disjoint by construction: the KPI counts status OPEN, these are status
+  // OVERDUE, so the two can be added without double-counting.
+  const storedOverdueTotal = storedOverdue?.total ?? 0
+  const overdueTotal = (stats?.overdue ?? 0) + storedOverdueTotal
+
+  const rows  = data?.data ?? []
+  const items = bucket === 'overdue'
+    ? [...rows, ...storedOverdueRows].sort((a, b) => {
+        const at = a.dueDate ? new Date(a.dueDate).getTime() : Infinity
+        const bt = b.dueDate ? new Date(b.dueDate).getTime() : Infinity
+        return at - bt
+      })
+    : rows
+  const total = bucket === 'overdue' ? overdueTotal : (data?.total ?? 0)
 
   return (
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="obligations-page">
@@ -179,7 +215,7 @@ export function ObligationsPage() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <StatCard label="Open"        value={stats?.open ?? 0}         meaning="inflight" data-testid="stat-open" />
         <StatCard label="Due in 30d"  value={stats?.dueSoon ?? 0}      meaning="turn"     data-testid="stat-due-soon" />
-        <StatCard label="Overdue"     value={stats?.overdue ?? 0}      meaning="risk"     data-testid="stat-overdue" />
+        <StatCard label="Overdue"     value={overdueTotal}             meaning="risk"     data-testid="stat-overdue" />
         <StatCard label="Completed (30d)" value={stats?.completedRecent ?? 0} meaning="binding" data-testid="stat-completed" />
       </div>
 
@@ -188,7 +224,9 @@ export function ObligationsPage() {
         <div className="flex items-center gap-1 -mb-2 overflow-x-auto">
           {BUCKETS.map(b => {
             const isActive = bucket === b.key
-            const count = b.statKey ? stats?.[b.statKey] ?? 0 : null
+            const count = b.key === 'overdue'
+              ? overdueTotal
+              : b.statKey ? stats?.[b.statKey] ?? 0 : null
             return (
               <button
                 key={b.key}
@@ -247,7 +285,9 @@ export function ObligationsPage() {
                     ? 'Nothing overdue — well done.'
                     : bucket === 'due_soon'
                       ? 'Nothing due in the next 30 days.'
-                      : 'No obligations extracted yet.'
+                      : bucket === 'open'
+                        ? 'Nothing outstanding — every extracted commitment is discharged.'
+                        : 'No obligations extracted yet.'
             }
             description="Obligations are auto-extracted when a contract is signed; you can also run extraction manually from any contract page."
           />
@@ -257,16 +297,21 @@ export function ObligationsPage() {
           <div className="px-5 py-2 text-[11px] text-ink-500 bg-paper-50 border-b border-paper-200 flex items-center justify-between">
             <span className="tabular-nums">{total} {total === 1 ? 'obligation' : 'obligations'}</span>
           </div>
+          {/* Fixed layout, not content-driven. Six auto-width columns measured
+              1116px inside a 730px shell with the assistant rail open, so
+              Status and the Complete button — the status you scan for and the
+              only action on the page — sat off-screen behind a horizontal
+              scrollbar on every row. Severity moved into the description's meta
+              line, where it reads as the property of the commitment it is. */}
           <div className="overflow-x-auto">
-          <table className="w-full text-[13px]" data-testid="obligations-table">
+          <table className="w-full table-fixed text-[13px]" data-testid="obligations-table">
             <thead className="bg-paper-50 text-eyebrow uppercase text-ink-500">
               <tr>
                 <th className="text-left px-4 py-2 font-semibold">Description</th>
-                <th className="text-left px-4 py-2 font-semibold">Contract</th>
-                <th className="text-left px-4 py-2 font-semibold">Due</th>
-                <th className="text-left px-4 py-2 font-semibold">Severity</th>
-                <th className="text-left px-4 py-2 font-semibold">Status</th>
-                <th className="text-right px-4 py-2 font-semibold"></th>
+                <th className="text-left px-3 py-2 font-semibold w-[24%]">Contract</th>
+                <th className="text-left px-3 py-2 font-semibold w-[104px]">Due</th>
+                <th className="text-left px-3 py-2 font-semibold w-[112px]">Status</th>
+                <th className="text-right px-4 py-2 font-semibold w-[122px]"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-paper-200">
@@ -276,82 +321,84 @@ export function ObligationsPage() {
                 const sevMeaning = SEVERITY_MEANING[o.severity] ?? 'turn'
                 const overdue = isOverdue(o)
                 return (
-                  <tr key={o.id} className="hover:bg-paper-50" data-testid={`obligation-row-${o.id}`}>
-                    <td className="px-4 py-2 max-w-[380px]">
+                  <tr key={o.id} className="hover:bg-paper-50 align-top" data-testid={`obligation-row-${o.id}`}>
+                    <td className="px-4 py-2">
                       <div className="flex items-start gap-2">
                         <TypeIcon className="size-3.5 text-ink-400 mt-0.5 flex-shrink-0" />
                         <div className="flex-1 min-w-0">
                           <div className="font-medium text-ink-950 truncate" title={o.description}>
                             {o.description}
                           </div>
-                          <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5">
-                            <span className="uppercase font-mono tracking-[0.08em] text-[10px]">{o.type}</span>
-                            <span>· {o.owner}</span>
-                            {o.sectionRef && <span className="font-mono">§{o.sectionRef}</span>}
+                          <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5 truncate">
+                            {/* Severity used to own a column of its own, which
+                                cost 107px to say one word. It is a property of
+                                the commitment, so it rides with the commitment —
+                                one dot, named for screen readers. */}
+                            <span className="inline-flex items-center gap-1 shrink-0">
+                              <MeaningDot meaning={sevMeaning} label={`${o.severity} severity`} />
+                              <span className="capitalize">{o.severity}</span>
+                            </span>
+                            <span className="uppercase font-mono tracking-[0.08em] text-[10px] shrink-0">· {o.type}</span>
+                            <span className="truncate">· {o.owner}</span>
+                            {o.sectionRef && <span className="font-mono shrink-0">§{o.sectionRef}</span>}
                             {o.recurrence !== 'one-time' && o.recurrence !== 'unknown' && (
                               // Recurrence is a property of the obligation, not a
                               // state — it gets no meaning colour.
-                              <span className="text-ink-700">↻ {o.recurrence}</span>
+                              <span className="text-ink-700 shrink-0">↻ {o.recurrence}</span>
                             )}
                           </div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2">
                       {o.contract ? (
                         <Link
                           to={`/contracts/${o.contract.id}`}
-                          className="text-[11.5px] block max-w-[200px] truncate hover:underline underline-offset-2 decoration-paper-300"
-                          title={o.contract.title}
+                          className="text-[11.5px] block truncate hover:underline underline-offset-2 decoration-paper-300"
+                          title={`${o.contract.title}${o.contract.counterpartyName ? ` · ${o.contract.counterpartyName}` : ''}`}
                         >
                           <span className="font-medium text-ink-950">{o.contract.title}</span>
                           {o.contract.counterpartyName && (
-                            <div className="text-ink-500">{o.contract.counterpartyName}</div>
+                            <div className="text-ink-500 truncate">{o.contract.counterpartyName}</div>
                           )}
                         </Link>
                       ) : (
                         <span className="text-[11.5px] text-ink-400">(deleted)</span>
                       )}
                     </td>
-                    <td className={`px-4 py-2 text-[11.5px] tabular-nums ${due.tone}`}>
+                    <td className={`px-3 py-2 text-[11.5px] tabular-nums ${due.tone}`}>
                       {due.text}
                     </td>
-                    <td className="px-4 py-2">
-                      <StatusPill meaning={sevMeaning} className="capitalize">
-                        {o.severity}
-                      </StatusPill>
-                    </td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2">
                       {/* An overdue obligation reads as risk here whatever the
                           stored status says — see isOverdue. */}
                       <StatusPill status={o.status} meaning={overdue ? 'risk' : undefined} />
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-2">
-                        {o.status === 'OPEN' && (
-                          // Completing an obligation discharges it — a binding
-                          // act, so the brand green is earned here.
-                          <Button
-                            type="button"
-                            variant="brand"
-                            size="xs"
-                            onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
-                            data-testid={`complete-btn-${o.id}`}
-                          >
-                            <CheckCircle2 />
-                            Complete
-                          </Button>
-                        )}
-                        {o.contract?.id && (
-                          <Link
-                            to={`/contracts/${o.contract.id}`}
-                            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
-                          >
-                            Open
-                            <ArrowRight className="size-3.5" />
-                          </Link>
-                        )}
-                      </div>
+                      {/* Anything not yet discharged can be completed. Gating on
+                          status === 'OPEN' hid the button from exactly the rows
+                          stored as OVERDUE — the latest ones in the org, and the
+                          only ones the endpoint would still accept.
+
+                          Outlined, not filled: completing IS binding, but this
+                          is a hundred-row queue, and a filled emerald button
+                          repeated down every row makes the brand colour the
+                          loudest thing on a page whose loudest thing should be
+                          "120d overdue". The fill stays on single-decision
+                          surfaces, including the confirmation modal this opens. */}
+                      {o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="xs"
+                          className="text-brand-700 border-brand-200 hover:bg-brand-50"
+                          onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
+                          data-testid={`complete-btn-${o.id}`}
+                        >
+                          <CheckCircle2 />
+                          Complete
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 )

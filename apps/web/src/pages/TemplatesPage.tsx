@@ -3,7 +3,7 @@
  * Browse, create, and manage contract templates.
  * Template builder with TipTap section editor + variable definition panel.
  */
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { sanitizeHtml } from '@/lib/sanitize'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload } from 'lucide-react'
@@ -11,6 +11,8 @@ import { api } from '@/lib/api'
 import { ContractEditor } from '@/components/editor/ContractEditor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { EmptyState } from '@/components/ui/primitives'
+import { StatusPill } from '@/components/ui/status-pill'
 import type { Template, VariableDef } from '@clm/types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -18,15 +20,28 @@ import type { Template, VariableDef } from '@clm/types'
 const CONTRACT_TYPES = ['NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'ORDER_FORM', 'OTHER']
 const VARIABLE_TYPES = ['text', 'number', 'date', 'boolean', 'select'] as const
 
-// Despite the name this renders the contract type — a category, not a state —
-// so it carries no meaning color.
-function RiskBadge({ type }: { type?: string | null }) {
+// The contract type — a category, not a state — so it carries no meaning color.
+// (Named RiskBadge for its first six months, which described neither what it
+// renders nor how it renders it.)
+function TypeBadge({ type }: { type?: string | null }) {
   if (!type) return null
   return (
     <span className="text-[11px] px-2 py-0.5 rounded-full border border-paper-200 bg-paper-100 text-ink-700 font-medium">
       {type}
     </span>
   )
+}
+
+/** "3 days ago" / "12 Mar" — a sort by "recently updated" you can verify. */
+function relativeDate(iso: string | Date | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const days = Math.floor((Date.now() - d.getTime()) / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days}d ago`
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 // ─── Template Card ────────────────────────────────────────────────────────────
@@ -52,65 +67,85 @@ function TemplateCard({
       data-testid={`template-card-${template.id}`}
       className="bg-card border border-paper-200 rounded-card p-4 hover:border-paper-300 transition-colors"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <FileText className="size-3.5 text-ink-400 shrink-0" />
-            <button
-              type="button"
-              onClick={onEdit}
-              data-testid={`template-card-title-${template.id}`}
-              className="text-body font-semibold text-ink-950 truncate text-left hover:text-brand-700 hover:underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700"
-            >
-              {template.name}
-            </button>
-            {/* Publishing is the act that makes a template usable, so the
-                published/draft split is a real binding/neutral distinction. */}
-            {template.isPublished
-              ? <span title="Published"><Globe className="size-3.5 text-brand-700" /></span>
-              : <span title="Draft"><Lock className="size-3.5 text-ink-400" /></span>
-            }
-            {usageCount >= 5 && (
-              <span
-                data-testid={`template-most-used-${template.id}`}
-                title={`Used ${usageCount} times — frequently used template`}
-                // "Most used" is a fact about the past, not a thing waiting on
-                // the user — so it does not get the attention color.
-                className="inline-flex items-center gap-0.5 text-[9.5px] font-semibold uppercase tracking-[0.09em] px-1.5 py-0.5 rounded-chip bg-paper-100 text-ink-700 border border-paper-200"
-              >
-                ★ Most used
-              </span>
-            )}
-          </div>
-          {template.description && (
-            <p className="text-dense text-ink-500 mt-1 line-clamp-2">{template.description}</p>
-          )}
-          <div className="flex items-center gap-2 mt-2 flex-wrap">
-            {template.contractType && <RiskBadge type={template.contractType} />}
-            <span className="text-[11px] tabular-nums text-ink-400">v{template.version}</span>
-            <span className="text-[11px] text-ink-400">·</span>
-            <span className="text-[11px] tabular-nums text-ink-400">{(template.sections?.length ?? 0)} sections</span>
-            <span className="text-[11px] text-ink-400">·</span>
-            <span className="text-[11px] tabular-nums text-ink-400">{(template.variables as VariableDef[])?.length ?? 0} variables</span>
-            {usageCount > 0 && (
-              <>
-                <span className="text-[11px] text-ink-400">·</span>
-                <span
-                  data-testid={`template-usage-${template.id}`}
-                  className="text-[11px] text-ink-500 tabular-nums"
-                >
-                  Used {usageCount} {usageCount === 1 ? 'time' : 'times'}
-                </span>
-              </>
-            )}
-          </div>
+      {/*
+        The title used to share one flex row with the publish glyph, the "MOST
+        USED" badge and the truncate class, three cards to a row. The badge won
+        that fight: real templates rendered as "Mutual …" and "Statement of W…",
+        i.e. the identifier a user picks a template BY was the first thing
+        dropped. Title gets the row; the badges moved down to the facts line
+        where they belong, and the header row holds only the actions.
+      */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-2 min-w-0 flex-1">
+          <FileText className="size-3.5 text-ink-400 shrink-0 mt-[3px]" />
+          <button
+            type="button"
+            onClick={onEdit}
+            data-testid={`template-card-title-${template.id}`}
+            title={template.name}
+            className="text-body font-semibold text-ink-950 line-clamp-2 text-left hover:text-brand-700 hover:underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700"
+          >
+            {template.name}
+          </button>
         </div>
         <div className="flex gap-1 shrink-0">
-          <button onClick={onPreview} className="p-1.5 rounded-md hover:bg-paper-100 text-ink-400 hover:text-ink-700" title="Preview"><Eye className="size-3.5" /></button>
-          <button onClick={onEdit} className="p-1.5 rounded-md hover:bg-paper-100 text-ink-400 hover:text-ink-950" title="Edit"><Edit2 className="size-3.5" /></button>
-          <button onClick={onDelete} className="p-1.5 rounded-md hover:bg-risk-50 text-ink-400 hover:text-risk-600" title="Delete"><Trash2 className="size-3.5" /></button>
+          <button onClick={onPreview} aria-label={`Preview ${template.name}`} className="p-1.5 rounded-md hover:bg-paper-100 text-ink-400 hover:text-ink-700" title="Preview"><Eye className="size-3.5" /></button>
+          <button onClick={onEdit} aria-label={`Edit ${template.name}`} className="p-1.5 rounded-md hover:bg-paper-100 text-ink-400 hover:text-ink-950" title="Edit"><Edit2 className="size-3.5" /></button>
+          <button onClick={onDelete} aria-label={`Delete ${template.name}`} className="p-1.5 rounded-md hover:bg-risk-50 text-ink-400 hover:text-risk-600" title="Delete"><Trash2 className="size-3.5" /></button>
         </div>
       </div>
+
+      {template.description && (
+        <p className="text-dense text-ink-500 mt-1.5 line-clamp-2">{template.description}</p>
+      )}
+
+      <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+        {template.contractType && <TypeBadge type={template.contractType} />}
+        {/*
+          Publishing is what makes a template usable, and it is worth a word
+          rather than a 14px glyph — but nineteen of these twenty templates are
+          published, so painting that state emerald put the brand colour on
+          almost every card and left the one card that ISN'T usable looking
+          identical. The majority state states itself quietly; the exception —
+          an unpublished draft nobody can draft from — gets the pill.
+        */}
+        {template.isPublished ? (
+          <span className="inline-flex items-center gap-1 text-[11px] text-ink-500">
+            <Globe className="size-3" /> Published
+          </span>
+        ) : (
+          <StatusPill meaning="inflight">
+            <Lock className="size-3" /> Draft — not usable yet
+          </StatusPill>
+        )}
+        {usageCount >= 5 && (
+          <span
+            data-testid={`template-most-used-${template.id}`}
+            title={`Used ${usageCount} times — frequently used template`}
+            // "Most used" is a fact about the past, not a thing waiting on
+            // the user — so it does not get the attention color.
+            className="inline-flex items-center gap-0.5 text-[9.5px] font-semibold uppercase tracking-[0.09em] px-1.5 py-0.5 rounded-chip bg-paper-100 text-ink-700 border border-paper-200"
+          >
+            ★ Most used
+          </span>
+        )}
+      </div>
+
+      {/* One string, so a wrap can never leave a separator hanging at the end of
+          a line — which is exactly what the previous span-per-dot did. */}
+      <p className="text-[11px] tabular-nums text-ink-400 mt-1.5">
+        {[
+          `v${template.version}`,
+          `${template.sections?.length ?? 0} sections`,
+          `${(template.variables as VariableDef[])?.length ?? 0} variables`,
+          `updated ${relativeDate(template.updatedAt)}`,
+        ].join(' · ')}
+      </p>
+      {usageCount > 0 && (
+        <p data-testid={`template-usage-${template.id}`} className="text-[11px] text-ink-500 tabular-nums mt-0.5">
+          Used {usageCount} {usageCount === 1 ? 'time' : 'times'}
+        </p>
+      )}
     </div>
   )
 }
@@ -350,15 +385,31 @@ function TemplateBuilderModal({
 
 // ─── Preview Modal ────────────────────────────────────────────────────────────
 
+/** Escape closes a modal that holds no unsaved input. */
+function useEscape(onClose: () => void) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+}
+
 function PreviewModal({ templateId, onClose }: { templateId: string; onClose: () => void }) {
+  useEscape(onClose)
   const { data, isLoading } = useQuery({
     queryKey: ['template-preview', templateId],
     queryFn: () => api.post(`/templates/${templateId}/preview`).then(r => r.data),
   })
 
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch bg-ink-950/40">
-      <div className="m-auto w-full max-w-4xl h-[80vh] bg-card rounded-card flex flex-col overflow-hidden shadow-e3">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Template preview"
+      className="fixed inset-0 z-50 flex items-stretch bg-ink-950/40"
+      onClick={onClose}
+    >
+      <div className="m-auto w-full max-w-4xl h-[80vh] bg-card rounded-card flex flex-col overflow-hidden shadow-e3" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
           <h2 className="text-section text-ink-950">Template Preview (Sample Data)</h2>
           <button onClick={onClose} className="text-ink-400 hover:text-ink-700"><X className="size-4" /></button>
@@ -393,6 +444,7 @@ export function TemplatesPage() {
   // battle-tested templates float to the top (Notion-like template
   // gallery convention).
   const [sortBy, setSortBy] = useState<SortKey>('used')
+  const [pendingDelete, setPendingDelete] = useState<Template | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['templates', filterType, filterPublished, q],
@@ -427,7 +479,7 @@ export function TemplatesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/templates/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['templates'] }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); setPendingDelete(null) },
   })
 
   // Create a template from an existing .docx. The server converts it to HTML
@@ -457,6 +509,14 @@ export function TemplatesPage() {
       setUploadError(detail ?? 'Upload failed. Please try again.')
     },
   })
+
+  // Escape backs out of the delete confirmation — the safe direction.
+  useEffect(() => {
+    if (!pendingDelete) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPendingDelete(null) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pendingDelete])
 
   const rawTemplates: Template[] = data?.data ?? []
   // Client-side sort — easier than threading a query param through
@@ -581,10 +641,30 @@ export function TemplatesPage() {
           </div>
         )}
         {!isLoading && !templates.length && (
-          <div className="flex flex-col items-center justify-center h-48 text-ink-400">
-            <FileText className="size-6 mb-2" />
-            <p className="text-dense">No templates yet. Create your first template.</p>
-          </div>
+          // "No templates yet" was shown even when twenty exist and the filter
+          // simply matched none of them, which reads as data loss.
+          <EmptyState
+            className="mx-auto max-w-md"
+            icon={<FileText />}
+            title={q || filterType || filterPublished ? 'No templates match these filters' : 'No templates yet'}
+            description={
+              q || filterType || filterPublished
+                ? 'Clear the search or filters to see the whole library.'
+                : 'Create one, or upload a .docx you already use.'
+            }
+            action={
+              q || filterType || filterPublished ? (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => { setQ(''); setFilterType(''); setFilterPublished('') }}
+                  data-testid="templates-clear-filters"
+                >
+                  Clear filters
+                </Button>
+              ) : undefined
+            }
+          />
         )}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {templates.map(t => (
@@ -592,7 +672,7 @@ export function TemplatesPage() {
               key={t.id}
               template={t}
               onEdit={() => { setEditTemplate(t); setShowBuilder(true) }}
-              onDelete={() => deleteMutation.mutate(t.id)}
+              onDelete={() => setPendingDelete(t)}
               onPreview={() => setPreviewId(t.id)}
             />
           ))}
@@ -616,6 +696,46 @@ export function TemplatesPage() {
       {/* Preview Modal */}
       {previewId && (
         <PreviewModal templateId={previewId} onClose={() => setPreviewId(null)} />
+      )}
+
+      {/*
+        A template is an org asset that other people draft from — deleting one
+        used to be a single unconfirmed click on an icon sitting 12px from
+        "Edit", with no undo. The dialog names the template, because "are you
+        sure?" on a grid of twenty cards is not a question anyone can answer.
+      */}
+      {pendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete template"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4"
+          onClick={() => setPendingDelete(null)}
+          data-testid="template-delete-dialog"
+        >
+          <div className="w-full max-w-sm bg-card rounded-card shadow-e3" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-paper-200">
+              <h2 className="text-section text-ink-950">Delete this template?</h2>
+              <p className="text-dense text-ink-500 mt-1">
+                <span className="font-medium text-ink-950">{pendingDelete.name}</span> will no longer be
+                available for drafting. Contracts already drafted from it are unaffected. This can't be undone.
+              </p>
+            </div>
+            <div className="px-5 py-3 flex justify-end gap-2 bg-paper-50 rounded-b-card">
+              <Button variant="outline" size="xs" onClick={() => setPendingDelete(null)}>Cancel</Button>
+              <Button
+                variant="destructive"
+                size="xs"
+                onClick={() => deleteMutation.mutate(pendingDelete.id)}
+                disabled={deleteMutation.isPending}
+                data-testid="template-delete-confirm"
+              >
+                {deleteMutation.isPending && <Loader2 className="animate-spin" />}
+                Delete template
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

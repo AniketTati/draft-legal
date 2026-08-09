@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -24,13 +24,19 @@ const STATUS_LABEL: Record<string, string> = {
   COMPLETED:        'Completed',
 }
 
-// Priority is urgency: high is the assignee's turn, urgent is exposure, and the
-// two lower rungs are just facts about the request.
-const PRIORITY_BADGE: Record<string, string> = {
-  LOW:    'bg-paper-100 text-ink-500',
-  MEDIUM: 'bg-paper-100 text-ink-700',
-  HIGH:   'bg-attention-100 text-attention-700',
-  URGENT: 'bg-risk-100 text-risk-700',
+/**
+ * Priority, as prose and mostly without colour — see the long note in
+ * RequestsPage. A request's priority is a property of the request, not of the
+ * pair (request, viewer), so it cannot mean "your turn"; and "blocking a deal"
+ * is urgency, not the legal exposure that red is reserved for. Only URGENT
+ * keeps a mark, and it is a dot rather than a wash so the status pill beside
+ * it stays the loudest thing in the header.
+ */
+const PRIORITY: Record<string, { label: string; cls: string; dot?: string }> = {
+  LOW:    { label: 'Low priority',    cls: 'text-ink-500' },
+  MEDIUM: { label: 'Medium priority', cls: 'text-ink-500' },
+  HIGH:   { label: 'High priority',   cls: 'text-ink-700 font-medium' },
+  URGENT: { label: 'Urgent',          cls: 'text-attention-700 font-medium', dot: 'bg-attention-600' },
 }
 
 // The eleven-hue type palette is gone. A contract type is a fact about the
@@ -74,6 +80,31 @@ export function RequestDetailPanel({ request, onClose }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [selectedAssignee, setSelectedAssignee] = useState(request.assignedToId ?? '')
+  /*
+   * Rejection used to be one unguarded click on a red button: no confirm, no
+   * reason captured, no undo, and — because the mutation had no `onError` —
+   * no feedback at all when the PATCH failed. A colleague's intake request
+   * would be marked Rejected, they'd never learn why, and half the time the
+   * reviewer wouldn't know whether it had even saved. It is now a two-step
+   * that states the consequence, and every mutation reports its failure.
+   */
+  const [rejecting, setRejecting] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  // Escape closed nothing; the only way out was the × or a backdrop click.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (rejecting) { setRejecting(false); return }
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose, rejecting])
+
+  // Move focus into the panel so keyboard users aren't left behind the backdrop.
+  useEffect(() => { panelRef.current?.focus() }, [])
 
   const { data: usersData } = useQuery({
     queryKey: ['org-users'],
@@ -83,19 +114,30 @@ export function RequestDetailPanel({ request, onClose }: Props) {
 
   const aiClassification = request.metadata?._aiClassification as AiClassification | undefined
 
+  const failed = (e: unknown) =>
+    setActionError((e as Error)?.message ?? 'That did not save. The request is unchanged.')
+
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       api.patch(`/requests/${request.id}`, body).then(r => r.data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['requests'] }),
+    onSuccess: () => {
+      setActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['requests'] })
+      queryClient.invalidateQueries({ queryKey: ['requests-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['request', request.id] })
+    },
+    onError: failed,
   })
 
   const convert = useMutation({
     mutationFn: () => api.post(`/requests/${request.id}/convert`).then(r => r.data),
     onSuccess: (data: { contractId: string }) => {
       queryClient.invalidateQueries({ queryKey: ['requests'] })
+      queryClient.invalidateQueries({ queryKey: ['requests-counts'] })
       onClose()
       navigate(`/contracts/${data.contractId}`)
     },
+    onError: failed,
   })
 
   const handleAssign = (userId: string) => {
@@ -105,7 +147,22 @@ export function RequestDetailPanel({ request, onClose }: Props) {
 
   const handleStatus = (status: string) => patch.mutate({ status })
 
-  const isActionable = !['ACCEPTED', 'REJECTED', 'COMPLETED'].includes(request.status)
+  /*
+   * No reason field here, deliberately.
+   *
+   * `UpdateRequestSchema` is a plain (non-strict) Zod object over
+   * {assignedToId, status, priority}, so any extra key — `rejectionReason`,
+   * `metadata`, anything — is silently stripped by `.parse()` and never
+   * reaches Prisma. A textarea wired to that would look like it recorded the
+   * reviewer's reasoning and record nothing, which is worse than not asking.
+   * The confirmation step is the part that can be honest today; persisting
+   * the reason needs a schema + column change on the API side.
+   */
+  const confirmReject = () =>
+    patch.mutate({ status: 'REJECTED' }, { onSuccess: () => setRejecting(false) })
+
+  const isActionable = !['ACCEPTED', 'REJECTED', 'COMPLETED', 'CANCELLED'].includes(request.status)
+  const pri = PRIORITY[request.priority] ?? PRIORITY.MEDIUM
 
   return (
     <div className="fixed inset-0 z-40 flex">
@@ -113,7 +170,14 @@ export function RequestDetailPanel({ request, onClose }: Props) {
       <div className="flex-1 bg-ink-950/30 backdrop-blur-sm" onClick={onClose} />
 
       {/* Panel */}
-      <div className="w-full max-w-md bg-card shadow-e3 flex flex-col h-full overflow-hidden">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Request: ${request.title}`}
+        className="w-full max-w-md bg-card shadow-e3 flex flex-col h-full overflow-hidden focus:outline-none"
+      >
         {/* Header */}
         <div className="flex items-start justify-between px-5 py-4 border-b border-paper-200">
           <div className="min-w-0">
@@ -122,8 +186,9 @@ export function RequestDetailPanel({ request, onClose }: Props) {
                 <span className="text-[10px] font-mono text-ink-400">{request.requestNumber}</span>
               )}
               <StatusPill status={request.status}>{STATUS_LABEL[request.status]}</StatusPill>
-              <span className={`inline-flex items-center text-[10px] font-medium px-2 py-0.5 rounded-full ${PRIORITY_BADGE[request.priority] ?? PRIORITY_BADGE.MEDIUM}`}>
-                {request.priority}
+              <span className={`inline-flex items-center gap-1 text-[10.5px] ${pri.cls}`}>
+                {pri.dot && <span className={`size-1.5 rounded-full ${pri.dot}`} aria-hidden />}
+                {pri.label}
               </span>
             </div>
             <h2 className="text-section text-ink-950 mt-1.5">{request.title}</h2>
@@ -246,51 +311,125 @@ export function RequestDetailPanel({ request, onClose }: Props) {
         </div>
 
         {/* Action footer */}
-        {isActionable && (
+        {isActionable ? (
           <div className="border-t border-paper-200 px-5 py-4 space-y-2">
-            {/* Accepting a request commits it — this is the decision surface
-                where brand and danger are allowed to sit on buttons. */}
-            <Button
-              variant="brand"
-              className="w-full"
-              size="sm"
-              onClick={() => convert.mutate()}
-              disabled={convert.isPending || patch.isPending}
-            >
-              {convert.isPending ? (
-                <><Loader2 className="animate-spin" /> Creating contract…</>
-              ) : (
-                <><CheckCircle /> Accept &amp; Create Contract <ChevronRight className="ml-auto" /></>
-              )}
-            </Button>
-            <div className="flex gap-2">
-              {request.status !== 'MORE_INFO_NEEDED' && (
-                // Asking for more info is a hand-back, not a verdict — neutral.
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => handleStatus('MORE_INFO_NEEDED')}
-                  disabled={patch.isPending}
-                >
-                  <MessageSquare /> Need More Info
-                </Button>
-              )}
-              <Button
-                variant="danger"
-                size="sm"
-                className="flex-1"
-                onClick={() => handleStatus('REJECTED')}
-                disabled={patch.isPending}
+            {actionError && (
+              <div
+                role="alert"
+                data-testid="request-action-error"
+                className="flex items-start gap-2 text-dense text-risk-900 bg-risk-50 border border-risk-200 rounded-md px-3 py-2"
               >
-                <XCircle /> Reject
-              </Button>
-            </div>
-            {request.status === 'MORE_INFO_NEEDED' && (
-              <div className="flex items-center gap-1.5 text-dense text-attention-700 bg-attention-50 px-3 py-2 rounded-md">
-                <AlertTriangle className="size-3.5 flex-shrink-0" />
-                Awaiting additional information from requester
+                <AlertTriangle className="size-3.5 flex-shrink-0 mt-0.5 text-risk-600" />
+                <span className="min-w-0 break-words">{actionError}</span>
               </div>
+            )}
+
+            {rejecting ? (
+              /* Two-step reject. The reason is the whole point: a requester
+                 who gets "Rejected" and nothing else has to come and ask. */
+              <div className="space-y-2" data-testid="request-reject-confirm">
+                <Eyebrow>Reject this request?</Eyebrow>
+                <p className="text-dense text-ink-500">
+                  “{request.title}” closes and leaves the queue. The requester
+                  is not told why — follow up with them directly.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="ghost" size="sm" className="flex-1"
+                    onClick={() => setRejecting(false)}
+                    disabled={patch.isPending}
+                    autoFocus
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="danger" size="sm" className="flex-1"
+                    onClick={confirmReject}
+                    disabled={patch.isPending}
+                    data-testid="request-reject-confirm-btn"
+                  >
+                    {patch.isPending ? <><Loader2 className="animate-spin" /> Rejecting…</> : <><XCircle /> Reject request</>}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Accepting a request commits it — this is the decision surface
+                    where brand and danger are allowed to sit on buttons. */}
+                <Button
+                  variant="brand"
+                  className="w-full"
+                  size="sm"
+                  onClick={() => convert.mutate()}
+                  disabled={convert.isPending || patch.isPending}
+                >
+                  {convert.isPending ? (
+                    <><Loader2 className="animate-spin" /> Creating contract…</>
+                  ) : (
+                    <><CheckCircle /> Accept &amp; Create Contract <ChevronRight className="ml-auto" /></>
+                  )}
+                </Button>
+                <div className="flex gap-2">
+                  {request.status !== 'MORE_INFO_NEEDED' && (
+                    // Asking for more info is a hand-back, not a verdict — neutral.
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleStatus('MORE_INFO_NEEDED')}
+                      disabled={patch.isPending}
+                    >
+                      <MessageSquare /> Need More Info
+                    </Button>
+                  )}
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => setRejecting(true)}
+                    disabled={patch.isPending}
+                    data-testid="request-reject-btn"
+                  >
+                    <XCircle /> Reject
+                  </Button>
+                </div>
+                {request.status === 'MORE_INFO_NEEDED' && (
+                  <div className="flex items-center gap-1.5 text-dense text-attention-700 bg-attention-50 px-3 py-2 rounded-md">
+                    <AlertTriangle className="size-3.5 flex-shrink-0" />
+                    Awaiting additional information from requester
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          /*
+            Settled requests used to render no footer at all — the panel just
+            stopped, with no statement of the outcome and no way back. A
+            reviewer who rejected something in error had to go to the database.
+          */
+          <div className="border-t border-paper-200 px-5 py-4 space-y-2" data-testid="request-settled-footer">
+            {actionError && (
+              <div role="alert" className="flex items-start gap-2 text-dense text-risk-900 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">
+                <AlertTriangle className="size-3.5 flex-shrink-0 mt-0.5 text-risk-600" />
+                <span className="min-w-0 break-words">{actionError}</span>
+              </div>
+            )}
+            <p className="text-dense text-ink-500">
+              This request is settled ({STATUS_LABEL[request.status] ?? request.status.toLowerCase()}).
+              {typeof request.metadata?.rejectionReason === 'string' && request.metadata.rejectionReason
+                ? ` Reason given: “${request.metadata.rejectionReason}”`
+                : ''}
+            </p>
+            {['REJECTED', 'CANCELLED'].includes(request.status) && (
+              <Button
+                variant="outline" size="sm" className="w-full"
+                onClick={() => handleStatus('IN_REVIEW')}
+                disabled={patch.isPending}
+                data-testid="request-reopen-btn"
+              >
+                {patch.isPending ? <><Loader2 className="animate-spin" /> Reopening…</> : 'Reopen for review'}
+              </Button>
             )}
           </div>
         )}

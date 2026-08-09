@@ -14,10 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AssistCard, AssistChip, AssistMark } from '@/components/ui/assist'
 import { CountBadge } from '@/components/ui/primitives'
-import { StatusPill } from '@/components/ui/status-pill'
+import { StatusPill, MeaningDot } from '@/components/ui/status-pill'
 import type { Meaning } from '@/lib/status'
 import {
-  Receipt, Plus, Loader2, AlertCircle, CheckCircle2, ArrowRight,
+  Receipt, Plus, Loader2, AlertCircle, CheckCircle2,
   Search, Sparkles, RotateCw, Flag, FileText, X,
 } from 'lucide-react'
 
@@ -35,6 +35,8 @@ interface ApiInvoice {
   status:              'PENDING' | 'MATCHED' | 'RECONCILED' | 'DISPUTED'
   matchScore:          number | null
   reconciledAt:        string | null
+  /** Why someone disputed it. Stored and returned, but never rendered before. */
+  disputeReason:       string | null
   contract: { id: string; title: string; counterpartyName: string | null } | null
   matchedObligation: {
     id: string; type: string; description: string; dueDate: string | null
@@ -68,12 +70,51 @@ const FILTERS: { key: Status; label: string; statKey?: keyof ApiStats }[] = [
 function formatMoney(amount: string | number, currency = 'USD'): string {
   const n = typeof amount === 'string' ? Number(amount) : amount
   if (isNaN(n)) return `${currency} 0`
-  return n.toLocaleString('en-US', { style: 'currency', currency })
+  return n.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 })
+}
+
+/**
+ * A KPI figure, not a ledger entry. "$1,637,321.00" spent four characters on
+ * cents nobody reads at a glance and pushed the number into the card border.
+ */
+function formatMoneyCompact(amount: number, currency = 'USD'): string {
+  if (!Number.isFinite(amount)) return '—'
+  if (Math.abs(amount) >= 1_000_000) {
+    return `${(amount / 1_000_000).toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 2 })}M`
+  }
+  if (Math.abs(amount) >= 10_000) {
+    return `${Math.round(amount / 1_000).toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 })}K`
+  }
+  return amount.toLocaleString('en-US', { style: 'currency', currency, maximumFractionDigits: 0 })
 }
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—'
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The payment-due reading for an invoice that is still owed.
+ *
+ * The table showed the invoice DATE and nothing else, so "this one is three
+ * weeks past its payment terms" — the single fact that decides whether an AP
+ * queue is healthy — was not on the page at all. Reconciled and disputed
+ * invoices are exempt: they are settled or contested, not late.
+ */
+function dueReading(inv: ApiInvoice): { text: string; tone: string } {
+  if (!inv.dueDate) return { text: '—', tone: 'text-ink-400' }
+  const dateStr = formatDate(inv.dueDate)
+  if (inv.status === 'RECONCILED' || inv.status === 'DISPUTED') {
+    return { text: dateStr, tone: 'text-ink-500' }
+  }
+  const d = Math.round((new Date(inv.dueDate).getTime() - Date.now()) / DAY_MS)
+  if (!Number.isFinite(d)) return { text: dateStr, tone: 'text-ink-500' }
+  if (d < 0)   return { text: `${-d}d overdue`, tone: 'text-risk-700 font-medium' }
+  if (d === 0) return { text: 'Due today',      tone: 'text-attention-700 font-medium' }
+  if (d <= 14) return { text: `Due in ${d}d`,   tone: 'text-attention-700 font-medium' }
+  return { text: dateStr, tone: 'text-ink-500' }
 }
 
 /*
@@ -123,9 +164,16 @@ export function InvoicesPage() {
     mutationFn: async (id: string) => (await api.post(`/invoices/${id}/rematch`, {})).data,
     onSuccess:  () => qc.invalidateQueries({ queryKey: ['invoices-list'] }),
   })
+  // Disputing is a one-way door from this page — there is no un-dispute
+  // control — and it used to fire on a single click with the hard-coded reason
+  // "Flagged from invoices page", which tells the next reader nothing about why
+  // the money is being withheld. Ask, then act.
+  const [disputeTarget, setDisputeTarget] = useState<ApiInvoice | null>(null)
   const dispute = useMutation({
-    mutationFn: async (id: string) => (await api.post(`/invoices/${id}/dispute`, { reason: 'Flagged from invoices page' })).data,
+    mutationFn: async (p: { id: string; reason: string }) =>
+      (await api.post(`/invoices/${p.id}/dispute`, { reason: p.reason })).data,
     onSuccess:  () => {
+      setDisputeTarget(null)
       qc.invalidateQueries({ queryKey: ['invoices-list'] })
       qc.invalidateQueries({ queryKey: ['invoice-stats'] })
     },
@@ -156,14 +204,17 @@ export function InvoicesPage() {
         Match incoming vendor invoices to the payment obligations on your executed contracts.
       </p>
 
-      {/* Stats strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+      {/* Stats strip. Disputed was missing entirely — six invoices in contention
+          were the only invoice state the design system reads as risk, and the
+          header said nothing about them. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-6">
         <StatCard label="Pending"      value={stats?.pending ?? 0}     tone="neutral"  data-testid="stat-pending" />
         <StatCard label="Matched"      value={stats?.matched ?? 0}     tone="inflight" data-testid="stat-matched" />
         <StatCard label="Reconciled"   value={stats?.reconciled ?? 0}  tone="binding"  data-testid="stat-reconciled" />
+        <StatCard label="Disputed"     value={stats?.disputed ?? 0}    tone="risk"     data-testid="stat-disputed" />
         <StatCard
           label="Open total"
-          value={stats?.openTotal ? formatMoney(stats.openTotal) : '$0'}
+          value={formatMoneyCompact(stats?.openTotal ?? 0)}
           tone="neutral"
           data-testid="stat-open-total"
           subtitle="pending + matched"
@@ -245,41 +296,43 @@ export function InvoicesPage() {
           <div className="px-5 py-2 text-[11.5px] text-ink-500 bg-paper-50 border-b border-paper-200">
             <span className="tabular-nums">{total}</span> {total === 1 ? 'invoice' : 'invoices'}
           </div>
+          {/* Six auto-width columns needed more room than the shell has, so the
+              Status pill and every row action were clipped off the right edge —
+              on a page whose entire purpose is reconciling. The match is now a
+              line inside the invoice cell rather than a column of its own, which
+              is also where it belongs: it is a fact about this invoice, not a
+              parallel axis to scan. */}
           <div className="overflow-x-auto">
-            <table className="w-full text-dense" data-testid="invoices-table">
+            <table className="w-full table-fixed text-dense" data-testid="invoices-table">
               <thead className="bg-paper-50 text-[10px] uppercase tracking-[0.09em] text-ink-400">
                 <tr>
-                  <th className="text-left px-4 py-2 font-semibold">Vendor</th>
-                  <th className="text-left px-4 py-2 font-semibold">Amount</th>
-                  <th className="text-left px-4 py-2 font-semibold">Invoice date</th>
-                  <th className="text-left px-4 py-2 font-semibold">Match</th>
-                  <th className="text-left px-4 py-2 font-semibold">Status</th>
-                  <th className="text-right px-4 py-2 font-semibold"></th>
+                  <th className="text-left px-4 py-2 font-semibold">Vendor / match</th>
+                  <th className="text-right px-3 py-2 font-semibold w-[112px]">Amount</th>
+                  <th className="text-left px-3 py-2 font-semibold w-[106px]">Due</th>
+                  <th className="text-left px-3 py-2 font-semibold w-[116px]">Status</th>
+                  <th className="text-right px-4 py-2 font-semibold w-[150px]">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-paper-100">
-                {items.map(inv => (
-                  <tr key={inv.id} className="hover:bg-paper-50" data-testid={`invoice-row-${inv.id}`}>
-                    <td className="px-4 py-2 max-w-[280px]">
+                {items.map(inv => {
+                  const due = dueReading(inv)
+                  const actionable = inv.status === 'PENDING' || inv.status === 'MATCHED'
+                  return (
+                  <tr key={inv.id} className="hover:bg-paper-50 align-top" data-testid={`invoice-row-${inv.id}`}>
+                    <td className="px-4 py-2.5">
                       <div className="text-[13px] font-medium text-ink-950 truncate" title={inv.vendorName}>
                         {inv.vendorName}
                       </div>
-                      {inv.invoiceNumber && (
-                        <div className="text-[11px] text-ink-400 mt-0.5 font-mono">#{inv.invoiceNumber}</div>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 whitespace-nowrap font-medium text-ink-950 tabular-nums">
-                      {formatMoney(inv.amount, inv.currency)}
-                    </td>
-                    <td className="px-4 py-2 text-ink-700 whitespace-nowrap tabular-nums">
-                      {formatDate(inv.invoiceDate)}
-                    </td>
-                    <td className="px-4 py-2">
+                      <div className="text-[11px] text-ink-400 mt-0.5 truncate">
+                        {inv.invoiceNumber && <span className="font-mono">#{inv.invoiceNumber}</span>}
+                        {inv.invoiceNumber && ' · '}
+                        <span className="tabular-nums">issued {formatDate(inv.invoiceDate)}</span>
+                      </div>
                       {inv.matchedObligation && inv.contract ? (
-                        <div className="flex items-start gap-1.5 min-w-0">
+                        <div className="flex items-start gap-1.5 min-w-0 mt-1">
                           {/* The auto-matcher drew this link, so it carries the mark. */}
                           <AssistMark className="mt-1.5 flex-shrink-0" />
-                          <div className="min-w-0 max-w-[260px]">
+                          <div className="min-w-0">
                             <Link
                               to={`/contracts/${inv.contract.id}`}
                               className="text-[11.5px] font-medium text-ink-950 hover:text-brand-700 truncate block"
@@ -290,23 +343,42 @@ export function InvoicesPage() {
                             <div className="text-[10.5px] text-ink-500 truncate" title={inv.matchedObligation.description}>
                               {inv.matchedObligation.description}
                             </div>
-                            <div className="mt-0.5">
-                              <MatchScoreBadge score={inv.matchScore} />
-                            </div>
                           </div>
+                          <span className="shrink-0 mt-0.5">
+                            <MatchScoreBadge score={inv.matchScore} />
+                          </span>
                         </div>
                       ) : (
-                        <span className="text-[11.5px] text-ink-400 italic">No match</span>
+                        <div className="text-[11.5px] text-ink-400 italic mt-1">
+                          No match{actionable ? ' — rematch or link manually' : ''}
+                        </div>
+                      )}
+                      {inv.status === 'DISPUTED' && inv.disputeReason && (
+                        // Stored on every dispute and rendered nowhere: the next
+                        // person to pick this up had no idea why it was held.
+                        <div className="text-[11px] text-risk-700 mt-1 line-clamp-2" title={inv.disputeReason}>
+                          {inv.disputeReason}
+                        </div>
                       )}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2.5 text-right whitespace-nowrap font-medium text-ink-950 tabular-nums">
+                      {formatMoney(inv.amount, inv.currency)}
+                    </td>
+                    <td className={`px-3 py-2.5 whitespace-nowrap tabular-nums text-[11.5px] ${due.tone}`}>
+                      {due.text}
+                    </td>
+                    <td className="px-3 py-2.5">
                       <StatusPill
                         status={inv.status}
                         meaning={inv.status === 'MATCHED' ? 'inflight' : undefined}
                       />
                     </td>
-                    <td className="px-4 py-2 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-3">
+                    <td className="px-4 py-2.5 text-right">
+                      {/* Stacked, not wrapped. Three text actions cannot sit on
+                          one line at this width, and a wrap put "Dispute" next
+                          to two unrelated icons. The invoice cell beside it is
+                          already three lines tall, so the stack costs no height. */}
+                      <div className="inline-flex flex-col items-end gap-1">
                         {inv.status === 'MATCHED' && (
                           <button
                             type="button"
@@ -321,12 +393,13 @@ export function InvoicesPage() {
                             Reconcile
                           </button>
                         )}
-                        {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
+                        {actionable && (
                           <button
                             type="button"
                             onClick={() => rematch.mutate(inv.id)}
                             disabled={rematch.isPending}
                             data-testid={`rematch-${inv.id}`}
+                            aria-label="Re-run the auto-matcher for this invoice"
                             className="inline-flex items-center gap-1 text-[11.5px] text-ink-700 hover:text-ink-950 font-medium"
                             title="Re-run auto-matcher"
                           >
@@ -334,11 +407,10 @@ export function InvoicesPage() {
                             Rematch
                           </button>
                         )}
-                        {(inv.status === 'PENDING' || inv.status === 'MATCHED') && (
+                        {actionable && (
                           <button
                             type="button"
-                            onClick={() => dispute.mutate(inv.id)}
-                            disabled={dispute.isPending}
+                            onClick={() => setDisputeTarget(inv)}
                             data-testid={`dispute-${inv.id}`}
                             className="inline-flex items-center gap-1 text-[11.5px] text-risk-600 hover:text-risk-700 font-medium"
                           >
@@ -346,23 +418,40 @@ export function InvoicesPage() {
                             Dispute
                           </button>
                         )}
-                        {inv.contract?.id && (
+                        {/* The contract is already a link inside the invoice
+                            cell; a second one here was two more icons per row
+                            saying the same thing. Kept only where there is no
+                            match line to carry it. */}
+                        {inv.contract?.id && !inv.matchedObligation && (
                           <Link
                             to={`/contracts/${inv.contract.id}`}
-                            className="inline-flex items-center gap-0.5 text-[11.5px] text-ink-400 hover:text-ink-950"
+                            aria-label={`Open ${inv.contract.title}`}
+                            title="Open contract"
+                            className="inline-flex items-center gap-1 text-[11.5px] text-ink-700 hover:text-ink-950 font-medium"
                           >
                             <FileText className="size-3.5" />
-                            <ArrowRight className="size-3" />
+                            Contract
                           </Link>
                         )}
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+
+      {disputeTarget && (
+        <DisputeInvoiceDialog
+          invoice={disputeTarget}
+          pending={dispute.isPending}
+          error={dispute.isError ? 'Could not record the dispute. Try again.' : null}
+          onClose={() => { dispute.reset(); setDisputeTarget(null) }}
+          onConfirm={(reason) => dispute.mutate({ id: disputeTarget.id, reason })}
+        />
       )}
 
       {createOpen && (
@@ -388,20 +477,99 @@ function StatCard({ label, value, tone, subtitle, ...rest }: {
   // These are counts, and "your turn" is the only count that earns colour.
   // Tinting them by pipeline stage also made the strip disagree with the rows
   // underneath — the shared map reads MATCHED as binding, so a blue "Matched"
-  // figure sat directly above a green "Matched" pill. The figure stays ink;
-  // the pill in the row is where the meaning lives.
-  const toneClass = {
-    neutral:  'text-ink-950',
-    inflight: 'text-ink-950',
-    turn:     'text-attention-700',
-    binding:  'text-ink-950',
-    risk:     'text-ink-950',
-  }[tone]
+  // figure sat directly above a green "Matched" pill. The figure stays ink; the
+  // meaning rides on the dot beside the label, the same way the obligations
+  // strip carries it, so the two post-signature queues read alike.
+  const toneClass = tone === 'turn' ? 'text-attention-700' : 'text-ink-950'
   return (
     <div className="border border-paper-200 rounded-card p-4 bg-card" {...rest}>
-      <div className="text-[11px] text-ink-500">{label}</div>
+      <div className="flex items-center gap-1.5 text-[11px] text-ink-500">
+        <MeaningDot meaning={tone} label={label} />
+        {label}
+      </div>
       <div className={`text-[24px] font-semibold tracking-[-0.02em] tabular-nums mt-0.5 ${toneClass}`}>{value}</div>
       {subtitle && <div className="text-[10.5px] text-ink-500 mt-0.5">{subtitle}</div>}
+    </div>
+  )
+}
+
+/**
+ * Disputing withholds payment and, in this product, cannot be undone from the
+ * list. So it asks for the reason it already had a column for, and states the
+ * amount and vendor back to the user before they commit.
+ */
+function DisputeInvoiceDialog({
+  invoice, pending, error, onClose, onConfirm,
+}: {
+  invoice: ApiInvoice
+  pending: boolean
+  error: string | null
+  onClose: () => void
+  onConfirm: (reason: string) => void
+}) {
+  const [reason, setReason] = useState('')
+  const valid = reason.trim().length >= 4 && !pending
+
+  return (
+    <div
+      role="dialog"
+      aria-label="Dispute invoice"
+      className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4"
+      onClick={onClose}
+      data-testid="dispute-invoice-dialog"
+    >
+      <div className="bg-card rounded-card max-w-md w-full shadow-e3" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="text-section text-ink-950 flex items-center gap-2">
+              <Flag className="size-4 text-risk-600" />
+              Dispute invoice
+            </h2>
+            <p className="text-[11.5px] text-ink-500 mt-1 truncate">
+              {invoice.vendorName} · {formatMoney(invoice.amount, invoice.currency)}
+              {invoice.invoiceNumber && ` · #${invoice.invoiceNumber}`}
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="p-1 rounded-md hover:bg-paper-100 text-ink-400">
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="px-6 py-5 space-y-3">
+          <div>
+            <label htmlFor="dispute-reason" className="block text-[11px] font-medium text-ink-700 mb-1">
+              Reason <span className="text-risk-600">*</span>
+            </label>
+            <textarea
+              id="dispute-reason"
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="e.g. Amount exceeds the committed rate card by $4,200; PO number does not match."
+              data-testid="dispute-reason"
+              className="w-full text-[13px] text-ink-950 border border-input bg-card rounded-md px-3 py-2 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-y"
+            />
+            <p className="text-[10.5px] text-ink-400 mt-1">
+              Recorded on the invoice and shown to whoever picks it up next.
+            </p>
+          </div>
+          {error && (
+            <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
+          <Button variant="outline" onClick={onClose} disabled={pending}>Cancel</Button>
+          <Button
+            variant="danger"
+            onClick={() => onConfirm(reason.trim())}
+            disabled={!valid}
+            data-testid="dispute-confirm"
+          >
+            {pending && <Loader2 className="animate-spin" />}
+            Dispute invoice
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -35,8 +35,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
-import { normalizeRisk, riskBand } from '@/lib/status'
+import { normalizeRisk, riskBand, RISK_BAND_CLASS } from '@/lib/status'
 import type { Meaning } from '@/lib/status'
+import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import {
   ArrowLeft, Building2, Globe, Mail, Phone, FileText, Plus,
   TrendingUp, AlertTriangle, Clock, Edit, Loader2, X,
@@ -98,16 +99,8 @@ interface CpDetail {
  * and statusMeta() humanises anything it hasn't seen anyway.)
  */
 
-function relTime(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
-  if (d < 1)   return 'today'
-  if (d === 1) return 'yesterday'
-  if (d < 7)   return `${d}d ago`
-  if (d < 30)  return `${Math.floor(d / 7)}w ago`
-  if (d < 365) return `${Math.floor(d / 30)}mo ago`
-  return new Date(iso).toLocaleDateString()
-}
+/** One relative-time voice across the workspace. See components/contracts/dates. */
+const relTime = relativeTime
 
 function formatMoney(n: number | string | null | undefined, ccy = 'USD'): string {
   if (n == null) return '—'
@@ -139,9 +132,50 @@ export function CounterpartyDetailPage() {
   }
 
   const cp = data
-  const yearsActive = cp.stats.firstContractAt
-    ? Math.max(1, Math.floor((Date.now() - new Date(cp.stats.firstContractAt).getTime()) / (365 * 86_400_000)))
+
+  /*
+   * "N yrs of business" used to be `Math.max(1, floor(elapsed / 365d))`, so a
+   * counterparty added this morning claimed a year of trading history. On a
+   * page whose whole purpose is to tell counsel how deep a relationship runs,
+   * that is a fabricated fact, and it showed on every fresh record ("Member
+   * since Aug 2026 · 1 yr of business", read in August 2026).
+   *
+   * The floor is gone, and the clock starts at whichever is earlier — when we
+   * first recorded them, or their first contract — so the two halves of the
+   * sentence can no longer contradict each other.
+   */
+  const relationshipStart = [cp.createdAt, cp.stats.firstContractAt]
+    .filter(Boolean)
+    .map(d => new Date(d as string).getTime())
+    .filter(t => Number.isFinite(t))
+    .sort((a, b) => a - b)[0]
+  const yearsActive = relationshipStart
+    ? Math.floor((Date.now() - relationshipStart) / (365 * 86_400_000))
     : 0
+
+  /*
+   * High-risk count, computed from the rows on this page rather than trusted
+   * from the server.
+   *
+   * The API's `stats.highRiskCount` is wrong: for Zynga Inc. it returns 10 —
+   * every contract they have — while the highest risk score in that same
+   * payload is 55, and the card's own label reads "contracts ≥ 70%". The
+   * result was a red stat card screaming ten high-risk contracts above a list
+   * in which not one row carried a risk marker. (It looks like a 0–1 vs 0–100
+   * threshold mix-up server-side; see `deferred`.)
+   *
+   * `cp.contracts` is the full set behind the count, and it carries every
+   * `riskScore`, so the page can answer its own question. Where the server
+   * disagrees we say so rather than quietly picking a number.
+   */
+  const HIGH_RISK_AT = 70
+  const highRiskRows = cp.contracts.filter(c => {
+    const r = normalizeRisk(c.riskScore)
+    return r != null && r >= HIGH_RISK_AT
+  })
+  const highRiskCount = highRiskRows.length
+  const serverDisagrees =
+    typeof cp.stats.highRiskCount === 'number' && cp.stats.highRiskCount !== highRiskCount
 
   return (
     <div className="px-6 py-5 max-w-6xl mx-auto" data-testid="counterparty-detail-page">
@@ -200,10 +234,19 @@ export function CounterpartyDetailPage() {
                 {cp.phone}
               </span>
             )}
-            <span className="inline-flex items-center gap-1.5 text-ink-500">
+            {/*
+              One clock, not two. This read "Member since Aug 2026 · 1 yr of
+              business" in August 2026, because the date came from when the CRM
+              row was created and the duration came from the first contract —
+              two different facts joined by a "·" that implied they were one.
+              The relationship is what counsel is asking about, so the first
+              contract wins when there is one, and the label says which.
+            */}
+            <span className="inline-flex items-center gap-1.5 text-ink-500" data-testid="cp-tenure">
               <Clock className="size-3.5 text-ink-400" />
-              Member since {new Date(cp.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
-              {yearsActive > 0 && ` · ${yearsActive} ${yearsActive === 1 ? 'yr' : 'yrs'} of business`}
+              {cp.stats.firstContractAt ? 'First contract ' : 'Added '}
+              {new Date(cp.stats.firstContractAt ?? cp.createdAt).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+              {yearsActive >= 1 && ` · ${yearsActive} ${yearsActive === 1 ? 'yr' : 'yrs'} of history`}
             </span>
           </div>
         </div>
@@ -253,10 +296,18 @@ export function CounterpartyDetailPage() {
         />
         <StatCard
           label="High risk"
-          value={String(cp.stats.highRiskCount)}
-          sub={cp.stats.highRiskCount > 0 ? 'contracts ≥ 70%' : 'all in playbook'}
+          value={String(highRiskCount)}
+          sub={
+            highRiskCount > 0
+              ? `risk ≥ ${HIGH_RISK_AT}`
+              : serverDisagrees
+                // Don't silently swallow the discrepancy — an analyst comparing
+                // this page to a report needs to know which number moved.
+                ? `none at risk ≥ ${HIGH_RISK_AT}`
+                : 'all in playbook'
+          }
           icon={AlertTriangle}
-          tone={cp.stats.highRiskCount > 0 ? 'risk' : 'neutral'}
+          tone={highRiskCount > 0 ? 'risk' : 'neutral'}
         />
       </div>
 
@@ -296,9 +347,10 @@ export function CounterpartyDetailPage() {
             <ul className="divide-y divide-border">
               {cp.contracts.map(c => {
                 const v = c.value ? Number(c.value.toString()) : 0
-                const expiryDays = c.expiryDate
-                  ? Math.floor((new Date(c.expiryDate).getTime() - Date.now()) / 86_400_000)
-                  : null
+                // Calendar days, shared with the contract header and the
+                // Renewal rail — see components/contracts/dates.ts.
+                const exp = expiryLabel(c.expiryDate)
+                const risk = normalizeRisk(c.riskScore)
                 return (
                   <li key={c.id} data-testid={`cp-contract-${c.id}`}>
                     <Link
@@ -324,22 +376,40 @@ export function CounterpartyDetailPage() {
                                 {formatMoney(v, c.currency ?? 'USD')}
                               </span>
                             )}
-                            {c.riskScore != null && riskBand(normalizeRisk(c.riskScore)!) === 'high' && (
-                              <span className="inline-flex items-center gap-0.5 text-risk-700">
-                                <AlertTriangle className="size-2.5" />
-                                risk {normalizeRisk(c.riskScore)}
+                            {/*
+                              Risk shows on every row now, as a meaning dot
+                              beside neutral text. It used to render only in
+                              the high band, which is how the page ended up
+                              claiming ten high-risk contracts above ten rows
+                              that displayed no risk at all — nothing on screen
+                              could corroborate or contradict the stat card.
+                            */}
+                            {risk != null && (
+                              <span
+                                className={`inline-flex items-center gap-1 tabular-nums ${riskBand(risk) === 'low' ? 'text-ink-500' : 'text-ink-700'}`}
+                                title={`Risk score ${risk} of 100 — ${riskBand(risk)} band`}
+                              >
+                                {/* The score shows on every row so the "High
+                                    risk" stat above is checkable, but the dot
+                                    only appears above the low band. Marking
+                                    low risk too would put two coloured dots on
+                                    a row that already has a status dot, for
+                                    the majority of a portfolio that needs
+                                    nothing from anyone. */}
+                                {riskBand(risk) !== 'low' && (
+                                  <span className={`size-1.5 rounded-full ${RISK_BAND_CLASS[riskBand(risk)]}`} aria-hidden />
+                                )}
+                                risk {risk}
                               </span>
                             )}
-                            {expiryDays != null && (
-                              expiryDays < 0 ? (
-                                // Already expired: exposure. Still inside the
-                                // 90-day window: the user's turn to renew.
-                                <span className="text-risk-700">expired {-expiryDays}d ago</span>
-                              ) : expiryDays <= 90 ? (
-                                <span className="text-attention-700">expires in {expiryDays}d</span>
-                              ) : (
-                                <span className="text-muted-foreground">expires {new Date(c.expiryDate!).toLocaleDateString()}</span>
-                              )
+                            {exp && (
+                              <span className={
+                                exp.tone === 'risk' ? 'text-risk-700 font-medium'
+                                  : exp.tone === 'turn' ? 'text-ink-700'
+                                  : 'text-muted-foreground'
+                              }>
+                                {exp.label.replace(/^Expire/, 'expire').replace(/^Expired/, 'expired')}
+                              </span>
                             )}
                             {c.owner && (
                               <span className="text-muted-foreground">· {c.owner.name}</span>

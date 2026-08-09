@@ -200,6 +200,27 @@ export function RedlinePreview({
         {/* Proposed full text — collapsed by default */}
         <ProposedText text={active?.proposedText ?? ''} />
 
+        {/* GROUNDING — say plainly when there is no playbook behind this.
+            `hasPlaybook: false` means the rewrite is the model's own view of
+            market terms, not the organisation's recorded position, and that
+            is the single most important thing a reviewer can know before
+            putting the text into a contract. It was a grey "No playbook"
+            chip in the header, easy to read as a filing detail. */}
+        {!proposal.hasPlaybook && (
+          <div
+            data-testid="redline-preview-ungrounded"
+            className="flex items-start gap-1.5 rounded-md border border-dashed border-assist-200 bg-card px-2 py-1.5 text-[10.5px] text-ink-700"
+          >
+            <AlertTriangle className="size-3 mt-px flex-shrink-0 text-ink-500" />
+            <span>
+              No playbook position exists for{' '}
+              <span className="font-medium text-ink-950">{proposal.clause.clauseType}</span>, so this
+              wording is the model&rsquo;s own — not your organisation&rsquo;s agreed fallback.
+              Read it before applying.
+            </span>
+          </div>
+        )}
+
         {/* Apply button */}
         <div className="flex items-center justify-between gap-2 pt-1">
           <div className="text-[10.5px] text-ink-500">

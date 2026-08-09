@@ -5,12 +5,14 @@
  * (done / processing / failed). New room creation kicks off via a
  * dialog; clicking a row opens the detail page.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { StatusPill } from '@/components/ui/status-pill'
+import { MEANING_CLASS, statusMeaning, statusMeta } from '@/lib/status'
 import {
   FolderOpen, Plus, Loader2, AlertCircle, ArrowRight, X,
   ChevronDown, ChevronRight, FileText,
@@ -122,6 +124,10 @@ function RoomCard({ r }: { r: ApiRoom }) {
     staleTime: 30_000,
   })
   const previewDocs = (docs?.data ?? []).slice(0, 5)
+  const queued = Math.max(
+    0,
+    r.documentCount - r.progress.done - r.progress.failed - r.progress.processing,
+  )
 
   return (
     <div
@@ -131,9 +137,20 @@ function RoomCard({ r }: { r: ApiRoom }) {
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <Link to={`/diligence/${r.id}`} className="flex-1 min-w-0 group">
-          <h3 className="text-body font-medium text-ink-950 truncate group-hover:text-brand-700 transition-colors" title={r.name ?? undefined}>{r.name}</h3>
+          <div className="flex items-center gap-2 min-w-0">
+            {/* Room names are long and specific ("EMEA Data Transfer Audit —
+                DPA Sweep"); the discriminating half is at the end, so two lines
+                beats an ellipsis. */}
+            <h3 className="text-body font-medium text-ink-950 line-clamp-2 group-hover:text-brand-700 transition-colors" title={r.name ?? undefined}>{r.name}</h3>
+          </div>
+          {/* An archived room is finished work. It looked identical to a live
+              one on this grid, which is how last quarter's diligence gets
+              reopened and added to. */}
+          {r.status && r.status !== 'ACTIVE' && (
+            <span className="inline-block mt-1"><StatusPill status={r.status} /></span>
+          )}
           {r.description && (
-            <p className="text-[11.5px] text-ink-500 mt-0.5 line-clamp-2">{r.description}</p>
+            <p className="text-[11.5px] text-ink-500 mt-1 line-clamp-2">{r.description}</p>
           )}
         </Link>
         <Link to={`/diligence/${r.id}`} className="text-paper-300 hover:text-ink-950 transition-colors flex-shrink-0 mt-1" title="Open room">
@@ -152,16 +169,22 @@ function RoomCard({ r }: { r: ApiRoom }) {
           {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
           <span className="tabular-nums">{r.documentCount}</span> {r.documentCount === 1 ? 'doc' : 'docs'}
         </button>
-        {/* Extraction finished / still running / failed — binding, in flight, risk. */}
+        {/*
+          Extraction finished / still running / failed — binding, in flight,
+          risk. The dot carries the meaning and the label stays ink, exactly as
+          StatusPill does it: "ready" is the majority state on every card, and
+          colouring its words too made a full-colour row where the only thing
+          worth noticing is the failure count.
+        */}
         {r.progress.done > 0 && (
-          <span className="text-brand-700 tabular-nums">
+          <span className="text-ink-700 tabular-nums">
             <span className="inline-block size-1.5 rounded-full bg-brand-700 mr-1" />
             {r.progress.done} ready
           </span>
         )}
         {r.progress.processing > 0 && (
-          <span className="text-info-700 tabular-nums">
-            <Loader2 className="inline size-3 animate-spin mr-0.5" />
+          <span className="text-ink-700 tabular-nums">
+            <Loader2 className="inline size-3 animate-spin mr-0.5 text-info-600" />
             {r.progress.processing} processing
           </span>
         )}
@@ -169,6 +192,15 @@ function RoomCard({ r }: { r: ApiRoom }) {
           <span className="text-risk-700 tabular-nums">
             <span className="inline-block size-1.5 rounded-full bg-risk-600 mr-1" />
             {r.progress.failed} failed
+          </span>
+        )}
+        {/* done + processing + failed can be short of the document count, and
+            the difference — documents sitting in the queue, untouched — was the
+            one bucket the card never named. */}
+        {queued > 0 && (
+          <span className="text-ink-500 tabular-nums">
+            <span className="inline-block size-1.5 rounded-full bg-ink-350 mr-1" />
+            {queued} queued
           </span>
         )}
       </div>
@@ -202,12 +234,23 @@ function RoomCard({ r }: { r: ApiRoom }) {
                     <div className="text-[10px] text-ink-400 flex items-center gap-1.5 mt-0.5">
                       <span>{d.type}</span>
                       <span aria-hidden>·</span>
-                      <span>{d.status.replace(/_/g, ' ').toLowerCase()}</span>
+                      <span>{statusMeta(d.status).label}</span>
                       {d.analysisStatus && d.analysisStatus !== 'DONE' && (
                         <>
                           <span aria-hidden>·</span>
-                          {/* Extraction still running — the system's turn. */}
-                          <span className="text-info-700">{d.analysisStatus.replace(/_/g, ' ').toLowerCase()}</span>
+                          {/*
+                            analysisStatus is PENDING | ANALYZING | DONE | FAILED,
+                            and this hard-coded info blue for all four. That
+                            painted FAILED — a document in a diligence room that
+                            never got processed, and the one thing on this card
+                            somebody has to act on — as "in flight, nothing to
+                            do". The meaning comes from lib/status now, so a
+                            failed extraction reads risk here exactly as it does
+                            in the room detail and the contracts list.
+                          */}
+                          <span className={MEANING_CLASS[statusMeaning(d.analysisStatus)].fg}>
+                            {statusMeta(d.analysisStatus).label}
+                          </span>
                         </>
                       )}
                     </div>
@@ -234,6 +277,19 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const dirty = name.trim().length > 0 || description.trim().length > 0
+
+  /*
+   * Escape closes an untouched dialog. A dialog with typed input does not close
+   * on Escape or on a stray backdrop click — a mis-click on the overlay used to
+   * throw away a room name and a paragraph of description with no warning and
+   * no way back.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !dirty) onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dirty, onClose])
 
   const create = useMutation({
     mutationFn: async () => {
@@ -257,8 +313,9 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     <div
       role="dialog"
       aria-label="Create diligence room"
+      aria-modal="true"
       className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4 overflow-auto"
-      onClick={onClose}
+      onClick={() => { if (!dirty) onClose() }}
       data-testid="create-room-dialog"
     >
       <div className="bg-card rounded-card max-w-md w-full shadow-e3 my-8" onClick={(e) => e.stopPropagation()}>

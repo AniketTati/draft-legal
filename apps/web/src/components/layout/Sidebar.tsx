@@ -302,7 +302,7 @@ export function Sidebar() {
           data-testid="logo-home-link"
           aria-label="draftLegal — go to dashboard"
           title="draftLegal — Dashboard"
-          className="hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring/35 rounded-md"
+          className="hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-ring rounded-md"
         >
           <span className={showMark}><Wordmark size="xl" kind="mark" /></span>
           <span className={showLabel}><Wordmark size="2xl" kind="full" /></span>

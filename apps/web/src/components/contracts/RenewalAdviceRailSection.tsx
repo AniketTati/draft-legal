@@ -61,12 +61,9 @@ const SEV_CLS: Record<string, string> = {
   low:    'text-ink-500 border-paper-200 bg-paper-50',
 }
 
-function daysUntil(iso: string | null): number | null {
-  if (!iso) return null
-  const mid = new Date(iso); mid.setHours(0, 0, 0, 0)
-  const todayMid = new Date(); todayMid.setHours(0, 0, 0, 0)
-  return Math.round((mid.getTime() - todayMid.getTime()) / (24 * 3600 * 1000))
-}
+/* This rail already normalised to midnight; the rest of the app now shares it
+   rather than re-deriving it (the contract header disagreed by a day). */
+import { calendarDaysUntil as daysUntil } from './dates'
 
 export function RenewalAdviceRailSection({
   contractId,

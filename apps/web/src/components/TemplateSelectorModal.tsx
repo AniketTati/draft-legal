@@ -3,9 +3,9 @@
  * Triggered from "New Contract" button or chat draft flow.
  * Shows published templates with type filter + match score.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileText, Globe, Loader2, X } from 'lucide-react'
+import { FileText, Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -40,9 +40,23 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
 
   const templates: Template[] = data?.data ?? []
 
+  // Escape closes it. This is a picker, not a form — there is nothing to lose,
+  // and a modal that ignores Escape is a modal a keyboard user is stuck in.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40">
-      <div className="w-full max-w-2xl bg-card rounded-card shadow-e3 overflow-hidden">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Select template"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4"
+      onClick={onClose}
+    >
+      <div className="w-full max-w-2xl bg-card rounded-card shadow-e3 overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
           <div>
@@ -104,10 +118,13 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <FileText className="size-3.5 text-ink-400 shrink-0" />
+                    {/*
+                      The globe next to every name said "published" on a list
+                      that is filtered to published — a glyph on 100% of rows
+                      carries no information, so it is gone. The name gets the
+                      space instead.
+                    */}
                     <span className="text-body font-medium text-ink-950">{t.name}</span>
-                    {/* Every row here is already filtered to published, so the
-                        globe states a fact rather than a status — keep it quiet. */}
-                    <Globe className="size-3.5 text-ink-400" />
                     {preferredType && t.contractType === preferredType && (
                       <Chip>Recommended</Chip>
                     )}
@@ -119,9 +136,13 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
                     {t.contractType && (
                       <span className="text-[11px] px-1.5 py-0.5 rounded-chip border border-paper-200 bg-paper-100 text-ink-700">{t.contractType}</span>
                     )}
-                    <span className="text-[11px] tabular-nums text-ink-400">{(t.sections?.length ?? 0)} sections</span>
-                    <span className="text-[11px] text-ink-400">·</span>
-                    <span className="text-[11px] tabular-nums text-ink-400">used {t.usageCount}×</span>
+                    {/* Facts in one string — a wrap can't strand a separator. */}
+                    <span className="text-[11px] tabular-nums text-ink-400">
+                      {[
+                        `${t.sections?.length ?? 0} sections`,
+                        ...((t.usageCount ?? 0) > 0 ? [`used ${t.usageCount}×`] : []),
+                      ].join(' · ')}
+                    </span>
                   </div>
                 </div>
               </div>

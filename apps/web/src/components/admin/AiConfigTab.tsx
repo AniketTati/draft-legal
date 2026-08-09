@@ -21,6 +21,7 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/components/common/Toaster'
+import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 import {
   Cpu, Save, Info, KeyRound, Gauge, Activity, ScrollText,
   CheckCircle2, Sparkles, Plus, RotateCw, Trash2, AlertTriangle, ShieldCheck,
@@ -602,9 +603,13 @@ function ApiKeysSection() {
     }
   }
 
+  // Guarded by the shared ConfirmDialog rather than window.confirm — same
+  // treatment as every other irreversible admin act on these surfaces.
+  const [pendingDelete, setPendingDelete] = useState<Provider | null>(null)
+
   const handleDelete = async (provider: Provider) => {
     const providerMeta = PROVIDER_META.find(p => p.id === provider)
-    if (!confirm(`Remove the ${providerMeta?.label ?? provider} BYOK key? Calls for this provider will fall back to the platform key (if available).`)) return
+    setPendingDelete(null)
     setBusy(provider)
     try {
       await deleteKey.mutateAsync(provider)
@@ -694,8 +699,9 @@ function ApiKeysSection() {
                           </Button>
                           <Button
                             variant="ghost" size="sm"
-                            onClick={() => handleDelete(id)}
+                            onClick={() => setPendingDelete(id)}
                             disabled={isBusy}
+                            aria-label={`Remove ${label} key`}
                             className="h-8 text-[12px] gap-1 text-risk-700 hover:text-risk-700 hover:bg-risk-50"
                           >
                             <Trash2 className="size-3" />
@@ -774,6 +780,27 @@ function ApiKeysSection() {
           (never the plaintext).
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingDelete != null}
+        testId="byok-delete-confirm"
+        title="Remove this BYOK key?"
+        confirmLabel="Remove key"
+        body={
+          <>
+            Calls to{' '}
+            <span className="font-medium text-ink-950">
+              {PROVIDER_META.find(p => p.id === pendingDelete)?.label ?? pendingDelete}
+            </span>{' '}
+            fall back to the platform key. If your org has no platform key for this
+            provider, every feature routed to it starts failing — extraction, review
+            and the assistant included. The key cannot be recovered; you would need
+            to paste it again.
+          </>
+        }
+        onConfirm={() => pendingDelete && handleDelete(pendingDelete)}
+        onCancel={() => setPendingDelete(null)}
+      />
     </section>
   )
 }

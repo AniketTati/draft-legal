@@ -40,10 +40,40 @@ interface Props {
   stepId:     string
   instanceId: string
   stepName:   string
+  /** When this step auto-escalates. Absent on surfaces that don't fetch it. */
+  escalateAt?: string | null
   contract:   Contract
   instance:   InstanceContext
   onDecided?: () => void
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Whole days since an ISO timestamp. Negative is impossible for a submission. */
+export function waitingDaysSince(iso: string): number {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return 0
+  return Math.max(0, Math.floor((Date.now() - t) / DAY_MS))
+}
+
+/** Whole days until an ISO timestamp; negative once it has passed. */
+function daysUntil(iso: string): number | null {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return null
+  return Math.round((t - Date.now()) / DAY_MS)
+}
+
+/**
+ * An AI summary either arrived with the queue or it is never coming.
+ *
+ * The card used to render a spinner and "AI summary is being generated…"
+ * whenever `aiSummary` was null — with no polling behind it. On a seeded org
+ * that is eight cards spinning forever, and a reviewer who waits for an
+ * analysis that does not exist is a reviewer who does not decide. Analysis runs
+ * seconds after submission, so past this grace window the honest reading is
+ * "there is none"; the card then says so and gets out of the way.
+ */
+const SUMMARY_GRACE_MS = 5 * 60 * 1000
 
 // A low-severity finding is a note, not a warning — it stays neutral. Medium is
 // the reviewer's call to make; high and critical are real exposure.
@@ -65,7 +95,7 @@ const REC_LABEL: Record<string, string> = {
   reject_advised:  'AI recommends: Reject',
 }
 
-export function ApprovalCard({ stepId, instanceId, stepName, contract, instance, onDecided }: Props) {
+export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contract, instance, onDecided }: Props) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [decision, setDecision] = useState<'APPROVED' | 'REJECTED' | 'DELEGATED' | null>(null)
@@ -97,6 +127,13 @@ export function ApprovalCard({ stepId, instanceId, stepName, contract, instance,
 
   const hasRisks = (instance.keyRisks?.length ?? 0) > 0 || (instance.nonStandardTerms?.length ?? 0) > 0
   const rec = instance.approvalRecommendation ? REC_LABEL[instance.approvalRecommendation] : null
+
+  const waited = waitingDaysSince(instance.submittedAt)
+  const summaryStillLanding =
+    !instance.aiSummary && Date.now() - new Date(instance.submittedAt).getTime() < SUMMARY_GRACE_MS
+  // Escalation is the only hard deadline on this card. Past it the step is
+  // reassigned over the reviewer's head, so it is exposure, not a nicety.
+  const escalateIn = escalateAt ? daysUntil(escalateAt) : null
 
   return (
     <div
@@ -138,6 +175,37 @@ export function ApprovalCard({ stepId, instanceId, stepName, contract, instance,
             <Calendar className="size-3" />
             Submitted {new Date(instance.submittedAt).toLocaleDateString()} by {instance.submittedByName ?? 'Unknown'}
           </span>
+        </div>
+
+        {/* How long this has been sitting with me, and when it stops being mine.
+            A date alone makes the reader do the arithmetic on every card; the
+            queue's whole job is to make the backlog legible at a glance. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2">
+          <span
+            className={`inline-flex items-center gap-1.5 text-[11.5px] font-medium tabular-nums ${
+              waited >= 7 ? 'text-risk-700' : waited >= 3 ? 'text-attention-700' : 'text-ink-500'
+            }`}
+          >
+            <span className={`size-1.5 rounded-full ${
+              waited >= 7 ? 'bg-risk-600' : waited >= 3 ? 'bg-attention-600' : 'bg-ink-350'
+            }`} />
+            {waited === 0 ? 'Waiting since today' : `Waiting ${waited} day${waited === 1 ? '' : 's'}`}
+          </span>
+          {escalateIn != null && (
+            <span
+              className={`inline-flex items-center gap-1 text-[11.5px] tabular-nums ${
+                escalateIn <= 2 ? 'text-risk-700 font-medium' : 'text-ink-500'
+              }`}
+              title={`This step auto-escalates on ${new Date(escalateAt!).toLocaleDateString()} if no decision is recorded.`}
+            >
+              {escalateIn <= 2 && <AlertTriangle className="size-3 shrink-0" />}
+              {escalateIn < 0
+                ? `Escalated ${-escalateIn}d ago`
+                : escalateIn === 0
+                  ? 'Escalates today'
+                  : `Escalates in ${escalateIn}d`}
+            </span>
+          )}
         </div>
       </div>
 
@@ -183,10 +251,22 @@ export function ApprovalCard({ stepId, instanceId, stepName, contract, instance,
             </div>
           )}
         </div>
-      ) : (
+      ) : summaryStillLanding ? (
         <div className="px-5 py-3 border-b border-paper-200 flex items-center gap-2 text-dense text-ink-400">
           <Loader2 className="size-3.5 animate-spin" />
           AI summary is being generated…
+        </div>
+      ) : (
+        // No spinner: nothing is running. Say what is missing and point at the
+        // document, which is the thing the reviewer has to read instead.
+        <div className="px-5 py-3 border-b border-paper-200 flex items-center justify-between gap-2 text-dense text-ink-500">
+          <span>No AI summary for this submission — review the contract directly.</span>
+          <button
+            onClick={() => navigate(`/contracts/${contract.id}`)}
+            className="shrink-0 font-medium text-ink-950 hover:underline underline-offset-2 decoration-paper-300"
+          >
+            Open contract →
+          </button>
         </div>
       )}
 

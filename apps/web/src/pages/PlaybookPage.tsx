@@ -3,7 +3,7 @@
  * Manage preferred/acceptable/fallback/walkaway positions per clause category.
  * Test mode: paste a clause → agent scores it against playbook.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { sanitizeHtml } from '@/lib/sanitize'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -20,6 +20,14 @@ import type { ClauseCategory, PlaybookPosition } from '@clm/types'
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const POSITION_TYPES: PlaybookPosition['positionType'][] = ['preferred', 'acceptable', 'fallback', 'walkaway']
+
+/** What each rung of the ladder is for, in the words a negotiator would use. */
+const POSITION_BLURB: Record<string, string> = {
+  preferred:  'What we open with.',
+  acceptable: 'What we sign without escalating.',
+  fallback:   'What we concede, reluctantly.',
+  walkaway:   'What we refuse.',
+}
 
 /*
  * The four positions are a ladder, so they read as one: inside the playbook →
@@ -70,18 +78,87 @@ function PositionCard({
       {position.notes && (
         <p className="text-[11.5px] text-ink-500 mt-2 italic">{position.notes}</p>
       )}
-      <div className="flex items-center gap-3 mt-2">
-        <div className="flex items-center gap-1">
-          <div className="w-20 h-1 rounded-full bg-paper-200 overflow-hidden">
-            <div
-              className={cn('h-full rounded-full', c.bg, 'brightness-90')}
-              style={{ width: `${(position.riskThreshold ?? 0.5) * 100}%`, background: 'currentColor' }}
-            />
-          </div>
-          <span className="text-[11px] tabular-nums text-ink-500">threshold {Math.round((position.riskThreshold ?? 0.5) * 100)}%</span>
-        </div>
+      {/*
+        The bar used to set `background: currentColor` inline on top of a wash
+        class and a brightness filter, so it painted in whatever the inherited
+        text colour happened to be — ink, in every position type — while the
+        class said otherwise. And "threshold 50%" named a number without naming
+        what it gates. It is the match score at which the agent will treat a
+        counterparty's clause as landing on this rung, so it says so.
+      */}
+      <div className="flex items-center gap-2 mt-3">
+        <span
+          className="block h-1 w-20 shrink-0 overflow-hidden rounded-full bg-paper-200"
+          role="meter"
+          aria-valuenow={Math.round((position.riskThreshold ?? 0.5) * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`Match threshold ${Math.round((position.riskThreshold ?? 0.5) * 100)} percent`}
+        >
+          <span
+            className="block h-full rounded-full bg-ink-700"
+            style={{ width: `${(position.riskThreshold ?? 0.5) * 100}%` }}
+          />
+        </span>
+        <span className="text-[11px] tabular-nums text-ink-500">
+          matches at {Math.round((position.riskThreshold ?? 0.5) * 100)}%+
+        </span>
       </div>
     </div>
+  )
+}
+
+// ─── Empty rung ───────────────────────────────────────────────────────────────
+
+/**
+ * A rung with nothing on it.
+ *
+ * The playbook's value is the ladder, and the gaps in the ladder are the thing
+ * a GC most wants to see: "we have never written down what we walk away from on
+ * indemnities" is a finding. Rendering only the rungs that exist hid exactly
+ * that, and left a lone card floating in a two-column grid.
+ */
+function EmptyRung({ type, onAdd }: { type: string; onAdd: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onAdd}
+      data-testid={`playbook-empty-${type}`}
+      className="rounded-card border border-dashed border-paper-300 p-4 text-left transition-colors hover:border-ink-400 hover:bg-paper-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="text-eyebrow uppercase text-ink-400">{type}</span>
+      <p className="text-dense text-ink-500 mt-2">{POSITION_BLURB[type]}</p>
+      <span className="mt-2 inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950">
+        <Plus className="size-3" /> Define this position
+      </span>
+    </button>
+  )
+}
+
+// ─── Coverage ticks ───────────────────────────────────────────────────────────
+
+/**
+ * Four ticks: how many rungs of the ladder this category has written down.
+ *
+ * Ink, not colour — an incomplete playbook is a gap in the work, not a state
+ * of a contract, and this rail sits next to nineteen of them. The accessible
+ * name carries the number so the ticks are never the only signal.
+ */
+function CoverageTicks({ filled, name }: { filled: number; name: string }) {
+  return (
+    <span
+      className="flex shrink-0 items-center gap-[3px]"
+      role="img"
+      aria-label={`${name}: ${filled} of 4 positions defined`}
+      title={`${filled} of 4 positions defined`}
+    >
+      {POSITION_TYPES.map((_, i) => (
+        <span
+          key={i}
+          className={cn('block h-2.5 w-[3px] rounded-full', i < filled ? 'bg-ink-700' : 'bg-paper-200')}
+        />
+      ))}
+    </span>
   )
 }
 
@@ -256,8 +333,11 @@ function TestPanel({ categoryId }: { categoryId: string }) {
       {result && !result.error && (
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-2">
-            <span className={cn('px-3 py-1 rounded-full text-dense font-semibold', MATCH_COLORS[result.bestMatch])}>
-              {result.bestMatch?.toUpperCase()} MATCH
+            {/* bestMatch can come back as something not on the ladder (or
+                absent) — cn() then emits a pill with no colour and the label
+                reads "UNDEFINED MATCH". */}
+            <span className={cn('px-3 py-1 rounded-full text-dense font-semibold', MATCH_COLORS[result.bestMatch] ?? 'text-ink-700 bg-paper-100')}>
+              {result.bestMatch ? `${String(result.bestMatch).toUpperCase()} MATCH` : 'NO CLEAR MATCH'}
             </span>
             <span className="text-dense tabular-nums text-ink-500">Score: {Math.round((result.score ?? 0) * 100)}%</span>
           </div>
@@ -292,6 +372,9 @@ export function PlaybookPage() {
   const [editPosition, setEditPosition] = useState<PlaybookPosition | undefined>()
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set())
   const [showTest, setShowTest] = useState(false)
+  // Which rung the editor should open on when the user adds from a gap card.
+  const [addType, setAddType] = useState<PlaybookPosition['positionType'] | undefined>()
+  const [pendingDelete, setPendingDelete] = useState<PlaybookPosition | undefined>()
 
   const { data: categoriesData } = useQuery({
     queryKey: ['clause-categories'],
@@ -316,24 +399,54 @@ export function PlaybookPage() {
     enabled: !!selectedCategoryId,
   })
 
+  // The rail's coverage ticks are computed from the org-wide 'playbook-all'
+  // query, so every write has to invalidate it too — otherwise adding the
+  // missing walkaway leaves the rail still showing three of four.
+  const refreshPlaybook = () => {
+    qc.invalidateQueries({ queryKey: ['playbook'] })
+    qc.invalidateQueries({ queryKey: ['playbook-all'] })
+  }
+
   const createMutation = useMutation({
     mutationFn: (body: any) => api.post('/playbook/positions', body),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['playbook'] }); setShowEditor(false) },
+    onSuccess: () => { refreshPlaybook(); setShowEditor(false); setAddType(undefined) },
   })
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => api.patch(`/playbook/positions/${id}`, data),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['playbook'] }); setShowEditor(false); setEditPosition(undefined) },
+    onSuccess: () => { refreshPlaybook(); setShowEditor(false); setEditPosition(undefined) },
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/playbook/positions/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['playbook'] }),
+    onSuccess: () => refreshPlaybook(),
   })
 
   const categories: (ClauseCategory & { children?: ClauseCategory[] })[] = categoriesData?.data ?? []
   const positions: PlaybookPosition[] = playbookData?.data ?? []
-  const totalPositionsInOrg: number = (allPositionsData?.data ?? []).length
+  const allPositions: PlaybookPosition[] = allPositionsData?.data ?? []
+  const totalPositionsInOrg: number = allPositions.length
+
+  /*
+   * Coverage per category, from the org-wide fetch we already make.
+   *
+   * The rail listed nineteen clause types identically, so the only way to learn
+   * that Governing Law has one position and Term & Termination has four was to
+   * click nineteen times. Coverage is the playbook's whole health metric — an
+   * unwritten walkaway is what gets conceded at 6pm on a Friday — so the rail
+   * carries it.
+   */
+  const coverage = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const p of allPositions) {
+      const set = m.get(p.clauseCategoryId) ?? new Set<string>()
+      set.add(p.positionType)
+      m.set(p.clauseCategoryId, set)
+    }
+    return m
+  }, [allPositions])
+
+  const coverageOf = (id: string) => coverage.get(id)?.size ?? 0
 
   // P7.4.12 / F-63 — auto-select the first category once categories
   // load IF the org already has positions (i.e. not a brand-new
@@ -350,6 +463,14 @@ export function PlaybookPage() {
       ?? categories.find(c => c.children?.some(ch => positionCategoryIds.has(ch.id)))
     setSelectedCategoryId(populated?.id ?? categories[0].id)
   }, [categories, totalPositionsInOrg, selectedCategoryId, allPositionsData])
+
+  // Escape backs out of the delete confirmation — the safe direction.
+  useEffect(() => {
+    if (!pendingDelete) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPendingDelete(undefined) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pendingDelete])
 
   const toggleCategory = (id: string) => {
     setExpandedCategories(prev => {
@@ -389,6 +510,7 @@ export function PlaybookPage() {
                   ? (expandedCategories.has(cat.id) ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />)
                   : <span className="w-3.5" />}
                 <span className="flex-1 text-left truncate">{cat.name}</span>
+                <CoverageTicks filled={coverageOf(cat.id)} name={cat.name} />
               </button>
               {expandedCategories.has(cat.id) && cat.children?.map(child => (
                 <div key={child.id} className="ml-3 border-l-2 border-paper-200 pl-2">
@@ -401,7 +523,8 @@ export function PlaybookPage() {
                         : 'text-ink-500 hover:bg-paper-100',
                     )}
                   >
-                    <span className="truncate">{child.name}</span>
+                    <span className="flex-1 text-left truncate">{child.name}</span>
+                    <CoverageTicks filled={coverageOf(child.id)} name={child.name} />
                   </button>
                 </div>
               ))}
@@ -426,8 +549,15 @@ export function PlaybookPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-title text-ink-950">
-                      {categories.find(c => c.id === selectedCategoryId)?.name ?? 'Positions'}
+                      {categoryName(categories, selectedCategoryId) ?? 'Positions'}
                     </h2>
+                    {/* Coverage first — it is the answer to "is this category
+                        finished?", which is why the user opened it. */}
+                    <p className="text-[11.5px] text-ink-500 mt-0.5">
+                      {allFilled
+                        ? `All 4 positions defined · ${positions.length} in total`
+                        : `${POSITION_TYPES.length - missingTypes.length} of 4 positions defined — missing ${missingTypes.join(', ')}`}
+                    </p>
                     {positions.length > 0 && !showTest && (
                       <p className="text-[11.5px] text-muted-foreground mt-0.5">
                         Tip: paste a clause into <span className="font-semibold">Test playbook</span> to see which position it matches.
@@ -453,12 +583,17 @@ export function PlaybookPage() {
                       <Play />
                       {showTest ? 'Hide test panel' : 'Test playbook'}
                     </Button>
+                    {/*
+                      No longer disabled when all four rungs exist. Three
+                      categories in this org legitimately carry two positions on
+                      one rung (a general cap and a carve-out, say), and the
+                      button that adds them was greyed out with the tooltip
+                      "All 4 positions defined" — a rule the data does not obey.
+                    */}
                     <Button
-                      onClick={() => { setEditPosition(undefined); setShowEditor(true) }}
-                      disabled={allFilled}
-                      title={allFilled ? 'All 4 positions defined — edit existing cards' : `Add ${missingTypes[0]} position`}
+                      onClick={() => { setEditPosition(undefined); setAddType(missingTypes[0]); setShowEditor(true) }}
+                      title={allFilled ? 'Add another position to this category' : `Add ${missingTypes[0]} position`}
                       data-testid="playbook-add-position-btn"
-                      className="disabled:cursor-not-allowed"
                     >
                       <Plus />
                       Add Position
@@ -471,26 +606,38 @@ export function PlaybookPage() {
 
             {showTest && <TestPanel categoryId={selectedCategoryId} />}
 
+            {/*
+              This grid used to render `positions.find(p => p.positionType === t)`
+              — the FIRST position of each rung, and nothing else. Three
+              categories in this org carry a second position on a rung
+              (Confidentiality and Limitation of Liability each have two
+              `preferred`; Intellectual Property has two `acceptable`), and those
+              were invisible: not listed, not editable, not deletable, but very
+              much still fed to the agent that scores counterparty language. A
+              playbook you cannot see all of is worse than no playbook. Every
+              position renders, in ladder order; empty rungs render as gaps.
+            */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {POSITION_TYPES.map(type => {
-                const pos = positions.find(p => p.positionType === type)
-                if (!pos) return null
-                return (
+              {POSITION_TYPES.flatMap(type => {
+                const forType = positions.filter(p => p.positionType === type)
+                if (!forType.length) {
+                  return [
+                    <EmptyRung
+                      key={`empty-${type}`}
+                      type={type}
+                      onAdd={() => { setEditPosition(undefined); setAddType(type); setShowEditor(true) }}
+                    />,
+                  ]
+                }
+                return forType.map(pos => (
                   <PositionCard
                     key={pos.id}
                     position={pos}
                     onEdit={() => { setEditPosition(pos); setShowEditor(true) }}
-                    onDelete={() => deleteMutation.mutate(pos.id)}
+                    onDelete={() => setPendingDelete(pos)}
                   />
-                )
+                ))
               })}
-              {!positions.length && (
-                <div className="col-span-2 flex flex-col items-center justify-center py-12 text-ink-400 border-2 border-dashed border-paper-200 rounded-card">
-                  <Shield className="size-6 mb-2" />
-                  <p className="text-dense">No positions defined yet</p>
-                  <p className="text-[11.5px] mt-1">Add preferred → acceptable → fallback → walkaway positions</p>
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -503,8 +650,8 @@ export function PlaybookPage() {
           <PositionEditor
             position={editPosition}
             categoryId={selectedCategoryId}
-            defaultPositionType={editPosition ? undefined : (missingTypes[0] ?? 'preferred')}
-            onClose={() => { setShowEditor(false); setEditPosition(undefined) }}
+            defaultPositionType={editPosition ? undefined : (addType ?? missingTypes[0] ?? 'preferred')}
+            onClose={() => { setShowEditor(false); setEditPosition(undefined); setAddType(undefined) }}
             onSave={async (data) => {
               if (editPosition) {
                 await updateMutation.mutateAsync({ id: editPosition.id, data })
@@ -515,8 +662,64 @@ export function PlaybookPage() {
           />
         )
       })()}
+
+      {/* Deleting a negotiated position was a single unconfirmed click, and the
+          position is what the agent scores counterparty language against. */}
+      {pendingDelete && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete position"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4"
+          onClick={() => setPendingDelete(undefined)}
+          data-testid="playbook-delete-dialog"
+        >
+          <div className="w-full max-w-sm bg-card rounded-card shadow-e3" onClick={e => e.stopPropagation()}>
+            <div className="px-5 py-4 border-b border-paper-200">
+              <h2 className="text-section text-ink-950">Delete this position?</h2>
+              <p className="text-dense text-ink-500 mt-1">
+                The <span className="font-medium text-ink-950 capitalize">{pendingDelete.positionType}</span> position
+                for {categoryName(categories, selectedCategoryId) ?? 'this category'} will be removed, and drafting and
+                review will stop scoring against it. This can't be undone.
+              </p>
+            </div>
+            <div className="px-5 py-3 flex justify-end gap-2 bg-paper-50 rounded-b-card">
+              <Button variant="outline" size="xs" onClick={() => setPendingDelete(undefined)}>Cancel</Button>
+              <Button
+                variant="destructive"
+                size="xs"
+                onClick={() => { deleteMutation.mutate(pendingDelete.id); setPendingDelete(undefined) }}
+                data-testid="playbook-delete-confirm"
+              >
+                Delete position
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
+}
+
+/**
+ * Category name by id, including nested children.
+ *
+ * The heading looked only at top-level categories, so selecting any child
+ * category in the rail titled the panel "Positions" — the one word on screen
+ * that says which playbook you are editing, blank exactly when the tree is
+ * deep enough to need it.
+ */
+function categoryName(
+  categories: (ClauseCategory & { children?: ClauseCategory[] })[],
+  id: string | null,
+): string | undefined {
+  if (!id) return undefined
+  for (const c of categories) {
+    if (c.id === id) return c.name
+    const child = c.children?.find(ch => ch.id === id)
+    if (child) return child.name
+  }
+  return undefined
 }
 
 // ─── Empty-state explainer (B.6.19) ───────────────────────────────────────────

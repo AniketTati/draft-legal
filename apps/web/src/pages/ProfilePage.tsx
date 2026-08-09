@@ -267,7 +267,11 @@ export function ProfilePage() {
             </div>
           )}
 
-          <Button type="submit" disabled={changePassword.isPending}>
+          {/* One primary per view — "Save Profile" above is this page's
+              primary. Changing a password is a separate, occasional
+              operation in its own card, so it takes the secondary weight
+              rather than competing with the page's main action. */}
+          <Button type="submit" variant="outline" disabled={changePassword.isPending}>
             {changePassword.isPending ? 'Changing...' : 'Change Password'}
           </Button>
         </form>

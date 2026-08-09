@@ -244,16 +244,40 @@ export function RenewalsPage() {
     refetchInterval: 60_000,
   })
 
+  /*
+   * The notice-to-terminate deadline is the only irreversible date on this
+   * page: once it passes, an auto-renewing contract renews whatever anyone
+   * decides afterwards. It was computed per row and shown in red, but there was
+   * no way to ask for just those rows — so finding them meant reading every
+   * month group. This is the filter a renewals owner actually wants.
+   */
+  const [noticeOnly, setNoticeOnly] = useState(false)
+  const noticeAtRiskCount = (data?.data ?? []).filter(r => noticeDeadline(r)?.atRisk).length
+
   // Client-side text filter — server endpoint doesn't support `q` for renewals yet.
-  const filteredMonths = (data?.months ?? []).map(m => ({
-    ...m,
-    rows: q
-      ? m.rows.filter(r =>
-          r.title.toLowerCase().includes(q.toLowerCase()) ||
-          (r.counterpartyName ?? '').toLowerCase().includes(q.toLowerCase()),
-        )
-      : m.rows,
-  })).filter(m => m.rows.length > 0)
+  const needle = q.trim().toLowerCase()
+  const clientFiltered = noticeOnly || !!needle
+  const filteredMonths = (data?.months ?? []).map(m => {
+    const rows = m.rows.filter(r => {
+      if (noticeOnly && !noticeDeadline(r)?.atRisk) return false
+      if (!needle) return true
+      return (
+        r.title.toLowerCase().includes(needle) ||
+        (r.counterpartyName ?? '').toLowerCase().includes(needle)
+      )
+    })
+    // The month header's ACV is a sum of the rows under it. When a client-side
+    // filter drops rows the server's total stops describing what is on screen —
+    // "8 renewals · USD 7.77M ACV" over eight rows that add up to less is the
+    // kind of number a renewals owner will quote in a QBR. Re-sum what is shown.
+    return {
+      ...m,
+      rows,
+      totalValue: clientFiltered
+        ? rows.reduce((sum, r) => sum + (Number(r.value) || 0), 0)
+        : m.totalValue,
+    }
+  }).filter(m => m.rows.length > 0)
 
   return (
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="renewals-page">
@@ -293,13 +317,15 @@ export function RenewalsPage() {
           meaning="turn"
           icon={AlertTriangle}
           data-testid="stat-undecided"
-          subtitle={stats?.totalAcvNext90 ? `${formatMoney(stats.totalAcvNext90)} ACV in next 90d` : ''}
+          subtitle={stats?.totalAcvNext90 ? `next 90d · ${formatMoney(stats.totalAcvNext90)} ACV` : 'next 90d'}
         />
       </div>
 
-      {/* Filter row */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 border-b border-paper-200 pb-2">
-        <div className="flex items-center gap-1 -mb-2 overflow-x-auto">
+      {/* Filter rows. Buckets and controls used to share one line, which at
+          sidebar-plus-rail width scrolled four of the six windows out of sight —
+          including Overdue. Two rows, each free to use the full width. */}
+      <div className="flex flex-col gap-2 mb-5 border-b border-paper-200 pb-2">
+        <div className="flex items-center gap-1 overflow-x-auto">
           {BUCKETS.map(b => {
             const active = bucket === b.key
             const count = b.statKey ? stats?.[b.statKey] ?? 0 : null
@@ -323,7 +349,25 @@ export function RenewalsPage() {
             )
           })}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {noticeAtRiskCount > 0 && (
+            <button
+              type="button"
+              onClick={() => setNoticeOnly(v => !v)}
+              aria-pressed={noticeOnly}
+              data-testid="renewal-notice-filter"
+              title="Auto-renewing contracts whose notice-to-terminate deadline has passed or is within 30 days"
+              className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border text-[11.5px] font-medium whitespace-nowrap transition-colors ${
+                noticeOnly
+                  ? 'border-risk-600 bg-risk-50 text-risk-700'
+                  : 'border-input bg-card text-ink-700 hover:bg-paper-100'
+              }`}
+            >
+              <AlertTriangle className="size-3.5 text-risk-600" />
+              Notice at risk
+              <span className="tabular-nums">{noticeAtRiskCount}</span>
+            </button>
+          )}
           <select
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value as StatusFilter)}
@@ -335,7 +379,7 @@ export function RenewalsPage() {
             <option value="pending">No decision yet</option>
             <option value="decided">Decided</option>
           </select>
-          <div className="relative">
+          <div className="relative flex-1 min-w-[180px]">
             <Search className="absolute left-2.5 top-2 size-4 text-ink-400" />
             <Input
               type="search"
@@ -343,7 +387,7 @@ export function RenewalsPage() {
               value={q}
               onChange={e => setQ(e.target.value)}
               data-testid="renewals-search"
-              className="pl-8 w-full sm:w-64"
+              className="pl-8 w-full"
             />
           </div>
         </div>
@@ -363,8 +407,16 @@ export function RenewalsPage() {
         <div data-testid="renewals-empty">
           <EmptyState
             icon={<CalendarDays />}
-            title={q ? `No renewals match "${q}".` : 'No upcoming renewals in this window.'}
-            description="Renewals appear here once a contract is executed and the expiry date is set."
+            title={
+              noticeOnly
+                ? 'No notice deadlines at risk in this window.'
+                : q ? `No renewals match "${q}".` : 'No upcoming renewals in this window.'
+            }
+            description={
+              noticeOnly
+                ? 'Every auto-renewing contract here still has time to serve notice.'
+                : 'Renewals appear here once a contract is executed and the expiry date is set.'
+            }
           />
         </div>
       ) : (

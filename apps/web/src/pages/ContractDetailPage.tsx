@@ -18,7 +18,9 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
+  PanelRightClose, PanelRightOpen,
 } from 'lucide-react'
+import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -465,6 +467,44 @@ export function ContractDetailPage() {
   // the drawer state so we don't get stuck with a mobile drawer visible
   // at desktop width.
   useEffect(() => { if (isXl) setRailOpen(false) }, [isXl])
+
+  /*
+   * Reading room (design system rule 3 — "the document is the hero").
+   *
+   * At 1440px the document column measured 460px wide. DocumentCanvas gives
+   * the page a real 2.5cm print margin on each side, so counsel was reading a
+   * 40-page MSA through a ~223px slot — roughly 30 characters a line, about a
+   * third of the measure the typographic literature calls comfortable. The
+   * chrome (320px rail + the assistant panel) outweighed the paper.
+   *
+   * The rail earns its space during review and costs during reading, so this
+   * makes it foldable rather than permanent, and remembers the choice. Folded,
+   * the same viewport gives the document ~780px — a full 65-character measure.
+   */
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('contract:rail-collapsed') === '1' } catch { return false }
+  })
+  const toggleRail = () => {
+    setRailCollapsed(v => {
+      const next = !v
+      try { localStorage.setItem('contract:rail-collapsed', next ? '1' : '0') } catch { /* private mode */ }
+      track('contract_rail_toggled', { collapsed: next })
+      return next
+    })
+  }
+  // ⌥\ folds the rail — same modifier the sidebar uses for its own collapse.
+  useEffect(() => {
+    if (!isXl) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === '\\' || e.code === 'Backslash')) {
+        e.preventDefault()
+        toggleRail()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isXl])
 
   // P3.1 — when arriving from a citation pill (?section=9.2), find the
   // matching <h*> in the TipTap view + scroll to it + pulse the
@@ -1022,9 +1062,16 @@ export function ContractDetailPage() {
         below. Same JTBDs, no 4-row stack.
       */}
       <div className="bg-card border-b border-paper-200 px-6 py-4 space-y-2.5">
-        {/* Row 1 — title + action buttons */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
+        {/* Row 1 — title + action buttons.
+
+            `flex-wrap` + a floor on the title block is load-bearing, not
+            cosmetic: the action cluster is `flex-shrink-0`, so on a 1440px
+            laptop with the assistant panel open the buttons ate the entire
+            row and the contract TITLE collapsed to zero width — the page
+            rendered a toolbar with no name on it. The buttons now drop to
+            their own line instead of erasing the record's identity. */}
+        <div className="flex items-start justify-between gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex items-start gap-3 flex-1 min-w-[18rem]">
             <button
               onClick={() => navigate('/contracts')}
               className="mt-0.5 p-1.5 rounded-md text-ink-400 hover:text-ink-950 hover:bg-paper-100 transition-colors flex-shrink-0"
@@ -1052,8 +1099,21 @@ export function ContractDetailPage() {
               <Copy className="size-4" />
             </button>
           </div>
-          {/* Row 1 right — action buttons */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Row 1 right — action buttons.
+
+              Hierarchy, not a queue. This row used to run nine controls at
+              five weights, so nothing read as the next step. It is now two
+              tiers separated by a hairline:
+
+                view chrome  — Styled/Original, Risk markers, Compare, and the
+                               rail fold. These change what you are LOOKING at.
+                               Quiet: no button chrome, ink-500 until hovered.
+                decisions    — Edit, the single workflow CTA, Actions. These
+                               change the CONTRACT. Full weight.
+
+              Same controls, same testids, same breakpoints — the difference is
+              that the eye now lands on the decision. */}
+          <div className="flex items-center gap-1 flex-shrink-0">
             {/*
               B.5.2 — Styled / Original document-view toggle.
               - "Styled" (default): TipTap + contract-paper CSS. Editable when
@@ -1066,7 +1126,9 @@ export function ContractDetailPage() {
               B.6.12 — hide on <1280px. The toggle moves into the
               Actions menu below xl so the primary CTA stays visible.
             */}
-            <div className="hidden xl:inline-flex items-center rounded-md border border-paper-200 bg-paper-50 p-0.5">
+            {/* ── Tier 1: view chrome. Recessive by construction. ── */}
+            <div className="hidden xl:flex items-center gap-0.5 mr-1.5 pr-2 border-r border-paper-200">
+            <div className="inline-flex items-center rounded-md border border-paper-200 bg-paper-50 p-0.5">
               <button
                 onClick={() => setDocView('styled')}
                 aria-pressed={docView === 'styled'}
@@ -1115,7 +1177,7 @@ export function ContractDetailPage() {
             {docView === 'styled' && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="hidden 2xl:inline-flex gap-1">
+                  <Button variant="ghost" size="sm" className="hidden 2xl:inline-flex gap-1 text-ink-500 hover:text-ink-950">
                     Risks: <span className="font-semibold capitalize">{riskView}</span>
                     <ChevronDown className="size-3" />
                   </Button>
@@ -1160,14 +1222,14 @@ export function ContractDetailPage() {
               widths.
             */}
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               disabled={versions.length < 2}
               onClick={() => {
                 setCompareOpen(true)
                 track('compare_opened', { versionCount: versions.length })
               }}
-              className="hidden xl:inline-flex gap-1.5"
+              className="gap-1.5 text-ink-500 hover:text-ink-950"
               title={versions.length < 2
                 ? 'Upload a second version to compare. Until then there is nothing to diff.'
                 : 'Compare two versions with redline attribution'}
@@ -1176,6 +1238,27 @@ export function ContractDetailPage() {
               <ArrowLeftRight className="size-4" />
               Compare
             </Button>
+
+            {/*
+              Rail fold. The single biggest lever on "the document is the
+              hero" — see the railCollapsed note above. Icon-only because it
+              is chrome about chrome.
+            */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleRail}
+              aria-pressed={railCollapsed}
+              data-testid="rail-toggle-btn"
+              title={railCollapsed
+                ? 'Show the details rail (⌥\\)'
+                : 'Hide the details rail and widen the document (⌥\\)'}
+              aria-label={railCollapsed ? 'Show details rail' : 'Hide details rail'}
+              className="text-ink-500 hover:text-ink-950"
+            >
+              {railCollapsed ? <PanelRightOpen className="size-4" /> : <PanelRightClose className="size-4" />}
+            </Button>
+            </div>
 
             {/*
               B.5.3 — Edit toggle. In view mode it reads "✏ Edit"; in edit
@@ -1345,6 +1428,11 @@ export function ContractDetailPage() {
                       Risk markers: <span className="ml-1 capitalize font-medium">{riskView}</span>
                     </DropdownMenuItem>
                   )}
+                </div>
+                {/* Compare is inline from xl up, so the mirror stops at xl —
+                    it used to stop at 2xl, which double-listed it between
+                    1280 and 1536 (two triggers, one action). */}
+                <div className="xl:hidden">
                   <DropdownMenuItem
                     disabled={versions.length < 2}
                     onSelect={() => {
@@ -1360,6 +1448,8 @@ export function ContractDetailPage() {
                       <span className="ml-auto text-[10px] text-muted-foreground">need 2+</span>
                     )}
                   </DropdownMenuItem>
+                </div>
+                <div className="2xl:hidden">
                   <DropdownMenuSeparator />
                 </div>
                 <DropdownMenuItem onSelect={() => setShowShareDialog(true)}>
@@ -1427,15 +1517,177 @@ export function ContractDetailPage() {
           </div>
         )}
 
-        {/* Row 2 — full-width metadata strip. Indented `pl-11` so the
-            pills line up with the title text (back-button + gap). At all
-            viewports this stays a single visual row at MBA-class width
-            and only wraps to 2 lines at very narrow widths. */}
+        {/* Row 2 — the record strip. Indented `pl-11` so it lines up with
+            the title text (back-button + gap).
+
+            This was nine affordances at five weights with no order: a status
+            pill, a dashed action button, a sync badge, a type chip, a text
+            link, a jurisdiction, an amber risk wash, an avatar, and four grey
+            facts — all competing, and the one time-critical number ("Expires
+            in 29d") rendered in the quietest grey on the row while a static
+            risk SCORE got the loudest wash. Colour was inverted against
+            urgency.
+
+            It is now three groups, hairline-separated, read left to right:
+
+              STATE     what is true right now, and what is running out.
+                        The only place in this row allowed a colour.
+              RECORD    what this document is — type, law, money, matter.
+              PROVENANCE who owns it, when it moved, how the text was got.
+                        Dimmest; it is context, never the answer.
+        */}
         <div
-          className="flex items-center flex-wrap gap-x-2 gap-y-1.5 pl-11"
+          className="flex items-center flex-wrap gap-x-2.5 gap-y-1.5 pl-11 text-[11.5px]"
           data-testid="contract-meta-row"
         >
+          {/* ── STATE ─────────────────────────────────────────────────── */}
           <StatusPill status={contract.status} />
+
+          {/*
+            Expiry. Calendar days, not elapsed milliseconds — the header said
+            "29d" while the Renewal rail said "30d" for the same date on the
+            same screen, because only one of them normalised to midnight.
+            See components/contracts/dates.ts.
+
+            It takes the wash when it is genuinely news (lapsed, or inside the
+            30-day notice window). That wash is the row's one exception, which
+            is why the risk score below gives its own up.
+          */}
+          {(() => {
+            const exp = expiryLabel(contract.expiryDate)
+            if (!exp) return null
+            const meaning = exp.tone === 'risk' ? 'risk' : exp.tone === 'turn' ? 'turn' : null
+            return (
+              <span
+                title={`Expires ${new Date(contract.expiryDate).toLocaleDateString()}`}
+                data-testid="contract-expiry-chip"
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-medium tabular-nums',
+                  meaning === 'risk'
+                    ? [MEANING_CLASS.risk.wash, MEANING_CLASS.risk.washFg, 'border', MEANING_CLASS.risk.washBorder]
+                    : meaning === 'turn'
+                      ? ['border border-paper-200 bg-paper-100 text-ink-700']
+                      : 'text-ink-500',
+                )}
+              >
+                {meaning === 'turn' && (
+                  <span className={cn('size-1.5 shrink-0 rounded-full', MEANING_CLASS.turn.dot)} aria-hidden />
+                )}
+                {exp.label}
+              </span>
+            )
+          })()}
+
+          {/*
+            Risk score. Demoted from a full amber/red wash to the system's
+            default treatment — neutral chip, coloured meaning dot. A risk
+            score is a standing reading, not an event; washing it amber on
+            every medium-risk contract (34–66, i.e. most of the portfolio)
+            made amber the modal colour of the page and left nothing louder
+            for the deadline that actually moves.
+          */}
+          {contract.riskScore != null && (() => {
+            const band = riskBand(normalizeRisk(contract.riskScore)!)
+            return (
+              <span
+                title={`Risk score ${normalizeRisk(contract.riskScore)} of 100 — ${band} band`}
+                data-testid="contract-risk-chip"
+                className="inline-flex items-center gap-1.5 rounded-full border border-paper-200 bg-paper-100 px-2.5 py-0.5 font-medium tabular-nums text-ink-700"
+              >
+                <span className={cn('size-1.5 shrink-0 rounded-full', RISK_BAND_CLASS[band])} aria-hidden />
+                Risk {normalizeRisk(contract.riskScore)}
+              </span>
+            )
+          })()}
+
+          <span className="h-3.5 w-px bg-paper-200" aria-hidden />
+
+          {/* ── RECORD ────────────────────────────────────────────────── */}
+          {editingType ? (
+            <select
+              ref={typeSelectRef}
+              autoFocus
+              defaultValue={contract.type}
+              disabled={retype.isPending}
+              onBlur={() => setEditingType(false)}
+              onChange={(e) => {
+                if (e.target.value !== contract.type) retype.mutate(e.target.value)
+                else setEditingType(false)
+              }}
+              aria-label="Contract type"
+              className="text-[11.5px] font-semibold border border-paper-300 rounded-full px-2.5 py-0.5 bg-card text-ink-950 cursor-pointer focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
+            >
+              {CONTRACT_TYPES.map(t => (
+                <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+              ))}
+            </select>
+          ) : (
+            /*
+              Type is one control, not two. It was a static chip plus a
+              separate "Correct type" text link — a second affordance, at a
+              third weight, whose only job was to make the first one editable.
+              The chip itself is now the button.
+            */
+            <button
+              type="button"
+              onClick={() => setEditingType(true)}
+              title="Click to correct the contract type"
+              data-testid="contract-type-chip"
+              className={cn(
+                'px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold border transition-colors',
+                'hover:border-paper-300 hover:bg-paper-100',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                TYPE_COLORS[contract.type] ?? TYPE_COLORS.OTHER,
+              )}
+            >
+              {contract.type.replace(/_/g, ' ')}
+            </button>
+          )}
+          {contract.jurisdiction && (
+            <span className="text-ink-500" title="Governing law">⚖ {contract.jurisdiction}</span>
+          )}
+          {contract.value != null && (
+            <span
+              title="Contract value"
+              data-testid="contract-value-chip"
+              className="font-medium text-ink-950 tabular-nums"
+            >
+              {(contract.currency ?? 'USD')} {Number(contract.value).toLocaleString()}
+            </span>
+          )}
+          {id && (
+            <ContractMatterPicker contractId={id} currentMatterId={(contract as unknown as { matterId?: string | null }).matterId ?? null} />
+          )}
+
+          <span className="h-3.5 w-px bg-paper-200" aria-hidden />
+
+          {/* ── PROVENANCE ────────────────────────────────────────────── */}
+          {contract.owner?.name && (
+            <span
+              className="inline-flex items-center gap-1.5 text-ink-500"
+              title={`Owner: ${contract.owner.name}`}
+              data-testid="contract-owner-chip"
+            >
+              {/* The owner is a person, not the machine — the indigo avatar this
+                  used to be is now the system's neutral initials chip. */}
+              <span
+                aria-hidden
+                className="size-5 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-[9.5px] font-semibold ring-1 ring-paper-200"
+              >
+                {contract.owner.name.split(/\s+/).filter(Boolean).slice(0, 2).map((p: string) => p[0]?.toUpperCase()).join('') || '?'}
+              </span>
+              <span className="text-ink-500">{contract.owner.name}</span>
+            </span>
+          )}
+          {contract.updatedAt && (
+            <span
+              className="text-ink-500"
+              title={new Date(contract.updatedAt).toLocaleString()}
+              data-testid="contract-edited-chip"
+            >
+              Edited {relativeTime(contract.updatedAt)}
+            </span>
+          )}
           {ocrApplied && (
             <span
               data-testid="contract-ocr-badge"
@@ -1451,118 +1703,7 @@ export function ContractDetailPage() {
               OCR'd
             </span>
           )}
-          {id && (
-            <ContractMatterPicker contractId={id} currentMatterId={(contract as unknown as { matterId?: string | null }).matterId ?? null} />
-          )}
           {id && <CollabStatusBadge contractId={id} />}
-          {editingType ? (
-            <select
-              ref={typeSelectRef}
-              autoFocus
-              defaultValue={contract.type}
-              disabled={retype.isPending}
-              onBlur={() => setEditingType(false)}
-              onChange={(e) => {
-                if (e.target.value !== contract.type) retype.mutate(e.target.value)
-                else setEditingType(false)
-              }}
-              className="text-[11.5px] font-semibold border border-paper-300 rounded-full px-2.5 py-0.5 bg-card text-ink-950 cursor-pointer focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
-            >
-              {CONTRACT_TYPES.map(t => (
-                <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
-              ))}
-            </select>
-          ) : (
-            <span className="inline-flex items-center gap-2">
-              <span className={`px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold border ${
-                TYPE_COLORS[contract.type] ?? TYPE_COLORS.OTHER
-              }`}>
-                {contract.type.replace(/_/g, ' ')}
-              </span>
-              <button
-                onClick={() => setEditingType(true)}
-                className="text-[11.5px] text-ink-400 hover:text-ink-950 hover:underline underline-offset-2 transition-colors"
-              >
-                Correct type
-              </button>
-            </span>
-          )}
-          {contract.jurisdiction && (
-            <span className="text-[11.5px] text-ink-500">⚖ {contract.jurisdiction}</span>
-          )}
-          {contract.riskScore != null && (
-            <span className={cn(
-              'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11.5px] font-medium tabular-nums',
-              MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].wash,
-              MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].washFg,
-            )}>
-              <TrendingUp className="size-3" />
-              Risk {normalizeRisk(contract.riskScore)}
-            </span>
-          )}
-          {/* Owner / Edited / Value / Expiry — now show at all widths
-              (no `hidden xl:` gate). The dedicated Row 2 has the room. */}
-          {contract.owner?.name && (
-            <span
-              className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-500"
-              title={`Owner: ${contract.owner.name}`}
-              data-testid="contract-owner-chip"
-            >
-              <span className="text-paper-300" aria-hidden>·</span>
-              {/* The owner is a person, not the machine — the indigo avatar this
-                  used to be is now the system's neutral initials chip. */}
-              <span
-                aria-hidden
-                className="size-5 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-[9.5px] font-semibold ring-1 ring-paper-200"
-              >
-                {contract.owner.name.split(/\s+/).filter(Boolean).slice(0, 2).map((p: string) => p[0]?.toUpperCase()).join('') || '?'}
-              </span>
-              <span className="font-medium text-ink-700">{contract.owner.name}</span>
-            </span>
-          )}
-          {contract.updatedAt && (
-            <span
-              className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-500"
-              title={new Date(contract.updatedAt).toLocaleString()}
-              data-testid="contract-edited-chip"
-            >
-              <span className="text-paper-300" aria-hidden>·</span>
-              Edited {(() => {
-                const ms = Date.now() - new Date(contract.updatedAt).getTime()
-                if (ms < 60_000) return 'just now'
-                if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
-                if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
-                return `${Math.floor(ms / 86_400_000)}d ago`
-              })()}
-            </span>
-          )}
-          {contract.value != null && (
-            <span
-              className="inline-flex items-center gap-1.5 text-[11.5px]"
-              title="Contract value"
-              data-testid="contract-value-chip"
-            >
-              <span className="text-paper-300" aria-hidden>·</span>
-              <span className="font-medium text-ink-950 tabular-nums">
-                {(contract.currency ?? 'USD')} {Number(contract.value).toLocaleString()}
-              </span>
-            </span>
-          )}
-          {contract.expiryDate && (
-            <span
-              className="inline-flex items-center gap-1.5 text-[11.5px] text-ink-500"
-              title={`Expires ${new Date(contract.expiryDate).toLocaleDateString()}`}
-              data-testid="contract-expiry-chip"
-            >
-              <span className="text-paper-300" aria-hidden>·</span>
-              {(() => {
-                const days = Math.floor((new Date(contract.expiryDate).getTime() - Date.now()) / 86_400_000)
-                if (days < 0) return `Expired ${-days}d ago`
-                if (days < 90) return `Expires in ${days}d`
-                return `Expires ${new Date(contract.expiryDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
-              })()}
-            </span>
-          )}
         </div>
       </div>
 
@@ -1691,19 +1832,22 @@ export function ContractDetailPage() {
           The model is writing the document — one of the few surfaces on this
           page that genuinely earns the assist accent. */}
       {contract?.analysisStatus === 'DRAFTING' && (
-        <div className="bg-assist-600 text-white px-6 py-3 flex items-center gap-3 text-body">
+        // Tint, not a saturated band. Assist still owns the colour — this is
+        // genuinely machine-authored work — but a background job is chrome,
+        // and chrome recedes. See the note on the pipeline banner below.
+        <div className="bg-assist-50 border-b border-assist-200 text-assist-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <Loader2 className="size-4 animate-spin flex-shrink-0" />
           <div className="flex-1">
-            <span className="font-medium">AI is generating a first draft from your request...</span>
-            <span className="text-assist-200 text-dense ml-2">(~30–60 seconds)</span>
+            <span className="font-medium">AI is generating a first draft from your request…</span>
+            <span className="text-ink-500 text-dense ml-2">(~30–60 seconds)</span>
           </div>
           {isStuck && (
-            <div className="flex items-center gap-3 flex-shrink-0 border-l border-assist-200/50 pl-3 ml-1">
-              <span className="text-assist-200 text-dense">Taking too long?</span>
+            <div className="flex items-center gap-3 flex-shrink-0 border-l border-assist-200 pl-3 ml-1">
+              <span className="text-ink-500 text-dense">Taking too long?</span>
               <button
                 onClick={() => cancelAnalysis.mutate()}
                 disabled={cancelAnalysis.isPending}
-                className="text-dense text-assist-200 hover:text-white underline underline-offset-2"
+                className="text-dense font-medium text-assist-700 hover:text-assist-900 underline underline-offset-2"
               >
                 Cancel
               </button>
@@ -1714,13 +1858,21 @@ export function ContractDetailPage() {
 
       {/* ── Analysis Progress Banner ───────────────────────────────────────
           Pipeline states resolve to "inflight" in lib/status, so the banner
-          takes info rather than the ink an action would get. */}
+          takes info rather than the ink an action would get.
+
+          It used to be a full-bleed `bg-info-600` band in white type — the
+          single loudest element on a page whose declared hero is the paper,
+          and louder than the FAILED banner directly below it, which is a
+          quiet risk tint. So an ordinary background job shouted and an actual
+          extraction failure whispered. Both are now tints of their meaning,
+          which puts them in the right order: failure reads louder because red
+          on the page is rarer than blue. */}
       {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && STATUS_BANNER[contract.analysisStatus] && (
-        <div className="bg-info-600 text-white px-6 py-2.5 flex items-center gap-3 text-body">
+        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <Loader2 className="size-4 animate-spin flex-shrink-0" />
           <span className="font-medium">{STATUS_BANNER[contract.analysisStatus].message}</span>
           {STATUS_BANNER[contract.analysisStatus].sub && (
-            <span className="text-info-200 text-dense">{STATUS_BANNER[contract.analysisStatus].sub}</span>
+            <span className="text-ink-500 text-dense">{STATUS_BANNER[contract.analysisStatus].sub}</span>
           )}
           {/* Step indicator */}
           <div className="ml-auto flex items-center gap-2.5 flex-shrink-0">
@@ -1731,11 +1883,11 @@ export function ContractDetailPage() {
                 <div
                   key={i}
                   className={`flex items-center gap-1 text-[10px] font-medium transition-colors ${
-                    isActive ? 'text-white' : isPast ? 'text-info-200' : 'text-info-200/50'
+                    isActive ? 'text-info-700' : isPast ? 'text-info-600' : 'text-ink-400'
                   }`}
                 >
                   <div className={`size-1.5 rounded-full flex-shrink-0 transition-colors ${
-                    isActive ? 'bg-white' : isPast ? 'bg-info-200' : 'bg-info-200/30'
+                    isActive ? 'bg-info-600' : isPast ? 'bg-info-200' : 'bg-paper-300'
                   }`} />
                   {step.label}
                 </div>
@@ -1743,19 +1895,19 @@ export function ContractDetailPage() {
             })}
           </div>
           {isStuck && (
-            <div className="flex items-center gap-3 flex-shrink-0 border-l border-info-200/50 pl-3 ml-1">
-              <span className="text-info-200 text-dense">Taking too long?</span>
+            <div className="flex items-center gap-3 flex-shrink-0 border-l border-info-200 pl-3 ml-1">
+              <span className="text-ink-500 text-dense">Taking too long?</span>
               <button
                 onClick={() => cancelAnalysis.mutate()}
                 disabled={cancelAnalysis.isPending}
-                className="text-dense text-info-200 hover:text-white underline underline-offset-2"
+                className="text-dense font-medium text-info-700 hover:text-ink-950 underline underline-offset-2"
               >
                 Cancel
               </button>
               <button
                 onClick={() => analyze.mutate()}
                 disabled={analyze.isPending}
-                className="text-dense bg-white/20 hover:bg-white/30 text-white px-2.5 py-1 rounded-chip"
+                className="text-dense font-medium border border-info-200 bg-card text-info-700 hover:bg-info-100 px-2.5 py-1 rounded-chip"
               >
                 Retry
               </button>
@@ -2924,10 +3076,15 @@ export function ContractDetailPage() {
       <aside
         role="complementary"
         aria-label="Contract rail"
+        // Folded on xl+ the rail leaves the layout entirely — its 320px is
+        // exactly what the document gets back.
         className={cn(
           // B.5.16 — responsive positioning.
           isXl
-            ? 'hidden xl:flex w-rail border-l border-paper-200 bg-card overflow-y-auto flex-col'
+            ? cn(
+                'w-rail border-l border-paper-200 bg-card overflow-y-auto flex-col',
+                railCollapsed ? 'hidden' : 'hidden xl:flex',
+              )
             : isMd
               ? cn(
                   'fixed inset-y-0 right-0 z-40 w-[min(420px,100vw)] bg-card shadow-e3 border-l border-paper-200 overflow-y-auto flex flex-col transition-transform',
@@ -3587,6 +3744,15 @@ export function ContractDetailPage() {
                   Waiting on you: <span className="font-medium text-ink-950">{approvalData.stepName}</span>
                 </div>
                 <Button
+                  /*
+                   * Outline, not the ink fill. At PENDING_APPROVAL the header
+                   * already carries an ink "Send for signature", and the real
+                   * decision lives in the DecisionStrip above the document —
+                   * this only scrolls to it. Two ink fills on one screen is two
+                   * primaries, and the design system allows one; the navigation
+                   * is the one that steps back.
+                   */
+                  variant="outline"
                   className="w-full"
                   onClick={() => {
                     // Wave 2.3 — scroll to the real DecisionStrip (Approve /

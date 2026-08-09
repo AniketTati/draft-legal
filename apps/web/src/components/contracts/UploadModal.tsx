@@ -170,7 +170,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                     <button
                       type="button"
                       onClick={() => setActiveIdx(i)}
-                      className="truncate font-medium leading-tight text-left flex-1 min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 rounded-md"
+                      className="truncate font-medium leading-tight text-left flex-1 min-w-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
                     >
                       {e.title || e.file.name}
                     </button>

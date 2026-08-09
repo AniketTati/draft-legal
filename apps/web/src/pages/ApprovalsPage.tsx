@@ -11,7 +11,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
-import { ApprovalCard } from '@/components/approvals/ApprovalCard'
+import { ApprovalCard, waitingDaysSince } from '@/components/approvals/ApprovalCard'
 import { WorkflowDefinitionList } from '@/components/approvals/WorkflowDefinitionList'
 import { CheckSquare, Settings2, Loader2, Inbox, AlertTriangle, Globe2, ArrowRight, ListChecks } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,11 @@ type Tab = 'queue' | 'all' | 'workflows'
 
 interface AllApprovalRow {
   instanceId:        string
-  contract?:         { id: string; title: string; type: string; value?: number | null; currency?: string | null; counterpartyName?: string | null; status: string }
+  // `value` is a Prisma Decimal, which serialises as a STRING over JSON. It was
+  // typed `number` and formatted with `.toLocaleString()`, which is a no-op on a
+  // string — so the org-wide table printed "USD 13155831" while every other
+  // surface printed "USD 13,155,831". Type it honestly and coerce once.
+  contract?:         { id: string; title: string; type: string; value?: number | string | null; currency?: string | null; counterpartyName?: string | null; status: string }
   status:            string
   submittedAt:       string
   submittedByName:   string
@@ -32,6 +36,27 @@ interface AllApprovalRow {
   waitingDays:       number
   totalSteps:        number
   approvalRecommendation: string | null
+}
+
+/** Contract value with thousands separators, or null when there isn't one. */
+function money(value: number | string | null | undefined, currency?: string | null): string | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n === 0) return null
+  return `${currency ?? 'USD'} ${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+/**
+ * "step 3 of 5" — but only when the denominator can actually be true.
+ *
+ * /approvals/all computes `totalSteps` from an instance's PENDING steps only,
+ * so a workflow three steps in reports one remaining step and the table
+ * rendered "step 3 of 1". A denominator smaller than the numerator is provably
+ * wrong, and a wrong number beside a right one is worse than no number: it
+ * makes the reader distrust the step name too. Drop it when it can't hold.
+ */
+function stepLabel(order: number, total: number): string {
+  return total >= order && total > 0 ? `step ${order} of ${total}` : `step ${order}`
 }
 
 interface QueueItem {
@@ -89,8 +114,16 @@ export function ApprovalsPage() {
 
   const items = data?.data ?? []
   const pendingCount = data?.total ?? 0
-  const allItems = allData?.data ?? []
   const allCount = allData?.total ?? 0
+
+  // The page's own stated job is "spot where deals are stuck", but the endpoint
+  // orders by submittedAt DESC — newest first, i.e. the LEAST stuck at the top
+  // and the three-week-old blocker at the bottom of the scroll. Sort by the
+  // column the sentence is about.
+  const allItems = [...(allData?.data ?? [])].sort((a, b) => b.waitingDays - a.waitingDays)
+  const myEmail = useAuthStore(s => s.user?.email)?.toLowerCase()
+  const stuckCount = allItems.filter(r => r.waitingDays >= 7).length
+  const unroutedCount = allItems.filter(r => r.totalSteps === 0 && !r.currentStepName).length
 
   // B.6.21 — warn when the org has zero workflow definitions. Without
   // one, every `Submit for Approval` silently fails. This tells the
@@ -117,9 +150,11 @@ export function ApprovalsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-title text-ink-950">Approvals</h1>
-            {pendingCount > 0 && (
-              <p className="text-body text-ink-500 mt-0.5">{pendingCount} pending your decision</p>
-            )}
+            <p className="text-body text-ink-500 mt-0.5">
+              {pendingCount > 0
+                ? `${pendingCount} contract${pendingCount === 1 ? '' : 's'} waiting on your decision.`
+                : 'Decisions routed to you, and the org-wide view of everything in flight.'}
+            </p>
           </div>
         </div>
 
@@ -202,8 +237,14 @@ export function ApprovalsPage() {
               <>
                 {items.length > 1 && (
                   <div className="max-w-5xl mx-auto mb-3 flex items-center justify-between gap-2">
+                    {/* The count is already in the header and on the tab. What a
+                        queue owner cannot see anywhere else is how bad the
+                        backlog has got, so spend this line on the oldest wait. */}
                     <span className="text-dense text-ink-500">
-                      {items.length} item{items.length === 1 ? '' : 's'} awaiting your decision
+                      Oldest first · longest wait is{' '}
+                      <span className="font-medium text-ink-950 tabular-nums">
+                        {Math.max(...items.map(i => waitingDaysSince(i.instance.submittedAt)))} days
+                      </span>
                     </span>
                     <Button
                       variant="outline"
@@ -216,13 +257,14 @@ export function ApprovalsPage() {
                     </Button>
                   </div>
                 )}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 max-w-5xl mx-auto">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 max-w-5xl mx-auto items-start">
                   {items.map(item => (
                     <ApprovalCard
                       key={item.stepId}
                       stepId={item.stepId}
                       instanceId={item.instanceId}
                       stepName={item.stepName}
+                      escalateAt={item.escalateAt}
                       contract={item.contract}
                       instance={item.instance}
                       onDecided={() => refetch()}
@@ -259,65 +301,117 @@ export function ApprovalsPage() {
             ) : (
               <div className="max-w-5xl mx-auto" data-testid="all-approvals-list">
                 <p className="text-body text-ink-500 mb-3">
-                  Org-wide view of every approval in flight. Use this to spot where deals are stuck.
+                  Every approval in flight across the org, oldest wait first.
+                  {stuckCount > 0 && (
+                    <>
+                      {' '}
+                      <span className="font-medium text-ink-950">
+                        {stuckCount} {stuckCount === 1 ? 'has' : 'have'} been waiting a week or more.
+                      </span>
+                    </>
+                  )}
+                  {unroutedCount > 0 && (
+                    <>
+                      {' '}
+                      <span className="font-medium text-risk-700">
+                        {unroutedCount} {unroutedCount === 1 ? 'is' : 'are'} unrouted and cannot move at all.
+                      </span>
+                    </>
+                  )}
                 </p>
                 <div className="rounded-card border border-paper-200 bg-card overflow-hidden">
-                  <table className="w-full text-[13px]">
+                  <div className="overflow-x-auto">
+                  <table className="w-full table-fixed text-[13px]">
                     <thead className="bg-paper-50">
                       <tr className="text-left text-eyebrow uppercase text-ink-500">
                         <th className="px-4 py-2 font-semibold">Contract</th>
-                        <th className="px-4 py-2 font-semibold">Current step</th>
-                        <th className="px-4 py-2 font-semibold">Awaiting</th>
-                        <th className="px-4 py-2 font-semibold">Submitted</th>
-                        <th className="px-4 py-2 font-semibold">Waiting</th>
-                        <th className="px-4 py-2"></th>
+                        <th className="px-3 py-2 font-semibold w-[19%]">Current step</th>
+                        <th className="px-3 py-2 font-semibold w-[15%]">Awaiting</th>
+                        <th className="px-3 py-2 font-semibold w-[12%]">Submitted</th>
+                        <th className="px-3 py-2 font-semibold w-[76px]">Waiting</th>
+                        <th className="px-3 py-2 w-[64px]"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-paper-200">
                       {allItems.map(row => {
-                        // Age of a stuck approval, on the same three-step ramp the
-                        // risk meter uses: a week idle is exposure, three days is
-                        // someone's turn, anything fresher is fine.
+                        // Age of a stuck approval. A week idle is exposure and
+                        // three days is someone's turn — but a fresh one is not
+                        // "binding", so it does not get the brand green a decided
+                        // contract wears. Nothing has happened yet: neutral.
                         const dotClass = row.waitingDays >= 7 ? 'bg-risk-600' :
                                          row.waitingDays >= 3 ? 'bg-attention-600' :
-                                         'bg-brand-700'
+                                         'bg-ink-350'
                         const waitingText = row.waitingDays === 0 ? 'today' :
                                             row.waitingDays === 1 ? '1d' :
                                             `${row.waitingDays}d`
+                        const valueText = money(row.contract?.value, row.contract?.currency)
+                        // Oversight normally means "someone else's problem". When
+                        // the org-wide view lands on the viewer it stops being
+                        // oversight and becomes their turn, so say so — otherwise
+                        // an admin scans past their own blocker.
+                        const isMine = !!myEmail && row.currentApproverEmail?.toLowerCase() === myEmail
+                        // An instance still marked PENDING with no pending step
+                        // left cannot advance on its own: nobody holds it and no
+                        // decision will ever arrive. The table used to render
+                        // that as three em-dashes at the bottom of the scroll,
+                        // which is how three contracts sat unrouted for ten
+                        // weeks. Name it.
+                        const unrouted = row.totalSteps === 0 && !row.currentStepName
                         return (
                           <tr key={row.instanceId} className="hover:bg-paper-50 transition-colors">
                             <td className="px-4 py-2">
                               <Link
                                 to={`/contracts/${row.contract?.id}`}
-                                className="font-medium text-ink-950 hover:underline underline-offset-2 decoration-paper-300"
+                                className="font-medium text-ink-950 hover:underline underline-offset-2 decoration-paper-300 truncate block"
+                                title={row.contract?.title}
                               >
                                 {row.contract?.title ?? 'Unknown'}
                               </Link>
-                              {row.contract?.counterpartyName && (
-                                <div className="text-[11px] text-ink-500 mt-0.5">
-                                  {row.contract.counterpartyName}
-                                  {row.contract.value && ` · ${row.contract.currency ?? 'USD'} ${row.contract.value.toLocaleString()}`}
+                              {(row.contract?.counterpartyName || valueText) && (
+                                <div className="text-[11px] text-ink-500 mt-0.5 truncate">
+                                  {row.contract?.counterpartyName}
+                                  {valueText && <span className="tabular-nums">{row.contract?.counterpartyName ? ' · ' : ''}{valueText}</span>}
                                 </div>
                               )}
                             </td>
-                            <td className="px-4 py-2 text-ink-700 text-[11.5px]">
-                              <div className="font-medium">{row.currentStepName ?? '—'}</div>
-                              <div className="text-ink-400 mt-0.5 tabular-nums">step {row.currentStepOrder} of {row.totalSteps}</div>
+                            <td className="px-3 py-2 text-ink-700 text-[11.5px]">
+                              {unrouted ? (
+                                <span
+                                  className="inline-flex items-center gap-1 font-medium text-risk-700"
+                                  title="This approval is still open but has no pending step, so no decision can be recorded against it. It needs to be re-routed or withdrawn."
+                                >
+                                  <AlertTriangle className="size-3 shrink-0" />
+                                  Unrouted
+                                </span>
+                              ) : (
+                                <>
+                                  <div className="font-medium truncate" title={row.currentStepName ?? undefined}>{row.currentStepName ?? '—'}</div>
+                                  <div className="text-ink-400 mt-0.5 tabular-nums">{stepLabel(row.currentStepOrder, row.totalSteps)}</div>
+                                </>
+                              )}
                             </td>
-                            <td className="px-4 py-2 text-ink-700 text-[13px]">
-                              {row.currentApproverName ?? <span className="text-ink-400 italic">unassigned</span>}
+                            <td className="px-3 py-2 text-ink-700 text-[13px]">
+                              <div className="truncate" title={row.currentApproverName ?? 'unassigned'}>
+                                {row.currentApproverName ?? <span className="text-ink-400 italic text-[11.5px]">nobody</span>}
+                              </div>
+                              {isMine && (
+                                <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-attention-700">
+                                  <span className="size-1.5 rounded-full bg-attention-600" />
+                                  You
+                                </span>
+                              )}
                             </td>
-                            <td className="px-4 py-2 text-ink-500 text-[11.5px]">
-                              <div>{row.submittedByName}</div>
+                            <td className="px-3 py-2 text-ink-500 text-[11.5px]">
+                              <div className="truncate" title={row.submittedByName}>{row.submittedByName}</div>
                               <div className="text-ink-400 mt-0.5 tabular-nums">{new Date(row.submittedAt).toLocaleDateString()}</div>
                             </td>
-                            <td className="px-4 py-2">
+                            <td className="px-3 py-2">
                               <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium tabular-nums text-ink-700">
-                                <span className={`size-1.5 rounded-full ${dotClass}`} />
+                                <span className={`size-1.5 rounded-full shrink-0 ${dotClass}`} />
                                 {waitingText}
                               </span>
                             </td>
-                            <td className="px-4 py-2 text-right">
+                            <td className="px-3 py-2 text-right">
                               <Link
                                 to={`/contracts/${row.contract?.id}`}
                                 className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
@@ -331,6 +425,7 @@ export function ApprovalsPage() {
                       })}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               </div>
             )}

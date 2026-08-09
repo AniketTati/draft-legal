@@ -25,9 +25,10 @@ import { api } from '@/lib/api'
 import { CommentsPanel } from '@/components/contracts/CommentsPanel'
 import { Button } from '@/components/ui/button'
 import { Chip } from '@/components/ui/primitives'
+import { Wordmark } from '@/components/brand/Wordmark'
 import {
   AlertCircle, Loader2, MessageSquare, FileText, Clock, Upload, Download,
-  ChevronRight, Building2, ShieldCheck, CheckCircle2,
+  ChevronRight, Building2, ShieldCheck, CheckCircle2, FileWarning, Printer,
 } from 'lucide-react'
 
 interface PortalContract {
@@ -116,16 +117,33 @@ export function ExternalPortalPage() {
   }
 
   if (isError || !data) {
+    /*
+     * The most-visited state of this page, and until now the least designed
+     * one: three lines of grey text on an otherwise blank browser window, with
+     * nothing identifying the product and no next step. A counterparty who
+     * reaches it should be able to act without emailing to ask what happened.
+     */
     return (
-      <div className="min-h-screen bg-paper-50 flex items-center justify-center p-4">
-        <div className="text-center max-w-sm">
+      <div className="min-h-screen bg-paper-50 flex flex-col items-center justify-center gap-6 p-4">
+        <div className="w-full max-w-md rounded-card border border-paper-200 bg-card p-8 text-center shadow-e1">
           {/* A dead share link is expiry/revocation — genuine risk, not decor. */}
-          <AlertCircle className="size-6 text-risk-600 mx-auto mb-4" />
-          <h1 className="text-title text-ink-950 mb-2">Link unavailable</h1>
-          <p className="text-body text-ink-500">
-            This share link is invalid, has expired, or has been revoked. Please contact the sender for a new link.
+          <span className="mb-4 inline-flex size-11 items-center justify-center rounded-full bg-risk-50">
+            <AlertCircle className="size-5 text-risk-600" />
+          </span>
+          <h1 className="text-title text-ink-950">Link unavailable</h1>
+          <p className="mt-2 text-body text-ink-500">
+            This share link is invalid, has expired, or has been revoked.
           </p>
+          <div className="mt-5 rounded-md border border-paper-200 bg-paper-50 px-4 py-3 text-left text-dense text-ink-700">
+            <p className="font-medium text-ink-950">What to do next</p>
+            <ul className="mt-1.5 space-y-1 text-ink-500">
+              <li>· Reply to the email that carried this link and ask the sender for a new one.</li>
+              <li>· Share links expire on a schedule the sender sets — this is routine, not a fault.</li>
+              <li>· Anything you uploaded or commented before it expired was already delivered.</li>
+            </ul>
+          </div>
         </div>
+        <ExternalFooter />
       </div>
     )
   }
@@ -141,6 +159,15 @@ export function ExternalPortalPage() {
   // so read-only shares stay truly read-only. Download is allowed for any
   // active link (a read-only link can still be taken home to print).
   const canUpload = permissions.includes('edit') || permissions.includes('upload')
+  /*
+   * 269 of the 420 contracts in this org have no version row at all, so a share
+   * link minted against one delivers `htmlContent: ''`. The portal rendered
+   * that as a full-height blank sheet of paper — the counterparty's read is
+   * "their product is broken", and the Download .docx button next to it answers
+   * with a 400. Detect the case, say what happened, and stop offering an export
+   * that cannot succeed.
+   */
+  const hasDocument = Boolean(data.htmlContent?.trim())
   const isExpiringSoon = shareLink.expiresAt
     ? Date.now() > new Date(shareLink.expiresAt).getTime() - 48 * 3600 * 1000
     : false
@@ -217,15 +244,28 @@ export function ExternalPortalPage() {
           {/* Primary CTAs pushed right. Download is always available on an
               active link; upload requires an 'edit' / 'upload' permission. */}
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <Button asChild variant="outline" size="xs">
-              <a
-                href={`/api/v1/portal/${portalToken}/download/docx`}
-                title="Download this version as a Word document you can redline"
-              >
-                <Download />
-                Download .docx
-              </a>
-            </Button>
+            {hasDocument && (
+              <>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => window.print()}
+                  title="Print, or save as PDF"
+                >
+                  <Printer />
+                  Print
+                </Button>
+                <Button asChild variant="outline" size="xs">
+                  <a
+                    href={`/api/v1/portal/${portalToken}/download/docx`}
+                    title="Download this version as a Word document you can redline"
+                  >
+                    <Download />
+                    Download .docx
+                  </a>
+                </Button>
+              </>
+            )}
             {canUpload && (
               <>
                 <input
@@ -286,8 +326,10 @@ export function ExternalPortalPage() {
       <div className="bg-card border-b border-paper-200 px-6 py-5">
         <div className="max-w-5xl mx-auto">
           <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-title text-ink-950">{contract.title}</h1>
+            <div className="min-w-0">
+              {/* Contract titles run long and arrive from customer data — a
+                  180-character title used to push the access label off-screen. */}
+              <h1 className="text-title text-ink-950 break-words">{contract.title}</h1>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
                 <Chip>{contract.type.replace(/_/g, ' ')}</Chip>
                 {contract.counterpartyName && (
@@ -354,7 +396,23 @@ export function ExternalPortalPage() {
             // chrome competing with it.
             <div className="bg-card rounded-paper shadow-page overflow-hidden">
               <div className="p-8 md:p-12">
-                {editor ? (
+                {!hasDocument ? (
+                  <div className="py-12 text-center" data-testid="portal-no-document">
+                    <span className="mb-3 inline-flex size-10 items-center justify-center rounded-card border border-paper-200 bg-paper-100 text-ink-400">
+                      <FileWarning className="size-5" />
+                    </span>
+                    <p className="text-[13.5px] font-semibold text-ink-950">
+                      No document has been attached to this link yet
+                    </p>
+                    <p className="mx-auto mt-1 max-w-md text-dense text-ink-500">
+                      The link is valid and the record exists, but {contract.org.name} has
+                      not uploaded a version for you to read.
+                      {canComment
+                        ? ' You can still leave a comment below, or reply to the email that sent you here.'
+                        : ' Reply to the email that sent you here and ask them to attach it.'}
+                    </p>
+                  </div>
+                ) : editor ? (
                   <EditorContent
                     editor={editor}
                     className="prose prose-sm md:prose max-w-none focus:outline-none [&_.ProseMirror]:outline-none [&_.ProseMirror]:min-h-[400px]"
@@ -380,12 +438,55 @@ export function ExternalPortalPage() {
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="py-4 px-6 border-t border-paper-200 bg-card text-center">
+      {/*
+        Footer. It used to assert "View only · Do not distribute" on every
+        link, including the ones granting comment and upload — the page was
+        contradicting its own toolbar. Now it states the access this particular
+        link actually carries, and carries the product identity, which a
+        counterparty had no other way to learn.
+      */}
+      <footer className="border-t border-paper-200 bg-card px-6 py-4 text-center print:hidden">
         <p className="text-dense text-ink-400">
-          Shared securely via {contract.org.name} · View only · Do not distribute
+          Shared securely by {contract.org.name} ·{' '}
+          {canUpload
+            ? 'You may comment and return a revised version'
+            : canComment
+              ? 'You may read and comment'
+              : 'Read-only'}{' '}
+          · Do not redistribute this link
         </p>
+        <ExternalFooter className="mt-2" />
       </footer>
+    </div>
+  )
+}
+
+/**
+ * The trimmed external shell's footer — the counterparty has no app nav and no
+ * account, so this is the only place that names the product and the only route
+ * to the terms under which they are transacting.
+ */
+function ExternalFooter({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-dense text-ink-400 ${className}`}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        Secured by <Wordmark size="sm" />
+      </span>
+      <span aria-hidden="true">·</span>
+      <a
+        href="/terms"
+        className="underline decoration-paper-300 underline-offset-2 hover:text-ink-700 hover:decoration-brand-700"
+      >
+        Terms
+      </a>
+      <a
+        href="/privacy"
+        className="underline decoration-paper-300 underline-offset-2 hover:text-ink-700 hover:decoration-brand-700"
+      >
+        Privacy
+      </a>
     </div>
   )
 }

@@ -187,7 +187,7 @@ export function UserPicker({
             'focus:outline-none focus:ring-1',
             invalid
               ? 'border-risk-600 focus:ring-risk-600'
-              : 'border-input focus:ring-ring/35',
+              : 'border-input focus:ring-ring',
           )}
         />
       )}

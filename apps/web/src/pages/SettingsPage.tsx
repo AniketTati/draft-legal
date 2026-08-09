@@ -12,6 +12,7 @@ import {
   CheckCircle2, AlertTriangle, Clock,
 } from 'lucide-react'
 import { Eyebrow, EmptyState } from '@/components/ui/primitives'
+import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -130,9 +131,21 @@ export function SettingsPage() {
     },
   })
 
+  /*
+   * Deleting a field definition removes that column from every contract in the
+   * org, and the stored values with it. It used to fire from a bare trash icon
+   * on the first click, with no confirmation and no error path — the single
+   * most destructive unguarded control in the admin surfaces. It now goes
+   * through the shared confirm, gated on typing the field key, because there is
+   * no undo on the other side.
+   */
+  const [pendingDeleteField, setPendingDeleteField] = useState<any | null>(null)
   const deleteField = useMutation({
     mutationFn: (id: string) => api.delete(`/field-definitions/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['field-definitions'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['field-definitions'] })
+      setPendingDeleteField(null)
+    },
   })
 
   const defs = defsData?.data ?? []
@@ -424,8 +437,11 @@ export function SettingsPage() {
                             )}
                           </div>
                           <button
-                            onClick={() => deleteField.mutate(def.id)}
-                            className="p-2 rounded-md text-ink-400 hover:text-risk-700 hover:bg-risk-50 transition-colors"
+                            onClick={() => setPendingDeleteField(def)}
+                            aria-label={`Delete field ${def.fieldLabel}`}
+                            title={`Delete field "${def.fieldLabel}"`}
+                            data-testid={`delete-field-${def.id}`}
+                            className="rounded-md p-2 text-ink-400 transition-colors hover:bg-risk-50 hover:text-risk-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             <Trash2 className="size-4" />
                           </button>
@@ -445,6 +461,39 @@ export function SettingsPage() {
         {/* ─── Notifications ─────────────────────────────────────────────── */}
         {activeTab === 'notifications' && <NotificationsTab />}
       </div>
+
+      <ConfirmDialog
+        open={pendingDeleteField != null}
+        testId="delete-field-confirm"
+        title="Delete this custom field?"
+        confirmLabel={deleteField.isPending ? 'Deleting…' : 'Delete field'}
+        isPending={deleteField.isPending}
+        error={
+          deleteField.isError
+            ? ((deleteField.error as any)?.response?.data?.detail ?? 'Could not delete this field.')
+            : null
+        }
+        requireTyped={pendingDeleteField?.fieldKey}
+        requireTypedHint={
+          <>
+            Type the field key <span className="font-mono text-ink-700">{pendingDeleteField?.fieldKey}</span> to confirm
+          </>
+        }
+        body={
+          <>
+            <span className="font-medium text-ink-950">{pendingDeleteField?.fieldLabel}</span> is
+            removed from every contract in the organisation, along with the value
+            stored on each one. Saved views, exports and reports that reference{' '}
+            <span className="font-mono text-[11.5px] text-ink-500">{pendingDeleteField?.fieldKey}</span>{' '}
+            stop returning it. This cannot be undone.
+          </>
+        }
+        onConfirm={() => pendingDeleteField && deleteField.mutate(pendingDeleteField.id)}
+        onCancel={() => {
+          deleteField.reset()
+          setPendingDeleteField(null)
+        }}
+      />
     </div>
   )
 }

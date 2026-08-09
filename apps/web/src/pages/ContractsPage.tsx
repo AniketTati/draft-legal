@@ -508,9 +508,21 @@ export function ContractsPage() {
                 ))}
               </FacetGroup>
             )}
+            {/* No counts on the risk bands. Every other facet here is both
+                counted AND filtered by Elasticsearch, so its badge matches
+                what clicking it returns. Risk is the exception: the filter
+                was deliberately moved to Postgres (see buildQuery) because
+                the index holds a subset, but these doc_counts are still
+                aggregated over that same partial index — so the badges read
+                "Low 12 / Medium 6 / High 1" while the filters actually
+                return 176 / 61 / 28. A count that disagrees with its own
+                filter by an order of magnitude is the "wrong answer wearing
+                the costume of a right one" this page was fixed to stop
+                telling. Until the counts come from the same source as the
+                rows, the band label alone is the honest control. */}
             <FacetGroup title="Risk">
               {(facets.riskRanges ?? []).map((b: any) => (
-                <FacetItem key={b.key} label={b.key.charAt(0).toUpperCase() + b.key.slice(1)} count={b.doc_count}
+                <FacetItem key={b.key} label={b.key.charAt(0).toUpperCase() + b.key.slice(1)}
                   active={filters.riskBand === b.key}
                   onClick={() => setFilters(f => ({ ...f, riskBand: f.riskBand === b.key ? undefined : b.key as any }))} />
               ))}
@@ -656,7 +668,7 @@ export function ContractsPage() {
                         <div className="flex items-center gap-2">
                           <Link
                             to={`/contracts/${c.id}`}
-                            className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 rounded"
+                            className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                             onClick={(e) => e.stopPropagation()}
                           >
                             {displayTitle(c)}

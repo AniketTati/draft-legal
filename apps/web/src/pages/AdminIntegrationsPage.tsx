@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import { StatusPill } from '@/components/ui/status-pill'
 import { MEANING_CLASS, type Meaning } from '@/lib/status'
+import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 
 interface ApiKey {
   id:         string
@@ -154,6 +155,7 @@ function ApiKeysSection() {
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [revealKey, setRevealKey] = useState<{ id: string; key: string } | null>(null)
+  const [pendingRevoke, setPendingRevoke] = useState<ApiKey | null>(null)
 
   const { data, isLoading } = useQuery<{ data: ApiKey[] }>({
     queryKey: ['api-keys'],
@@ -162,7 +164,10 @@ function ApiKeysSection() {
 
   const revoke = useMutation({
     mutationFn: async (id: string) => api.delete(`/admin/integrations/api-keys/${id}`),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      setPendingRevoke(null)
+    },
   })
 
   if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
@@ -225,11 +230,10 @@ function ApiKeysSection() {
                   <td className="px-4 py-2 text-right">
                     {!k.revokedAt && (
                       <button
-                        onClick={() => {
-                          if (confirm('Revoke this API key? Any system using it will stop working immediately.')) revoke.mutate(k.id)
-                        }}
+                        onClick={() => setPendingRevoke(k)}
                         data-testid={`revoke-${k.id}`}
-                        className="text-dense text-risk-700 hover:text-risk-600 inline-flex items-center gap-1"
+                        aria-label={`Revoke API key ${k.name}`}
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
                         <Trash2 className="size-3.5" /> Revoke
                       </button>
@@ -252,6 +256,39 @@ function ApiKeysSection() {
         />
       )}
       {revealKey && <RevealKeyModal id={revealKey.id} keyValue={revealKey.key} onClose={() => setRevealKey(null)} />}
+
+      {/*
+        Revocation was guarded by window.confirm, which cannot name the key.
+        With several keys in a table and a right-aligned Revoke on every row,
+        "Revoke this API key?" is the one question the admin cannot answer.
+      */}
+      <ConfirmDialog
+        open={pendingRevoke != null}
+        testId="revoke-key-confirm"
+        title="Revoke this API key?"
+        confirmLabel={revoke.isPending ? 'Revoking…' : 'Revoke key'}
+        isPending={revoke.isPending}
+        error={revoke.isError ? 'Could not revoke this key. Try again.' : null}
+        body={
+          <>
+            <span className="font-medium text-ink-950">{pendingRevoke?.name}</span>{' '}
+            <span className="font-mono text-[11.5px] text-ink-500">{pendingRevoke?.prefix}…</span>{' '}
+            stops working immediately, and every system authenticating with it
+            starts getting 401s. Revocation is permanent — issue a new key to
+            restore access.
+            {pendingRevoke?.lastUsedAt && (
+              <>
+                {' '}This key was last used{' '}
+                <span className="tabular-nums">
+                  {new Date(pendingRevoke.lastUsedAt).toLocaleString()}
+                </span>.
+              </>
+            )}
+          </>
+        }
+        onConfirm={() => pendingRevoke && revoke.mutate(pendingRevoke.id)}
+        onCancel={() => { revoke.reset(); setPendingRevoke(null) }}
+      />
     </div>
   )
 }
@@ -349,6 +386,7 @@ function WebhooksSection() {
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Webhook | null>(null)
 
   const { data, isLoading } = useQuery<{ data: Webhook[] }>({
     queryKey: ['webhooks'],
@@ -366,7 +404,10 @@ function WebhooksSection() {
   })
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/admin/integrations/webhooks/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['webhooks'] })
+      setPendingDelete(null)
+    },
   })
   const toggle = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -440,8 +481,11 @@ function WebhooksSection() {
                     {w.enabled ? 'Disable' : 'Enable'}
                   </button>
                   <button
-                    onClick={() => { if (confirm(`Delete ${w.name}?`)) remove.mutate(w.id) }}
-                    className="text-dense text-risk-700 hover:text-risk-600 inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-risk-50"
+                    onClick={() => setPendingDelete(w)}
+                    aria-label={`Delete webhook ${w.name}`}
+                    title={`Delete webhook "${w.name}"`}
+                    data-testid={`delete-webhook-${w.id}`}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <Trash2 className="size-3.5" />
                   </button>
@@ -460,6 +504,36 @@ function WebhooksSection() {
           onCreated={() => qc.invalidateQueries({ queryKey: ['webhooks'] })}
         />
       )}
+
+      {/* A webhook is how another system learns a contract was executed. Losing
+          one silently stops that feed, so the confirm names the endpoint. */}
+      <ConfirmDialog
+        open={pendingDelete != null}
+        testId="delete-webhook-confirm"
+        title="Delete this webhook?"
+        confirmLabel={remove.isPending ? 'Deleting…' : 'Delete webhook'}
+        isPending={remove.isPending}
+        error={remove.isError ? 'Could not delete this webhook. Try again.' : null}
+        body={
+          <>
+            <span className="font-medium text-ink-950">{pendingDelete?.name}</span> stops
+            receiving events at{' '}
+            <span className="break-all font-mono text-[11.5px] text-ink-500">{pendingDelete?.url}</span>.
+            Anything downstream that relies on{' '}
+            {pendingDelete?.events?.length ? (
+              <span className="font-mono text-[11.5px] text-ink-500">
+                {pendingDelete.events.slice(0, 3).join(', ')}
+                {pendingDelete.events.length > 3 ? ` +${pendingDelete.events.length - 3} more` : ''}
+              </span>
+            ) : (
+              'these events'
+            )}{' '}
+            goes quiet with no error on their side. To pause instead, use Disable.
+          </>
+        }
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete.id)}
+        onCancel={() => { remove.reset(); setPendingDelete(null) }}
+      />
     </div>
   )
 }
@@ -947,6 +1021,7 @@ function SlackSection() {
       setError(err.response?.data?.detail ?? 'Failed to save.'),
   })
 
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const disconnect = useMutation({
     mutationFn: async () => api.delete('/admin/integrations/slack'),
     onSuccess:  () => qc.invalidateQueries({ queryKey: ['slack-config'] }),
@@ -983,14 +1058,34 @@ function SlackSection() {
           </div>
           <div className="mt-4 flex justify-end">
             <button
-              onClick={() => { if (confirm('Disconnect Slack? Slash commands and approval buttons will stop working.')) disconnect.mutate() }}
+              onClick={() => setConfirmDisconnect(true)}
               data-testid="slack-disconnect"
-              className="text-dense text-risk-700 hover:text-risk-600 inline-flex items-center gap-1"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <Trash2 className="size-3.5" /> Disconnect
             </button>
           </div>
         </div>
+
+        <ConfirmDialog
+          open={confirmDisconnect}
+          testId="slack-disconnect-confirm"
+          title="Disconnect Slack?"
+          confirmLabel={disconnect.isPending ? 'Disconnecting…' : 'Disconnect Slack'}
+          isPending={disconnect.isPending}
+          error={disconnect.isError ? 'Could not disconnect. Try again.' : null}
+          body={
+            <>
+              <code className="font-mono text-[11.5px] text-ink-700">/contract</code> stops
+              responding in every channel, and Approve / Reject buttons in already-posted
+              approval messages stop working — approvers will have to come back into
+              draftLegal. Your signing secret and bot token are deleted; reconnecting means
+              pasting them again from the Slack app config.
+            </>
+          }
+          onConfirm={() => disconnect.mutate(undefined, { onSuccess: () => setConfirmDisconnect(false) })}
+          onCancel={() => { disconnect.reset(); setConfirmDisconnect(false) }}
+        />
       </div>
     )
   }

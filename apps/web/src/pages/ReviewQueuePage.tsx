@@ -21,7 +21,7 @@ import { EmptyState } from '@/components/ui/primitives'
 import { AssistMark } from '@/components/ui/assist'
 import {
   AlertTriangle, CheckCircle2, XCircle, ExternalLink, ShieldCheck,
-  Search,
+  Search, Pencil, Loader2,
 } from 'lucide-react'
 
 interface QueueItem {
@@ -57,14 +57,31 @@ export function ReviewQueuePage() {
     )).data,
   })
 
+  /*
+   * A single shared `isPending` gated every button on the page, so clicking
+   * Verify on one row greyed out all fourteen and told you nothing about which
+   * one was in flight. Track the row instead.
+   */
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  /** The row currently being corrected, keyed contractId::field. */
+  const [editKey, setEditKey] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+
   const verify = useMutation({
-    mutationFn: (p: { contractId: string; field: string }) =>
-      api.post(`/review-queue/${p.contractId}/verify`, { field: p.field }).then(r => r.data),
+    mutationFn: (p: { contractId: string; field: string; value?: string | null }) =>
+      api.post(`/review-queue/${p.contractId}/verify`, {
+        field: p.field,
+        ...(p.value !== undefined ? { value: p.value } : {}),
+      }).then(r => r.data),
+    onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
+    onSettled: () => { setBusyKey(null); setEditKey(null) },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
   })
   const reject = useMutation({
     mutationFn: (p: { contractId: string; field: string }) =>
       api.post(`/review-queue/${p.contractId}/reject`, { field: p.field }).then(r => r.data),
+    onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
+    onSettled: () => { setBusyKey(null) },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
   })
 
@@ -140,11 +157,14 @@ export function ReviewQueuePage() {
           <AlertTriangle className="size-4" /> Failed to load the queue.
         </div>
       )}
-      {filtered.length === 0 && !isLoading && (
+      {/* A failed load is not an empty queue. Without the `!error` guard the
+          page reported both at once: an error banner, and underneath it a
+          reassuring "Nothing to review". */}
+      {filtered.length === 0 && !isLoading && !error && (
         <EmptyState
           icon={<ShieldCheck />}
-          title="Nothing to review at this threshold."
-          description="Try widening it to surface more."
+          title={search ? `Nothing matches "${search}" at this threshold.` : 'Nothing to review at this threshold.'}
+          description={search ? 'Clear the filter, or widen the threshold.' : 'Try widening it to surface more.'}
         />
       )}
 
@@ -178,9 +198,14 @@ export function ReviewQueuePage() {
               </Link>
             </div>
             <div className="divide-y divide-paper-200">
-              {group.items.map(it => (
+              {group.items.map(it => {
+                const key = `${it.contractId}::${it.field}`
+                const busy = busyKey === key
+                const editing = editKey === key
+                const isEmpty = it.value == null || it.value === ''
+                return (
                 <div
-                  key={`${it.contractId}::${it.field}`}
+                  key={key}
                   data-testid={`review-queue-row-${it.contractId}-${it.field}`}
                   className="px-4 py-2 flex items-start gap-3"
                 >
@@ -189,18 +214,53 @@ export function ReviewQueuePage() {
                     <div className="text-[10.5px] text-ink-400 font-mono">{it.field}</div>
                   </div>
                   <div className="flex-1 min-w-0 space-y-0.5">
-                    <div className="text-dense text-ink-950 truncate">
-                      {it.value != null && it.value !== ''
-                        ? String(it.value)
-                        : <em className="text-ink-400">(empty)</em>}
-                    </div>
-                    {it.quote && (
+                    {editing ? (
+                      /* The page header has always promised three actions —
+                         verify, CORRECT, reject — and only ever rendered two.
+                         The verify endpoint has taken an optional `value` all
+                         along, so correcting was one input away; without it the
+                         only way to fix a wrong extraction was to reject it,
+                         which clears the field and loses the answer. */
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          value={draft}
+                          autoFocus
+                          onChange={e => setDraft(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') verify.mutate({ contractId: it.contractId, field: it.field, value: draft.trim() || null })
+                            if (e.key === 'Escape') setEditKey(null)
+                          }}
+                          data-testid={`review-queue-correct-input-${it.field}`}
+                          aria-label={`Corrected value for ${it.fieldLabel}`}
+                          className="h-7 text-[12.5px]"
+                        />
+                        <Button
+                          size="xs"
+                          onClick={() => verify.mutate({ contractId: it.contractId, field: it.field, value: draft.trim() || null })}
+                          disabled={busy}
+                          data-testid={`review-queue-correct-save-${it.field}`}
+                        >
+                          Save
+                        </Button>
+                        <Button size="xs" variant="ghost" onClick={() => setEditKey(null)} disabled={busy}>
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="text-dense text-ink-950 truncate">
+                        {!isEmpty
+                          ? String(it.value)
+                          : <em className="text-ink-400">(nothing extracted)</em>}
+                      </div>
+                    )}
+                    {it.quote && !editing && (
                       <div className="text-[10.5px] text-ink-500 italic truncate"
                            title={it.quote}>
                         “{it.quote}”
                       </div>
                     )}
                   </div>
+                  {!editing && (
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     {/* Every value on this page was written by the model, so the
                         confidence reading is an assist mark, not a risk badge —
@@ -214,14 +274,29 @@ export function ReviewQueuePage() {
                     </span>
                     <Button
                       size="xs"
-                      variant="danger"
-                      onClick={() => reject.mutate({ contractId: it.contractId, field: it.field })}
-                      disabled={reject.isPending}
-                      data-testid={`review-queue-reject-${it.field}`}
+                      variant="outline"
+                      onClick={() => { setDraft(it.value != null ? String(it.value) : ''); setEditKey(key) }}
+                      disabled={busy}
+                      data-testid={`review-queue-correct-${it.field}`}
                     >
-                      <XCircle />
-                      Reject
+                      <Pencil />
+                      Correct
                     </Button>
+                    {/* Rejecting clears the value. On a field where nothing was
+                        extracted there is nothing to clear, so the action would
+                        be a no-op dressed up as a decision. */}
+                    {!isEmpty && (
+                      <Button
+                        size="xs"
+                        variant="danger"
+                        onClick={() => reject.mutate({ contractId: it.contractId, field: it.field })}
+                        disabled={busy}
+                        data-testid={`review-queue-reject-${it.field}`}
+                      >
+                        <XCircle />
+                        Reject
+                      </Button>
+                    )}
                     {/* Verifying an extracted value makes it authoritative, so
                         the action is tinted brand — but outlined, not filled.
                         This is a bulk queue: a filled emerald button repeated
@@ -234,15 +309,19 @@ export function ReviewQueuePage() {
                       variant="outline"
                       className="text-brand-700 border-brand-200 hover:bg-brand-50"
                       onClick={() => verify.mutate({ contractId: it.contractId, field: it.field })}
-                      disabled={verify.isPending}
+                      disabled={busy}
                       data-testid={`review-queue-verify-${it.field}`}
                     >
-                      <CheckCircle2 />
-                      Verify
+                      {busy ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+                      {/* Confirming that a field is genuinely absent is a real
+                          answer, and a different one from confirming a value. */}
+                      {isEmpty ? 'Not present' : 'Verify'}
                     </Button>
                   </div>
+                  )}
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         ))}

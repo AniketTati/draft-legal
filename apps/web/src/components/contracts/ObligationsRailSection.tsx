@@ -42,12 +42,15 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   other:       Bell,
 }
 
-function daysUntil(iso: string | null): number | null {
-  if (!iso) return null
-  const t = new Date(iso).getTime()
-  if (isNaN(t)) return null
-  return Math.floor((t - Date.now()) / (24 * 3600 * 1000))
-}
+/*
+ * Calendar days, not elapsed milliseconds. The old `Math.floor((due - now)/1d)`
+ * was wrong in both directions on the two labels that matter most: an
+ * obligation due tomorrow morning, read this afternoon, floored to 0 and said
+ * "due today"; one that fell due six hours ago floored to -1 and said "1d
+ * overdue" before anybody had missed a day. Shared with the contract header
+ * and the Renewal rail so a date reads the same everywhere.
+ */
+import { calendarDaysUntil as daysUntil } from './dates'
 
 // P7.4.1 (F-32, F-47) — Status-aware empty state. Obligations only
 // matter once a contract is signed; surfacing the "Extract" CTA on
@@ -218,7 +221,10 @@ export function ObligationsRailSection({
                             type="button"
                             onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
                             data-testid={`obligation-complete-${o.id}`}
-                            className="ml-auto inline-flex items-center gap-0.5 text-ink-700 hover:text-ink-950 opacity-0 group-hover:opacity-100 transition-opacity"
+                            // `opacity-0 group-hover:opacity-100` alone meant a
+                            // keyboard user could Tab onto "complete" and never
+                            // see where they were.
+                            className="ml-auto inline-flex items-center gap-0.5 text-ink-700 hover:text-ink-950 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-chip"
                           >
                             <CheckCircle2 className="size-3" />
                             <span className="font-medium">complete</span>

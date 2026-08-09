@@ -94,7 +94,7 @@ export function StatusPill({ status, className }: { status: string; className?: 
         className={cn(
           'inline-flex items-center gap-[7px] rounded-full border border-paper-200 bg-paper-100 py-0.5 pl-2 pr-2.5',
           'text-[11.5px] font-medium transition-colors',
-          'hover:border-paper-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:ring-offset-1',
+          'hover:border-paper-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
           tone.fg,
         )}
       >
