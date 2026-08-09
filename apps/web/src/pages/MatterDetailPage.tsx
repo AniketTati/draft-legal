@@ -6,7 +6,7 @@
  * metadata + status toggle.
  */
 import { useState } from 'react'
-import { normalizeRisk } from '@/lib/status'
+import { normalizeRisk, riskBand } from '@/lib/status'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -168,8 +168,8 @@ export function MatterDetailPage() {
                   {c.riskScore != null && (
                     <span className={cn(
                       'text-[10.5px] tabular-nums',
-                      c.riskScore >= 0.67 ? 'text-risk-700'
-                        : c.riskScore >= 0.34 ? 'text-attention-700'
+                      riskBand(normalizeRisk(c.riskScore)!) === 'high' ? 'text-risk-700'
+                        : riskBand(normalizeRisk(c.riskScore)!) === 'medium' ? 'text-attention-700'
                         : 'text-ink-500',
                     )}>risk {normalizeRisk(c.riskScore)}</span>
                   )}

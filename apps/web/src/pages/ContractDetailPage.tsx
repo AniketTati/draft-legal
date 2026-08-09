@@ -3403,8 +3403,8 @@ export function ContractDetailPage() {
                   'font-medium',
                   MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].fg,
                 )}>
-                  {contract.riskScore >= 0.67 ? 'High Risk' :
-                   contract.riskScore >= 0.34 ? 'Medium Risk' : 'Low Risk'}
+                  {(() => { const b = riskBand(normalizeRisk(contract.riskScore)!)
+                    return b === 'high' ? 'High Risk' : b === 'medium' ? 'Medium Risk' : 'Low Risk' })()}
                 </span>
                 <span className="text-ink-500 tabular-nums">{normalizeRisk(contract.riskScore)}</span>
               </div>

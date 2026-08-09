@@ -293,12 +293,21 @@ export function ContractsPage() {
       if (needsEs) {
         return api.post('/search/advanced', buildQuery()).then(r => r.data)
       }
-      // Plain route — pass structural filters as GET params
+      // Plain route — pass structural filters as GET params.
+      // Risk MUST be in this list. It was moved off the Elasticsearch path
+      // because that index holds a subset of contracts and made "high risk AND
+      // expiring" answer zero; if the bounds are then omitted here, the filter
+      // is silently ignored and the list returns EVERYTHING while the chip
+      // still says "High risk" — a wrong answer that looks like a right one,
+      // which is worse than the empty result it replaced.
       const params: Record<string, unknown> = { limit: PAGE_SIZE }
       if (filters.type) params.type = filters.type
       if (filters.status) params.status = filters.status
       if (filters.counterpartyId) params.counterpartyId = filters.counterpartyId
       if (filters.expiryDateTo) params.expiryDateTo = filters.expiryDateTo
+      if (filters.riskBand === 'high') params.riskScoreMin = 67
+      if (filters.riskBand === 'medium') { params.riskScoreMin = 34; params.riskScoreMax = 67 }
+      if (filters.riskBand === 'low') params.riskScoreMax = 34
       if (pageParam) params.cursor = pageParam
       return api.get('/contracts', { params }).then(r => r.data)
     },

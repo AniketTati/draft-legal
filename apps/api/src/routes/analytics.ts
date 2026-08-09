@@ -32,7 +32,7 @@ interface KpiSummary {
   executedContracts: number
   pendingApprovals:  number
   expiringSoon:      number       // next 90 days
-  highRiskOpen:      number       // riskScore > 0.6 + not EXECUTED/EXPIRED/TERMINATED
+  highRiskOpen:      number       // riskScore > 60 + not EXECUTED/EXPIRED/TERMINATED
 
   // Currency
   executedTotalValue: number      // sum(value) EXECUTED
@@ -76,7 +76,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
       prisma.contract.count({
         where: {
           orgId, deletedAt: null,
-          riskScore: { gt: 0.6 },
+          // 0-100, matching the declared scale in @clm/types. These were 0-1,
+          // so with real data "high risk open" counted almost nothing.
+          riskScore: { gt: 60 },
           status: { notIn: ['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'] },
         },
       }),
@@ -197,9 +199,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const riskBuckets = { low: 0, medium: 0, high: 0, critical: 0, none: 0 }
     for (const c of byRisk) {
       if (c.riskScore == null) riskBuckets.none++
-      else if (c.riskScore < 0.3) riskBuckets.low++
-      else if (c.riskScore < 0.6) riskBuckets.medium++
-      else if (c.riskScore < 0.8) riskBuckets.high++
+      else if (c.riskScore < 30) riskBuckets.low++
+      else if (c.riskScore < 60) riskBuckets.medium++
+      else if (c.riskScore < 80) riskBuckets.high++
       else riskBuckets.critical++
     }
 

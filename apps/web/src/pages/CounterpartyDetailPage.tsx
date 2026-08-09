@@ -35,7 +35,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
-import { normalizeRisk } from '@/lib/status'
+import { normalizeRisk, riskBand } from '@/lib/status'
 import type { Meaning } from '@/lib/status'
 import {
   ArrowLeft, Building2, Globe, Mail, Phone, FileText, Plus,
@@ -324,7 +324,7 @@ export function CounterpartyDetailPage() {
                                 {formatMoney(v, c.currency ?? 'USD')}
                               </span>
                             )}
-                            {c.riskScore != null && c.riskScore >= 0.7 && (
+                            {c.riskScore != null && riskBand(normalizeRisk(c.riskScore)!) === 'high' && (
                               <span className="inline-flex items-center gap-0.5 text-risk-700">
                                 <AlertTriangle className="size-2.5" />
                                 risk {normalizeRisk(c.riskScore)}
