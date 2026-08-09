@@ -22,6 +22,43 @@ export const RefreshTokenSchema = z.object({
 
 // ─── Contracts ───────────────────────────────────────────────────────────────
 
+// Risk score is 0-100. That is what the stored portfolio holds, what the CSV
+// export emits, and what the UI's RiskMeter and riskBand() thresholds expect.
+// This schema used to declare 0-1, which nothing on the write path honoured
+// except the agents-service review callback — so one column carried two scales
+// and every consumer multiplied by 100 and hoped. Reads of a 0-100 row then
+// rendered as "Risk 7000%". 0-100 is now the declared truth, and the two
+// remaining fraction writers (the review callback, and legacy rows) are folded
+// up at the boundary instead of being pushed onto every reader.
+export const RISK_SCORE_MIN = 0
+export const RISK_SCORE_MAX = 100
+
+// A stored 1 is genuinely ambiguous — maximum risk on the old scale, near-zero
+// on the new one. We read it as a fraction, which is what the frontend guard
+// this replaces already did: real 0-100 scores cluster in the tens, so a bare
+// 1 is overwhelmingly an old fraction rather than a 1% risk.
+function toPercentScale(score: number): number {
+  const pct = score <= 1 ? score * 100 : score
+  return Math.max(RISK_SCORE_MIN, Math.min(RISK_SCORE_MAX, Math.round(pct)))
+}
+
+/** 0-100, folding a legacy 0-1 fraction up. Null in, null out. */
+export function normalizeRiskScore(score: number | null | undefined): number | null {
+  if (score == null || Number.isNaN(score)) return null
+  return toPercentScale(score)
+}
+
+/**
+ * Accepts either scale on the way in and always stores 0-100, so the
+ * agents-service review callback (review_agent.py clamps to 0-1) stops minting
+ * fresh mixed-scale rows while the Python side still emits fractions.
+ */
+export const RiskScoreSchema = z
+  .number()
+  .min(RISK_SCORE_MIN)
+  .max(RISK_SCORE_MAX)
+  .transform(toPercentScale)
+
 export const CreateContractSchema = z.object({
   title: z.string().min(1),
   type: z.nativeEnum(ContractType),
@@ -38,7 +75,7 @@ export const UpdateContractSchema = CreateContractSchema.partial().extend({
   status: z.string().optional(),
   summary: z.string().optional(),
   keyTerms: z.record(z.unknown()).optional(),
-  riskScore: z.number().min(0).max(1).optional(),
+  riskScore: RiskScoreSchema.optional(),
   riskFactors: z.array(z.string()).optional(),
   overallConfidence: z.number().min(0).max(1).optional(),
   // Wave E.2 — these fields are written by the agents-service review

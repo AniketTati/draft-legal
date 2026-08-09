@@ -30,7 +30,15 @@ import {
   UpdateContractSchema,
   ContractFilterSchema,
   AuditAction,
+  normalizeRiskScore,
 } from '@clm/types'
+
+// riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
+// the row happens to hold, so a client never has to guess which one it got.
+// Writes are normalised too, so this only rescales rows that pre-date that.
+function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
+  return { ...row, riskScore: normalizeRiskScore(row.riskScore) }
+}
 
 export async function contractRoutes(app: FastifyInstance) {
   // ── List ────────────────────────────────────────────────────────────────
@@ -76,17 +84,18 @@ export async function contractRoutes(app: FastifyInstance) {
       andClauses.push({ metadata: { path: ['uptimeSlaPct'], gte: query.uptimeSlaMin } as never })
     }
 
-    // Risk band. Filters are 0-100 but a minority of legacy rows still store a
-    // 0-1 fraction, so each bound matches EITHER scale rather than silently
-    // dropping whichever half of the portfolio is on the other one. Remove the
-    // fraction branch once riskScore is normalised at write time.
-    if (query.riskScoreMin !== undefined) {
-      const min = query.riskScoreMin
-      andClauses.push({ OR: [{ riskScore: { gte: min } }, { riskScore: { gte: min / 100, lte: 1 } }] })
-    }
-    if (query.riskScoreMax !== undefined) {
-      const max = query.riskScoreMax
-      andClauses.push({ OR: [{ riskScore: { lte: max, gt: 1 } }, { riskScore: { lte: max / 100 } }] })
+    // Risk band, 0-100. Writes are normalised at the boundary now, so this is a
+    // plain range rather than the dual-scale OR it used to be — that OR made
+    // every bound mean two different things and quietly widened the band.
+    // Rows written before normalisation may still hold a 0-1 fraction and will
+    // under-match until scripts/backfill-risk-score-scale.ts has been run.
+    if (query.riskScoreMin !== undefined || query.riskScoreMax !== undefined) {
+      andClauses.push({
+        riskScore: {
+          ...(query.riskScoreMin !== undefined && { gte: query.riskScoreMin }),
+          ...(query.riskScoreMax !== undefined && { lte: query.riskScoreMax }),
+        },
+      })
     }
 
     const where = {
@@ -126,7 +135,13 @@ export async function contractRoutes(app: FastifyInstance) {
         },
         take: query.limit + 1,
         ...(query.cursor && { cursor: { id: query.cursor }, skip: 1 }),
-        orderBy: { createdAt: 'desc' },
+        // `id` is the tiebreaker, not decoration: createdAt is TIMESTAMP(3) and
+        // CURRENT_TIMESTAMP is transaction-constant, so a bulk-seeded or
+        // bulk-imported batch shares one millisecond. Cursor paging on a
+        // non-unique sort key lets the second page repeat or skip rows, which
+        // now that the repository actually pages ("Load more") would show up as
+        // duplicated contracts.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
       prisma.contract.count({ where }),
     ])
@@ -135,7 +150,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const data = hasMore ? contracts.slice(0, query.limit) : contracts
     const nextCursor = hasMore ? data[data.length - 1].id : undefined
 
-    return reply.send({ data, cursor: nextCursor, hasMore, total })
+    return reply.send({ data: data.map(withNormalizedRisk), cursor: nextCursor, hasMore, total })
   })
 
   // ── POST /bulk-import — CSV bulk import (P10D) ──────────────────────
@@ -269,9 +284,12 @@ export async function contractRoutes(app: FastifyInstance) {
     if (q.type)            where.type = q.type
     if (q.counterpartyId)  where.counterpartyId = q.counterpartyId
     if (q.ownerId)         where.ownerId = q.ownerId
-    if (q.riskBand === 'high')   where.riskScore = { gt: 0.67 }
-    if (q.riskBand === 'medium') where.riskScore = { gte: 0.34, lte: 0.67 }
-    if (q.riskBand === 'low')    where.riskScore = { lt: 0.34 }
+    // 0-100 bands, matching riskBand() in the web app so an exported row lands
+    // in the same band the user saw on screen. These read 0.67/0.34 before,
+    // which on real 0-100 data put the entire portfolio in "high".
+    if (q.riskBand === 'high')   where.riskScore = { gte: 67 }
+    if (q.riskBand === 'medium') where.riskScore = { gte: 34, lt: 67 }
+    if (q.riskBand === 'low')    where.riskScore = { lt: 34 }
     if (q.expiryDateTo) {
       where.expiryDate = { gte: new Date(), lte: new Date(q.expiryDateTo) }
     }
@@ -304,7 +322,7 @@ export async function contractRoutes(app: FastifyInstance) {
       c.effectiveDate?.toISOString().slice(0, 10) ?? '',
       c.expiryDate?.toISOString().slice(0, 10) ?? '',
       c.jurisdiction ?? '',
-      c.riskScore != null ? Math.round(c.riskScore * 100) : '',
+      normalizeRiskScore(c.riskScore) ?? '',
       c.overallConfidence != null ? Math.round(c.overallConfidence * 100) : '',
       (c.tags ?? []).join('; '),
       c.analysisStatus ?? '',
@@ -347,7 +365,7 @@ export async function contractRoutes(app: FastifyInstance) {
       plainText:        '',
       summary:          contract.summary ?? undefined,
       tags:             contract.tags,
-      riskScore:        contract.riskScore ?? undefined,
+      riskScore:        normalizeRiskScore(contract.riskScore) ?? undefined,
       effectiveDate:    contract.effectiveDate?.toISOString(),
       expiryDate:       contract.expiryDate?.toISOString(),
       createdAt:        contract.createdAt.toISOString(),
@@ -553,7 +571,7 @@ export async function contractRoutes(app: FastifyInstance) {
       resourceId: id,
     })
 
-    return reply.send(contract)
+    return reply.send(withNormalizedRisk(contract))
   })
 
   // ── Presigned download URL ───────────────────────────────────────────────
@@ -1088,7 +1106,7 @@ export async function contractRoutes(app: FastifyInstance) {
         plainText: currentVersion?.plainText ?? '',
         summary: updated.summary ?? undefined,
         tags: updated.tags,
-        riskScore: updated.riskScore ?? undefined,
+        riskScore: normalizeRiskScore(updated.riskScore) ?? undefined,
         effectiveDate: updated.effectiveDate?.toISOString(),
         expiryDate: updated.expiryDate?.toISOString(),
         createdAt: updated.createdAt.toISOString(),
@@ -1110,7 +1128,7 @@ export async function contractRoutes(app: FastifyInstance) {
         : { changes: Object.keys(body) },
     })
 
-    return reply.send(updated)
+    return reply.send(withNormalizedRisk(updated))
   })
 
   // ── Re-trigger AI analysis ───────────────────────────────────────────────
@@ -1317,6 +1335,8 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
+    const selfRiskScore = normalizeRiskScore(contract.riskScore)
+
     // Query-contract avg embedding (from all clauses across all its versions).
     const selfAvg = await prisma.$queryRaw<Array<{ avg_vec: string | null }>>`
       SELECT AVG(cc.embedding)::text AS avg_vec
@@ -1332,7 +1352,7 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.send({
         data:               [],
         message:            'No embeddings yet for this contract — precedents unavailable',
-        selfRiskScore:      contract.riskScore,
+        selfRiskScore,
         peerAvgRiskScore:   null,
         riskDeltaLabel:     null,
       })
@@ -1379,16 +1399,20 @@ export async function contractRoutes(app: FastifyInstance) {
       LIMIT  3
     `
 
-    const peerRiskScores = peers.map(p => p.risk_score).filter((x): x is number => x != null)
+    const peerRiskScores = peers
+      .map(p => normalizeRiskScore(p.risk_score))
+      .filter((x): x is number => x != null)
     const peerAvgRiskScore = peerRiskScores.length
       ? peerRiskScores.reduce((a, b) => a + b, 0) / peerRiskScores.length
       : null
 
     // "20% higher risk than peer avg" label
     let riskDeltaLabel: string | null = null
-    if (contract.riskScore != null && peerAvgRiskScore != null) {
-      const diff = contract.riskScore - peerAvgRiskScore
-      const pct = Math.round((Math.abs(diff) / Math.max(0.01, peerAvgRiskScore)) * 100)
+    if (selfRiskScore != null && peerAvgRiskScore != null) {
+      const diff = selfRiskScore - peerAvgRiskScore
+      // Floor the divisor at one point of the 0-100 scale so a peer group that
+      // averages zero risk yields a large-but-finite delta, not a division blowup.
+      const pct = Math.round((Math.abs(diff) / Math.max(1, peerAvgRiskScore)) * 100)
       if (pct >= 10) {
         riskDeltaLabel = diff > 0
           ? `${pct}% higher risk than peer avg`
@@ -1406,10 +1430,10 @@ export async function contractRoutes(app: FastifyInstance) {
         value:        p.value,
         counterparty: p.counterparty,
         signedAt:     p.signed_at,
-        riskScore:    p.risk_score,
+        riskScore:    normalizeRiskScore(p.risk_score),
         similarity:   Number(p.similarity),
       })),
-      selfRiskScore:    contract.riskScore,
+      selfRiskScore,
       peerAvgRiskScore,
       riskDeltaLabel,
     })

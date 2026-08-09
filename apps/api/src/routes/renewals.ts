@@ -34,6 +34,10 @@ interface RenewalRow {
   currency:         string | null
   ownerId:          string
   ownerName:        string | null
+  // AI-extracted term sheet. The renewals calendar needs autoRenew +
+  // noticeDays to show the notice-to-terminate deadline, which is the date
+  // that actually binds — expiry alone is too late to act on.
+  keyTerms:         Record<string, unknown> | null
   // Renewal-specific from metadata
   renewalDecision:    string | null   // renew | renegotiate | let_expire | pause | unknown
   renewalDecisionAt:  string | null
@@ -68,7 +72,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true,
         counterpartyName: true, expiryDate: true, effectiveDate: true,
-        value: true, currency: true, metadata: true,
+        value: true, currency: true, metadata: true, keyTerms: true,
         ownerId: true,
         owner: { select: { name: true } },
       },
@@ -93,6 +97,9 @@ export async function renewalRoutes(app: FastifyInstance) {
         currency:         c.currency ?? null,
         ownerId:          c.ownerId,
         ownerName:        c.owner?.name ?? null,
+        keyTerms:         (c.keyTerms && typeof c.keyTerms === 'object' && !Array.isArray(c.keyTerms))
+          ? (c.keyTerms as Record<string, unknown>)
+          : null,
         renewalDecision:    md.renewalDecision ?? null,
         renewalDecisionAt:  md.renewalDecisionAt ?? null,
         renewalAdvice:    md.renewalAdvice

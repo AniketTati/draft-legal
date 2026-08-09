@@ -26,12 +26,18 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
       {/* Stats bar + mode toggle */}
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-4 text-dense tabular-nums">
-          <span className="flex items-center gap-1.5 text-brand-700 font-medium">
-            <span className="size-3 rounded-sm bg-brand-100 border border-brand-500 inline-block" />
+          {/* The legend shows the mark itself, not a colour swatch: underline
+              for in, strike for out. Read it in greyscale and it still works. */}
+          <span className="flex items-center gap-1.5 text-info-700 font-medium">
+            <span aria-hidden className="px-1 rounded-chip bg-info-50 border border-info-200 underline decoration-2 underline-offset-2">
+              Aa
+            </span>
             {stats.insertions} insertion{stats.insertions !== 1 ? 's' : ''}
           </span>
-          <span className="flex items-center gap-1.5 text-risk-700 font-medium">
-            <span className="size-3 rounded-sm bg-risk-100 border border-risk-200 inline-block" />
+          <span className="flex items-center gap-1.5 text-info-700 font-medium">
+            <span aria-hidden className="px-1 rounded-chip bg-info-50 border border-info-200 line-through decoration-2">
+              Aa
+            </span>
             {stats.deletions} deletion{stats.deletions !== 1 ? 's' : ''}
           </span>
         </div>
@@ -85,42 +91,59 @@ export function DiffViewer({ diffHtml, stats, v1Label = 'Original', v2Label = 'C
         </div>
       )}
 
-      {/* Redline marks read off the meaning tokens, not literal green/red: what
-          survives into the agreement is brand, what is struck is risk. Washes
-          are held low so the serif body stays the thing you read. */}
+      {/*
+        Redline marks follow the blackline conventions counsel already has in
+        their hands, not this app's status palette:
+
+          - Insertions are UNDERLINED, deletions are STRUCK. That pairing is the
+            load-bearing signal; it is thirty years old, it survives a photocopy,
+            and it is the only part of the mark that reads in greyscale. Colour
+            is a second, redundant channel.
+          - Both marks are ONE colour, info. Emerald here was actively
+            misleading: brand means executed/approved/signed, so a proposed
+            insertion rendered green read as language already agreed. A pending
+            redline is neither binding nor a risk finding — it is a change in
+            flight on someone else's turn, which is exactly info. Using the same
+            colour for both marks is also what Word does per author, so the
+            underline/strike does the distinguishing work rather than hue.
+
+        Washes stay low so the serif body remains the thing you read.
+      */}
       <style>{`
         /* Unified: show both ins and del */
-        .diff-unified ins {
-          background: hsl(var(--brand) / 0.12);
-          color: hsl(var(--brand));
-          text-decoration: none;
+        .diff-unified ins,
+        .diff-right ins {
+          background: hsl(var(--info) / 0.10);
+          color: hsl(var(--info));
+          text-decoration: underline;
+          text-decoration-thickness: 1.5px;
+          text-underline-offset: 2px;
           border-radius: 2px;
           padding: 0 1px;
         }
-        .diff-unified del {
-          background: hsl(var(--destructive) / 0.08);
-          color: hsl(var(--destructive));
+        .diff-unified del,
+        .diff-left del {
+          background: hsl(var(--info) / 0.06);
+          color: hsl(var(--info));
           text-decoration: line-through;
+          text-decoration-thickness: 1.5px;
           border-radius: 2px;
           padding: 0 1px;
         }
         /* Side-by-side left: hide ins (counterparty additions not in original) */
         .diff-left ins { display: none; }
-        .diff-left del {
-          background: hsl(var(--destructive) / 0.08);
-          color: hsl(var(--destructive));
-          text-decoration: none;
-          border-radius: 2px;
-          padding: 0 1px;
-        }
         /* Side-by-side right: hide del (original text removed by counterparty) */
         .diff-right del { display: none; }
-        .diff-right ins {
-          background: hsl(var(--brand) / 0.12);
-          color: hsl(var(--brand));
-          text-decoration: none;
-          border-radius: 2px;
-          padding: 0 1px;
+
+        /* Printed or photocopied, the wash and the hue are both gone. The
+           decorations have to carry the whole diff on their own, so drop the
+           colour rather than let it grey out into something ambiguous. */
+        @media print {
+          .diff-unified ins, .diff-right ins,
+          .diff-unified del, .diff-left del {
+            background: transparent;
+            color: inherit;
+          }
         }
       `}</style>
     </div>

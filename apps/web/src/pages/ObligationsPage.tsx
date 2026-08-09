@@ -88,12 +88,35 @@ function dueLabel(iso: string | null, status: string): { text: string; tone: str
   const d = daysUntil(iso)
   // A completed obligation is discharged — binding, not "on time".
   if (status === 'COMPLETED') return { text: new Date(iso).toLocaleDateString(), tone: 'text-brand-700' }
+  // A waived obligation was excused, so it cannot be late. Without this it
+  // read "66d overdue" in red next to a neutral "Waived" pill — the Due and
+  // Status columns contradicting each other on the same row.
+  if (status === 'WAIVED') return { text: new Date(iso).toLocaleDateString(), tone: 'text-ink-500' }
   if (d == null) return { text: new Date(iso).toLocaleDateString(), tone: 'text-ink-700' }
   if (d < 0)  return { text: `${-d}d overdue`, tone: 'text-risk-700 font-medium' }
   if (d === 0) return { text: 'Due today',     tone: 'text-attention-700 font-medium' }
   if (d === 1) return { text: 'Due tomorrow',  tone: 'text-attention-700 font-medium' }
   if (d <= 14) return { text: `Due in ${d}d`,  tone: 'text-attention-700 font-medium' }
   return { text: `Due in ${d}d`, tone: 'text-ink-500' }
+}
+
+/**
+ * Whether an obligation is past its due date and still owed.
+ *
+ * The stored status cannot answer this: the API leaves an obligation OPEN when
+ * its date slips, and OPEN maps to `inflight` — so a commitment 66 days late
+ * renders calm blue in the Status column, the one column users are trained to
+ * scan. lib/status is deliberately date-neutral (a status is a property of the
+ * record, overdue-ness is a property of the record AND today), so the page
+ * applies the date it knows and overrides the meaning.
+ *
+ * Completed and waived obligations are exempt: a discharged commitment cannot
+ * be overdue, however long ago its date was.
+ */
+function isOverdue(o: ApiObligation): boolean {
+  if (o.status === 'COMPLETED' || o.status === 'WAIVED') return false
+  const d = daysUntil(o.dueDate)
+  return d != null && d < 0
 }
 
 // Severity is exposure, so it tiers the same way the risk meter does: high is
@@ -251,6 +274,7 @@ export function ObligationsPage() {
                 const TypeIcon = TYPE_ICON[o.type] ?? Bell
                 const due = dueLabel(o.dueDate, o.status)
                 const sevMeaning = SEVERITY_MEANING[o.severity] ?? 'turn'
+                const overdue = isOverdue(o)
                 return (
                   <tr key={o.id} className="hover:bg-paper-50" data-testid={`obligation-row-${o.id}`}>
                     <td className="px-4 py-2 max-w-[380px]">
@@ -298,7 +322,9 @@ export function ObligationsPage() {
                       </StatusPill>
                     </td>
                     <td className="px-4 py-2">
-                      <StatusPill status={o.status} />
+                      {/* An overdue obligation reads as risk here whatever the
+                          stored status says — see isOverdue. */}
+                      <StatusPill status={o.status} meaning={overdue ? 'risk' : undefined} />
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-2">

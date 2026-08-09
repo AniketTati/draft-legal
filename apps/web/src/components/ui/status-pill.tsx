@@ -36,12 +36,28 @@ export function StatusPill({
   const m = MEANING_CLASS[key]
   const wash = tone === 'wash'
 
+  /*
+   * In dot tone the LABEL stays ink and only the dot carries the meaning
+   * colour — literally "one coloured element per row".
+   *
+   * The design system's own map colours the label too, and that reads well in
+   * its mockup, where eight rows carry eight different statuses. A real
+   * portfolio is not shaped like that: it is ~56% executed, so colouring the
+   * label made emerald the modal colour of the product. The majority state
+   * (which needs nothing from anyone) shouted, and the 5% that need a human
+   * whispered — the exact inversion the design system says it exists to
+   * prevent, and the reason it calls the brand colour "spent sparingly".
+   *
+   * With a neutral label, a column of 147 executed rows reads as a calm field
+   * of small green dots, and one red "Expired" or amber "In review" is
+   * genuinely the loudest thing on screen.
+   */
   return (
     <span
       className={cn(
         'inline-flex w-fit items-center gap-[7px] rounded-full border py-0.5 pl-2 pr-2.5',
         'text-[11.5px] font-medium',
-        wash ? [m.wash, m.washFg, m.washBorder] : ['bg-paper-100 border-paper-200', m.fg],
+        wash ? [m.wash, m.washFg, m.washBorder] : ['bg-paper-100 border-paper-200 text-ink-700'],
         className
       )}
     >

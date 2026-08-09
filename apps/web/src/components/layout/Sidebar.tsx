@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/store/auth'
 import { Wordmark } from '@/components/brand/Wordmark'
 import {
   LayoutDashboard,
@@ -35,6 +36,19 @@ import type { LucideIcon } from 'lucide-react'
 
 // ─── Nav structure ─────────────────────────────────────────────────────────────
 
+/**
+ * Every queue that can block someone is badgeable. The nav is the only place a
+ * user can answer "what needs me this morning" without opening five pages, so
+ * a blocking queue that cannot show a count is a queue the user has to go and
+ * check by hand.
+ */
+type BadgeKey =
+  | 'pendingApprovals'
+  | 'openRequests'
+  | 'signaturesAwaitingMe'
+  | 'renewalDecisions'
+  | 'obligationsOverdue'
+
 interface NavSection {
   label?: string
   items: Array<{
@@ -43,7 +57,7 @@ interface NavSection {
     label: string
     // P7.4.9 / F-14 — explicit `staticBadge` keeps "Soon" UX-only
     // (no API hit). Use `badge` for runtime counts as before.
-    badge?: 'pendingApprovals' | 'openRequests'
+    badge?: BadgeKey
     staticBadge?: 'soon'
   }>
 }
@@ -86,15 +100,15 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: '/approvals',    icon: CheckSquare, label: 'Approvals', badge: 'pendingApprovals' },
       // Phase 07 — Signatures promoted once the eSignature flow shipped.
-      { to: '/signatures',   icon: PenSquare,   label: 'Signatures' },
+      { to: '/signatures',   icon: PenSquare,   label: 'Signatures', badge: 'signaturesAwaitingMe' },
     ],
   },
   {
     // Phase 08 — what we track on EXECUTED contracts.
     label: 'Post-signature',
     items: [
-      { to: '/obligations',  icon: ListTodo,     label: 'Obligations' },
-      { to: '/renewals',     icon: CalendarDays, label: 'Renewals' },
+      { to: '/obligations',  icon: ListTodo,     label: 'Obligations', badge: 'obligationsOverdue' },
+      { to: '/renewals',     icon: CalendarDays, label: 'Renewals',    badge: 'renewalDecisions' },
       { to: '/invoices',     icon: Receipt,      label: 'Invoices' },
     ],
   },
@@ -118,12 +132,24 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ]
 
-// "Your turn" is the only count that earns color. Pending approvals sit in the
-// signed-in user's own queue, so they are genuinely blocking them; open requests
-// are a workload figure for the team, so they stay an informational count.
-const BADGE_TONE: Record<string, 'neutral' | 'attention'> = {
-  pendingApprovals: 'attention',
-  openRequests:     'neutral',
+// "Your turn" is the only count that earns color, so the test for `attention`
+// is narrow: could this number move if the signed-in user, and nobody else,
+// acted? Approvals and signatures are addressed to them personally. The other
+// three are real work but org-wide — nothing in the data says WHO owes them —
+// so they stay informational counts rather than claiming to be someone's turn.
+const BADGE_TONE: Record<BadgeKey, 'neutral' | 'attention'> = {
+  pendingApprovals:     'attention',
+  signaturesAwaitingMe: 'attention',
+  openRequests:         'neutral',
+  renewalDecisions:     'neutral',
+  obligationsOverdue:   'neutral',
+}
+
+// Shape of the pending signature requests the badge reads. Only the fields the
+// "is it my turn to sign?" test needs — the full row lives in SignaturesPage.
+interface PendingSignatureRequest {
+  signOrder: 'ANY' | 'SEQUENTIAL'
+  signers: Array<{ email: string; status: 'PENDING' | 'SIGNED' | 'DECLINED'; signOrder: number }>
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────────
@@ -142,6 +168,7 @@ const ADMIN_SECTION: NavSection = {
 
 export function Sidebar() {
   const canAdmin = usePermission('configure', 'user')
+  const myEmail = useAuthStore(s => s.user?.email)?.toLowerCase()
 
   const { data: stats } = useQuery<{
     pendingApprovals: number
@@ -153,9 +180,58 @@ export function Sidebar() {
     refetchInterval: 60_000,
   })
 
-  const badgeCounts: Record<string, number> = {
-    pendingApprovals: stats?.pendingApprovals ?? 0,
-    openRequests:     stats?.openRequests ?? 0,
+  // There is no "signatures awaiting me" count on the API, so the badge is
+  // derived from the same PENDING list the Signatures page reads. `total` is
+  // the org's pending requests, not the user's, so it cannot stand in.
+  const { data: pendingSignatures } = useQuery<{ data: PendingSignatureRequest[] }>({
+    queryKey: ['sidebar-pending-signatures'],
+    queryFn: () => api.get('/signature-requests?status=PENDING&limit=100').then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+
+  // Same key + URL as RenewalsPage / ObligationsPage, so opening those pages
+  // reuses the sidebar's cached response instead of firing a second request.
+  const { data: renewalStats } = useQuery<{ undecided: number }>({
+    queryKey: ['renewals-stats'],
+    queryFn: () => api.get('/renewals/stats').then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+  const { data: obligationStats } = useQuery<{ overdue: number }>({
+    queryKey: ['obligations-stats'],
+    queryFn: () => api.get('/obligations/stats').then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+
+  const signaturesAwaitingMe = useMemo(() => {
+    if (!myEmail) return 0
+    return (pendingSignatures?.data ?? []).filter(sr => {
+      const stillToSign = sr.signers.filter(s => s.status === 'PENDING')
+      const mine = stillToSign.find(s => s.email?.toLowerCase() === myEmail)
+      if (!mine) return false
+      // A SEQUENTIAL request only unblocks one signer at a time, so being on
+      // the roster is not the same as being the blocker — the badge would
+      // otherwise claim someone's turn several signatures before it arrives.
+      if (sr.signOrder === 'SEQUENTIAL') {
+        return mine.signOrder === Math.min(...stillToSign.map(s => s.signOrder))
+      }
+      return true
+    }).length
+  }, [pendingSignatures, myEmail])
+
+  const badgeCounts: Record<BadgeKey, number> = {
+    pendingApprovals:     stats?.pendingApprovals ?? 0,
+    openRequests:         stats?.openRequests ?? 0,
+    signaturesAwaitingMe,
+    // Expiring inside 90 days with no renew/exit decision recorded — the
+    // subset of the renewals page that is actually still a decision.
+    renewalDecisions:     renewalStats?.undecided ?? 0,
+    obligationsOverdue:   obligationStats?.overdue ?? 0,
   }
 
   // U.7 — sidebar auto-collapses to icon-only below lg (1024px). On
@@ -245,6 +321,7 @@ export function Sidebar() {
             <div className="space-y-0.5">
               {section.items.map(({ to, icon: Icon, label, badge, staticBadge }) => {
                 const count = badge ? badgeCounts[badge] : 0
+                const badgeTone = badge ? BADGE_TONE[badge] : 'neutral'
                 // U.2.1 / decision 14a — Assistant keeps the assist accent at
                 // rest, as the "Ask draftLegal" affordance. But assist is
                 // machine-authored only, never a UI accent: the ACTIVE nav item
@@ -281,7 +358,7 @@ export function Sidebar() {
                     <Icon size={16} className="shrink-0" />
                     <span className={cn('flex-1', showLabel)}>{label}</span>
                     {badge && count > 0 && (
-                      <CountBadge tone={BADGE_TONE[badge] ?? 'neutral'} className={showLabelF}>
+                      <CountBadge tone={badgeTone} className={showLabelF}>
                         {count > 99 ? '99+' : count}
                       </CountBadge>
                     )}
@@ -292,7 +369,7 @@ export function Sidebar() {
                         className={cn(
                           'absolute top-1 right-1 h-2 w-2 rounded-full',
                           collapsed ? 'inline' : 'lg:hidden',
-                          BADGE_TONE[badge] === 'attention' ? 'bg-attention-600' : 'bg-ink-400',
+                          badgeTone === 'attention' ? 'bg-attention-600' : 'bg-ink-400',
                         )}
                       />
                     )}

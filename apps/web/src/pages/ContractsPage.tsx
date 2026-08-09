@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/utils'
+import { MEANING_CLASS, statusMeta, type Meaning } from '@/lib/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { StatusPill } from '@/components/ui/status-pill'
@@ -30,6 +31,70 @@ const PHASE_LABEL: Record<string, string> = {
 // meaning, and the system spends color only on meaning — so the dot is neutral
 // and the type is read from the subtitle line right beside it.
 const TYPE_DOT = 'bg-paper-300'
+
+// One screenful of rows per request. The plain /contracts route pages by cursor,
+// so "Load more" appends; the advanced-search route takes a size but has no
+// cursor or offset, which is why the Elasticsearch path asks for the server
+// maximum in one go and then says so rather than pretending to be complete.
+const PAGE_SIZE = 50
+const ES_MAX = 100
+
+const GRID_COLS = 'grid-cols-[minmax(0,2fr)_120px_160px_100px_80px_36px]'
+
+// ─── Expiry urgency ───────────────────────────────────────────────────────────
+
+/**
+ * Whole days from today to `iso` — negative once the date is past. Both sides
+ * are floored to local midnight so "tomorrow" is 1 all day, not 0 in the morning
+ * and 1 after lunch.
+ */
+function daysUntil(iso: string): number | null {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return null
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.round((new Date(t).setHours(0, 0, 0, 0) - today.getTime()) / 86_400_000)
+}
+
+/**
+ * Expiry is the one date in the repository that carries exposure: an auto-renewal
+ * window closing in five days read exactly like one closing in two years, so the
+ * column ranked nothing. Thresholds and vocabulary match /renewals — inside 30
+ * days is `risk` (the notice period is going or gone), 31–90 days is `turn` (the
+ * renewal decision is now the user's to make), beyond that neutral.
+ *
+ * The relative figure is only rendered where it changes what the user does; on a
+ * 240-row table "in 812d" would be noise on every calm row.
+ *
+ * A closed record is exempt. /renewals scopes its whole query to EXECUTED, so a
+ * terminated agreement never reaches it — but the repository lists every status,
+ * and three terminated contracts sit inside the 90-day window today. Colouring
+ * their expiry claimed a renewal decision was outstanding on an agreement that
+ * had already ended, beside a pill saying "Terminated". Same call the obligations
+ * table makes for COMPLETED/WAIVED: nothing discharged can also be overdue.
+ */
+const EXPIRY_DISCHARGED = new Set(['TERMINATED', 'ARCHIVED'])
+
+function expiryMeta(iso: string | null | undefined, status?: string | null): {
+  dateText: string
+  relative: string | null
+  meaning: Meaning
+} | null {
+  if (!iso) return null
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return null
+  const dateText = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' })
+  if (status && EXPIRY_DISCHARGED.has(status.toUpperCase())) {
+    return { dateText, relative: null, meaning: 'neutral' }
+  }
+  const d = daysUntil(iso)
+  if (d == null) return { dateText, relative: null, meaning: 'neutral' }
+  if (d < 0)    return { dateText, relative: `${-d}d ago`, meaning: 'risk' }
+  if (d === 0)  return { dateText, relative: 'today',      meaning: 'risk' }
+  if (d <= 30)  return { dateText, relative: `in ${d}d`,   meaning: 'risk' }
+  if (d <= 90)  return { dateText, relative: `in ${d}d`,   meaning: 'turn' }
+  return { dateText, relative: null, meaning: 'neutral' }
+}
 
 /**
  * B.6.8 — guard against placeholder titles leaking to the UI.
@@ -165,7 +230,7 @@ export function ContractsPage() {
   })
 
   const buildQuery = () => {
-    const q: Record<string, any> = { limit: 50, mode: 'keyword' }
+    const q: Record<string, any> = { limit: ES_MAX, mode: 'keyword' }
     if (debouncedSearch) q.q = debouncedSearch
     if (filters.type) q.type = filters.type
     if (filters.status) q.status = filters.status
@@ -215,24 +280,35 @@ export function ContractsPage() {
     !!filters.clauseFlags ||
     !!filters.jurisdiction
 
-  const { data, isLoading } = useQuery({
+  const {
+    data,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
     queryKey: ['contracts', debouncedSearch, filters, needsEs],
-    queryFn: () => {
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => {
       if (needsEs) {
         return api.post('/search/advanced', buildQuery()).then(r => r.data)
       }
       // Plain route — pass structural filters as GET params
-      const params: Record<string, unknown> = { limit: 50 }
+      const params: Record<string, unknown> = { limit: PAGE_SIZE }
       if (filters.type) params.type = filters.type
       if (filters.status) params.status = filters.status
       if (filters.counterpartyId) params.counterpartyId = filters.counterpartyId
       if (filters.expiryDateTo) params.expiryDateTo = filters.expiryDateTo
+      if (pageParam) params.cursor = pageParam
       return api.get('/contracts', { params }).then(r => r.data)
     },
+    // Only the Postgres route hands back a cursor; the search route answers in
+    // one page, so hasNextPage is false there and the footer says why.
+    getNextPageParam: (last: any) => (last?.hasMore ? last.cursor ?? undefined : undefined),
     // Poll every 5s while any contract in the list is being analyzed
     refetchInterval: (q) => {
-      const contracts = q.state.data?.data ?? q.state.data ?? []
-      return contracts.some((c: any) => IN_PROGRESS_STATUSES.includes(c.analysisStatus)) ? 5000 : false
+      const loaded = (q.state.data?.pages ?? []).flatMap((p: any) => p?.data ?? [])
+      return loaded.some((c: any) => IN_PROGRESS_STATUSES.includes(c.analysisStatus)) ? 5000 : false
     },
   })
 
@@ -253,13 +329,32 @@ export function ContractsPage() {
     })
   }
 
-  const contracts = data?.data ?? []
-  const total = data?.total ?? 0
+  const pages: any[] = data?.pages ?? []
+  const contracts = pages.flatMap((p) => p?.data ?? [])
+  // `total` is how many rows MATCH — not how many are on screen. Both numbers
+  // are shown in the footer, because the gap between them is the whole finding:
+  // ten of the sixty contracts inside the 90-day cliff used to be silently
+  // unreachable, and nothing on the page admitted it.
+  const total = pages[0]?.total ?? 0
   const facets = facetsData ?? {}
   // U3 — when ES returns highlights per row, surface "matched in
   // counterparty / summary / clause body" so a partial-match search
   // ("Iowa" → "Iora Health") feels confirmed instead of confusing.
-  const highlights: Record<string, Record<string, string[]>> = data?.highlights ?? {}
+  const highlights: Record<string, Record<string, string[]>> = Object.assign(
+    {},
+    ...pages.map((p) => p?.highlights ?? {}),
+  )
+  // The search route caps at ES_MAX and cannot page past it. Say so rather than
+  // letting the last row imply the list ended.
+  //
+  // Gated on needsEs because the message names search as the cause. The
+  // Postgres route pages to completion, so any shortfall there is a bug in
+  // paging, not a cap the user can narrow their way out of — and telling
+  // someone to "narrow the filters" when they have no search active sends them
+  // after a problem that isn't theirs. Seen live: a cursor that lost a row to a
+  // createdAt tie printed "Search shows the first 374 matches" on an unfiltered
+  // repository.
+  const truncated = needsEs && !hasNextPage && total > contracts.length
 
   return (
     <div className="h-full flex flex-col bg-paper-50">
@@ -339,10 +434,13 @@ export function ContractsPage() {
           )}
           {/* Active filter chips */}
           {filters.type && (
-            <FilterChip label={filters.type} onRemove={() => setFilters(f => ({ ...f, type: undefined }))} />
+            <FilterChip label={filters.type.replace(/_/g, ' ')} onRemove={() => setFilters(f => ({ ...f, type: undefined }))} />
           )}
           {filters.status && (
-            <FilterChip label={filters.status.replace(/_/g, ' ')} onRemove={() => setFilters(f => ({ ...f, status: undefined }))} />
+            // One vocabulary: the chip must say what the pill on the row says.
+            // It used to read "PENDING APPROVAL" next to a pill saying
+            // "Awaiting approval" — the same state, named twice.
+            <FilterChip label={statusMeta(filters.status).label} onRemove={() => setFilters(f => ({ ...f, status: undefined }))} />
           )}
           {filters.riskBand && (
             <FilterChip label={`${filters.riskBand} risk`} onRemove={() => setFilters(f => ({ ...f, riskBand: undefined }))} />
@@ -387,7 +485,7 @@ export function ContractsPage() {
             </FacetGroup>
             <FacetGroup title="Status">
               {(facets.statuses ?? []).map((b: any) => (
-                <FacetItem key={b.key} label={b.key.replace(/_/g, ' ')} count={b.doc_count}
+                <FacetItem key={b.key} label={statusMeta(b.key).label} count={b.doc_count}
                   active={filters.status === b.key}
                   onClick={() => setFilters(f => ({ ...f, status: f.status === b.key ? undefined : b.key }))} />
               ))}
@@ -481,146 +579,225 @@ export function ContractsPage() {
               />
             </div>
           ) : (
+            /*
+             * The grid is a real table to anything that reads the page, via ARIA
+             * rather than <table>: the column widths are a CSS grid and putting
+             * one back on table layout would change the visual result. Before
+             * this, a screen-reader user got 240 rows of values with no column
+             * association at all — "Acme Corp, Executed, 96" with nothing saying
+             * which was which. aria-rowcount is the MATCHING count, not the
+             * loaded one, so the announcement agrees with the footer.
+             */
             <div className="bg-card">
-              {/* Table header */}
-              <div className="grid grid-cols-[minmax(0,2fr)_120px_160px_100px_80px_36px] gap-4 px-6 py-2 border-b border-paper-200 bg-paper-50 sticky top-0">
-                <span className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Contract</span>
-                <span className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Status</span>
-                <span className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Counterparty</span>
-                <span className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Expires</span>
-                <span className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Risk</span>
-                <span />
-              </div>
+              <div
+                role="table"
+                aria-label="Contracts"
+                aria-rowcount={total ? total + 1 : undefined}
+              >
+                {/* `sticky` has to sit on the ROWGROUP, not the header row: a
+                    sticky box is bounded by its own parent, so with the class on
+                    the row it would only stick within a wrapper the height of one
+                    row — i.e. scroll away instantly. The rowgroup spans the whole
+                    table, which is what the header used to have before the ARIA
+                    wrappers went in. */}
+                <div role="rowgroup" className="sticky top-0 z-10">
+                  {/* Table header */}
+                  <div
+                    role="row"
+                    aria-rowindex={1}
+                    className={`grid ${GRID_COLS} gap-4 px-6 py-2 border-b border-paper-200 bg-paper-50`}
+                  >
+                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Contract</span>
+                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Status</span>
+                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Counterparty</span>
+                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Expires</span>
+                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Risk</span>
+                    {/* The chevron column is decorative, but a header cell with no
+                        name leaves the row a cell short of the others. */}
+                    <span role="columnheader"><span className="sr-only">Open</span></span>
+                  </div>
+                </div>
 
-              {/* Rows */}
-              {contracts.map((c: any) => (
-                // P48 a11y — remove role="button" + tabIndex on the wrapper
-                // so nested <button>s (Retry, kebab, etc.) don't trip axe's
-                // `nested-interactive`. Keyboard a11y is preserved by the
-                // <Link> on the title cell below; mouse users still get the
-                // full-row click target via onClick.
-                <div
-                  key={c.id}
-                  data-testid={`contract-row-${c.id}`}
-                  data-contract-title={c.title}
-                  onClick={(e) => {
-                    // Don't double-navigate when the click started on the
-                    // <Link> or a button inside the row.
-                    if ((e.target as HTMLElement).closest('a, button')) return
-                    navigate(`/contracts/${c.id}`)
-                  }}
-                  className="grid grid-cols-[minmax(0,2fr)_120px_160px_100px_80px_36px] gap-4 items-center px-6 py-2 border-b border-paper-100 hover:bg-paper-50 cursor-pointer transition-colors group"
-                >
-                  {/* Title + type */}
-                  <div className="min-w-0 flex items-center gap-3">
-                    <div className={`size-2 rounded-full flex-shrink-0 ${TYPE_DOT}`} />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Link
-                          to={`/contracts/${c.id}`}
-                          className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 rounded"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {displayTitle(c)}
-                        </Link>
-                        {IN_PROGRESS_STATUSES.includes(c.analysisStatus) && (
-                          // Machine work in flight — the system's turn, not the
-                          // user's, so info rather than attention.
-                          <span className="flex items-center gap-1 text-[10px] font-medium text-info-700 bg-info-100 border border-info-200 rounded-full px-1.5 py-0.5 flex-shrink-0">
-                            <Loader2 className="size-2.5 animate-spin" />
-                            {PHASE_LABEL[c.analysisStatus] ?? 'Processing'}
-                          </span>
-                        )}
-                        {c.analysisStatus === 'FAILED' && (
-                          <span className="flex items-center gap-1 flex-shrink-0">
-                            {/* The row-level wash exception: a document that did
-                                not get processed is real risk, not a note. */}
-                            <StatusPill status="FAILED" tone="wash" className="py-0 pl-1.5 pr-2 text-[10px] font-medium" />
-                            {/* B.6.17 — inline retry; don't make the user open the row */}
-                            <button
-                              type="button"
-                              data-testid={`retry-${c.id}`}
-                              disabled={retry.isPending && retryingId === c.id}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                retry.mutate(c.id)
-                              }}
-                              className="inline-flex items-center gap-1 rounded-full border border-risk-200 bg-card px-1.5 py-0.5 text-[10px] font-medium text-risk-700 hover:bg-risk-50 transition-colors disabled:opacity-60"
-                              title="Re-run analysis"
-                            >
-                              {retry.isPending && retryingId === c.id
-                                ? <Loader2 className="size-2.5 animate-spin" />
-                                : <RefreshCcw className="size-2.5" />}
-                              Retry
-                            </button>
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-ink-400 mt-0.5">
-                        {c.type.replace(/_/g, ' ')} ·{' '}
-                        <span title={new Date(c.createdAt).toLocaleString()}>{formatRelativeTime(c.createdAt)}</span>
-                      </p>
-                      {/* U3 — search-match field hint. When ES matched a
-                          field other than the title (counterparty,
-                          summary, clause body), tell the user — without
-                          this, "Iowa" → "Iora Health" looks like a wrong
-                          row instead of a partial-name match. */}
-                      {(() => {
-                        const h = highlights[c.id]
-                        if (!h || !debouncedSearch) return null
-                        const titleHas = (c.title ?? '').toLowerCase().includes(debouncedSearch.toLowerCase())
-                        if (titleHas) return null  // already obvious
-                        const matchedField =
-                          h.counterpartyName ? 'counterparty'
-                          : h.summary       ? 'summary'
-                          : h.plainText     ? 'clause body'
-                          : null
-                        const fragment = (h.counterpartyName ?? h.summary ?? h.plainText ?? [])[0]
-                        if (!matchedField || !fragment) return null
-                        // The ES highlighter wraps matches in <em>; strip them
-                        // for a plain-text excerpt rendering (no need to dangerously
-                        // setInnerHTML for a small chip).
-                        const plain = String(fragment).replace(/<\/?em>/g, '')
-                        return (
-                          // Nothing is blocked on the user here — it just says
-                          // which field matched — so this drops amber for neutral.
-                          <p
-                            className="text-[10.5px] text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5 mt-1 inline-block"
-                            data-testid={`match-${c.id}`}
-                            title={plain}
+                {/* Rows */}
+                <div role="rowgroup">
+                  {contracts.map((c: any, i: number) => (
+                  // P48 a11y — remove role="button" + tabIndex on the wrapper
+                  // so nested <button>s (Retry, kebab, etc.) don't trip axe's
+                  // `nested-interactive`. Keyboard a11y is preserved by the
+                  // <Link> on the title cell below; mouse users still get the
+                  // full-row click target via onClick.
+                  <div
+                    key={c.id}
+                    role="row"
+                    aria-rowindex={i + 2}
+                    data-testid={`contract-row-${c.id}`}
+                    data-contract-title={c.title}
+                    onClick={(e) => {
+                      // Don't double-navigate when the click started on the
+                      // <Link> or a button inside the row.
+                      if ((e.target as HTMLElement).closest('a, button')) return
+                      navigate(`/contracts/${c.id}`)
+                    }}
+                    className={`grid ${GRID_COLS} gap-4 items-center px-6 py-2 border-b border-paper-100 hover:bg-paper-50 cursor-pointer transition-colors group`}
+                  >
+                    {/* Title + type */}
+                    <div role="cell" className="min-w-0 flex items-center gap-3">
+                      <div className={`size-2 rounded-full flex-shrink-0 ${TYPE_DOT}`} />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <Link
+                            to={`/contracts/${c.id}`}
+                            className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 rounded"
+                            onClick={(e) => e.stopPropagation()}
                           >
-                            <span className="font-medium">Matched in {matchedField}:</span>{' '}
-                            <span className="text-ink-500">{plain.length > 60 ? plain.slice(0, 60) + '…' : plain}</span>
-                          </p>
-                        )
-                      })()}
+                            {displayTitle(c)}
+                          </Link>
+                          {IN_PROGRESS_STATUSES.includes(c.analysisStatus) && (
+                            // Machine work in flight — the system's turn, not the
+                            // user's, so info rather than attention.
+                            <span className="flex items-center gap-1 text-[10px] font-medium text-info-700 bg-info-100 border border-info-200 rounded-full px-1.5 py-0.5 flex-shrink-0">
+                              <Loader2 className="size-2.5 animate-spin" />
+                              {PHASE_LABEL[c.analysisStatus] ?? 'Processing'}
+                            </span>
+                          )}
+                          {c.analysisStatus === 'FAILED' && (
+                            <span className="flex items-center gap-1 flex-shrink-0">
+                              {/* The row-level wash exception: a document that did
+                                  not get processed is real risk, not a note. */}
+                              <StatusPill status="FAILED" tone="wash" className="py-0 pl-1.5 pr-2 text-[10px] font-medium" />
+                              {/* B.6.17 — inline retry; don't make the user open the row */}
+                              <button
+                                type="button"
+                                data-testid={`retry-${c.id}`}
+                                disabled={retry.isPending && retryingId === c.id}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  retry.mutate(c.id)
+                                }}
+                                className="inline-flex items-center gap-1 rounded-full border border-risk-200 bg-card px-1.5 py-0.5 text-[10px] font-medium text-risk-700 hover:bg-risk-50 transition-colors disabled:opacity-60"
+                                title="Re-run analysis"
+                              >
+                                {retry.isPending && retryingId === c.id
+                                  ? <Loader2 className="size-2.5 animate-spin" />
+                                  : <RefreshCcw className="size-2.5" />}
+                                Retry
+                              </button>
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-ink-400 mt-0.5">
+                          {c.type.replace(/_/g, ' ')} ·{' '}
+                          <span title={new Date(c.createdAt).toLocaleString()}>{formatRelativeTime(c.createdAt)}</span>
+                        </p>
+                        {/* U3 — search-match field hint. When ES matched a
+                            field other than the title (counterparty,
+                            summary, clause body), tell the user — without
+                            this, "Iowa" → "Iora Health" looks like a wrong
+                            row instead of a partial-name match. */}
+                        {(() => {
+                          const h = highlights[c.id]
+                          if (!h || !debouncedSearch) return null
+                          const titleHas = (c.title ?? '').toLowerCase().includes(debouncedSearch.toLowerCase())
+                          if (titleHas) return null  // already obvious
+                          const matchedField =
+                            h.counterpartyName ? 'counterparty'
+                            : h.summary       ? 'summary'
+                            : h.plainText     ? 'clause body'
+                            : null
+                          const fragment = (h.counterpartyName ?? h.summary ?? h.plainText ?? [])[0]
+                          if (!matchedField || !fragment) return null
+                          // The ES highlighter wraps matches in <em>; strip them
+                          // for a plain-text excerpt rendering (no need to dangerously
+                          // setInnerHTML for a small chip).
+                          const plain = String(fragment).replace(/<\/?em>/g, '')
+                          return (
+                            // Nothing is blocked on the user here — it just says
+                            // which field matched — so this drops amber for neutral.
+                            <p
+                              className="text-[10.5px] text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5 mt-1 inline-block"
+                              data-testid={`match-${c.id}`}
+                              title={plain}
+                            >
+                              <span className="font-medium">Matched in {matchedField}:</span>{' '}
+                              <span className="text-ink-500">{plain.length > 60 ? plain.slice(0, 60) + '…' : plain}</span>
+                            </p>
+                          )
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* Status */}
+                    <div role="cell">
+                      <StatusPill status={c.status} />
+                    </div>
+
+                    {/* Counterparty */}
+                    <p role="cell" className="text-[12.5px] text-ink-700 truncate">{c.counterpartyName ?? c.counterparty?.name ?? <span className="text-ink-400">—</span>}</p>
+
+                    {/* Expiry — the date carries its own urgency; see expiryMeta. */}
+                    {(() => {
+                      const e = expiryMeta(c.expiryDate, c.status)
+                      if (!e) return <p role="cell" className="text-[12.5px] text-ink-400 tabular-nums">—</p>
+                      return (
+                        <p role="cell" className="text-[12.5px] tabular-nums">
+                          <span className={`${MEANING_CLASS[e.meaning].fg}${e.meaning === 'risk' ? ' font-medium' : ''}`}>
+                            {e.dateText}
+                          </span>
+                          {e.relative && (
+                            <span className={`block text-[10.5px] ${MEANING_CLASS[e.meaning].fg}`}>{e.relative}</span>
+                          )}
+                        </p>
+                      )
+                    })()}
+
+                    {/* Risk */}
+                    <div role="cell">
+                      {c.riskScore != null ? (
+                        <RiskMeter score={c.riskScore} />
+                      ) : <span className="text-ink-400 text-[12.5px]">—</span>}
+                    </div>
+
+                    {/* Arrow */}
+                    <div role="cell">
+                      <ChevronRight aria-hidden="true" className="size-4 text-paper-300 group-hover:text-ink-400 transition-colors" />
                     </div>
                   </div>
-
-                  {/* Status */}
-                  <div>
-                    <StatusPill status={c.status} />
-                  </div>
-
-                  {/* Counterparty */}
-                  <p className="text-[12.5px] text-ink-700 truncate">{c.counterpartyName ?? c.counterparty?.name ?? <span className="text-ink-400">—</span>}</p>
-
-                  {/* Expiry */}
-                  <p className="text-[12.5px] text-ink-700 tabular-nums">
-                    {c.expiryDate ? new Date(c.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : <span className="text-ink-400">—</span>}
-                  </p>
-
-                  {/* Risk */}
-                  <div>
-                    {c.riskScore != null ? (
-                      <RiskMeter score={c.riskScore} />
-                    ) : <span className="text-ink-400 text-[12.5px]">—</span>}
-                  </div>
-
-                  {/* Arrow */}
-                  <ChevronRight className="size-4 text-paper-300 group-hover:text-ink-400 transition-colors" />
+                  ))}
                 </div>
-              ))}
+              </div>
+
+              {/* Counts + paging. The list used to stop dead at 50 rows with
+                  nothing saying so, which on a renewals cliff reads as "that is
+                  all of them". */}
+              <div
+                data-testid="contracts-pagination"
+                className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-paper-200 px-6 py-3"
+              >
+                <p className="text-dense text-ink-500 tabular-nums" aria-live="polite">
+                  Showing {contracts.length} of {total} {total === 1 ? 'contract' : 'contracts'}
+                </p>
+                {hasNextPage && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => fetchNextPage()}
+                    disabled={isFetchingNextPage}
+                    data-testid="load-more-contracts"
+                  >
+                    {isFetchingNextPage
+                      ? <><Loader2 className="animate-spin" /> Loading…</>
+                      : <>Load {Math.min(PAGE_SIZE, Math.max(total - contracts.length, 0)) || PAGE_SIZE} more</>}
+                  </Button>
+                )}
+                {truncated && (
+                  // Not decoration: an incomplete answer on the screen legal ops
+                  // triages from is the user's problem to resolve, so it takes
+                  // the "your turn" tone and says what to do about it.
+                  <span className="text-dense text-attention-700">
+                    Search shows the first {contracts.length} matches — narrow the filters to see the rest.
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>

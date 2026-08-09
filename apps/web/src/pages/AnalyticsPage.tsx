@@ -75,17 +75,21 @@ function formatDays(d: number | null): string {
  * so a reader who has learned the colors once does not relearn them here.
  */
 const PAINT = {
-  brand:     '#047857', // binding — approved, executed
-  info:      '#2563EB', // in flight — someone else's turn
-  attention: '#D97706', // your turn
-  risk:      '#DC2626', // exposure
-  riskDeep:  '#B91C1C', // risk-700 — the far end of the same family
-  neutral:   '#9A9893', // ink-400 — nothing is happening
+  brand:     '#047857', // brand-700  — binding: approved, executed
+  info:      '#2563EB', // info-600   — in flight: someone else's turn
+  attention: '#CC7005', // attention-600 — your turn
+  risk:      '#DC2626', // risk-600   — exposure
+  riskDeep:  '#B91C1C', // risk-700   — the far end of the same family
+  neutral:   '#757369', // ink-400    — nothing is happening
   grid:      '#E7E6E3', // paper-200
-  axis:      '#9A9893', // ink-400
-  ink:       '#17161A',
-  inkMuted:  '#57554F',
-  card:      '#FFFFFF',
+  // Axis ticks are text, so they answer to 4.5:1, not the 3:1 a bar or a dot
+  // gets. ink-400 measures 4.76:1 on white but only 4.56:1 on paper-50, and at
+  // 11px inside a busy plot it reads as a smudge — ink-500 is the same voice
+  // with 5.6:1 behind it.
+  axis:      '#6A6862', // ink-500
+  ink:       '#17161A', // ink-950
+  inkMuted:  '#57554F', // ink-700
+  card:      '#FFFFFF', // paper-0
 } as const
 
 /** Meaning → series color, so status bars agree with the status pills. */
@@ -110,7 +114,11 @@ const RISK_PAINT: Record<string, string> = {
   none:     PAINT.neutral,
 }
 
-/* Popovers are e2 — a tooltip floats above the page but is not a dialog. */
+/*
+ * Recharts styles the tooltip inline, so the tokens are restated literally:
+ * paper-200 border, rounded-md (6px), shadow-e2. A tooltip floats above the
+ * page but is not a dialog, so it stops at e2 — e3 stays for overlays.
+ */
 const TOOLTIP_CONTENT: React.CSSProperties = {
   background:   PAINT.card,
   border:       `1px solid ${PAINT.grid}`,
@@ -121,8 +129,26 @@ const TOOLTIP_CONTENT: React.CSSProperties = {
 }
 const TOOLTIP_LABEL: React.CSSProperties = { color: PAINT.ink, fontWeight: 600, marginBottom: 2 }
 const TOOLTIP_ITEM:  React.CSSProperties = { color: PAINT.inkMuted }
-const AXIS_TICK = { fontSize: 11, fill: PAINT.axis }
+const AXIS_TICK = { fontSize: 11.5, fill: PAINT.axis }
 const LEGEND_STYLE: React.CSSProperties = { fontSize: 11.5, color: PAINT.inkMuted }
+
+/**
+ * Square points for the "Executed" series.
+ *
+ * WCAG 1.4.1: the two lines on the volume chart may not be told apart by hue
+ * alone. Created is dashed with round points, Executed is solid with square
+ * ones, and the legend keys use the matching shapes — so the chart still reads
+ * in greyscale, in print, and to a deuteranope.
+ */
+function SquareDot({ cx, cy }: { cx?: number; cy?: number }) {
+  if (cx == null || cy == null) return null
+  return (
+    <rect
+      x={cx - 3.5} y={cy - 3.5} width={7} height={7}
+      fill={PAINT.card} stroke={PAINT.brand} strokeWidth={2}
+    />
+  )
+}
 
 export function AnalyticsPage() {
   const [windowDays, setWindowDays] = useState(90)
@@ -153,12 +179,16 @@ export function AnalyticsPage() {
           <h1 className="text-title text-ink-950">Analytics</h1>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-ink-500">Window:</span>
+          {/* The "Window:" text was a bare span, so the control announced
+              itself as an unlabelled combobox. A real label also makes the
+              word a click target for the select. */}
+          <label htmlFor="analytics-window-select" className="text-[11px] text-ink-500">Window:</label>
           <select
+            id="analytics-window-select"
             value={windowDays}
             onChange={e => setWindowDays(Number(e.target.value))}
             data-testid="analytics-window"
-            className="h-8 rounded-md border border-input bg-card px-2.5 text-[13px] text-ink-950 focus:outline-none focus-visible:border-brand-700"
+            className="h-8 rounded-md border border-input bg-card px-2.5 text-[13px] text-ink-950 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
           >
             <option value={30}>Last 30 days</option>
             <option value={90}>Last 90 days</option>
@@ -264,9 +294,31 @@ export function AnalyticsPage() {
                 cursor={{ stroke: PAINT.grid }}
               />
               <Legend wrapperStyle={LEGEND_STYLE} />
-              {/* Created is in flight; executed is binding. */}
-              <Line type="monotone" dataKey="created"  stroke={PAINT.info}  strokeWidth={2} name="Created" />
-              <Line type="monotone" dataKey="executed" stroke={PAINT.brand} strokeWidth={2} name="Executed" />
+              {/* Created is in flight; executed is binding. Colour says which
+                  meaning; the dash and the point shape say which series, so
+                  neither depends on the reader seeing hue (WCAG 1.4.1). A
+                  dashed line for the provisional half of the pair and a solid
+                  one for the executed half also happens to read correctly.
+
+                  isAnimationActive={false} is not a taste call. Recharts draws
+                  a line by animating stroke-dasharray from "0px, <length>" to
+                  the full length — and here the animation never ran, so both
+                  curves sat at zero length and the chart has been showing bare
+                  dots. It also means the animation owns stroke-dasharray, so a
+                  dash pattern cannot survive alongside it. The status bars on
+                  this page already opt out for their own reasons. */}
+              <Line
+                type="monotone" dataKey="created" name="Created"
+                stroke={PAINT.info} strokeWidth={2} strokeDasharray="5 4"
+                legendType="circle" isAnimationActive={false}
+                dot={{ r: 3, fill: PAINT.card, stroke: PAINT.info, strokeWidth: 2 }}
+              />
+              <Line
+                type="monotone" dataKey="executed" name="Executed"
+                stroke={PAINT.brand} strokeWidth={2}
+                legendType="square" isAnimationActive={false}
+                dot={<SquareDot />}
+              />
             </LineChart>
           </ResponsiveContainer>
         </ChartCard>

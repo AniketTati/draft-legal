@@ -19,7 +19,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
-import { Wand2, Check, X, AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { AssistMark } from '@/components/ui/assist'
+import { Check, X, AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 
 export interface StagedProposal {
   clauseId:      string
@@ -125,13 +126,19 @@ export function PlaybookRedlineRailSection({
             Check every clause against your playbook and draft a first-pass markup.
             Nothing changes in the document until you accept it.
           </p>
+          {/* This is the heaviest model action in the product — it reads the
+              whole agreement and writes a full markup. In ink it was
+              indistinguishable from "Draft new", i.e. from something a person
+              does. Assist + the diamond say, before the click, that a machine
+              is about to author text. The white diamond is the mark on a filled
+              indigo button; assist-600 on assist-600 would be invisible. */}
           <Button
-            size="sm" className="w-full gap-1.5"
+            size="sm" variant="assist" className="w-full gap-1.5"
             onClick={() => start.mutate()}
             disabled={start.isPending}
             data-testid="start-playbook-redline"
           >
-            <Wand2 className="h-3.5 w-3.5" />
+            <AssistMark className="bg-white" />
             {start.isPending ? 'Starting…' : 'Redline against playbook'}
           </Button>
         </div>
@@ -154,7 +161,10 @@ export function PlaybookRedlineRailSection({
               {error || 'The redline could not be completed.'}
             </p>
           </div>
-          <Button size="sm" variant="outline" className="w-full" onClick={() => start.mutate()}>
+          {/* Same model run, so the same mark — quieter, because a retry after a
+              failure should not shout louder than the first attempt did. */}
+          <Button size="sm" variant="assistOutline" className="w-full gap-1.5" onClick={() => start.mutate()}>
+            <AssistMark />
             Try again
           </Button>
         </div>
@@ -248,18 +258,24 @@ export function PlaybookRedlineRailSection({
                       {isOpen && (
                         <div className="border-t border-paper-100 px-2 py-2 space-y-1.5">
                           {p.rationale && <p className="text-[11px] text-ink-700">{p.rationale}</p>}
+                          {/* Neither block is a status. The current wording is
+                              what the signed document says today — a fact, so
+                              neutral, not risk. The replacement has been drafted
+                              by a model and accepted by nobody, so it takes the
+                              assist wash and the diamond rather than brand,
+                              which would read as language already agreed. */}
                           <div>
                             <p className="text-[10px] uppercase tracking-[0.07em] text-ink-400 mb-0.5">Current</p>
-                            {/* Diff washes carry meaning, not decoration: the
-                                text on its way out sits on risk, the text that
-                                would replace it on binding. */}
-                            <p className="text-[11px] text-ink-700 bg-risk-50 rounded-chip px-1.5 py-1 whitespace-pre-line">
+                            <p className="text-[11px] text-ink-700 bg-paper-100 rounded-chip px-1.5 py-1 whitespace-pre-line">
                               {p.originalText}
                             </p>
                           </div>
                           <div>
-                            <p className="text-[10px] uppercase tracking-[0.07em] text-ink-400 mb-0.5">Proposed</p>
-                            <p className="text-[11px] text-ink-950 bg-brand-50 rounded-chip px-1.5 py-1 whitespace-pre-line">
+                            <p className="flex items-center gap-1 text-[10px] uppercase tracking-[0.07em] text-assist-700 mb-0.5">
+                              <AssistMark className="size-[5px]" />
+                              Proposed
+                            </p>
+                            <p className="text-[11px] text-assist-900 bg-assist-50 rounded-chip px-1.5 py-1 whitespace-pre-line">
                               {p.proposedText}
                             </p>
                           </div>

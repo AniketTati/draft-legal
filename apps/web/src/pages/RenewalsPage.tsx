@@ -30,6 +30,49 @@ import { MEANING_CLASS, type Meaning } from '@/lib/status'
 type Bucket = 'all' | 'this_week' | 'next_30' | 'next_60' | 'next_90' | 'overdue'
 type StatusFilter = 'all' | 'pending' | 'decided'
 
+/** AI-extracted term sheet. Every field is best-effort and may be missing. */
+interface KeyTerms {
+  autoRenew?: boolean | null
+  /**
+   * Days of notice-to-terminate required before expiry.
+   *
+   * Four writers, four spellings, and no migration ever unified them:
+   * `noticePeriodDays` is what the extraction agent emits (review_agent.py
+   * rawFields), `noticePeriod` is what a human writes when they correct the
+   * field in the review queue (FIELD_LABELS in api/routes/review-queue.ts) and
+   * is a phrase like "90 days", `renewalNoticeDays` comes from the audit seed,
+   * and `noticeDays` from the demo portfolio seed. See noticeDays() below —
+   * reading only one of these is why a contract whose notice period was known
+   * still reported it as unknown.
+   */
+  noticeDays?:       number | string | null
+  noticePeriodDays?: number | string | null
+  renewalNoticeDays?: number | string | null
+  noticePeriod?:     number | string | null
+}
+
+/**
+ * The notice period in whole days, across every spelling the codebase writes
+ * and both shapes it stores them in — 90 or "90 days".
+ *
+ * Only a leading integer counts. "30-60 days" would be a guess about which
+ * bound binds, and this feeds a date people diarise against, so it is left
+ * unknown instead.
+ */
+function noticeDaysOf(kt: KeyTerms): number | null {
+  for (const raw of [kt.noticeDays, kt.noticePeriodDays, kt.renewalNoticeDays, kt.noticePeriod]) {
+    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.round(raw)
+    if (typeof raw === 'string') {
+      const m = raw.trim().match(/^(\d+)\s*(?:days?|d)?\s*$/i)
+      if (m) {
+        const n = Number(m[1])
+        if (n > 0) return n
+      }
+    }
+  }
+  return null
+}
+
 interface RenewalRow {
   id:               string
   title:            string
@@ -41,6 +84,7 @@ interface RenewalRow {
   currency:         string | null
   ownerId:          string
   ownerName:        string | null
+  keyTerms:         KeyTerms | null
   renewalDecision:    string | null
   renewalDecisionAt:  string | null
   renewalAdvice: {
@@ -120,6 +164,61 @@ function dueText(iso: string | null): { text: string; tone: string } {
   if (d <= 7)  return { text: `${dateStr} · in ${d}d`,          tone: 'text-attention-700 font-medium' }
   if (d <= 30) return { text: `${dateStr} · in ${d}d`,          tone: 'text-attention-700' }
   return { text: `${dateStr} · in ${d}d`, tone: 'text-ink-500' }
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * The auto-renewal notice deadline: expiry minus the notice-to-terminate
+ * period — the last day anyone can stop the contract renewing.
+ *
+ * This cannot be read off the expiry date the row already shows, and that is
+ * exactly why it needs its own line: the two run on different clocks. A
+ * contract expiring in 40 days with a 90-day notice period is 50 days past the
+ * point of no return, while the expiry column still reads a calm "in 40d" —
+ * the renewal is already locked in and nothing on the row said so. Once the
+ * deadline has passed or is close it is live exposure, so it takes the risk
+ * colour rather than the expiry date's chrome, and carries an icon so the
+ * colour is not the only signal.
+ *
+ * Returns null for contracts that do not auto-renew: there is no deadline to
+ * miss, and a line on every row would spend the risk colour as decoration.
+ */
+function noticeDeadline(r: RenewalRow): {
+  text: string
+  tone: string
+  title: string
+  atRisk: boolean
+} | null {
+  const kt = r.keyTerms
+  if (!kt?.autoRenew) return null
+
+  const days  = noticeDaysOf(kt)
+  const expiry = r.expiryDate ? new Date(r.expiryDate) : null
+
+  // Auto-renewing, but there is no notice period (or no expiry) to subtract.
+  // Say so — a fabricated date is worse than an admitted gap, because this is
+  // a date people diarise against.
+  if (days == null || !expiry || isNaN(expiry.getTime())) {
+    return {
+      text:   'Auto-renews · notice period unknown',
+      tone:   'text-ink-500',
+      title:  'This contract auto-renews, but no notice-to-terminate period was extracted, so the deadline to stop it is unknown.',
+      atRisk: false,
+    }
+  }
+
+  const deadline = new Date(expiry.getTime() - days * DAY_MS)
+  const dateStr  = deadline.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  const d        = daysUntil(deadline.toISOString())
+  const title    = `Auto-renews. ${days} days' notice to terminate, so notice must be served by ${dateStr}.`
+  const risky    = 'text-risk-700 font-medium'
+
+  if (d == null) return { text: `Notice by ${dateStr}`, tone: 'text-ink-500', title, atRisk: false }
+  if (d < 0)     return { text: `Notice deadline passed · ${dateStr}`, tone: risky, title, atRisk: true }
+  if (d === 0)   return { text: `Notice due today · ${dateStr}`,       tone: risky, title, atRisk: true }
+  if (d <= 30)   return { text: `Notice by ${dateStr} · ${d}d left`,   tone: risky, title, atRisk: true }
+  return { text: `Notice by ${dateStr}`, tone: 'text-ink-500', title, atRisk: false }
 }
 
 function formatMoney(n: number, currency = 'USD'): string {
@@ -228,6 +327,7 @@ export function RenewalsPage() {
           <select
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label="Filter by renewal decision"
             data-testid="renewal-decision-filter"
             className="h-8 text-[13px] text-ink-950 border border-input rounded-md px-2 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
           >
@@ -291,6 +391,7 @@ export function RenewalsPage() {
               <ul className="divide-y divide-paper-200">
                 {m.rows.map(r => {
                   const due = dueText(r.expiryDate)
+                  const notice = noticeDeadline(r)
                   const decisionPill = r.renewalDecision ? DECISION_PILL[r.renewalDecision] : null
                   const adviceLabel = r.renewalAdvice
                     ? ADVICE_LABEL[r.renewalAdvice.recommendation?.toUpperCase() ?? '']
@@ -321,8 +422,20 @@ export function RenewalsPage() {
                           {r.ownerName && <span>· {r.ownerName}</span>}
                         </div>
                       </div>
-                      <div className={`text-[11.5px] tabular-nums whitespace-nowrap ${due.tone}`}>
-                        {due.text}
+                      <div className="text-right whitespace-nowrap">
+                        <div className={`text-[11.5px] tabular-nums ${due.tone}`}>
+                          {due.text}
+                        </div>
+                        {notice && (
+                          <div
+                            className={`mt-0.5 flex items-center justify-end gap-1 text-[10.5px] tabular-nums ${notice.tone}`}
+                            title={notice.title}
+                            data-testid={`renewal-notice-${r.id}`}
+                          >
+                            {notice.atRisk && <AlertTriangle className="size-3 shrink-0" />}
+                            {notice.text}
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5">
                         {adviceLabel && !decisionPill && (

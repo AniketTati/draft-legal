@@ -200,3 +200,102 @@
 .document-canvas--tone-amber .risk-marker--risk.risk-marker--view-summary::before {
   background: hsl(var(--attention));
 }
+
+/* ─── Print ───────────────────────────────────────────────────────────────────
+   On screen the canvas SIMULATES a sheet of paper — fixed 820px width, 2.5cm
+   padding, a page shadow, an 11in minimum height. On actual paper all of that
+   is a second sheet drawn inside the first: doubled margins, a shadow the
+   printer renders as a grey smear, and a forced blank page whenever the
+   contract is shorter than the simulated one. The @page margin in index.css is
+   the real margin, so the simulation is dropped and the document just becomes
+   the document.
+
+   This file is @imported ABOVE @tailwind utilities, so these rules lose to
+   Tailwind's utilities on specificity alone — hence !important. */
+@media print {
+  .document-canvas {
+    width: 100% !important;
+    max-width: none !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+  }
+
+  .document-canvas .ProseMirror {
+    max-width: none !important;
+    min-height: 0 !important;
+    /* 11.5pt was sized for a 820px screen column; the printed measure is wider
+       once the @page margin replaces the canvas padding, so the same text at
+       10.5pt keeps a comparable line length and saves a sheet or two on a
+       long-form MSA. */
+    font-size: 10.5pt;
+  }
+  .document-canvas .ProseMirror p {
+    orphans: 3;
+    widows: 3;
+  }
+  /* A section heading stranded at the foot of a page is the classic contract
+     printing defect — the clause number says one thing, the next sheet says
+     another. */
+  .document-canvas .ProseMirror h1,
+  .document-canvas .ProseMirror h2,
+  .document-canvas .ProseMirror h3,
+  .document-canvas .ProseMirror h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  /* Signature blocks and short recitals must not be split across sheets. */
+  .document-canvas .ProseMirror tr,
+  .document-canvas .ProseMirror blockquote,
+  .document-canvas .ProseMirror li {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .document-canvas .ProseMirror table {
+    break-inside: auto;
+  }
+  .document-canvas .ProseMirror thead {
+    display: table-header-group;
+  }
+
+  /*
+    Risk and deviation markers are hue-coded on screen (red squiggle = risk,
+    blue = deviation) and greyscale flattens the two into the same wavy line.
+    Print gives them different STROKES instead — a doubled underline for risk,
+    a single dotted one for a deviation — so a marked-up print still reads,
+    and the marker keeps working on a mono office printer.
+  */
+  .document-canvas .risk-marker--risk.risk-marker--view-full {
+    background: transparent !important;
+    text-decoration: underline double hsl(var(--foreground)) !important;
+    text-underline-offset: 3px;
+  }
+  .document-canvas .risk-marker--deviation.risk-marker--view-full {
+    background: transparent !important;
+    text-decoration: underline dotted hsl(var(--foreground)) !important;
+    text-underline-offset: 3px;
+  }
+  /* The summary-mode margin dot is a background fill, which print drops. Same
+     two-axis trick the status dots use in index.css: risk is a solid square,
+     a deviation is a hollow circle. */
+  .document-canvas .risk-marker--view-summary::before {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .document-canvas .risk-marker--risk.risk-marker--view-summary::before {
+    background: hsl(var(--foreground)) !important;
+    border-radius: 0 !important;
+  }
+  .document-canvas .risk-marker--deviation.risk-marker--view-summary::before {
+    background: transparent !important;
+    box-shadow: inset 0 0 0 1px hsl(var(--foreground));
+  }
+  .document-canvas .risk-marker:hover {
+    background: transparent;
+  }
+}

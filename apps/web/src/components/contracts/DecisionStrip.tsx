@@ -23,11 +23,12 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { AssistChip, AssistMark } from '@/components/ui/assist'
 import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import {
-  CheckCircle2, XCircle, ArrowRight, AlertTriangle, Loader2, Sparkles,
+  CheckCircle2, XCircle, ArrowRight, Loader2,
   ShieldAlert, TrendingUp, ChevronDown,
 } from 'lucide-react'
 
@@ -54,16 +55,21 @@ interface AwaitingMe {
   }
 }
 
-// A model advising "Approve" is not an approval. Brand means binding, and this
-// chip sits inches from the real brand Approve button — colouring the advice
-// the same green would read as the decision already being made, so the
-// recommendation stays neutral and lets the words carry it. (Same call
-// ApprovalCard makes.) "Review required" is genuinely the user's turn and
-// "Reject advised" is genuine exposure, so those two keep their meaning.
-const REC_TONE: Record<string, { label: string; tone: string; icon: JSX.Element }> = {
-  approve:         { label: 'Approve',         tone: 'text-ink-700 bg-paper-100 border-paper-200',              icon: <CheckCircle2 className="size-3.5" /> },
-  review_required: { label: 'Review required', tone: 'text-attention-700 bg-attention-50 border-attention-200', icon: <AlertTriangle className="size-3.5" /> },
-  reject_advised:  { label: 'Reject advised',  tone: 'text-risk-700 bg-risk-50 border-risk-200',                icon: <XCircle className="size-3.5" /> },
+/**
+ * The recommendation carries NO meaning colour, in any of its three states.
+ *
+ * This chip sits inches from the real Approve and Reject buttons, and a reader
+ * must never be able to mistake what a model advised for what a human recorded:
+ * emerald here would read as already-approved, red as already-rejected. Amber
+ * for "review required" is the same trap one step down — it claims the workflow
+ * has put the ball in your court, when all that happened is that a model was
+ * unsure. The assist vocabulary is the whole answer: the diamond says who wrote
+ * it, the words say what it advises. (Same call ApprovalCard's REC_LABEL makes.)
+ */
+const REC_LABEL: Record<string, string> = {
+  approve:         'Approve',
+  review_required: 'Review required',
+  reject_advised:  'Reject advised',
 }
 
 export function DecisionStrip({
@@ -103,7 +109,7 @@ export function DecisionStrip({
   })
 
   const recKey = (awaitingMe.instance.approvalRecommendation ?? 'review_required').toLowerCase()
-  const rec = REC_TONE[recKey] ?? REC_TONE.review_required
+  const recLabel = REC_LABEL[recKey] ?? REC_LABEL.review_required
   const topRisk = awaitingMe.instance.keyRisks?.[0]
   const confidence = Math.max(0, Math.min(100, Math.round(
     // Confidence is derived: strong recommendation + few blockers → high.
@@ -113,6 +119,9 @@ export function DecisionStrip({
       : recKey === 'reject_advised' ? 75
       : 60) - (awaitingMe.instance.keyRisks?.length ?? 0) * 5
   )))
+  // "The mark scales with how sure it is" — a hollow diamond on a shaky
+  // recommendation asks to be read rather than trusted.
+  const confidenceBand = confidence >= 80 ? 'high' : confidence >= 60 ? 'medium' : 'low'
 
   const riskPct = normalizeRisk(riskScore)
   // Route the badge through the shared risk bands so this pill and the risk
@@ -147,8 +156,9 @@ export function DecisionStrip({
 
         {/* AI Confidence */}
         <div className="flex items-center gap-1.5 text-dense" title="Higher = AI is more certain about its recommendation">
-          {/* A machine-produced number, so the glyph keeps the assist accent. */}
-          <Sparkles className="size-3.5 text-assist-600" />
+          {/* A machine-produced number, so it takes the machine's one glyph —
+              the diamond — rather than a second sparkle that means the same. */}
+          <AssistMark confidence={confidenceBand} />
           <span className="text-ink-500">Confidence</span>
           <span className="font-semibold text-ink-950 tabular-nums">{confidence}%</span>
         </div>
@@ -162,14 +172,10 @@ export function DecisionStrip({
           <span>Risk {riskPct != null ? `${riskPct}%` : '—'}</span>
         </div>
 
-        {/* AI Recommendation */}
-        <div className={cn(
-          'flex items-center gap-1 px-2 py-0.5 rounded-full border text-dense font-medium',
-          rec.tone,
-        )}>
-          {rec.icon}
-          <span>AI: {rec.label}</span>
-        </div>
+        {/* AI Recommendation — advice, not a verdict. See REC_LABEL. */}
+        <AssistChip icon={<AssistMark confidence={confidenceBand} className="size-[5px]" />}>
+          AI: {recLabel}
+        </AssistChip>
 
         {/* Top blocker — clickable "jump" link */}
         {topRisk && (

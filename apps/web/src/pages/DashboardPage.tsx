@@ -10,6 +10,8 @@ import {
 } from 'lucide-react'
 import { toast } from '@/components/common/Toaster'
 import { Button } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
+import { MEANING_CLASS, normalizeRisk, riskBand, type Meaning } from '@/lib/status'
 import { UploadModal } from '@/components/contracts/UploadModal'
 import { NewRequestModal } from '@/components/requests/NewRequestModal'
 import { WelcomeChecklist } from '@/components/onboarding/WelcomeChecklist'
@@ -46,6 +48,13 @@ function resourceLink(entityType: string, entityId: string): string {
 // The per-actor colour hash is gone: activity avatars are one neutral paper
 // chip. A rainbow of identity colours down the feed competes with the five
 // meaning colours, and identity is already carried by the initials.
+
+// Severity band → meaning. Kept as a local literal on purpose: lib/status.ts
+// declines to export this map so a RiskBand can never be typed as a Meaning and
+// handed to <StatusPill> (see riskBand's docstring). It is the same literal the
+// contract detail page and the approval strip use, so a score that turns amber
+// there cannot stay calm here.
+const RISK_TO_MEANING = { low: 'binding', medium: 'turn', high: 'risk' } as const
 
 // ─── Component ─────────────────────────────────────────────────────────────────
 
@@ -429,8 +438,11 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     )
   }
 
-  // The accent is the row's MEANING, not a colour: blocked-on-you is attention,
-  // an expiry is risk, work merely moving is inflight, a draft is nothing yet.
+  // Each chip carries a MEANING, not a colour, and the colour comes from
+  // MEANING_CLASS. "Your day" is one of the few surfaces that genuinely knows
+  // the viewer is the blocker — the query behind it is already scoped to this
+  // user — so it states `turn` outright instead of asking a status map that is
+  // deliberately viewer-neutral (see the header comment in lib/status.ts).
   const chips: Array<{
     key: string
     icon: typeof CheckSquare
@@ -438,7 +450,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     label: string
     verb: string
     to: string
-    accent: 'attention' | 'inflight' | 'risk' | 'neutral'
+    meaning: Meaning
   }> = []
 
   if (yourDay.approvalsWaiting > 0) chips.push({
@@ -448,7 +460,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     label: yourDay.approvalsWaiting === 1 ? 'approval' : 'approvals',
     verb: 'waiting on your decision',
     to: '/approvals',
-    accent: 'attention',
+    meaning: 'turn',
   })
 
   if (yourDay.requestsWaiting > 0) chips.push({
@@ -458,8 +470,8 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     label: yourDay.requestsWaiting === 1 ? 'request' : 'requests',
     verb: 'assigned to you',
     to: '/requests',
-    // Assigned to you is your turn, not merely in flight — so attention, not info.
-    accent: 'attention',
+    // Assigned to you is your turn, not merely in flight — so turn, not inflight.
+    meaning: 'turn',
   })
 
   if (yourDay.contractsExpiring > 0) chips.push({
@@ -473,7 +485,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
       d.setDate(d.getDate() + 90)
       return `/contracts?expiryDateTo=${d.toISOString().slice(0, 10)}&filterLabel=${encodeURIComponent('Your contracts expiring in 90 days')}`
     })(),
-    accent: 'risk',
+    meaning: 'risk',
   })
 
   // P7.1.1 — F-78 fix: negotiations chip for the Legal persona, whose
@@ -487,7 +499,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     verb: negCount === 1 ? 'in flight you own' : 'in flight you own',
     to: '/contracts?status=UNDER_NEGOTIATION',
     // "In flight you own" is movement, not a block on this user.
-    accent: 'inflight',
+    meaning: 'inflight',
   })
 
   if (yourDay.draftsInProgress > 0) chips.push({
@@ -497,17 +509,8 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     label: yourDay.draftsInProgress === 1 ? 'draft' : 'drafts',
     verb: 'in progress',
     to: '/contracts?status=DRAFT',
-    accent: 'neutral',
+    meaning: 'neutral',
   })
-
-  // One colored element per chip — the leading dot. The chip body stays paper so
-  // a row of five doesn't read as five competing washes.
-  const accentStyles: Record<string, { icon: string; dot: string }> = {
-    attention: { icon: 'text-attention-600', dot: 'bg-attention-600' },
-    inflight:  { icon: 'text-info-600',      dot: 'bg-info-600' },
-    risk:      { icon: 'text-risk-600',      dot: 'bg-risk-600' },
-    neutral:   { icon: 'text-ink-400',       dot: 'bg-ink-400' },
-  }
 
   return (
     <div data-testid="your-day-band" className="rounded-card border border-paper-200 bg-card p-4">
@@ -515,7 +518,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
         <div>
           {/* The one eyebrow in the product allowed a meaning colour — but only
               when something is actually blocked on the user. */}
-          <p className={`text-eyebrow uppercase ${yourDay.total > 0 ? 'text-attention-700' : 'text-ink-500'}`}>
+          <p className={`text-eyebrow uppercase ${yourDay.total > 0 ? MEANING_CLASS.turn.fg : 'text-ink-500'}`}>
             {yourDay.total > 0 ? 'Your day' : 'In progress'}
           </p>
           <p className="text-dense text-ink-500 mt-1">
@@ -527,7 +530,9 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
       </div>
       <div className="flex flex-wrap gap-2">
         {chips.map((c) => {
-          const s = accentStyles[c.accent]
+          // One coloured element per chip — the leading dot. The chip body stays
+          // paper so a row of five doesn't read as five competing washes.
+          const s = MEANING_CLASS[c.meaning]
           return (
             <button
               key={c.key}
@@ -536,7 +541,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
               className="inline-flex items-center gap-2 rounded-md border border-paper-200 bg-card px-3 py-2 text-left text-ink-950 transition-colors hover:border-paper-300 hover:bg-paper-50"
             >
               <span className={`size-1.5 shrink-0 rounded-full ${s.dot}`} />
-              <c.icon className={`size-3.5 ${s.icon}`} />
+              <c.icon className={`size-3.5 ${s.fg}`} />
               <span className="text-dense">
                 <span className="font-semibold tabular-nums">{c.count}</span>{' '}
                 <span className="font-medium">{c.label}</span>{' '}
@@ -559,28 +564,45 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
             <YourDayList
               title="Negotiations in flight"
               icon={MessageSquareWarning}
-              accent="inflight"
+              meaning="inflight"
               rows={yourDay.negotiations!}
-              renderMeta={(r) => (
-                <>
-                  {r.value && (
-                    <span className="font-medium tabular-nums text-ink-950">
-                      {(r.currency ?? 'USD')} {r.value.toLocaleString()}
-                    </span>
-                  )}
-                  {typeof r.riskScore === 'number' && r.riskScore > 0.4 && (
-                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-chip bg-risk-50 text-risk-700 border border-risk-200">
-                      <AlertTriangle className="size-2.5" />
-                      RISK {Math.round((r.riskScore ?? 0) * 100)}%
-                    </span>
-                  )}
-                  {typeof r.daysSinceUpdate === 'number' && (
-                    <span className="text-ink-500">
-                      updated {r.daysSinceUpdate === 0 ? 'today' : `${r.daysSinceUpdate}d ago`}
-                    </span>
-                  )}
-                </>
-              )}
+              renderMeta={(r) => {
+                // The gate used to be `riskScore > 0.4` against data that
+                // arrives 0-100, so it badged every negotiation and printed
+                // percentages in the thousands. normalizeRisk absorbs both
+                // scales and riskBand decides — the same call the repository
+                // and the risk meters make, so the two can't disagree.
+                const riskPct = normalizeRisk(r.riskScore)
+                const band = riskPct == null ? null : riskBand(riskPct)
+                // Only a scored-up contract earns a badge; "low" is the resting
+                // state and gets no mark at all.
+                const riskMeaning = band && band !== 'low' ? RISK_TO_MEANING[band] : null
+                return (
+                  <>
+                    {r.value && (
+                      <span className="font-medium tabular-nums text-ink-950">
+                        {(r.currency ?? 'USD')} {r.value.toLocaleString()}
+                      </span>
+                    )}
+                    {riskMeaning && (
+                      <span className={cn(
+                        'inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-chip border',
+                        MEANING_CLASS[riskMeaning].wash,
+                        MEANING_CLASS[riskMeaning].washFg,
+                        MEANING_CLASS[riskMeaning].washBorder,
+                      )}>
+                        <AlertTriangle className="size-2.5" />
+                        RISK {riskPct}%
+                      </span>
+                    )}
+                    {typeof r.daysSinceUpdate === 'number' && (
+                      <span className="text-ink-500">
+                        updated {r.daysSinceUpdate === 0 ? 'today' : `${r.daysSinceUpdate}d ago`}
+                      </span>
+                    )}
+                  </>
+                )
+              }}
               onClickRow={(r) => navigate(`/contracts/${r.id}`)}
             />
           )}
@@ -588,7 +610,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
             <YourDayList
               title="Renewals coming up"
               icon={Repeat}
-              accent="risk"
+              meaning="risk"
               rows={yourDay.renewals!}
               renderMeta={(r) => (
                 <>
@@ -599,8 +621,9 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
                   )}
                   {typeof r.daysToExpiry === 'number' && (
                     // Inside 30 days is exposure; inside 60 it is the owner's
-                    // turn to act; beyond that it is just a date.
-                    <span className={r.daysToExpiry <= 30 ? 'text-risk-700 font-medium' : r.daysToExpiry <= 60 ? 'text-attention-700 font-medium' : 'text-ink-500'}>
+                    // turn to act; beyond that it is just a date — so the
+                    // thresholds name meanings and MEANING_CLASS colours them.
+                    <span className={r.daysToExpiry <= 30 ? `${MEANING_CLASS.risk.fg} font-medium` : r.daysToExpiry <= 60 ? `${MEANING_CLASS.turn.fg} font-medium` : 'text-ink-500'}>
                       {r.daysToExpiry < 0 ? `${-r.daysToExpiry}d overdue` :
                        r.daysToExpiry === 0 ? 'expires today' :
                        `expires in ${r.daysToExpiry}d`}
@@ -622,18 +645,14 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
 interface YourDayListProps {
   title: string
   icon: typeof MessageSquareWarning
-  accent: 'attention' | 'risk' | 'inflight'
+  meaning: Meaning
   rows: YourDayContractRow[]
   renderMeta: (r: YourDayContractRow) => React.ReactNode
   onClickRow: (r: YourDayContractRow) => void
 }
 
-function YourDayList({ title, icon: Icon, accent, rows, renderMeta, onClickRow }: YourDayListProps) {
-  const headerColor = {
-    attention: 'text-attention-600',
-    risk:      'text-risk-600',
-    inflight:  'text-info-600',
-  }[accent]
+function YourDayList({ title, icon: Icon, meaning, rows, renderMeta, onClickRow }: YourDayListProps) {
+  const headerColor = MEANING_CLASS[meaning].fg
 
   return (
     <div className="rounded-card border border-paper-200 bg-paper-50 overflow-hidden" data-testid={`your-day-list-${title.toLowerCase().replace(/\s+/g, '-')}`}>

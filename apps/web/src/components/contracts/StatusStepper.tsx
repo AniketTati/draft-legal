@@ -122,7 +122,11 @@ export function StatusStepper({
     return (
       <span className={cn('inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ink-700', className)}>
         <span className="relative flex size-2">
-          <span className={cn('absolute inset-0 animate-ping rounded-full opacity-40', tone.dot)} />
+          {/* The halo pings forever — there is no end state to animate towards,
+              so it is decoration, and decoration that never stops is the exact
+              thing prefers-reduced-motion exists to switch off. Under `reduce`
+              the class drops and the halo stays as a soft static ring. */}
+          <span className={cn('absolute inset-0 motion-safe:animate-ping rounded-full opacity-40', tone.dot)} />
           <span className={cn('relative size-2 rounded-full', tone.dot)} />
         </span>
         {step?.short ?? step?.label ?? status}

@@ -31,21 +31,68 @@ export function Eyebrow({
   )
 }
 
+/**
+ * Flattens a node to its text, so a control can name what it acts on. Only
+ * walks strings, numbers and arrays — a chip whose label is an element should
+ * pass `removeLabel` rather than have us guess at how it renders.
+ */
+function textOf(node: React.ReactNode): string {
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  return ''
+}
+
 /** Removable filter chip. Selected chips invert to ink. */
 export function Chip({
   children,
   selected = false,
   onRemove,
   onClick,
+  removeLabel,
   className,
 }: {
   children: React.ReactNode
   selected?: boolean
   onRemove?: () => void
   onClick?: () => void
+  /**
+   * Accessible name for the remove control. Defaults to the chip's own text —
+   * a row of five chips must not announce "Remove filter" five times.
+   */
+  removeLabel?: string
   className?: string
 }) {
   const Comp = onClick ? 'button' : 'span'
+  /*
+   * A button inside a button is invalid and swallows the inner activation, so
+   * the remove control can only be a real <button> when the chip itself isn't
+   * one. In the clickable case it stays a role="button" span with its own key
+   * handling.
+   */
+  const RemoveComp = onClick ? 'span' : 'button'
+  const chipText = textOf(children).trim()
+  const removeName = removeLabel ?? (chipText ? `Remove filter: ${chipText}` : 'Remove filter')
+  const removeProps = {
+    'aria-label': removeName,
+    onClick: (e: React.MouseEvent) => {
+      e.stopPropagation()
+      onRemove?.()
+    },
+    ...(onClick
+      ? {
+          role: 'button' as const,
+          tabIndex: 0,
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              e.stopPropagation()
+              onRemove?.()
+            }
+          },
+        }
+      : { type: 'button' as const }),
+  }
   return (
     <Comp
       {...(onClick ? { type: 'button' as const, onClick } : {})}
@@ -61,30 +108,34 @@ export function Chip({
     >
       {children}
       {onRemove && (
-        <span
-          role="button"
-          tabIndex={0}
-          aria-label="Remove filter"
-          onClick={(e) => {
-            e.stopPropagation()
-            onRemove()
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              e.stopPropagation()
-              onRemove()
-            }
-          }}
+        <RemoveComp
+          {...removeProps}
           className={cn(
-            'cursor-pointer leading-none',
+            /*
+             * The glyph stays 11px but the target is 24x24 — WCAG 2.5.8's
+             * minimum, and this control sits inside a chip that may itself be
+             * clickable, so a near-miss used to remove the wrong filter or
+             * toggle the chip. -6.5px on every side gives the box back exactly
+             * the 11px of layout the bare glyph used to occupy, so the target
+             * grows into the chip's existing padding and nothing moves.
+             */
+            '-m-[6.5px] inline-flex size-6 shrink-0 items-center justify-center',
+            'cursor-pointer rounded-full leading-none',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             selected ? 'text-white/60 hover:text-white' : 'text-ink-400 hover:text-ink-700'
           )}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="size-[11px]">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            aria-hidden="true"
+            className="size-[11px] shrink-0"
+          >
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
-        </span>
+        </RemoveComp>
       )}
     </Comp>
   )
@@ -202,7 +253,11 @@ export function EmptyState({
       )}
     >
       {icon && (
-        <span className="mb-3.5 inline-flex size-10 items-center justify-center rounded-card border border-paper-200 bg-paper-100 text-ink-400 [&_svg]:size-5">
+        // Decorative: the title below already says what the empty list is.
+        <span
+          aria-hidden="true"
+          className="mb-3.5 inline-flex size-10 items-center justify-center rounded-card border border-paper-200 bg-paper-100 text-ink-400 [&_svg]:size-5"
+        >
           {icon}
         </span>
       )}
