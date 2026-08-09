@@ -183,10 +183,13 @@ export function SettingsPage() {
             <button
               key={id}
               onClick={() => setActiveTab(id as Tab)}
-              // Selected nav is an action, not a status — ink, never info.
+              // Selected is a state, not an action, so it stays quiet. The ink
+              // fill is the app sidebar's alone — spending it again on an
+              // in-page rail puts a second full-weight ink block on the surface
+              // and it competes with the page's actual primary button.
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-dense transition-colors ${
                 activeTab === id
-                  ? 'bg-ink-950 text-white font-medium'
+                  ? 'bg-paper-100 text-ink-950 font-medium'
                   : 'text-ink-700 hover:bg-paper-100'
               }`}
             >

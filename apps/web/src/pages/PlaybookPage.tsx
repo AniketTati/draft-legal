@@ -377,9 +377,11 @@ export function PlaybookPage() {
                 onClick={() => { setSelectedCategoryId(cat.id); toggleCategory(cat.id) }}
                 className={cn(
                   'w-full flex items-center gap-1.5 px-2 py-2 rounded-md text-[12.5px] transition-colors',
-                  // Active nav item — ink, per the system's nav treatment.
+                  // Selected is a state, not an action, so it stays quiet. The
+                  // ink fill is the app sidebar's; a second one here would
+                  // compete with "Add Position" for the eye.
                   selectedCategoryId === cat.id
-                    ? 'bg-ink-950 text-white font-medium'
+                    ? 'bg-paper-100 text-ink-950 font-medium'
                     : 'text-ink-700 hover:bg-paper-100',
                 )}
               >
@@ -395,7 +397,7 @@ export function PlaybookPage() {
                     className={cn(
                       'w-full flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[12.5px] transition-colors',
                       selectedCategoryId === child.id
-                        ? 'bg-ink-950 text-white font-medium'
+                        ? 'bg-paper-100 text-ink-950 font-medium'
                         : 'text-ink-500 hover:bg-paper-100',
                     )}
                   >

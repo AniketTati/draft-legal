@@ -222,10 +222,17 @@ export function ReviewQueuePage() {
                       <XCircle />
                       Reject
                     </Button>
-                    {/* Verifying an extracted value makes it authoritative. */}
+                    {/* Verifying an extracted value makes it authoritative, so
+                        the action is tinted brand — but outlined, not filled.
+                        This is a bulk queue: a filled emerald button repeated
+                        down fourteen rows is the opposite of "the brand color,
+                        spent sparingly", and it would outweigh the Reject
+                        beside it. Both row actions stay outlined and equal;
+                        the fill is saved for single-decision surfaces. */}
                     <Button
                       size="xs"
-                      variant="brand"
+                      variant="outline"
+                      className="text-brand-700 border-brand-200 hover:bg-brand-50"
                       onClick={() => verify.mutate({ contractId: it.contractId, field: it.field })}
                       disabled={verify.isPending}
                       data-testid={`review-queue-verify-${it.field}`}

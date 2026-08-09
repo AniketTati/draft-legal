@@ -101,10 +101,12 @@ export function AdminOrgPage() {
             <button
               key={id}
               onClick={() => setActiveTab(id)}
-              // Selected nav is an action, not a status — ink, never info.
+              // Selected is a state, not an action, so it stays quiet — the ink
+              // fill belongs to the app sidebar, not to an in-page rail sitting
+              // next to this page's Save button.
               className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-dense transition-colors ${
                 activeTab === id
-                  ? 'bg-ink-950 text-white font-medium'
+                  ? 'bg-paper-100 text-ink-950 font-medium'
                   : 'text-ink-700 hover:bg-paper-100'
               }`}
             >
