@@ -6,6 +6,7 @@
  * metadata + status toggle.
  */
 import { useState } from 'react'
+import { normalizeRisk } from '@/lib/status'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -170,7 +171,7 @@ export function MatterDetailPage() {
                       c.riskScore >= 0.67 ? 'text-risk-700'
                         : c.riskScore >= 0.34 ? 'text-attention-700'
                         : 'text-ink-500',
-                    )}>risk {(c.riskScore * 100).toFixed(0)}%</span>
+                    )}>risk {normalizeRisk(c.riskScore)}</span>
                   )}
                 </div>
               </Link>

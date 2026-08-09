@@ -213,7 +213,7 @@ export function RedlinePanel({
             <select
               value={v1Id}
               onChange={e => setV1Id(e.target.value)}
-              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             >
               {versions.map(v => (
                 <option key={v.id} value={v.id}>v{v.versionNumber}</option>
@@ -225,7 +225,7 @@ export function RedlinePanel({
             <select
               value={v2Id}
               onChange={e => setV2Id(e.target.value)}
-              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             >
               {versions.map(v => (
                 <option key={v.id} value={v.id}>v{v.versionNumber}</option>

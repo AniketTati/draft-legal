@@ -181,7 +181,7 @@ function CommentThread({
                 onChange={e => setReplyBody(e.target.value)}
                 placeholder="Write a reply…"
                 rows={2}
-                className="flex-1 text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-1.5 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-none"
+                className="flex-1 text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-1.5 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-none"
               />
               <Button
                 size="sm"
@@ -305,7 +305,7 @@ export function CommentsPanel({
             onChange={e => setBody(e.target.value)}
             placeholder="Write your comment…"
             rows={3}
-            className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-none"
+            className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-none"
           />
           <div className="flex justify-end">
             <Button

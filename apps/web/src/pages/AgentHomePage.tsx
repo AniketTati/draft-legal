@@ -1181,7 +1181,7 @@ export function AgentHomePage() {
                 rows={2}
                 disabled={streaming}
                 data-testid="agent-composer"
-                className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-12 text-[13px] text-ink-950 placeholder:text-ink-400 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-12 text-[13px] text-ink-950 placeholder:text-ink-400 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               />
               {/* This screen's one ink-filled primary. */}
               <Button

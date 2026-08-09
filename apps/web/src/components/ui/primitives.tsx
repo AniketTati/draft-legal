@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
-import { MEANING_CLASS, riskMeaning } from '@/lib/status'
+import { RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 
 /*
  * The small, repeated pieces — design system §04. Each one exists because the
@@ -131,12 +131,22 @@ export function RiskMeter({
   showValue?: boolean
   className?: string
 }) {
-  const pct = Math.max(0, Math.min(100, Math.round(score)))
+  // Accepts either scale — see normalizeRisk. Callers must NOT pre-multiply.
+  const pct = normalizeRisk(score)
+  if (pct == null) return null
+  const band = riskBand(pct)
   return (
     <span className={cn('flex items-center gap-2.5', className)}>
-      <span className="block h-1 flex-1 overflow-hidden rounded-full bg-paper-100">
+      <span
+        className="block h-1 flex-1 overflow-hidden rounded-full bg-paper-100"
+        role="meter"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Risk score ${pct} of 100, ${band}`}
+      >
         <span
-          className={cn('block h-full rounded-full', MEANING_CLASS[riskMeaning(pct)].dot)}
+          className={cn('block h-full rounded-full', RISK_BAND_CLASS[band])}
           style={{ width: `${pct}%` }}
         />
       </span>

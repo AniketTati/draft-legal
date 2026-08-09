@@ -218,7 +218,7 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
               value={draftJson}
               onChange={e => { setDraftJson(e.target.value); setJsonError(null) }}
               data-testid="action-preview-args"
-              className="w-full text-[10.5px] font-mono rounded-md border border-input bg-card p-2 text-ink-950 resize-y min-h-[6em] focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full text-[10.5px] font-mono rounded-md border border-input bg-card p-2 text-ink-950 resize-y min-h-[6em] focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             />
             {jsonError && (
               <div className="text-[10.5px] text-risk-700 mt-1">Invalid JSON: {jsonError}</div>

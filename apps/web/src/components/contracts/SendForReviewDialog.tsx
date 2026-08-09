@@ -140,7 +140,7 @@ export function SendForReviewDialog({
                   value={effectiveWorkflowId ?? ''}
                   onChange={e => setSelectedWorkflowId(e.target.value || null)}
                   data-testid="send-for-review-workflow"
-                  className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                  className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 >
                   {workflows.map(w => (
                     <option key={w.id} value={w.id}>
@@ -182,7 +182,7 @@ export function SendForReviewDialog({
                   rows={3}
                   placeholder="Anything the reviewer should know? (e.g. urgency, key terms to focus on)"
                   data-testid="send-for-review-message"
-                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 />
               </div>
 

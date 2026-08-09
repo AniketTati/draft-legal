@@ -126,7 +126,7 @@ export function ReviewQueuePage() {
           value={threshold}
           onChange={e => setThreshold(Number(e.target.value))}
           data-testid="review-queue-threshold"
-          className="h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-2 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+          className="h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-2 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
         >
           {THRESHOLDS.map(t =>
             <option key={t.value} value={t.value}>{t.label}</option>

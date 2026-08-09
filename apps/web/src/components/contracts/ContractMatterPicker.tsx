@@ -130,7 +130,7 @@ export function ContractMatterPicker({
               value={search}
               onChange={e => setSearch(e.target.value)}
               autoFocus
-              className="w-full pl-7 pr-2 py-1 text-[12px] rounded-md border border-input bg-card placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+              className="w-full pl-7 pr-2 py-1 text-[12px] rounded-md border border-input bg-card placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
               data-testid="contract-matter-picker-search"
             />
           </div>

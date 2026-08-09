@@ -40,6 +40,23 @@ const RAW_HEX = /(?:className|class|style)\s*=\s*[{"'`][^"'`}]*#[0-9a-fA-F]{3,8}
 // Tailwind's stock elevation scale — replaced by e0–e3 + shadow-page.
 const OFF_SCALE_SHADOW = /\bshadow-(?:sm|md|lg|xl|2xl|inner)\b/g
 
+/*
+ * Opacity modifiers OUTSIDE Tailwind's default scale.
+ *
+ * This one is here because it already bit us. `ring-brand-700/12` looks
+ * perfectly reasonable and is what the design system's spec literally says
+ * (rgba(4,120,87,0.12)) — but 12 is not a step in Tailwind v3's opacity scale,
+ * so the utility is not emitted at all. It fails SILENTLY: no build warning, no
+ * type error, the class just isn't in the stylesheet. Fifty-seven of them
+ * shipped across thirty-three files, which meant every focused text field in
+ * the product fell back to Tailwind's stock BLUE focus halo — the one colour
+ * the design system reserves for "in flight".
+ *
+ * Nothing else in the toolchain catches this, so it is caught here.
+ */
+const OPACITY_SCALE = new Set([0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100])
+const OPACITY_MOD = new RegExp(`\\b(?:${UTILS})-[a-z]+(?:-\\d{2,3})?/(\\d{1,3})\\b`, 'g')
+
 /**
  * Surfaces allowed to speak in assist indigo. Everything the model authors
  * lives here; nothing else may borrow the accent.
@@ -101,6 +118,11 @@ for (const abs of walk(SRC)) {
   for (const m of src.matchAll(OFF_SCALE_SHADOW)) {
     record(file, lineOf(src, m.index), 'off-scale-shadow', m[0])
   }
+  for (const m of src.matchAll(OPACITY_MOD)) {
+    if (!OPACITY_SCALE.has(Number(m[1]))) {
+      record(file, lineOf(src, m.index), 'dead-opacity-modifier', m[0])
+    }
+  }
   if (!ASSIST_ALLOWED.some((p) => file.startsWith(p) || file === p)) {
     for (const m of src.matchAll(ASSIST_USE)) {
       record(file, lineOf(src, m.index), 'assist-outside-agent', m[0])
@@ -123,6 +145,7 @@ const EXPLAIN = {
   'raw-hex': 'Hex in markup escapes the token layer. Use a palette class or hsl(var(--token)).',
   'off-scale-shadow': 'Elevation is e0–e3 (+ shadow-page). Borders before shadows; e3 is overlays only.',
   'assist-outside-agent': 'Indigo means "a machine wrote this". Outside agent surfaces it stops meaning anything.',
+  'dead-opacity-modifier': 'Not a step in Tailwind\'s opacity scale, so this utility is never emitted — it fails silently. Use the nearest multiple of 5.',
 }
 
 console.error(`\n✗ design system: ${violations.length} violation(s)\n`)

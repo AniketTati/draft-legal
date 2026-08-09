@@ -144,7 +144,7 @@ export function NewRequestModal({ onClose }: Props) {
               <select
                 value={form.type}
                 onChange={set('type')}
-                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               >
                 {CONTRACT_TYPES.map(t => (
                   <option key={t.value} value={t.value}>{t.label}</option>
@@ -156,7 +156,7 @@ export function NewRequestModal({ onClose }: Props) {
               <select
                 value={form.priority}
                 onChange={set('priority')}
-                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               >
                 {PRIORITIES.map(p => (
                   <option key={p.value} value={p.value}>{p.label}</option>
@@ -204,7 +204,7 @@ export function NewRequestModal({ onClose }: Props) {
               onChange={set('description')}
               placeholder="Describe the purpose, key terms, deadlines, or any special requirements…"
               rows={4}
-              className="w-full text-[13px] text-ink-950 border border-input rounded-md px-3 py-2 bg-card resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full text-[13px] text-ink-950 border border-input rounded-md px-3 py-2 bg-card resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               data-testid="request-description"
             />
           </div>

@@ -255,7 +255,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                     value={activeEntry.type}
                     onChange={e => update(activeIdx, { type: e.target.value })}
                     disabled={activeEntry.status !== 'pending'}
-                    className="w-full mt-1 h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 disabled:opacity-60"
+                    className="w-full mt-1 h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 disabled:opacity-60"
                   >
                     {CONTRACT_TYPES.map(t => (
                       <option key={t} value={t}>{t.replace('_', ' ')}</option>
@@ -330,7 +330,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                         value={activeEntry.relationshipType}
                         onChange={e => update(activeIdx, { relationshipType: e.target.value })}
                         disabled={activeEntry.status !== 'pending'}
-                        className="w-full h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 disabled:opacity-60"
+                        className="w-full h-8 rounded-md border border-input bg-card px-2.5 text-[13px] focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 disabled:opacity-60"
                       >
                         <option value="">Select relationship…</option>
                         {RELATIONSHIP_TYPES.map(r => (

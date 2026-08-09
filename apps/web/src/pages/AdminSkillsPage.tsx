@@ -133,7 +133,7 @@ export function AdminSkillsPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             data-testid="admin-skills-search"
-            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-input bg-card text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+            className="w-full pl-8 pr-2 py-1.5 text-[13px] rounded-md border border-input bg-card text-ink-950 placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
           />
         </div>
         <select
@@ -519,7 +519,7 @@ function SkillCreateDrawer({ onClose, onCreated }: {
 
 // ─── Shared bits ──────────────────────────────────────────────────────────────
 
-const inputCls = 'w-full text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] py-1.5 placeholder:text-ink-400 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700'
+const inputCls = 'w-full text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] py-1.5 placeholder:text-ink-400 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700'
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

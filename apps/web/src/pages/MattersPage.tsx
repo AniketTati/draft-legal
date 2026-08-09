@@ -241,7 +241,7 @@ function CreateMatterDrawer({ onClose, onCreated }: { onClose: () => void; onCre
 const inputCls =
   'w-full text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] py-1.5 ' +
   'placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 ' +
-  'focus-visible:ring-[3px] focus-visible:ring-brand-700/12'
+  'focus-visible:ring-[3px] focus-visible:ring-brand-700/15'
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>

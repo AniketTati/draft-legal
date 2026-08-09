@@ -1746,7 +1746,7 @@ export function SideAgentRail() {
             placeholder={streaming ? 'Generating…' : 'Ask anything · @ for skills · / for actions'}
             rows={2}
             data-testid="side-agent-composer"
-            className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-10 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 transition-colors disabled:opacity-60"
+            className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-10 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 transition-colors disabled:opacity-60"
           />
           <Button
             type="submit"

@@ -114,7 +114,7 @@ export function CompleteObligationModal({ obligationId, description, open, onClo
               placeholder="What was done? Reference numbers, payment date, etc."
               rows={3}
               data-testid="obligation-note"
-              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 resize-y"
+              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 resize-y"
             />
           </div>
 

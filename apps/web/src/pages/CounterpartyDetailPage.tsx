@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
+import { normalizeRisk } from '@/lib/status'
 import type { Meaning } from '@/lib/status'
 import {
   ArrowLeft, Building2, Globe, Mail, Phone, FileText, Plus,
@@ -326,7 +327,7 @@ export function CounterpartyDetailPage() {
                             {c.riskScore != null && c.riskScore >= 0.7 && (
                               <span className="inline-flex items-center gap-0.5 text-risk-700">
                                 <AlertTriangle className="size-2.5" />
-                                risk {Math.round(c.riskScore * 100)}%
+                                risk {normalizeRisk(c.riskScore)}
                               </span>
                             )}
                             {expiryDays != null && (

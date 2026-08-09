@@ -205,7 +205,7 @@ export function AiConfigTab() {
                     <select
                       value={value}
                       onChange={e => setDraft(d => ({ ...d, [key]: e.target.value || null }))}
-                      className="w-full h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700 transition-colors"
+                      className="w-full h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-[11px] focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700 transition-colors"
                     >
                       <option value="">
                         Platform default{candidates[0] ? ` — ${candidates[0].provider}/${candidates[0].model}` : ''}
@@ -348,7 +348,7 @@ function AuditLogSection() {
           <select
             value={actionFilter}
             onChange={e => setActionFilter(e.target.value)}
-            className="text-[13px] text-ink-950 rounded-md border border-input bg-card px-2.5 py-1.5 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+            className="text-[13px] text-ink-950 rounded-md border border-input bg-card px-2.5 py-1.5 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
             data-testid="audit-filter"
           >
             {AI_ACTIONS.map(a => (

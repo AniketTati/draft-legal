@@ -229,7 +229,7 @@ export function RenewalsPage() {
             value={statusFilter}
             onChange={e => setStatusFilter(e.target.value as StatusFilter)}
             data-testid="renewal-decision-filter"
-            className="h-8 text-[13px] text-ink-950 border border-input rounded-md px-2 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+            className="h-8 text-[13px] text-ink-950 border border-input rounded-md px-2 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
           >
             <option value="all">All decisions</option>
             <option value="pending">No decision yet</option>

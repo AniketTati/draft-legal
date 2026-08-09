@@ -174,7 +174,7 @@ export function WorkflowBuilder({ steps, onChange }: Props) {
                     <select
                       value={step.approverId ?? ''}
                       onChange={e => update(idx, { approverId: e.target.value || undefined, roleRequired: e.target.value ? undefined : step.roleRequired })}
-                      className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                      className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                     >
                       <option value="">— None —</option>
                       {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
@@ -185,7 +185,7 @@ export function WorkflowBuilder({ steps, onChange }: Props) {
                     <select
                       value={step.roleRequired ?? ''}
                       onChange={e => update(idx, { roleRequired: e.target.value || undefined, approverId: e.target.value ? undefined : step.approverId })}
-                      className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                      className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                       disabled={!!step.approverId}
                     >
                       <option value="">— None —</option>
@@ -247,7 +247,7 @@ export function WorkflowBuilder({ steps, onChange }: Props) {
                   <select
                     value={step.escalateTo ?? ''}
                     onChange={e => update(idx, { escalateTo: e.target.value || undefined })}
-                    className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                    className="w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                   >
                     <option value="">— No escalation —</option>
                     {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}

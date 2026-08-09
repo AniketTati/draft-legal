@@ -176,7 +176,7 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
                   onChange={e => setMessage(e.target.value)}
                   rows={2}
                   placeholder="Happy to walk through the redlines this week."
-                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 />
               </div>
             )}
@@ -185,7 +185,7 @@ export function ShareLinkDialog({ contractId, onClose }: ShareLinkDialogProps) {
               <select
                 value={expiresInHours}
                 onChange={e => setExpiresInHours(Number(e.target.value))}
-                className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               >
                 {EXPIRY_OPTIONS.map(opt => (
                   <option key={opt.hours} value={opt.hours}>{opt.label}</option>

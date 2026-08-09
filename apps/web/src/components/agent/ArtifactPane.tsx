@@ -338,7 +338,7 @@ function DiffBody({ artifact }: { artifact: DiffArtifact }) {
 const FIELD_CLS =
   'w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-3 transition-colors ' +
   'placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 ' +
-  'focus-visible:ring-[3px] focus-visible:ring-brand-700/12'
+  'focus-visible:ring-[3px] focus-visible:ring-brand-700/15'
 
 function FormBody({ artifact, onAction }: { artifact: FormArtifact; onAction: (a: ArtifactAction, art: Artifact) => Promise<void> | void }) {
   const [values, setValues] = useState<Record<string, string>>(() => {

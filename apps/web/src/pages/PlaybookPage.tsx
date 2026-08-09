@@ -234,7 +234,7 @@ function TestPanel({ categoryId }: { categoryId: string }) {
         onChange={e => setClauseText(e.target.value)}
         rows={4}
         placeholder="Paste a clause to test against your playbook..."
-        className="w-full border border-input rounded-md px-3 py-2 text-[13px] text-ink-950 bg-card placeholder:text-ink-400 outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-none"
+        className="w-full border border-input rounded-md px-3 py-2 text-[13px] text-ink-950 bg-card placeholder:text-ink-400 outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-none"
       />
       {/* Outline, not ink — "Add Position" is this screen's one primary. */}
       <Button

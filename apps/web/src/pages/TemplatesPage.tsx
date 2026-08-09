@@ -283,7 +283,7 @@ function TemplateBuilderModal({
                   value={description}
                   onChange={e => setDescription(e.target.value)}
                   rows={2}
-                  className="w-full border border-input bg-card rounded-md px-[11px] py-1.5 text-[13px] text-ink-950 placeholder:text-ink-400 outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-none"
+                  className="w-full border border-input bg-card rounded-md px-[11px] py-1.5 text-[13px] text-ink-950 placeholder:text-ink-400 outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-none"
                 />
               </div>
               <div>

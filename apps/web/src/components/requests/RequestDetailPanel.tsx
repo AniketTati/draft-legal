@@ -234,7 +234,7 @@ export function RequestDetailPanel({ request, onClose }: Props) {
                 value={selectedAssignee}
                 onChange={e => handleAssign(e.target.value)}
                 disabled={!isActionable || patch.isPending}
-                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md pl-8 pr-3 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full h-9 text-[13px] text-ink-950 border border-input rounded-md pl-8 pr-3 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">Unassigned</option>
                 {users.map((u) => (

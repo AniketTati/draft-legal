@@ -271,7 +271,7 @@ export function SendForSignatureDialog({
                 value={expiresInDays}
                 onChange={(e) => setExpiresInDays(+e.target.value)}
                 data-testid="expires-in-days"
-                className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               >
                 <option value={7}>7 days</option>
                 <option value={14}>14 days</option>
@@ -293,7 +293,7 @@ export function SendForSignatureDialog({
               placeholder="Shown above the document on the signer's page. Add context — what they're signing, deadline, who to contact with questions."
               rows={3}
               data-testid="sign-message"
-              className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             />
             <p className="text-dense text-ink-400 mt-1 tabular-nums">{message.length} / 2000</p>
           </div>

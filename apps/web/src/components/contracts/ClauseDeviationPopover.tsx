@@ -34,7 +34,7 @@ interface DeviationDetail {
 
 /**
  * The four positions are a severity ramp, so they take the same three meanings
- * riskMeaning() uses for a score: at-market is healthy (binding), weaker-than-
+ * the risk bands use for a score: at-market is healthy (binding), weaker-than-
  * market hands the call back to the drafter (turn), aggressive is real exposure
  * (risk). "Off playbook" says nothing about severity, so it stays neutral.
  */

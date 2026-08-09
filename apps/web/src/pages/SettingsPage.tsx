@@ -226,7 +226,7 @@ export function SettingsPage() {
                   value={filterType}
                   onChange={e => setFilterType(e.target.value)}
                   aria-label="Filter fields by contract type"
-                  className="appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+                  className="appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
                 >
                   <option value="">All contract types</option>
                   {CONTRACT_TYPES.filter(Boolean).map(t => (
@@ -295,7 +295,7 @@ export function SettingsPage() {
                           value={newField.contractType}
                           onChange={e => setNewField(f => ({ ...f, contractType: e.target.value }))}
                           aria-label="Contract type for new field"
-                          className="w-full appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+                          className="w-full appearance-none h-8 pl-3 pr-7 text-[13px] text-ink-950 bg-card border border-input rounded-md focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
                         >
                           <option value="">All types (global)</option>
                           {CONTRACT_TYPES.filter(Boolean).map(t => (
@@ -590,7 +590,7 @@ function GeneralTab() {
               value={prefs.currency}
               onChange={e => onPrefChange({ ...prefs, currency: e.target.value })}
               data-testid="general-currency"
-              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
             >
               {CURRENCY_OPTIONS.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
@@ -601,7 +601,7 @@ function GeneralTab() {
               value={prefs.dateFormat}
               onChange={e => onPrefChange({ ...prefs, dateFormat: e.target.value as GeneralPrefs['dateFormat'] })}
               data-testid="general-date-format"
-              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
             >
               {DATE_FORMAT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
@@ -612,7 +612,7 @@ function GeneralTab() {
               value={prefs.timezone}
               onChange={e => onPrefChange({ ...prefs, timezone: e.target.value })}
               data-testid="general-timezone"
-              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 focus:border-brand-700"
+              className="w-full h-8 text-[13px] text-ink-950 border border-input bg-card rounded-md px-2 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 focus:border-brand-700"
             >
               {COMMON_TIMEZONES.map(z => <option key={z} value={z}>{z.replace(/_/g, ' ')}</option>)}
               {!COMMON_TIMEZONES.includes(prefs.timezone) && (
@@ -715,7 +715,7 @@ function NotificationsTab() {
               checked={!!prefs[key]}
               onChange={e => update({ [key]: e.target.checked } as Partial<NotificationPrefs>)}
               data-testid={`notif-${key}-toggle`}
-              className="mt-1 size-4 rounded-chip border-paper-300 accent-ink-950 focus:ring-[3px] focus:ring-brand-700/12"
+              className="mt-1 size-4 rounded-chip border-paper-300 accent-ink-950 focus:ring-[3px] focus:ring-brand-700/15"
             />
           </label>
         ))}

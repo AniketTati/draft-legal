@@ -297,7 +297,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
               placeholder="Q3 2026 vendor contract review for the Acme acquisition…"
               rows={3}
               data-testid="room-description"
-              className="w-full text-[13px] text-ink-950 border border-input bg-card rounded-md px-3 py-2 placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12 resize-y"
+              className="w-full text-[13px] text-ink-950 border border-input bg-card rounded-md px-3 py-2 placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-y"
             />
           </div>
           {error && (

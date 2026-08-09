@@ -152,7 +152,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
               placeholder="What's changing? Effective date, scope, value impact, etc."
               rows={3}
               data-testid="amendment-description"
-              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/12 resize-y"
+              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 resize-y"
             />
           </div>
 

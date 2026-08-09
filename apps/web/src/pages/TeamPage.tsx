@@ -302,7 +302,7 @@ function OooModal({
                   setDelegateId(m.delegateToId ?? '')
                 }
               }}
-              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
             >
               <option value="">Select a member...</option>
               {members.map(m => (
@@ -342,7 +342,7 @@ function OooModal({
             <select
               value={delegateId}
               onChange={e => setDelegateId(e.target.value)}
-              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+              className="w-full h-8 rounded-md border border-input bg-card px-[11px] text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
             >
               <option value="">None</option>
               {members

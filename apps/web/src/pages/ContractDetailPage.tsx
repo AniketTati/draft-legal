@@ -8,7 +8,7 @@ import { Worker, Viewer } from '@react-pdf-viewer/core'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { MEANING_CLASS, riskMeaning } from '@/lib/status'
+import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -200,7 +200,10 @@ const CLAUSE_TYPE_LABELS: Record<string, string> = {
 
 // Clause ratings ride the same five meanings as every other state: unfavorable
 // is exposure, unusual is "a human has to look at this", and favorable is the
-// low end of the same scale riskMeaning() calls binding.
+// low end of the same scale the risk meter calls "low".
+/** Risk band → the meaning whose wash the header chip borrows. */
+const RISK_TO_MEANING = { low: 'binding', medium: 'turn', high: 'risk' } as const
+
 const RISK_RATING_BADGE: Record<string, { label: string; cls: string }> = {
   unfavorable: { label: 'Unfavorable', cls: 'bg-risk-100 text-risk-700 border border-risk-200' },
   favorable:   { label: 'Favorable',   cls: 'bg-brand-100 text-brand-700 border border-brand-200' },
@@ -232,11 +235,14 @@ function ConfidenceIcon({ confidence }: { confidence: number }) {
 }
 
 function RiskMeter({ score }: { score: number }) {
-  const pct = Math.round(score * 100)
-  // Bar and label read their color from the shared risk thresholds, so this
-  // meter can never disagree with a pill sitting next to it.
-  const meaning = MEANING_CLASS[riskMeaning(pct)]
-  const label = score >= 0.67 ? 'High Risk' : score >= 0.34 ? 'Medium Risk' : 'Low Risk'
+  // normalizeRisk absorbs the 0-1 vs 0-100 mismatch between the schema and the
+  // stored data; without it every contract here read "Risk 7000% / High Risk".
+  const pct = normalizeRisk(score) ?? 0
+  const band = riskBand(pct)
+  // Bar and label read their color from the shared risk bands, so this meter
+  // can never disagree with a pill sitting next to it.
+  const meaning = { dot: RISK_BAND_CLASS[band], fg: MEANING_CLASS[RISK_TO_MEANING[band]].fg }
+  const label = band === 'high' ? 'High Risk' : band === 'medium' ? 'Medium Risk' : 'Low Risk'
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -1460,7 +1466,7 @@ export function ContractDetailPage() {
                 if (e.target.value !== contract.type) retype.mutate(e.target.value)
                 else setEditingType(false)
               }}
-              className="text-[11.5px] font-semibold border border-paper-300 rounded-full px-2.5 py-0.5 bg-card text-ink-950 cursor-pointer focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+              className="text-[11.5px] font-semibold border border-paper-300 rounded-full px-2.5 py-0.5 bg-card text-ink-950 cursor-pointer focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
             >
               {CONTRACT_TYPES.map(t => (
                 <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
@@ -1487,11 +1493,11 @@ export function ContractDetailPage() {
           {contract.riskScore != null && (
             <span className={cn(
               'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11.5px] font-medium tabular-nums',
-              MEANING_CLASS[riskMeaning(contract.riskScore * 100)].wash,
-              MEANING_CLASS[riskMeaning(contract.riskScore * 100)].washFg,
+              MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].wash,
+              MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].washFg,
             )}>
               <TrendingUp className="size-3" />
-              Risk {Math.round(contract.riskScore * 100)}%
+              Risk {normalizeRisk(contract.riskScore)}
             </span>
           )}
           {/* Owner / Edited / Value / Expiry — now show at all widths
@@ -2623,7 +2629,7 @@ export function ContractDetailPage() {
                     <select
                       value={diffV1Id}
                       onChange={e => setDiffV1Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                     >
                       <option value="">v1 (baseline)</option>
                       {versions.map((v: any) => (
@@ -2634,7 +2640,7 @@ export function ContractDetailPage() {
                     <select
                       value={diffV2Id}
                       onChange={e => setDiffV2Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                     >
                       <option value="">v2 (redlines)</option>
                       {versions.map((v: any) => (
@@ -3184,10 +3190,10 @@ export function ContractDetailPage() {
                             <span
                               className={cn(
                                 'tabular-nums',
-                                MEANING_CLASS[riskMeaning(p.riskScore * 100)].fg,
+                                MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(p.riskScore)!)]].fg,
                               )}
                             >
-                              Risk {Math.round(p.riskScore * 100)}%
+                              Risk {normalizeRisk(p.riskScore)}
                             </span>
                           </>
                         )}
@@ -3386,7 +3392,7 @@ export function ContractDetailPage() {
           title="Risks"
           count={
             contract.riskScore != null
-              ? `${Math.round(contract.riskScore * 100)}%`
+              ? `${normalizeRisk(contract.riskScore)}`
               : riskFactors.length || null
           }
         >
@@ -3395,20 +3401,20 @@ export function ContractDetailPage() {
               <div className="flex items-center justify-between text-dense mb-1.5">
                 <span className={cn(
                   'font-medium',
-                  MEANING_CLASS[riskMeaning(contract.riskScore * 100)].fg,
+                  MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].fg,
                 )}>
                   {contract.riskScore >= 0.67 ? 'High Risk' :
                    contract.riskScore >= 0.34 ? 'Medium Risk' : 'Low Risk'}
                 </span>
-                <span className="text-ink-500 tabular-nums">{Math.round(contract.riskScore * 100)}%</span>
+                <span className="text-ink-500 tabular-nums">{normalizeRisk(contract.riskScore)}</span>
               </div>
               <div className="h-1 w-full rounded-full bg-paper-100 overflow-hidden">
                 <div
                   className={cn(
                     'h-full rounded-full transition-all',
-                    MEANING_CLASS[riskMeaning(contract.riskScore * 100)].dot,
+                    MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].dot,
                   )}
-                  style={{ width: `${Math.round(contract.riskScore * 100)}%` }}
+                  style={{ width: `${normalizeRisk(contract.riskScore)}%` }}
                 />
               </div>
             </div>
@@ -3712,7 +3718,7 @@ export function ContractDetailPage() {
                       <select
                         value={spec.type}
                         onChange={e => setSplitSpecs(prev => prev.map((s, j) => j === i ? { ...s, type: e.target.value } : s))}
-                        className="h-8 w-full rounded-md border border-input bg-card px-2 text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+                        className="h-8 w-full rounded-md border border-input bg-card px-2 text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                       >
                         {CONTRACT_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
                       </select>

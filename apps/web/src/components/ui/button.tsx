@@ -11,12 +11,18 @@ import { cn } from '@/lib/utils'
  * buttons: they belong on approval and signature surfaces and nowhere else.
  * `assist` is indigo and is reserved for asking the machine to do something.
  *
- * The focus ring is emerald at 35% — the brand shows up in interaction rather
- * than in fills.
+ * The focus ring is emerald — the brand shows up in interaction rather than in
+ * fills. It is at FULL opacity, which is a deliberate deviation from the design
+ * system's "emerald at 35%": composited over the page, 35% emerald measures
+ * 1.69:1 against bg-card and 1.67:1 against paper-50, roughly half the 3:1 that
+ * WCAG 1.4.11 requires of a focus indicator — i.e. it would be less visible
+ * than the browser default it replaces. Full emerald is 5.48:1 and reads the
+ * same way at a glance. The white ring-offset preserves the spec's two-ring
+ * look. Revisit only with a designer, not by reverting to /35.
  */
 const buttonVariants = cva(
   'inline-flex items-center justify-center whitespace-nowrap font-semibold transition-colors ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35 focus-visible:ring-offset-2 ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ' +
     'focus-visible:ring-offset-background disabled:pointer-events-none ' +
     'disabled:border-paper-200 disabled:bg-paper-100 disabled:text-ink-400 ' +
     '[&_svg]:shrink-0',

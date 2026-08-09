@@ -25,7 +25,7 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
-import { MEANING_CLASS, riskMeaning } from '@/lib/status'
+import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import {
   CheckCircle2, XCircle, ArrowRight, AlertTriangle, Loader2, Sparkles,
   ShieldAlert, TrendingUp, ChevronDown,
@@ -114,10 +114,12 @@ export function DecisionStrip({
       : 60) - (awaitingMe.instance.keyRisks?.length ?? 0) * 5
   )))
 
-  const riskPct = riskScore != null ? Math.round(riskScore * 100) : null
-  // Route the badge through riskMeaning so this pill and the risk meters
-  // elsewhere can never disagree about where amber and red begin.
-  const riskKey = riskPct == null ? 'neutral' : riskMeaning(riskPct)
+  const riskPct = normalizeRisk(riskScore)
+  // Route the badge through the shared risk bands so this pill and the risk
+  // meters elsewhere can never disagree about where amber and red begin.
+  const riskKey = riskPct == null
+    ? 'neutral' as const
+    : ({ low: 'binding', medium: 'turn', high: 'risk' } as const)[riskBand(riskPct)]
   const riskTone = cn(
     MEANING_CLASS[riskKey].wash,
     MEANING_CLASS[riskKey].washFg,
@@ -233,7 +235,7 @@ export function DecisionStrip({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 placeholder="Reason for rejection (required) — helps the submitter fix and re-submit…"
-                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/12 resize-y min-h-[52px]"
+                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/15 resize-y min-h-[52px]"
               />
             )}
             {pending === 'DELEGATED' && (
@@ -251,7 +253,7 @@ export function DecisionStrip({
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 placeholder="Optional note for the audit trail…"
-                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-brand-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/12"
+                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-brand-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
               />
             )}
           </div>

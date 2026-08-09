@@ -311,7 +311,7 @@ export function DiligenceRoomDetailPage() {
                     </td>
                     <td className="px-4 py-2">
                       {d.riskScore != null ? (
-                        <RiskMeter score={Math.round(d.riskScore * 100)} className="w-[92px]" />
+                        <RiskMeter score={d.riskScore} className="w-[92px]" />
                       ) : (
                         <span className="text-ink-400">—</span>
                       )}

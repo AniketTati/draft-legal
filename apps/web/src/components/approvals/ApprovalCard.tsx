@@ -238,7 +238,7 @@ export function ApprovalCard({ stepId, instanceId, stepName, contract, instance,
               value={comment}
               onChange={e => setComment(e.target.value)}
               rows={2}
-              className="w-full rounded-md border border-input bg-card text-[13px] text-ink-950 px-3 py-1.5 resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+              className="w-full rounded-md border border-input bg-card text-[13px] text-ink-950 px-3 py-1.5 resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             />
           )}
 
@@ -257,7 +257,7 @@ export function ApprovalCard({ stepId, instanceId, stepName, contract, instance,
                 value={comment}
                 onChange={e => setComment(e.target.value)}
                 rows={2}
-                className="w-full rounded-md border border-input bg-card text-[13px] text-ink-950 px-3 py-1.5 resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/12"
+                className="w-full rounded-md border border-input bg-card text-[13px] text-ink-950 px-3 py-1.5 resize-none placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               />
             </div>
           )}

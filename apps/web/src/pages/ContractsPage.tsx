@@ -601,7 +601,7 @@ export function ContractsPage() {
                   {/* Risk */}
                   <div>
                     {c.riskScore != null ? (
-                      <RiskMeter score={c.riskScore * 100} />
+                      <RiskMeter score={c.riskScore} />
                     ) : <span className="text-ink-400 text-[12.5px]">—</span>}
                   </div>
 
