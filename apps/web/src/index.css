@@ -34,7 +34,8 @@
     --popover:                0  0% 100%;
     --popover-foreground:    40  8%  9%;
     --muted:                 40  8% 96%;   /* #F4F4F2 hover, fill */
-    --muted-foreground:      40  4% 47%;   /* #7A7873 muted text  */
+    --muted-foreground:      40  5% 40%;   /* #6A6862 muted text — darkened
+                                              from #7A7873 (4.22:1) for AA */
     --border:                40  7% 90%;   /* #E7E6E3 */
     --input:                 40  6% 82%;   /* #D3D2CE */
 
@@ -52,7 +53,8 @@
     --brand:                162 94% 24%;   /* #047857 binding   */
     --brand-foreground:       0  0% 100%;
     --info:                 221 83% 53%;   /* #2563EB in flight */
-    --attention:             32 95% 44%;   /* #D97706 your turn */
+    --attention:             32 95% 41%;   /* #CC7005 your turn — darkened
+                                              from the spec's #D97706 for 3:1 */
     --destructive:            0 72% 51%;   /* #DC2626 risk      */
     --destructive-foreground: 0  0% 100%;
     --assist:               243 75% 59%;   /* #4F46E5 machine   */

@@ -65,8 +65,27 @@ const config: Config = {
           300: '#D3D2CE', // input, rule
         },
         ink: {
-          400: '#9A9893', // placeholder, disabled text
-          500: '#7A7873', // muted text
+          // 400 is darkened from the design system's #9A9893, which measures
+          // 2.88:1 on white and 2.76:1 on paper-50 — well under WCAG AA. It
+          // carries timestamps, metadata subtitles and column headers, so it is
+          // body text in practice whatever the spec calls it. #757369 is the
+          // lightest warm grey that clears 4.5:1 on BOTH surfaces (4.76 / 4.56);
+          // note paper-50, not white, is the binding constraint here.
+          // 350 exists only for the neutral status DOT, and only because a dot
+          // and body text have different jobs: WCAG asks 3:1 of a meaningful
+          // non-text element but 4.5:1 of text. Using one value for both forced
+          // a choice — dark enough to read as text put neutral-grey close
+          // enough to brand emerald that a deuteranope could not separate
+          // "Draft" from "Executed" by dot (ΔE 5.9). At 350 the dot still
+          // clears 3.18:1 and sits ΔE ~15 from emerald under both deuteranopia
+          // and protanopia. Text keeps 400.
+          350: '#8B8983', // neutral status dot
+          400: '#757369', // placeholder, disabled text, metadata
+          // 500 is darkened alongside 400. The design system's #7A7873 measures
+          // 4.22:1 on paper-50 — under AA — and once 400 was corrected it would
+          // also have left the ramp non-monotonic, with "500" lighter than
+          // "400". Every step now decreases in luminance and clears 4.5:1.
+          500: '#6A6862', // muted text
           700: '#57554F', // secondary text
           950: '#17161A', // text, button
         },
@@ -108,7 +127,14 @@ const config: Config = {
           50: '#FFFBEB',
           100: '#FEF3C7',
           200: '#FDE68A',
-          600: '#D97706',
+          // Darkened from the design system's #D97706, which is 2.89:1 against
+          // the paper-100 pill it sits on — under the 3:1 WCAG 1.4.11 asks of a
+          // meaningful non-text element. That mattered more here than anywhere
+          // else: this is the "your turn" dot, the one signal the whole colour
+          // model is built to make trustworthy. #CC7005 clears it at 3.24:1
+          // while staying visibly distinct from 700 (going all the way to
+          // #B45309 would have collapsed 600 and 700 into the same value).
+          600: '#CC7005',
           700: '#B45309',
         },
         // risk: legal exposure, failure, expiry. Never decoration.

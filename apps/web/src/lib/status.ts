@@ -47,7 +47,10 @@ export const MEANING_CLASS: Record<
   { dot: string; fg: string; wash: string; washFg: string; washBorder: string }
 > = {
   neutral: {
-    dot: 'bg-ink-400',
+    // ink-350, not 400 — see the palette note: the dot needs to stay separable
+    // from brand emerald for red-green colour-vision deficiency, which the
+    // darker text-grade neutral is not.
+    dot: 'bg-ink-350',
     fg: 'text-ink-700',
     wash: 'bg-paper-100',
     washFg: 'text-ink-700',

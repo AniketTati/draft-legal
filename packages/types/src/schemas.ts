@@ -79,6 +79,14 @@ export const ContractFilterSchema = z.object({
   otdMin:        z.coerce.number().min(0).max(100).optional(),
   uptimeSlaMax:  z.coerce.number().min(0).max(100).optional(),
   uptimeSlaMin:  z.coerce.number().min(0).max(100).optional(),
+  // Risk band, 0-100 to match how riskScore is actually stored. Previously the
+  // repository could only filter risk through Elasticsearch, which holds a
+  // subset of contracts — so "high risk AND expiring soon", the query legal ops
+  // runs every morning, returned zero rows and rendered as "nothing matches".
+  // Risk is a plain numeric column, so it belongs on the Postgres path with the
+  // other structural filters, where the answer is always complete.
+  riskScoreMin:  z.coerce.number().min(0).max(100).optional(),
+  riskScoreMax:  z.coerce.number().min(0).max(100).optional(),
 })
 
 // ─── Requests ────────────────────────────────────────────────────────────────

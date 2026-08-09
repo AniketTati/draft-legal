@@ -76,6 +76,19 @@ export async function contractRoutes(app: FastifyInstance) {
       andClauses.push({ metadata: { path: ['uptimeSlaPct'], gte: query.uptimeSlaMin } as never })
     }
 
+    // Risk band. Filters are 0-100 but a minority of legacy rows still store a
+    // 0-1 fraction, so each bound matches EITHER scale rather than silently
+    // dropping whichever half of the portfolio is on the other one. Remove the
+    // fraction branch once riskScore is normalised at write time.
+    if (query.riskScoreMin !== undefined) {
+      const min = query.riskScoreMin
+      andClauses.push({ OR: [{ riskScore: { gte: min } }, { riskScore: { gte: min / 100, lte: 1 } }] })
+    }
+    if (query.riskScoreMax !== undefined) {
+      const max = query.riskScoreMax
+      andClauses.push({ OR: [{ riskScore: { lte: max, gt: 1 } }, { riskScore: { lte: max / 100 } }] })
+    }
+
     const where = {
       orgId,
       deletedAt: null,

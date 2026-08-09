@@ -170,9 +170,13 @@ export function ContractsPage() {
     if (filters.type) q.type = filters.type
     if (filters.status) q.status = filters.status
     if (filters.jurisdiction) q.jurisdiction = filters.jurisdiction
-    if (filters.riskBand === 'high') q.riskScoreMin = 0.67
-    if (filters.riskBand === 'medium') { q.riskScoreMin = 0.34; q.riskScoreMax = 0.67 }
-    if (filters.riskBand === 'low') q.riskScoreMax = 0.34
+    // Risk bands are 0-100, matching how riskScore is actually stored and what
+    // riskBand()/normalizeRisk() use. These were 0.67/0.34 against 0-100 data,
+    // so "high risk" matched almost nothing and the filter silently under-
+    // reported instead of failing.
+    if (filters.riskBand === 'high') q.riskScoreMin = 67
+    if (filters.riskBand === 'medium') { q.riskScoreMin = 34; q.riskScoreMax = 67 }
+    if (filters.riskBand === 'low') q.riskScoreMax = 34
     if (filters.clauseFlags && Object.keys(filters.clauseFlags).length) q.clauseFlags = filters.clauseFlags
     if (filters.expiryDateTo) q.expiryDateTo = filters.expiryDateTo
     // B.6.9 — counterparty drill-through. Historical contracts often
@@ -197,10 +201,18 @@ export function ContractsPage() {
   // plain route whenever no ES-only filter is active — that way deep
   // links from Counterparties (counterpartyId) and Dashboard
   // (expiryDateTo, status) don't miss rows because of ES staleness.
+  //
+  // riskBand is deliberately NOT in this list, though it used to be. Risk is a
+  // plain numeric column in Postgres, so routing it through the index bought
+  // nothing and cost correctness: the index holds a subset of contracts, so
+  // "high risk AND expiring within 90 days" returned zero rows — rendered as a
+  // calm "no contracts match your filters" — while 60 contracts were expiring.
+  // On a renewal screen a false all-clear is worse than no filter at all: it
+  // converts an unanswered question into a wrong answer someone acts on. Same
+  // reasoning the comment above already applies to counterparty and expiry.
   const needsEs =
     !!debouncedSearch ||
     !!filters.clauseFlags ||
-    !!filters.riskBand ||
     !!filters.jurisdiction
 
   const { data, isLoading } = useQuery({
