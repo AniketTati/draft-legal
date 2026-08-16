@@ -877,6 +877,17 @@ async def run_agent_chat_stream(
     # across iterations. This is also what gets persisted, so what the user
     # saw and what the next turn replays cannot drift apart.
     streamed_parts: list[str] = []
+    # Set when an ActionPreview card is staged. That path yields the card and
+    # then `continue`s rather than returning, so a write turn where the model
+    # stages a card and writes no prose reaches the end-of-turn guard below —
+    # where an error frame would replace a card the user can actually see.
+    saw_confirmation_card = False
+    # Last provider metadata seen. Carries finish_reason, which is the only
+    # signal distinguishing an honest empty STOP from MALFORMED_FUNCTION_CALL /
+    # SAFETY / RECITATION / MAX_TOKENS. Logged, never branched on: a raw enum
+    # in the user's bubble helps nobody, and interpolating it into the message
+    # would make that message untestable without a live model.
+    last_meta: dict | None = None
     try:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # L10 — real token streaming. This used to be `await llm.ainvoke`,
@@ -894,6 +905,7 @@ async def run_agent_chat_stream(
             ai = None
             async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
                 ai = chunk if ai is None else ai + chunk
+                last_meta = getattr(chunk, "response_metadata", None) or last_meta
                 piece = _chunk_text(chunk)
                 if piece:
                     streamed_parts.append(piece)
@@ -918,7 +930,24 @@ async def run_agent_chat_stream(
                 final_text = "".join(streamed_parts)
                 if not final_text:
                     # Some providers deliver content only on the aggregate.
-                    final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
+                    #
+                    # Routed through _chunk_text, NOT str(). str() on a block
+                    # list produces a Python repr — a Gemini thinking-only
+                    # response became the literal text
+                    # "[{'type': 'thinking', 'thinking': '…'}]", which is
+                    # non-empty, so it skipped the end-of-turn guard, got
+                    # persisted at the bottom of this function, and was
+                    # replayed into the next prompt as if the assistant had
+                    # said it. _chunk_text knows every block shape here and
+                    # returns "" when there is genuinely no text.
+                    final_text = ai.content if isinstance(ai.content, str) else _chunk_text(ai)
+                    if final_text:
+                        # Never streamed, so the user has not seen it. Emit it
+                        # now, so streamed_parts stays a truthful record of
+                        # what the bubble contains — which is what the guard
+                        # below reads.
+                        streamed_parts.append(final_text)
+                        yield {"type": "token", "delta": final_text}
                 break
 
             # Tool-call branch: emit start + execute + emit result for each
@@ -1027,6 +1056,9 @@ async def run_agent_chat_stream(
                 # ends here so the user can click Apply / Cancel before the
                 # next turn fires.
                 if isinstance(result_payload, dict) and result_payload.get("awaitingConfirmation"):
+                    # The user has something to act on even if no prose follows,
+                    # so the end-of-turn empty guard must not fire on this turn.
+                    saw_confirmation_card = True
                     yield {
                         "type": "tool_call_awaiting_confirmation",
                         "id":   tc_id,
@@ -1232,13 +1264,25 @@ async def run_agent_chat_stream(
     # Surfaced rather than silently retried on purpose: a retry would hide a
     # real model-quality problem AND stop the eval suite measuring it, which is
     # how this went unnoticed in the first place.
-    if not final_text.strip() and not turn_tool_calls:
+    # Gated on streamed_parts, NOT final_text. final_text is a PERSISTENCE
+    # variable and is never yielded to the client — grep it: the done frame
+    # does not carry it. The only thing the user ever sees is token frames,
+    # i.e. streamed_parts, so that is the only honest measure of "did this turn
+    # show anything".
+    #
+    # The earlier `and not turn_tool_calls` was also wrong: it short-circuited
+    # the whole guard for any turn that called a tool, so a turn that searched
+    # and then returned empty prose still ended on a bare done frame — tool
+    # chips above a blank bubble. That is the shape this bug takes whenever the
+    # model does reach for contract_search first, which is most of the time.
+    if not "".join(streamed_parts).strip() and not saw_confirmation_card:
         logger.warning(
-            "empty turn: model returned no content and no tool calls (provider=%s model=%s)",
-            resolved.provider, resolved.model,
+            "empty turn: no token frames streamed (provider=%s model=%s tools=%d finish_reason=%s)",
+            resolved.provider, resolved.model, len(turn_tool_calls),
+            (last_meta or {}).get("finish_reason"),
         )
         yield {"type": "error", "error": (
-            "The model returned an empty response — no answer and no tool calls. "
+            "The model returned an empty response — no answer was produced. "
             "This is usually transient; try asking again or rephrasing."
         )}
         return

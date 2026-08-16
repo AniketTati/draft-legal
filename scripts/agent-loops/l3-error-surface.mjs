@@ -78,27 +78,15 @@ section('1. The server types every error envelope it emits')
   check('no SSE error envelope is emitted without a type field', untyped.length === 0,
     untyped.join(' | ') || 'all error emitters typed')
 
-  // A turn that produces neither prose nor a tool call must say so. This is
-  // the same invariant as the rest of this file, arriving on a turn that
-  // reports SUCCESS rather than one that failed, which is why nothing caught
-  // it: the stream carried only a done frame and the rail rendered an empty
-  // assistant bubble.
+  // The empty-turn invariant ("a turn that streams nothing says why") lived
+  // here briefly as a regex over the guard's source text. It was deleted the
+  // same day: it matched WORDING, not behaviour, so correcting the guard —
+  // which had to stop reading final_text and start reading streamed_parts —
+  // turned the assertion red on a strictly better implementation. A check that
+  // punishes the fix is the defect class this suite exists to end.
   //
-  // Found 2026-08-16 on gemini-2.5-flash, reproducibly, for "Which of my
-  // contracts expire in the next 90 days?" — finish_reason='STOP',
-  // content='', no tool calls, safety_ratings=[]. A normal completion that
-  // happens to be empty.
-  //
-  // Asserted statically because the trigger is model-dependent: the synthesis
-  // net cannot cover it (it is the `else:` of a `for`, and both empty-response
-  // paths `break`, which skips it), so the guard has to live after the loop.
-  const orch = fs.readFileSync(`${REPO}/apps/agents/app/orchestrator.py`, 'utf8')
-  const guard = /if not final_text\.strip\(\) and not turn_tool_calls:[\s\S]{0,600}?yield \{"type": "error"/
-    .test(orch)
-  check('an empty turn yields an error frame rather than a bare done', guard,
-    guard
-      ? 'the post-loop guard covers every break out of the tool loop'
-      : 'no guard after the tool loop — a turn with no prose and no tool calls streams a done frame and nothing else, which the rail renders as an empty bubble with no explanation')
+  // It now lives in l15-empty-turn.mjs, which drives the real generator with a
+  // stubbed LLM and asserts frame shapes.
 }
 
 // ─── Browser ────────────────────────────────────────────────────────────────

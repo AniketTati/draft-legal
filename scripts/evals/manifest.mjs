@@ -57,6 +57,11 @@ export const CHECKS = [
     what: 'a tier-3 run cannot spend a customer\'s BYOK budget or be halted by the cap' },
   { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],
     what: 'a recorded turn replays deterministically with no model and no key' },
+  // Drives run_agent_chat_stream with a STUBBED LLM, so it is deterministic
+  // and keyless despite testing model-response handling. `venv` only — it
+  // needs no database, API or model, which is why it can gate a PR.
+  { id: 'l15-empty-turn',     tier: 't2', needs: ['venv'],
+    what: 'a turn that streams no tokens tells the user why, instead of a bare done frame' },
   // (l11-cost-cap was promoted to t2 here on 2026-08-16 and REVERTED the same
   // day — see the t3 block below for why. Kept as a marker so the next person
   // who notices "8 of its 9 assertions are static" does not repeat it.)
