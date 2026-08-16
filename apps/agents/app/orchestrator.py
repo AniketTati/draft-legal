@@ -899,8 +899,15 @@ async def run_agent_chat_stream(
                     streamed_parts.append(piece)
                     yield {"type": "token", "delta": piece}
             if ai is None:
-                # The provider yielded nothing at all. Treat as an empty turn
-                # and let the synthesis safety net below handle it.
+                # The provider yielded nothing at all.
+                #
+                # This comment used to say "let the synthesis safety net below
+                # handle it". It does not, and cannot: that net is the `else:`
+                # of this `for`, and in Python a `for/else` runs its else ONLY
+                # when the loop finishes WITHOUT break. Every break here — this
+                # one and the no-tool-calls one below — jumps straight past it.
+                # The net has only ever caught iteration-cap exhaustion.
+                # The post-loop guard after this try/except is what covers it.
                 break
 
             tool_calls = getattr(ai, "tool_calls", None) or []
@@ -1206,6 +1213,34 @@ async def run_agent_chat_stream(
     except Exception as e:
         logger.exception("agent chat stream failed")
         yield {"type": "error", "error": f"{type(e).__name__}: {e}"}
+        return
+
+    # Every path out of the loop must leave the user with SOMETHING. Reached
+    # when the turn produced no prose AND called no tools — the blank bubble
+    # docs/36 L3 and scripts/agent-loops/l3-error-surface.mjs exist to prevent,
+    # arriving on a turn that reports success rather than one that failed.
+    #
+    # Observed live on gemini-2.5-flash, reproducibly, for "Which of my
+    # contracts expire in the next 90 days?": the model returns
+    # finish_reason='STOP' with content='' and no tool calls — a normal
+    # completion that happens to be empty. Not a safety block (safety_ratings
+    # was []), not a malformed function call. The stream then carried only a
+    # done frame, so the rail rendered an empty assistant bubble with nothing
+    # to explain it, and the persona suites scored it as "text missing: X"
+    # rather than as the defect it is.
+    #
+    # Surfaced rather than silently retried on purpose: a retry would hide a
+    # real model-quality problem AND stop the eval suite measuring it, which is
+    # how this went unnoticed in the first place.
+    if not final_text.strip() and not turn_tool_calls:
+        logger.warning(
+            "empty turn: model returned no content and no tool calls (provider=%s model=%s)",
+            resolved.provider, resolved.model,
+        )
+        yield {"type": "error", "error": (
+            "The model returned an empty response — no answer and no tool calls. "
+            "This is usually transient; try asking again or rephrasing."
+        )}
         return
 
     # P64 audit (2026-05-02). Persist tool I/O alongside the assistant
