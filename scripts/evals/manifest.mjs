@@ -141,6 +141,17 @@ export const SUITES = [
   { id: 'persona-sanity', tier: 't3', dir: 'scripts/persona-tests', entry: 'sanity.mjs',
     needs: ['db', 'api', 'agents', 'model', 'personas'],
     what: '18 single-turn sanity checks' },
+  // Added 2026-08-16. This existed and was listed NOWHERE: 86 asks across the
+  // five files in personas/, driven by run-personas.mjs through lib-multi.mjs
+  // — the only consumer of the multi-turn grader. docs/37 counted it ("~86
+  // more asks across five persona files") and the manifest never picked it up,
+  // so the largest multi-turn corpus in the repo was outside the gate
+  // entirely. Its summary line did not parse either; both are fixed together,
+  // because listing a suite the runner cannot read only converts silence into
+  // a permanent ERRO.
+  { id: 'persona-journeys', tier: 't3', dir: 'scripts/persona-tests', entry: 'run-personas.mjs',
+    needs: ['db', 'api', 'agents', 'model', 'personas'],
+    what: '86 multi-turn persona journeys — the only suite exercising lib-multi' },
 ]
 
 /** Directory each check id lives in, relative to the repo root. */
