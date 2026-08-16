@@ -8,6 +8,7 @@ import { Worker, Viewer } from '@react-pdf-viewer/core'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -17,7 +18,9 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
+  PanelRightClose, PanelRightOpen,
 } from 'lucide-react'
+import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -66,16 +69,21 @@ import '@react-pdf-viewer/default-layout/lib/styles/index.css'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// A contract's type is a fact, not a state, so it earns no meaning color — the
+// nine-hue rainbow this used to be competed with the status pill sitting right
+// next to it. The map is kept (call sites index into it by type) but every type
+// now resolves to the same neutral chip.
+const TYPE_CHIP = 'bg-paper-100 text-ink-700 border-paper-200'
 const TYPE_COLORS: Record<string, string> = {
-  NDA:              'bg-purple-100 text-purple-700 border-purple-200',
-  MSA:              'bg-blue-100 text-blue-700 border-blue-200',
-  SOW:              'bg-cyan-100 text-cyan-700 border-cyan-200',
-  SLA:              'bg-teal-100 text-teal-700 border-teal-200',
-  VENDOR_AGREEMENT: 'bg-orange-100 text-orange-700 border-orange-200',
-  EMPLOYMENT:       'bg-green-100 text-green-700 border-green-200',
-  PARTNERSHIP:      'bg-indigo-100 text-indigo-700 border-indigo-200',
-  LICENSE:          'bg-yellow-100 text-yellow-700 border-yellow-200',
-  OTHER:            'bg-gray-100 text-gray-600 border-gray-200',
+  NDA:              TYPE_CHIP,
+  MSA:              TYPE_CHIP,
+  SOW:              TYPE_CHIP,
+  SLA:              TYPE_CHIP,
+  VENDOR_AGREEMENT: TYPE_CHIP,
+  EMPLOYMENT:       TYPE_CHIP,
+  PARTNERSHIP:      TYPE_CHIP,
+  LICENSE:          TYPE_CHIP,
+  OTHER:            TYPE_CHIP,
 }
 
 const CONTRACT_TYPES = [
@@ -108,21 +116,10 @@ const PIPELINE_STEPS = [
   { statuses: ['INDEXING'],                 label: 'Index'    },
 ]
 
-// B.1.5a — STATUS_COLORS (the old pill-tint map) is no longer consumed
-// here; color choices moved into StatusPill.tsx. Retained as a commented
-// reference in case we need the old palette for a list-row mini-badge
-// variant later. Delete after one sprint if unused.
-//
-// const STATUS_COLORS: Record<string, string> = {
-//   DRAFT:             'bg-gray-100 text-gray-600',
-//   PENDING_REVIEW:    'bg-amber-100 text-amber-700',
-//   UNDER_NEGOTIATION: 'bg-orange-100 text-orange-700',
-//   PENDING_APPROVAL:  'bg-blue-100 text-blue-700',
-//   APPROVED:          'bg-emerald-100 text-emerald-700',
-//   EXECUTED:          'bg-emerald-100 text-emerald-700',
-//   EXPIRED:           'bg-red-100 text-red-700',
-//   ARCHIVED:          'bg-gray-100 text-gray-500',
-// }
+// B.1.5a — STATUS_COLORS (the old pill-tint map) is gone. Status color is
+// resolved once, in @/lib/status, and rendered by StatusPill; the commented
+// palette that used to sit here would only tempt someone into a second source
+// of truth.
 
 const CLAUSE_FLAG_LABELS: Record<string, string> = {
   forceMajeure:          'Force Majeure',
@@ -147,7 +144,10 @@ type Tab = 'overview' | 'document' | 'clauses' | 'versions' | 'activity' | 'nego
 // PENDING_REVIEW remains reachable via the workflow engine's rejection-to-
 // review path (wired in B.5).
 const STATUS_TRANSITIONS: Record<string, Array<{ to: string; label: string; variant?: 'default' | 'outline' }>> = {
-  PENDING_REVIEW:     [{ to: 'UNDER_NEGOTIATION', label: 'Start Negotiation' },
+  // Start Negotiation is outlined, not ink: in PENDING_REVIEW the header also
+  // renders "Send for Review", and only one ink-filled primary is allowed per
+  // view. Send-for-Review is the recommended path, so it keeps the fill.
+  PENDING_REVIEW:     [{ to: 'UNDER_NEGOTIATION', label: 'Start Negotiation', variant: 'outline' },
                        { to: 'DRAFT', label: 'Return to Draft', variant: 'outline' }],
   UNDER_NEGOTIATION:  [{ to: 'PENDING_REVIEW', label: 'Back to Review', variant: 'outline' }],
   APPROVED:           [{ to: 'EXECUTED', label: 'Mark as Executed' }],
@@ -200,11 +200,17 @@ const CLAUSE_TYPE_LABELS: Record<string, string> = {
   general:                        'General',
 }
 
+// Clause ratings ride the same five meanings as every other state: unfavorable
+// is exposure, unusual is "a human has to look at this", and favorable is the
+// low end of the same scale the risk meter calls "low".
+/** Risk band → the meaning whose wash the header chip borrows. */
+const RISK_TO_MEANING = { low: 'binding', medium: 'turn', high: 'risk' } as const
+
 const RISK_RATING_BADGE: Record<string, { label: string; cls: string }> = {
-  unfavorable: { label: 'Unfavorable', cls: 'bg-red-100 text-red-700 border border-red-200' },
-  favorable:   { label: 'Favorable',   cls: 'bg-emerald-100 text-emerald-700 border border-emerald-200' },
-  unusual:     { label: 'Unusual',     cls: 'bg-amber-100 text-amber-700 border border-amber-200' },
-  neutral:     { label: 'Neutral',     cls: 'bg-gray-100 text-gray-500 border border-gray-200' },
+  unfavorable: { label: 'Unfavorable', cls: 'bg-risk-100 text-risk-700 border border-risk-200' },
+  favorable:   { label: 'Favorable',   cls: 'bg-brand-100 text-brand-700 border border-brand-200' },
+  unusual:     { label: 'Unusual',     cls: 'bg-attention-100 text-attention-700 border border-attention-200' },
+  neutral:     { label: 'Neutral',     cls: 'bg-paper-100 text-ink-500 border border-paper-200' },
 }
 
 interface FieldDef {
@@ -220,25 +226,33 @@ interface TypeField {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+// Extraction confidence isn't authorship, so it doesn't take the assist accent:
+// it answers "must I check this myself?". High confidence next to an otherwise
+// neutral fact stays neutral; medium is the user's turn; low is a value that
+// may be wrong, which is risk.
 function ConfidenceIcon({ confidence }: { confidence: number }) {
-  if (confidence >= 0.9) return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
-  if (confidence >= 0.7) return <AlertTriangle className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
-  return <XCircle className="h-3.5 w-3.5 text-red-400 flex-shrink-0" />
+  if (confidence >= 0.9) return <CheckCircle2 className="size-3.5 text-ink-400 flex-shrink-0" />
+  if (confidence >= 0.7) return <AlertTriangle className="size-3.5 text-attention-600 flex-shrink-0" />
+  return <XCircle className="size-3.5 text-risk-600 flex-shrink-0" />
 }
 
 function RiskMeter({ score }: { score: number }) {
-  const pct = Math.round(score * 100)
-  const color = score >= 0.67 ? 'bg-red-500' : score >= 0.34 ? 'bg-amber-400' : 'bg-emerald-500'
-  const label = score >= 0.67 ? 'High Risk' : score >= 0.34 ? 'Medium Risk' : 'Low Risk'
-  const labelColor = score >= 0.67 ? 'text-red-600' : score >= 0.34 ? 'text-amber-600' : 'text-emerald-600'
+  // normalizeRisk absorbs the 0-1 vs 0-100 mismatch between the schema and the
+  // stored data; without it every contract here read "Risk 7000% / High Risk".
+  const pct = normalizeRisk(score) ?? 0
+  const band = riskBand(pct)
+  // Bar and label read their color from the shared risk bands, so this meter
+  // can never disagree with a pill sitting next to it.
+  const meaning = { dot: RISK_BAND_CLASS[band], fg: MEANING_CLASS[RISK_TO_MEANING[band]].fg }
+  const label = band === 'high' ? 'High Risk' : band === 'medium' ? 'Medium Risk' : 'Low Risk'
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className={`text-sm font-semibold ${labelColor}`}>{label}</span>
-        <span className="text-sm font-bold text-gray-900">{pct}%</span>
+        <span className={cn('text-body font-semibold', meaning.fg)}>{label}</span>
+        <span className="text-body font-semibold text-ink-950 tabular-nums">{pct}%</span>
       </div>
-      <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+      <div className="h-2 rounded-full bg-paper-100 overflow-hidden">
+        <div className={cn('h-full rounded-full transition-all', meaning.dot)} style={{ width: `${pct}%` }} />
       </div>
     </div>
   )
@@ -275,35 +289,35 @@ function ClauseCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm hover:shadow transition-shadow">
+    <div className="bg-card border border-paper-200 rounded-card p-4 shadow-e1 hover:border-paper-300 transition-colors">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           {badge && (
-            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badge.cls}`}>
+            <span className={`text-[11.5px] font-semibold px-2 py-0.5 rounded-full ${badge.cls}`}>
               {badge.label}
             </span>
           )}
-          <span className="text-sm font-semibold text-gray-800">{typeLabel}</span>
+          <span className="text-body font-semibold text-ink-950">{typeLabel}</span>
         </div>
         {sectionRef && (
-          <span className="text-xs text-gray-400 flex-shrink-0 mt-0.5">{sectionRef}</span>
+          <span className="text-dense font-mono text-ink-400 flex-shrink-0 mt-0.5">{sectionRef}</span>
         )}
       </div>
       {interpretation ? (
-        <p className="text-sm text-gray-600 leading-relaxed mb-2">{interpretation}</p>
+        <p className="text-body text-ink-700 mb-2">{interpretation}</p>
       ) : (
-        <p className="text-sm text-gray-400 italic mb-2">No interpretation available.</p>
+        <p className="text-body text-ink-400 italic mb-2">No interpretation available.</p>
       )}
       <button
         onClick={() => setExpanded(e => !e)}
-        className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-700 font-medium"
+        className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
       >
-        {expanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
         {expanded ? 'Hide' : 'View'} verbatim text
       </button>
       {expanded && (
-        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-100">
-          <p className="text-xs text-gray-600 font-mono leading-relaxed whitespace-pre-wrap">{content}</p>
+        <div className="mt-2 p-3 bg-paper-50 rounded-md border border-paper-200">
+          <p className="text-micro text-ink-700 font-mono whitespace-pre-wrap">{content}</p>
         </div>
       )}
     </div>
@@ -316,9 +330,9 @@ function ClauseCard({
 function DetailRow({ label, value, hideIfEmpty = true }: { label: string; value: string; hideIfEmpty?: boolean }) {
   if (hideIfEmpty && (!value || value === '—' || value === '-')) return null
   return (
-    <div className="flex items-start justify-between gap-4 py-2.5 border-b border-gray-50 last:border-0">
-      <span className="text-xs text-gray-400 whitespace-nowrap pt-0.5">{label}</span>
-      <span className="text-sm text-gray-800 font-medium text-right">{value}</span>
+    <div className="flex items-start justify-between gap-4 py-2.5 border-b border-paper-100 last:border-0">
+      <span className="text-dense text-ink-500 whitespace-nowrap pt-0.5">{label}</span>
+      <span className="text-dense text-ink-950 font-medium text-right">{value}</span>
     </div>
   )
 }
@@ -454,6 +468,44 @@ export function ContractDetailPage() {
   // at desktop width.
   useEffect(() => { if (isXl) setRailOpen(false) }, [isXl])
 
+  /*
+   * Reading room (design system rule 3 — "the document is the hero").
+   *
+   * At 1440px the document column measured 460px wide. DocumentCanvas gives
+   * the page a real 2.5cm print margin on each side, so counsel was reading a
+   * 40-page MSA through a ~223px slot — roughly 30 characters a line, about a
+   * third of the measure the typographic literature calls comfortable. The
+   * chrome (320px rail + the assistant panel) outweighed the paper.
+   *
+   * The rail earns its space during review and costs during reading, so this
+   * makes it foldable rather than permanent, and remembers the choice. Folded,
+   * the same viewport gives the document ~780px — a full 65-character measure.
+   */
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('contract:rail-collapsed') === '1' } catch { return false }
+  })
+  const toggleRail = () => {
+    setRailCollapsed(v => {
+      const next = !v
+      try { localStorage.setItem('contract:rail-collapsed', next ? '1' : '0') } catch { /* private mode */ }
+      track('contract_rail_toggled', { collapsed: next })
+      return next
+    })
+  }
+  // ⌥\ folds the rail — same modifier the sidebar uses for its own collapse.
+  useEffect(() => {
+    if (!isXl) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.altKey && (e.key === '\\' || e.code === 'Backslash')) {
+        e.preventDefault()
+        toggleRail()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isXl])
+
   // P3.1 — when arriving from a citation pill (?section=9.2), find the
   // matching <h*> in the TipTap view + scroll to it + pulse the
   // matching TOC entry. Runs whenever `highlightSection` changes so
@@ -478,11 +530,13 @@ export function ContractDetailPage() {
         `[data-testid^="toc-item-"][data-ref="${highlightSection.replace(/"/g, '\\"')}"]`,
       ) as HTMLElement | null
       if (tocItem) {
-        tocItem.classList.add('bg-blue-100', 'ring-2', 'ring-blue-400')
+        // "You landed here" is a selection, not a state, so the flash is ink.
+        // The literals stay spelled out so Tailwind's scanner still emits them.
+        tocItem.classList.add('bg-paper-100', 'ring-2', 'ring-ink-950')
         tocItem.scrollIntoView({ behavior: 'smooth', block: 'center' })
         // 5s flash — long enough for users to visually register and
         // for verification scripts to catch it deterministically.
-        setTimeout(() => tocItem.classList.remove('bg-blue-100', 'ring-2', 'ring-blue-400'), 5000)
+        setTimeout(() => tocItem.classList.remove('bg-paper-100', 'ring-2', 'ring-ink-950'), 5000)
       }
     }, 350)
     return () => clearTimeout(t)
@@ -931,7 +985,7 @@ export function ContractDetailPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="h-6 w-6 animate-spin text-gray-300" />
+        <Loader2 className="size-6 animate-spin text-ink-400" />
       </div>
     )
   }
@@ -939,8 +993,8 @@ export function ContractDetailPage() {
   if (!contract) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3">
-        <AlertCircle className="h-10 w-10 text-gray-300" />
-        <p className="text-gray-500 font-medium">Contract not found</p>
+        <AlertCircle className="size-10 text-ink-400" />
+        <p className="text-body text-ink-500 font-medium">Contract not found</p>
         <Button variant="outline" onClick={() => navigate('/contracts')}>Back to Contracts</Button>
       </div>
     )
@@ -995,7 +1049,7 @@ export function ContractDetailPage() {
   // the rail, the canonical seed list is in git history.
 
   return (
-    <div className="h-full flex flex-col bg-gray-50">
+    <div className="h-full flex flex-col bg-paper-50">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       {/*
         U.8 (header v2) — restructured into two explicit rows so metadata
@@ -1007,18 +1061,25 @@ export function ContractDetailPage() {
         whole row's width up to the buttons; metadata has the whole row
         below. Same JTBDs, no 4-row stack.
       */}
-      <div className="bg-white border-b px-6 py-4 space-y-2.5">
-        {/* Row 1 — title + action buttons */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
+      <div className="bg-card border-b border-paper-200 px-6 py-4 space-y-2.5">
+        {/* Row 1 — title + action buttons.
+
+            `flex-wrap` + a floor on the title block is load-bearing, not
+            cosmetic: the action cluster is `flex-shrink-0`, so on a 1440px
+            laptop with the assistant panel open the buttons ate the entire
+            row and the contract TITLE collapsed to zero width — the page
+            rendered a toolbar with no name on it. The buttons now drop to
+            their own line instead of erasing the record's identity. */}
+        <div className="flex items-start justify-between gap-x-4 gap-y-2 flex-wrap">
+          <div className="flex items-start gap-3 flex-1 min-w-[18rem]">
             <button
               onClick={() => navigate('/contracts')}
-              className="mt-0.5 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+              className="mt-0.5 p-1.5 rounded-md text-ink-400 hover:text-ink-950 hover:bg-paper-100 transition-colors flex-shrink-0"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft className="size-4" />
             </button>
             <h1
-              className="text-xl font-semibold text-gray-900 leading-tight line-clamp-2 break-words flex-1 min-w-0"
+              className="text-title text-ink-950 line-clamp-2 break-words flex-1 min-w-0"
               title={contract.title}
             >
               {contract.title}
@@ -1033,13 +1094,26 @@ export function ContractDetailPage() {
               }}
               title="Copy contract ID"
               aria-label="Copy contract ID"
-              className="mt-0.5 p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors flex-shrink-0"
+              className="mt-0.5 p-1.5 rounded-md text-ink-400 hover:text-ink-950 hover:bg-paper-100 transition-colors flex-shrink-0"
             >
-              <Copy className="h-4 w-4" />
+              <Copy className="size-4" />
             </button>
           </div>
-          {/* Row 1 right — action buttons */}
-          <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Row 1 right — action buttons.
+
+              Hierarchy, not a queue. This row used to run nine controls at
+              five weights, so nothing read as the next step. It is now two
+              tiers separated by a hairline:
+
+                view chrome  — Styled/Original, Risk markers, Compare, and the
+                               rail fold. These change what you are LOOKING at.
+                               Quiet: no button chrome, ink-500 until hovered.
+                decisions    — Edit, the single workflow CTA, Actions. These
+                               change the CONTRACT. Full weight.
+
+              Same controls, same testids, same breakpoints — the difference is
+              that the eye now lands on the decision. */}
+          <div className="flex items-center gap-1 flex-shrink-0">
             {/*
               B.5.2 — Styled / Original document-view toggle.
               - "Styled" (default): TipTap + contract-paper CSS. Editable when
@@ -1052,17 +1126,19 @@ export function ContractDetailPage() {
               B.6.12 — hide on <1280px. The toggle moves into the
               Actions menu below xl so the primary CTA stays visible.
             */}
-            <div className="hidden xl:inline-flex items-center rounded-md border border-gray-200 bg-gray-50 p-0.5">
+            {/* ── Tier 1: view chrome. Recessive by construction. ── */}
+            <div className="hidden xl:flex items-center gap-0.5 mr-1.5 pr-2 border-r border-paper-200">
+            <div className="inline-flex items-center rounded-md border border-paper-200 bg-paper-50 p-0.5">
               <button
                 onClick={() => setDocView('styled')}
                 aria-pressed={docView === 'styled'}
                 disabled={isEditing}
                 title={isEditing ? 'Exit Edit mode to switch to Original PDF' : undefined}
                 className={cn(
-                  'px-2.5 py-1 text-xs font-medium rounded transition-colors',
+                  'px-2.5 py-1 text-[11.5px] font-semibold rounded-chip transition-colors',
                   docView === 'styled'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-800',
+                    ? 'bg-card text-ink-950 shadow-e1'
+                    : 'text-ink-400 hover:text-ink-950',
                   isEditing && 'opacity-60 cursor-not-allowed',
                 )}
               >
@@ -1081,10 +1157,10 @@ export function ContractDetailPage() {
                 }
                 data-testid="doc-view-original"
                 className={cn(
-                  'px-2.5 py-1 text-xs font-medium rounded transition-colors',
+                  'px-2.5 py-1 text-[11.5px] font-semibold rounded-chip transition-colors',
                   docView === 'original'
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-800',
+                    ? 'bg-card text-ink-950 shadow-e1'
+                    : 'text-ink-400 hover:text-ink-950',
                   (isEditing || !hasOriginal) && 'opacity-60 cursor-not-allowed',
                 )}
               >
@@ -1101,22 +1177,22 @@ export function ContractDetailPage() {
             {docView === 'styled' && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="hidden 2xl:inline-flex gap-1 text-xs text-gray-600">
+                  <Button variant="ghost" size="sm" className="hidden 2xl:inline-flex gap-1 text-ink-500 hover:text-ink-950">
                     Risks: <span className="font-semibold capitalize">{riskView}</span>
-                    <ChevronDown className="h-3 w-3" />
+                    <ChevronDown className="size-3" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent>
                   <DropdownMenuItem onSelect={() => setRiskView('full')}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                    <span className="size-1.5 rounded-full bg-risk-600" />
                     Full — underlines + margin dots
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setRiskView('summary')}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-gray-400" />
+                    <span className="size-1.5 rounded-full bg-ink-400" />
                     Summary — margin dots only
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => setRiskView('off')}>
-                    <span className="h-1.5 w-1.5 rounded-full bg-transparent border border-gray-300" />
+                    <span className="size-1.5 rounded-full bg-transparent border border-paper-300" />
                     Off — no markers
                   </DropdownMenuItem>
                 </DropdownMenuContent>
@@ -1146,22 +1222,43 @@ export function ContractDetailPage() {
               widths.
             */}
             <Button
-              variant="outline"
+              variant="ghost"
               size="sm"
               disabled={versions.length < 2}
               onClick={() => {
                 setCompareOpen(true)
                 track('compare_opened', { versionCount: versions.length })
               }}
-              className="hidden xl:inline-flex gap-1.5 text-gray-600"
+              className="gap-1.5 text-ink-500 hover:text-ink-950"
               title={versions.length < 2
                 ? 'Upload a second version to compare. Until then there is nothing to diff.'
                 : 'Compare two versions with redline attribution'}
               data-testid="compare-btn"
             >
-              <ArrowLeftRight className="h-4 w-4" />
+              <ArrowLeftRight className="size-4" />
               Compare
             </Button>
+
+            {/*
+              Rail fold. The single biggest lever on "the document is the
+              hero" — see the railCollapsed note above. Icon-only because it
+              is chrome about chrome.
+            */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleRail}
+              aria-pressed={railCollapsed}
+              data-testid="rail-toggle-btn"
+              title={railCollapsed
+                ? 'Show the details rail (⌥\\)'
+                : 'Hide the details rail and widen the document (⌥\\)'}
+              aria-label={railCollapsed ? 'Show details rail' : 'Hide details rail'}
+              className="text-ink-500 hover:text-ink-950"
+            >
+              {railCollapsed ? <PanelRightOpen className="size-4" /> : <PanelRightClose className="size-4" />}
+            </Button>
+            </div>
 
             {/*
               B.5.3 — Edit toggle. In view mode it reads "✏ Edit"; in edit
@@ -1175,26 +1272,26 @@ export function ContractDetailPage() {
                   size="sm"
                   onClick={() => canvasEditorRef.current?.chain().focus().undo().run()}
                   disabled={!canvasEditorRef.current?.can().undo()}
-                  className="gap-1.5 text-gray-600"
+                  className="gap-1.5"
                   aria-label="Undo"
                   title="Undo (⌘Z)"
                 >
-                  <RefreshCw className="h-4 w-4 -scale-x-100" />
+                  <RefreshCw className="size-4 -scale-x-100" />
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => canvasEditorRef.current?.chain().focus().redo().run()}
                   disabled={!canvasEditorRef.current?.can().redo()}
-                  className="gap-1.5 text-gray-600"
+                  className="gap-1.5"
                   aria-label="Redo"
                   title="Redo (⌘⇧Z)"
                 >
-                  <RefreshCw className="h-4 w-4" />
+                  <RefreshCw className="size-4" />
                 </Button>
                 <span className={cn(
-                  'text-xs text-gray-400 min-w-[4rem] text-center',
-                  saveState === 'error' && 'text-red-500',
+                  'text-dense text-ink-400 min-w-[4rem] text-center',
+                  saveState === 'error' && 'text-risk-700',
                 )}>
                   {saveState === 'saving' ? 'Saving…'
                     : saveState === 'saved' ? 'Saved ✓'
@@ -1202,8 +1299,10 @@ export function ContractDetailPage() {
                     : saveState === 'error' ? 'Save failed'
                     : ''}
                 </span>
-                <Button variant="default" size="sm" onClick={exitEdit} className="gap-1.5">
-                  <CheckCircle2 className="h-4 w-4" /> Done
+                {/* Outlined: the ink fill in this header belongs to the one
+                    workflow CTA, and leaving edit mode is chrome. */}
+                <Button variant="outline" size="sm" onClick={exitEdit} className="gap-1.5">
+                  <CheckCircle2 className="size-4" /> Done
                 </Button>
               </>
             ) : (
@@ -1211,11 +1310,11 @@ export function ContractDetailPage() {
                 variant="outline"
                 size="sm"
                 onClick={enterEdit}
-                className="gap-1.5 text-gray-600"
+                className="gap-1.5"
                 title="Edit this document (⌘E)"
                 data-testid="enter-edit-btn"
               >
-                <FileEdit className="h-4 w-4" /> Edit
+                <FileEdit className="size-4" /> Edit
               </Button>
             )}
 
@@ -1229,7 +1328,7 @@ export function ContractDetailPage() {
                 disabled={changeStatus.isPending}
                 className="gap-1.5"
               >
-                {changeStatus.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                {changeStatus.isPending && <Loader2 className="size-4 animate-spin" />}
                 {tr.label}
               </Button>
             ))}
@@ -1246,8 +1345,8 @@ export function ContractDetailPage() {
                 className="gap-1.5"
               >
                 {submitForApproval.isPending
-                  ? <><Loader2 className="h-4 w-4 animate-spin" />Submitting…</>
-                  : <><CheckCircle2 className="h-4 w-4" />Send for Review</>}
+                  ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
+                  : <><CheckCircle2 className="size-4" />Send for Review</>}
               </Button>
             )}
             {/* Phase 07 — Send-for-Signature primary CTA.
@@ -1256,15 +1355,28 @@ export function ContractDetailPage() {
                 still owns the slot in DRAFT/PENDING_REVIEW/UNDER_NEGOTIATION
                 (it remains the recommended workflow path), and Send-for-Signature
                 is shown alongside it for orgs that approve outside the system
-                or want to skip approvals on low-risk contracts. */}
+                or want to skip approvals on low-risk contracts.
+
+                It is NOT a brand-fill button. Emerald means the state "binding"
+                — approved, executed, signed — and sending something out for
+                signature is the act that starts that, not the state itself.
+                (The design system's own send-for-signature dialog confirms with
+                an ink button.) So this takes the ink primary only when
+                Send-for-Review is absent; while both are on screen, review owns
+                the single primary slot and this one steps back to outline. */}
             {!['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
               <Button
-                variant="default" size="sm"
+                variant={
+                  ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
+                    ? 'outline'
+                    : 'default'
+                }
+                size="sm"
                 onClick={() => setSendForSignatureOpen(true)}
-                className="gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white"
+                className="gap-1.5"
                 data-testid="send-for-signature-btn"
               >
-                <PenLine className="h-4 w-4" />
+                <PenLine className="size-4" />
                 {contract?.status === 'PENDING_SIGNATURE' ? 'Resend for Signature' : 'Send for Signature'}
               </Button>
             )}
@@ -1283,8 +1395,8 @@ export function ContractDetailPage() {
                   removed — editing now happens on this same canvas via
                   the Edit toggle (B.5.3).
                 */}
-                <Button variant="outline" size="sm" className="gap-1.5 text-gray-600" aria-label="More actions">
-                  Actions <ChevronDown className="h-3.5 w-3.5" />
+                <Button variant="outline" size="sm" className="gap-1.5" aria-label="More actions">
+                  Actions <ChevronDown className="size-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent>
@@ -1299,7 +1411,7 @@ export function ContractDetailPage() {
                     onSelect={() => setDocView(docView === 'styled' ? 'original' : 'styled')}
                     disabled={isEditing}
                   >
-                    <FileText className="h-4 w-4" />
+                    <FileText className="size-4" />
                     {docView === 'styled' ? 'View original PDF' : 'Back to styled view'}
                   </DropdownMenuItem>
                 </div>
@@ -1312,10 +1424,15 @@ export function ContractDetailPage() {
                         )
                       }
                     >
-                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTriangle className="size-4" />
                       Risk markers: <span className="ml-1 capitalize font-medium">{riskView}</span>
                     </DropdownMenuItem>
                   )}
+                </div>
+                {/* Compare is inline from xl up, so the mirror stops at xl —
+                    it used to stop at 2xl, which double-listed it between
+                    1280 and 1536 (two triggers, one action). */}
+                <div className="xl:hidden">
                   <DropdownMenuItem
                     disabled={versions.length < 2}
                     onSelect={() => {
@@ -1325,21 +1442,23 @@ export function ContractDetailPage() {
                     }}
                     data-testid="compare-menu-item"
                   >
-                    <ArrowLeftRight className="h-4 w-4" />
+                    <ArrowLeftRight className="size-4" />
                     Compare versions
                     {versions.length < 2 && (
                       <span className="ml-auto text-[10px] text-muted-foreground">need 2+</span>
                     )}
                   </DropdownMenuItem>
+                </div>
+                <div className="2xl:hidden">
                   <DropdownMenuSeparator />
                 </div>
                 <DropdownMenuItem onSelect={() => setShowShareDialog(true)}>
-                  <Share2 className="h-4 w-4" /> Share
+                  <Share2 className="size-4" /> Share
                 </DropdownMenuItem>
                 {/* P8 Step 8 — spawn an amendment / SOW / order-form / renewal
                     that links back to this contract via parentContractId. */}
                 <DropdownMenuItem onSelect={() => setCreateAmendmentOpen(true)} data-testid="create-amendment-menu-item">
-                  <GitBranch className="h-4 w-4" /> Create amendment
+                  <GitBranch className="size-4" /> Create amendment
                 </DropdownMenuItem>
                 {/* P9 Step 6 — bundle audit trail + signers + signed PDF into
                     a single auditor-ready compliance package. */}
@@ -1361,7 +1480,7 @@ export function ContractDetailPage() {
                     }}
                     data-testid="compliance-export-menu-item"
                   >
-                    <FileText className="h-4 w-4" /> Compliance package (PDF)
+                    <FileText className="size-4" /> Compliance package (PDF)
                   </DropdownMenuItem>
                 )}
                 {/* U.4.4 — Actions menu agent-item deleted. Use ⌘K or
@@ -1370,11 +1489,11 @@ export function ContractDetailPage() {
                 {/* U.1.2 — only offer "View PDF" when there's actually one */}
                 {hasOriginal && (
                   <DropdownMenuItem onSelect={handleViewPdf}>
-                    <FileText className="h-4 w-4" /> View PDF in new tab
+                    <FileText className="size-4" /> View PDF in new tab
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuItem onSelect={() => handleDownload()}>
-                  <Download className="h-4 w-4" /> Download
+                  <Download className="size-4" /> Download
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1385,42 +1504,105 @@ export function ContractDetailPage() {
           <div
             role="alert"
             data-testid="contract-download-error"
-            className="mt-2 flex items-start justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+            className="mt-2 flex items-start justify-between gap-3 rounded-md border border-risk-200 bg-risk-50 px-3 py-2 text-dense text-risk-900"
           >
             <span className="min-w-0 break-words">{downloadError}</span>
             <button
               type="button"
               onClick={() => setDownloadError(null)}
-              className="shrink-0 font-medium text-red-700 hover:text-red-900"
+              className="shrink-0 font-semibold text-risk-700 hover:text-risk-900"
             >
               Dismiss
             </button>
           </div>
         )}
 
-        {/* Row 2 — full-width metadata strip. Indented `pl-11` so the
-            pills line up with the title text (back-button + gap). At all
-            viewports this stays a single visual row at MBA-class width
-            and only wraps to 2 lines at very narrow widths. */}
+        {/* Row 2 — the record strip. Indented `pl-11` so it lines up with
+            the title text (back-button + gap).
+
+            This was nine affordances at five weights with no order: a status
+            pill, a dashed action button, a sync badge, a type chip, a text
+            link, a jurisdiction, an amber risk wash, an avatar, and four grey
+            facts — all competing, and the one time-critical number ("Expires
+            in 29d") rendered in the quietest grey on the row while a static
+            risk SCORE got the loudest wash. Colour was inverted against
+            urgency.
+
+            It is now three groups, hairline-separated, read left to right:
+
+              STATE     what is true right now, and what is running out.
+                        The only place in this row allowed a colour.
+              RECORD    what this document is — type, law, money, matter.
+              PROVENANCE who owns it, when it moved, how the text was got.
+                        Dimmest; it is context, never the answer.
+        */}
         <div
-          className="flex items-center flex-wrap gap-x-2 gap-y-1.5 pl-11"
+          className="flex items-center flex-wrap gap-x-2.5 gap-y-1.5 pl-11 text-[11.5px]"
           data-testid="contract-meta-row"
         >
+          {/* ── STATE ─────────────────────────────────────────────────── */}
           <StatusPill status={contract.status} />
-          {ocrApplied && (
-            <span
-              data-testid="contract-ocr-badge"
-              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`}
-              className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10.5px] font-medium text-amber-900"
-            >
-              <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 8h10M7 12h10M7 16h6" /></svg>
-              OCR'd
-            </span>
-          )}
-          {id && (
-            <ContractMatterPicker contractId={id} currentMatterId={(contract as unknown as { matterId?: string | null }).matterId ?? null} />
-          )}
-          {id && <CollabStatusBadge contractId={id} />}
+
+          {/*
+            Expiry. Calendar days, not elapsed milliseconds — the header said
+            "29d" while the Renewal rail said "30d" for the same date on the
+            same screen, because only one of them normalised to midnight.
+            See components/contracts/dates.ts.
+
+            It takes the wash when it is genuinely news (lapsed, or inside the
+            30-day notice window). That wash is the row's one exception, which
+            is why the risk score below gives its own up.
+          */}
+          {(() => {
+            const exp = expiryLabel(contract.expiryDate)
+            if (!exp) return null
+            const meaning = exp.tone === 'risk' ? 'risk' : exp.tone === 'turn' ? 'turn' : null
+            return (
+              <span
+                title={`Expires ${new Date(contract.expiryDate).toLocaleDateString()}`}
+                data-testid="contract-expiry-chip"
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-medium tabular-nums',
+                  meaning === 'risk'
+                    ? [MEANING_CLASS.risk.wash, MEANING_CLASS.risk.washFg, 'border', MEANING_CLASS.risk.washBorder]
+                    : meaning === 'turn'
+                      ? ['border border-paper-200 bg-paper-100 text-ink-700']
+                      : 'text-ink-500',
+                )}
+              >
+                {meaning === 'turn' && (
+                  <span className={cn('size-1.5 shrink-0 rounded-full', MEANING_CLASS.turn.dot)} aria-hidden />
+                )}
+                {exp.label}
+              </span>
+            )
+          })()}
+
+          {/*
+            Risk score. Demoted from a full amber/red wash to the system's
+            default treatment — neutral chip, coloured meaning dot. A risk
+            score is a standing reading, not an event; washing it amber on
+            every medium-risk contract (34–66, i.e. most of the portfolio)
+            made amber the modal colour of the page and left nothing louder
+            for the deadline that actually moves.
+          */}
+          {contract.riskScore != null && (() => {
+            const band = riskBand(normalizeRisk(contract.riskScore)!)
+            return (
+              <span
+                title={`Risk score ${normalizeRisk(contract.riskScore)} of 100 — ${band} band`}
+                data-testid="contract-risk-chip"
+                className="inline-flex items-center gap-1.5 rounded-full border border-paper-200 bg-paper-100 px-2.5 py-0.5 font-medium tabular-nums text-ink-700"
+              >
+                <span className={cn('size-1.5 shrink-0 rounded-full', RISK_BAND_CLASS[band])} aria-hidden />
+                Risk {normalizeRisk(contract.riskScore)}
+              </span>
+            )
+          })()}
+
+          <span className="h-3.5 w-px bg-paper-200" aria-hidden />
+
+          {/* ── RECORD ────────────────────────────────────────────────── */}
           {editingType ? (
             <select
               ref={typeSelectRef}
@@ -1432,101 +1614,96 @@ export function ContractDetailPage() {
                 if (e.target.value !== contract.type) retype.mutate(e.target.value)
                 else setEditingType(false)
               }}
-              className="text-xs font-semibold border rounded-full px-2.5 py-0.5 bg-white cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500"
+              aria-label="Contract type"
+              className="text-[11.5px] font-semibold border border-paper-300 rounded-full px-2.5 py-0.5 bg-card text-ink-950 cursor-pointer focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
             >
               {CONTRACT_TYPES.map(t => (
                 <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
               ))}
             </select>
           ) : (
-            <span className="inline-flex items-center gap-2">
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
-                TYPE_COLORS[contract.type] ?? TYPE_COLORS.OTHER
-              }`}>
-                {contract.type.replace(/_/g, ' ')}
-              </span>
-              <button
-                onClick={() => setEditingType(true)}
-                className="text-xs text-gray-400 hover:text-blue-500 hover:underline underline-offset-2 transition-colors"
-              >
-                Correct type
-              </button>
-            </span>
+            /*
+              Type is one control, not two. It was a static chip plus a
+              separate "Correct type" text link — a second affordance, at a
+              third weight, whose only job was to make the first one editable.
+              The chip itself is now the button.
+            */
+            <button
+              type="button"
+              onClick={() => setEditingType(true)}
+              title="Click to correct the contract type"
+              data-testid="contract-type-chip"
+              className={cn(
+                'px-2.5 py-0.5 rounded-full text-[11.5px] font-semibold border transition-colors',
+                'hover:border-paper-300 hover:bg-paper-100',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                TYPE_COLORS[contract.type] ?? TYPE_COLORS.OTHER,
+              )}
+            >
+              {contract.type.replace(/_/g, ' ')}
+            </button>
           )}
           {contract.jurisdiction && (
-            <span className="text-xs text-gray-400">⚖ {contract.jurisdiction}</span>
+            <span className="text-ink-500" title="Governing law">⚖ {contract.jurisdiction}</span>
           )}
-          {contract.riskScore != null && (
-            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-              contract.riskScore >= 0.67 ? 'bg-red-50 text-red-600' :
-              contract.riskScore >= 0.34 ? 'bg-amber-50 text-amber-600' :
-              'bg-emerald-50 text-emerald-600'
-            }`}>
-              <TrendingUp className="h-3 w-3" />
-              Risk {Math.round(contract.riskScore * 100)}%
+          {contract.value != null && (
+            <span
+              title="Contract value"
+              data-testid="contract-value-chip"
+              className="font-medium text-ink-950 tabular-nums"
+            >
+              {(contract.currency ?? 'USD')} {Number(contract.value).toLocaleString()}
             </span>
           )}
-          {/* Owner / Edited / Value / Expiry — now show at all widths
-              (no `hidden xl:` gate). The dedicated Row 2 has the room. */}
+          {id && (
+            <ContractMatterPicker contractId={id} currentMatterId={(contract as unknown as { matterId?: string | null }).matterId ?? null} />
+          )}
+
+          <span className="h-3.5 w-px bg-paper-200" aria-hidden />
+
+          {/* ── PROVENANCE ────────────────────────────────────────────── */}
           {contract.owner?.name && (
             <span
-              className="inline-flex items-center gap-1.5 text-xs text-gray-600"
+              className="inline-flex items-center gap-1.5 text-ink-500"
               title={`Owner: ${contract.owner.name}`}
               data-testid="contract-owner-chip"
             >
-              <span className="text-gray-300" aria-hidden>·</span>
+              {/* The owner is a person, not the machine — the indigo avatar this
+                  used to be is now the system's neutral initials chip. */}
               <span
                 aria-hidden
-                className="h-5 w-5 rounded-full bg-indigo-50 text-indigo-700 flex items-center justify-center text-[9.5px] font-semibold ring-1 ring-indigo-200"
+                className="size-5 rounded-full bg-paper-100 text-ink-700 flex items-center justify-center text-[9.5px] font-semibold ring-1 ring-paper-200"
               >
                 {contract.owner.name.split(/\s+/).filter(Boolean).slice(0, 2).map((p: string) => p[0]?.toUpperCase()).join('') || '?'}
               </span>
-              <span className="font-medium text-gray-700">{contract.owner.name}</span>
+              <span className="text-ink-500">{contract.owner.name}</span>
             </span>
           )}
           {contract.updatedAt && (
             <span
-              className="inline-flex items-center gap-1.5 text-xs text-gray-500"
+              className="text-ink-500"
               title={new Date(contract.updatedAt).toLocaleString()}
               data-testid="contract-edited-chip"
             >
-              <span className="text-gray-300" aria-hidden>·</span>
-              Edited {(() => {
-                const ms = Date.now() - new Date(contract.updatedAt).getTime()
-                if (ms < 60_000) return 'just now'
-                if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
-                if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
-                return `${Math.floor(ms / 86_400_000)}d ago`
-              })()}
+              Edited {relativeTime(contract.updatedAt)}
             </span>
           )}
-          {contract.value != null && (
+          {ocrApplied && (
             <span
-              className="inline-flex items-center gap-1.5 text-xs"
-              title="Contract value"
-              data-testid="contract-value-chip"
+              data-testid="contract-ocr-badge"
+              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`}
+              // Provenance, not "your turn": this badge is a permanent fact
+              // about how the text was obtained and rides along on executed and
+              // archived contracts too. Nothing is blocked on the user, so it
+              // stays neutral rather than competing with the status pill beside
+              // it for the one attention colour on the row.
+              className="inline-flex items-center gap-1 rounded-full border border-paper-200 bg-paper-100 px-2 py-0.5 text-[10.5px] font-medium text-ink-700"
             >
-              <span className="text-gray-300" aria-hidden>·</span>
-              <span className="font-medium text-gray-700 tabular-nums">
-                {(contract.currency ?? 'USD')} {Number(contract.value).toLocaleString()}
-              </span>
+              <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 8h10M7 12h10M7 16h6" /></svg>
+              OCR'd
             </span>
           )}
-          {contract.expiryDate && (
-            <span
-              className="inline-flex items-center gap-1.5 text-xs text-gray-500"
-              title={`Expires ${new Date(contract.expiryDate).toLocaleDateString()}`}
-              data-testid="contract-expiry-chip"
-            >
-              <span className="text-gray-300" aria-hidden>·</span>
-              {(() => {
-                const days = Math.floor((new Date(contract.expiryDate).getTime() - Date.now()) / 86_400_000)
-                if (days < 0) return `Expired ${-days}d ago`
-                if (days < 90) return `Expires in ${days}d`
-                return `Expires ${new Date(contract.expiryDate).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`
-              })()}
-            </span>
-          )}
+          {id && <CollabStatusBadge contractId={id} />}
         </div>
       </div>
 
@@ -1635,8 +1812,9 @@ export function ContractDetailPage() {
             ) as HTMLElement | null
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              el.classList.add('ring-2', 'ring-amber-400')
-              setTimeout(() => el.classList.remove('ring-2', 'ring-amber-400'), 1500)
+              // Approver mode: the clause is the approver's turn, so attention.
+              el.classList.add('ring-2', 'ring-attention-600')
+              setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
             } else {
               setFocusedClauseId(clauseId)
             }
@@ -1650,21 +1828,26 @@ export function ContractDetailPage() {
         />
       )}
 
-      {/* ── AI Drafting Banner ────────────────────────────────────────────── */}
+      {/* ── AI Drafting Banner ──────────────────────────────────────────────
+          The model is writing the document — one of the few surfaces on this
+          page that genuinely earns the assist accent. */}
       {contract?.analysisStatus === 'DRAFTING' && (
-        <div className="bg-violet-600 text-white px-6 py-3 flex items-center gap-3 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
+        // Tint, not a saturated band. Assist still owns the colour — this is
+        // genuinely machine-authored work — but a background job is chrome,
+        // and chrome recedes. See the note on the pipeline banner below.
+        <div className="bg-assist-50 border-b border-assist-200 text-assist-700 px-6 py-2.5 flex items-center gap-3 text-body">
+          <Loader2 className="size-4 animate-spin flex-shrink-0" />
           <div className="flex-1">
-            <span className="font-medium">AI is generating a first draft from your request...</span>
-            <span className="text-violet-200 text-xs ml-2">(~30–60 seconds)</span>
+            <span className="font-medium">AI is generating a first draft from your request…</span>
+            <span className="text-ink-500 text-dense ml-2">(~30–60 seconds)</span>
           </div>
           {isStuck && (
-            <div className="flex items-center gap-3 flex-shrink-0 border-l border-violet-400 pl-3 ml-1">
-              <span className="text-violet-200 text-xs">Taking too long?</span>
+            <div className="flex items-center gap-3 flex-shrink-0 border-l border-assist-200 pl-3 ml-1">
+              <span className="text-ink-500 text-dense">Taking too long?</span>
               <button
                 onClick={() => cancelAnalysis.mutate()}
                 disabled={cancelAnalysis.isPending}
-                className="text-xs text-violet-200 hover:text-white underline underline-offset-2"
+                className="text-dense font-medium text-assist-700 hover:text-assist-900 underline underline-offset-2"
               >
                 Cancel
               </button>
@@ -1673,13 +1856,23 @@ export function ContractDetailPage() {
         </div>
       )}
 
-      {/* ── Analysis Progress Banner ─────────────────────────────────────── */}
+      {/* ── Analysis Progress Banner ───────────────────────────────────────
+          Pipeline states resolve to "inflight" in lib/status, so the banner
+          takes info rather than the ink an action would get.
+
+          It used to be a full-bleed `bg-info-600` band in white type — the
+          single loudest element on a page whose declared hero is the paper,
+          and louder than the FAILED banner directly below it, which is a
+          quiet risk tint. So an ordinary background job shouted and an actual
+          extraction failure whispered. Both are now tints of their meaning,
+          which puts them in the right order: failure reads louder because red
+          on the page is rarer than blue. */}
       {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && STATUS_BANNER[contract.analysisStatus] && (
-        <div className="bg-blue-600 text-white px-6 py-2.5 flex items-center gap-3 text-sm">
-          <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
+        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
+          <Loader2 className="size-4 animate-spin flex-shrink-0" />
           <span className="font-medium">{STATUS_BANNER[contract.analysisStatus].message}</span>
           {STATUS_BANNER[contract.analysisStatus].sub && (
-            <span className="text-blue-200 text-xs">{STATUS_BANNER[contract.analysisStatus].sub}</span>
+            <span className="text-ink-500 text-dense">{STATUS_BANNER[contract.analysisStatus].sub}</span>
           )}
           {/* Step indicator */}
           <div className="ml-auto flex items-center gap-2.5 flex-shrink-0">
@@ -1690,11 +1883,11 @@ export function ContractDetailPage() {
                 <div
                   key={i}
                   className={`flex items-center gap-1 text-[10px] font-medium transition-colors ${
-                    isActive ? 'text-white' : isPast ? 'text-blue-300' : 'text-blue-500/50'
+                    isActive ? 'text-info-700' : isPast ? 'text-info-600' : 'text-ink-400'
                   }`}
                 >
-                  <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 transition-colors ${
-                    isActive ? 'bg-white' : isPast ? 'bg-blue-300' : 'bg-blue-500/30'
+                  <div className={`size-1.5 rounded-full flex-shrink-0 transition-colors ${
+                    isActive ? 'bg-info-600' : isPast ? 'bg-info-200' : 'bg-paper-300'
                   }`} />
                   {step.label}
                 </div>
@@ -1702,19 +1895,19 @@ export function ContractDetailPage() {
             })}
           </div>
           {isStuck && (
-            <div className="flex items-center gap-3 flex-shrink-0 border-l border-blue-500 pl-3 ml-1">
-              <span className="text-blue-200 text-xs">Taking too long?</span>
+            <div className="flex items-center gap-3 flex-shrink-0 border-l border-info-200 pl-3 ml-1">
+              <span className="text-ink-500 text-dense">Taking too long?</span>
               <button
                 onClick={() => cancelAnalysis.mutate()}
                 disabled={cancelAnalysis.isPending}
-                className="text-xs text-blue-200 hover:text-white underline underline-offset-2"
+                className="text-dense font-medium text-info-700 hover:text-ink-950 underline underline-offset-2"
               >
                 Cancel
               </button>
               <button
                 onClick={() => analyze.mutate()}
                 disabled={analyze.isPending}
-                className="text-xs bg-white/20 hover:bg-white/30 text-white px-2.5 py-1 rounded"
+                className="text-dense font-medium border border-info-200 bg-card text-info-700 hover:bg-info-100 px-2.5 py-1 rounded-chip"
               >
                 Retry
               </button>
@@ -1723,13 +1916,13 @@ export function ContractDetailPage() {
         </div>
       )}
       {contract?.analysisStatus === 'FAILED' && (
-        <div className="bg-red-50 border-b border-red-200 text-red-700 px-6 py-2.5 flex items-center gap-3 text-sm">
-          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+        <div className="bg-risk-50 border-b border-risk-200 text-risk-700 px-6 py-2.5 flex items-center gap-3 text-body">
+          <AlertCircle className="size-4 flex-shrink-0" />
           <span className="font-medium">
             {versions.length === 0 ? 'Draft generation failed' : 'Analysis failed'}
           </span>
           {contract.analysisError && (
-            <span className="text-red-500">— {contract.analysisError}</span>
+            <span className="text-risk-900">— {contract.analysisError}</span>
           )}
           <div className="ml-auto">
             <Button
@@ -1737,9 +1930,9 @@ export function ContractDetailPage() {
               size="sm"
               onClick={() => analyze.mutate()}
               disabled={analyze.isPending}
-              className="gap-1.5 text-red-700 border-red-300 hover:bg-red-100"
+              className="gap-1.5 text-risk-700 border-risk-200 hover:bg-risk-100 hover:text-risk-900"
             >
-              {analyze.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {analyze.isPending && <Loader2 className="size-3.5 animate-spin" />}
               {versions.length === 0 ? 'Retry Draft' : 'Re-analyze'}
             </Button>
           </div>
@@ -1749,33 +1942,38 @@ export function ContractDetailPage() {
           of a binder (parentContractId set + relationshipType='exhibit_only'
           + family API returns a parent), surface a persistent "Split from
           <binder>" bar so the user can jump back regardless of which tab
-          they're on. Renders on top of all other banners. */}
+          they're on. Renders on top of all other banners.
+          Where a document sits in a binder is structure, not machine output, so
+          the indigo this band used to wear went back to the agent surfaces. */}
       {(contract as any)?.parentContractId && familyData?.parent && (
         <div
           data-testid="binder-child-banner"
-          className="bg-indigo-50 border-b border-indigo-200 text-indigo-800 px-6 py-2 flex items-center gap-2 text-sm"
+          className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
         >
-          <Scissors className="h-3.5 w-3.5 flex-shrink-0 text-indigo-500" />
-          <span className="text-[12px]">Split from binder:</span>
+          <Scissors className="size-3.5 flex-shrink-0 text-ink-400" />
+          <span className="text-dense">Split from binder:</span>
           <button
             onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
             data-testid="binder-child-parent-link"
-            className="text-[12px] font-medium underline hover:text-indigo-900 truncate"
+            className="text-dense font-medium underline underline-offset-2 decoration-paper-300 text-ink-950 hover:decoration-ink-950 truncate"
             title={`Open parent contract: ${familyData.parent.title}`}
           >
             {familyData.parent.title}
           </button>
-          <span className="ml-auto text-[10.5px] text-indigo-500">
+          <span className="ml-auto text-[10.5px] text-ink-500">
             {(familyData.siblings?.length ?? 0) + 1} total agreements in this binder
           </span>
         </div>
       )}
       {autoSplitDone && (
-        <div className="bg-blue-50 border-b border-blue-200 text-blue-800 px-6 py-2.5 flex items-center gap-3 text-sm">
-          <Scissors className="h-4 w-4 flex-shrink-0 text-blue-500" />
+        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
+          <Scissors className="size-4 flex-shrink-0 text-info-600" />
           <span className="font-medium">Auto-split into {splitInto.length} contracts</span>
-          <span className="text-blue-600">— AI split this binder automatically. Each contract is processing independently.</span>
-          <button
+          <span>— AI split this binder automatically. Each contract is processing independently.</span>
+          {/* Outlined, not ink: the header already owns the one filled primary. */}
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => {
               setSplitSpecs(suggestedSplits.map((s: any, i: number) => ({
                 pageStart: s.pageStart ?? 1,
@@ -1785,20 +1983,24 @@ export function ContractDetailPage() {
               })))
               setShowSplitModal(true)
             }}
-            className="ml-auto flex-shrink-0 px-3 py-1 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 font-medium"
+            className="ml-auto flex-shrink-0"
           >
             Adjust splits →
-          </button>
+          </Button>
         </div>
       )}
+      {/* Nothing moves until the user splits this binder, so this band is
+          attention (your turn) rather than info. */}
       {binderDetected && !autoSplitDone && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-800 px-6 py-2.5 flex items-center gap-3 text-sm">
-          <FileText className="h-4 w-4 flex-shrink-0 text-amber-500" />
+        <div className="bg-attention-50 border-b border-attention-200 text-attention-700 px-6 py-2.5 flex items-center gap-3 text-body">
+          <FileText className="size-4 flex-shrink-0 text-attention-600" />
           <span className="font-medium">Multiple agreements detected</span>
-          <span className="text-amber-600">
+          <span>
             — We found {suggestedSplits.length > 0 ? suggestedSplits.length : 'multiple'} separate agreements in this document.
           </span>
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => {
               setSplitSpecs(suggestedSplits.map((s: any, i: number) => ({
                 pageStart: s.pageStart ?? 1,
@@ -1808,10 +2010,10 @@ export function ContractDetailPage() {
               })))
               setShowSplitModal(true)
             }}
-            className="ml-auto flex-shrink-0 px-3 py-1 bg-amber-600 text-white text-xs rounded-lg hover:bg-amber-700 font-medium"
+            className="ml-auto flex-shrink-0"
           >
             Review &amp; Split →
-          </button>
+          </Button>
         </div>
       )}
 
@@ -1820,18 +2022,18 @@ export function ContractDetailPage() {
           to the contract." `setTab` was reachable via "View all" links but
           had no visible tab bar to switch back. This renders one. */}
       {tab !== 'document' && (
-        <div className="flex items-center gap-1 px-6 py-2 border-b border-gray-100 bg-white sticky top-0 z-10">
+        <div className="flex items-center gap-1 px-6 py-2 border-b border-paper-200 bg-card sticky top-0 z-10">
           <button
             type="button"
             onClick={() => setTab('document')}
             data-testid="tab-back-to-document"
-            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium text-gray-600 hover:text-blue-600 hover:bg-blue-50 mr-2"
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-dense font-medium text-ink-700 hover:text-ink-950 hover:bg-paper-100 mr-2"
             title="Back to document view"
           >
-            <ArrowLeft className="h-3.5 w-3.5" />
+            <ArrowLeft className="size-3.5" />
             Document
           </button>
-          <span className="text-gray-200" aria-hidden>·</span>
+          <span className="text-paper-300" aria-hidden>·</span>
           {visibleTabs.filter(t => t !== 'document').map(t => (
             <button
               key={t}
@@ -1839,10 +2041,11 @@ export function ContractDetailPage() {
               onClick={() => setTab(t)}
               data-testid={`tab-${t}`}
               className={cn(
-                'px-2.5 py-1 rounded-md text-xs font-medium capitalize transition-colors',
+                'px-2.5 py-1 rounded-md text-dense font-medium capitalize transition-colors',
+                // Selected is an action state, so it inverts to ink.
                 tab === t
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100',
+                  ? 'bg-ink-950 text-white'
+                  : 'text-ink-500 hover:text-ink-950 hover:bg-paper-100',
               )}
             >
               {t}
@@ -1863,47 +2066,49 @@ export function ContractDetailPage() {
               <div className="col-span-3 space-y-4">
 
                 {/* AI Summary */}
-                <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-                  <div className="px-5 py-4 border-b bg-gradient-to-r from-blue-50 to-indigo-50 flex items-center justify-between">
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 overflow-hidden">
+                  {/* Machine-authored panel — the one place on this tab that
+                      keeps the assist wash. */}
+                  <div className="px-5 py-4 border-b border-paper-200 bg-assist-50 flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 text-blue-500" />
-                      <span className="text-sm font-semibold text-blue-800">AI Analysis</span>
+                      <Sparkles className="size-4 text-assist-600" />
+                      <span className="text-section text-assist-700">AI Analysis</span>
                     </div>
                     {/* Split button: primary = smart resume, dropdown = full reprocess */}
                     {(() => {
                       const isAnalyzing = analyze.isPending || reprocess.isPending || IN_PROGRESS_STATUSES.includes(contract.analysisStatus)
                       return (
                         <div className="relative flex-shrink-0" onClick={e => e.stopPropagation()}>
-                          <div className="flex h-7 rounded-lg overflow-hidden border border-blue-200">
+                          <div className="flex h-7 rounded-md overflow-hidden border border-assist-200">
                             <button
                               onClick={() => { analyze.mutate(); setShowReanalyzeMenu(false) }}
                               disabled={isAnalyzing}
-                              className="flex items-center gap-1 px-3 text-xs font-medium text-blue-700 bg-white hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                              className="flex items-center gap-1 px-3 text-[11.5px] font-semibold text-assist-700 bg-card hover:bg-assist-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                             >
                               {isAnalyzing
-                                ? <><Loader2 className="h-3 w-3 animate-spin" /> Analyzing…</>
-                                : <><Sparkles className="h-3 w-3" /> {hasAnalysis ? 'Re-analyze' : 'Run Analysis'}</>
+                                ? <><Loader2 className="size-3 animate-spin" /> Analyzing…</>
+                                : <><Sparkles className="size-3" /> {hasAnalysis ? 'Re-analyze' : 'Run Analysis'}</>
                               }
                             </button>
                             {hasAnalysis && !isAnalyzing && (
                               <button
                                 onClick={e => { e.stopPropagation(); setShowReanalyzeMenu(m => !m) }}
-                                className="px-1.5 border-l border-blue-200 text-blue-500 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+                                className="px-1.5 border-l border-assist-200 text-assist-600 hover:bg-assist-50 hover:text-assist-700 transition-colors"
                               >
-                                <ChevronDown className="h-3 w-3" />
+                                <ChevronDown className="size-3" />
                               </button>
                             )}
                           </div>
                           {showReanalyzeMenu && (
-                            <div className="absolute right-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-lg shadow-lg py-1 w-52" onMouseDown={e => e.stopPropagation()}>
+                            <div className="absolute right-0 top-full mt-1 z-50 bg-card border border-paper-200 rounded-md shadow-e2 py-1 w-52" onMouseDown={e => e.stopPropagation()}>
                               <button
                                 onClick={() => { reprocess.mutate(); setShowReanalyzeMenu(false) }}
-                                className="w-full px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                className="w-full px-3 py-2 text-left text-dense text-ink-700 hover:bg-paper-100 flex items-center gap-2"
                               >
-                                <RefreshCw className="h-3.5 w-3.5 text-gray-400 flex-shrink-0" />
+                                <RefreshCw className="size-3.5 text-ink-400 flex-shrink-0" />
                                 <div>
                                   <div className="font-medium">Full re-process from file</div>
-                                  <div className="text-gray-400 mt-0.5">Re-parse PDF, re-classify, re-extract</div>
+                                  <div className="text-ink-400 mt-0.5">Re-parse PDF, re-classify, re-extract</div>
                                 </div>
                               </button>
                             </div>
@@ -1914,18 +2119,18 @@ export function ContractDetailPage() {
                   </div>
                   <div className="p-5">
                     {contract.summary ? (
-                      <p className="text-sm text-gray-700 leading-relaxed">{contract.summary}</p>
+                      <p className="text-body text-ink-700">{contract.summary}</p>
                     ) : (
                       <div className="flex flex-col items-center py-6 gap-3">
-                        <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center">
-                          <Sparkles className="h-5 w-5 text-gray-400" />
+                        <div className="size-10 rounded-full bg-paper-100 flex items-center justify-center">
+                          <Sparkles className="size-5 text-ink-400" />
                         </div>
                         <div className="text-center">
-                          <p className="text-sm font-medium text-gray-600">No analysis yet</p>
-                          <p className="text-xs text-gray-400 mt-0.5">Click "Run Analysis" to extract key terms, risk score, and summary</p>
+                          <p className="text-body font-medium text-ink-950">No analysis yet</p>
+                          <p className="text-dense text-ink-500 mt-0.5">Click "Run Analysis" to extract key terms, risk score, and summary</p>
                         </div>
-                        <Button size="sm" onClick={() => analyze.mutate()} disabled={analyze.isPending || IN_PROGRESS_STATUSES.includes(contract.analysisStatus)} className="gap-1.5">
-                          <Sparkles className="h-3.5 w-3.5" /> Run Analysis
+                        <Button variant="assistOutline" size="sm" onClick={() => analyze.mutate()} disabled={analyze.isPending || IN_PROGRESS_STATUSES.includes(contract.analysisStatus)} className="gap-1.5">
+                          <Sparkles className="size-3.5" /> Run Analysis
                         </Button>
                       </div>
                     )}
@@ -1934,25 +2139,27 @@ export function ContractDetailPage() {
 
                 {/* Clause Flags */}
                 {presentFlags.length > 0 && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
+                    {/* Attention, not risk: a flagged clause isn't exposure by
+                        itself, it's the list a reviewer is expected to read. */}
                     <div className="flex items-center gap-2 mb-3">
-                      <Shield className="h-4 w-4 text-amber-500" />
-                      <h3 className="text-sm font-semibold text-gray-800">Clause Flags</h3>
-                      <span className="ml-auto text-xs text-gray-400">{presentFlags.length} detected</span>
+                      <Shield className="size-4 text-attention-600" />
+                      <h3 className="text-section text-ink-950">Clause Flags</h3>
+                      <span className="ml-auto text-dense text-ink-400 tabular-nums">{presentFlags.length} detected</span>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {(showAllFlags ? presentFlags : presentFlags.slice(0, 6)).map(([k, label]) => (
-                        <span key={k} className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                        <span key={k} className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-[11.5px] font-medium bg-attention-50 text-attention-700 border border-attention-200">
+                          <span className="size-1.5 rounded-full bg-attention-600" />
                           {label}
                         </span>
                       ))}
                       {presentFlags.length > 6 && (
                         <button
                           onClick={() => setShowAllFlags(!showAllFlags)}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs text-gray-400 hover:text-gray-600"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-dense text-ink-500 hover:text-ink-950"
                         >
-                          {showAllFlags ? <><ChevronUp className="h-3 w-3" /> Less</> : <><ChevronDown className="h-3 w-3" /> +{presentFlags.length - 6} more</>}
+                          {showAllFlags ? <><ChevronUp className="size-3" /> Less</> : <><ChevronDown className="size-3" /> +{presentFlags.length - 6} more</>}
                         </button>
                       )}
                     </div>
@@ -1961,39 +2168,39 @@ export function ContractDetailPage() {
 
                 {/* Key Terms */}
                 {keyTermEntries.length > 0 ? (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-semibold text-gray-800">Key Terms</h3>
-                      <div className="flex items-center gap-3 text-xs text-gray-400">
-                        <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3 text-emerald-500" />High</span>
-                        <span className="flex items-center gap-1"><AlertTriangle className="h-3 w-3 text-amber-400" />Review</span>
-                        <span className="flex items-center gap-1"><XCircle className="h-3 w-3 text-red-400" />Uncertain</span>
+                      <h3 className="text-section text-ink-950">Key Terms</h3>
+                      <div className="flex items-center gap-3 text-dense text-ink-500">
+                        <span className="flex items-center gap-1"><CheckCircle2 className="size-3 text-ink-400" />High</span>
+                        <span className="flex items-center gap-1"><AlertTriangle className="size-3 text-attention-600" />Review</span>
+                        <span className="flex items-center gap-1"><XCircle className="size-3 text-risk-600" />Uncertain</span>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       {keyTermEntries.map(([k, v]) => {
                         const conf = fieldConfidence[k]
                         return (
-                          <div key={k} className="group relative rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
+                          <div key={k} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
                             <div className="flex items-start gap-2">
                               {conf && <ConfidenceIcon confidence={conf.confidence} />}
                               <div className="min-w-0">
-                                <p className="text-xs text-gray-400 capitalize mb-0.5">
+                                <p className="text-dense text-ink-500 capitalize mb-0.5">
                                   {k.replace(/([A-Z])/g, ' $1').trim()}
                                 </p>
-                                <p className="text-sm font-semibold text-gray-800 truncate">
+                                <p className="text-body font-semibold text-ink-950 truncate">
                                   {formatTermValue(k, v)}
                                 </p>
                                 {conf?.issue && (
-                                  <p className="text-xs text-orange-500 mt-0.5">{conf.issue}</p>
+                                  <p className="text-dense text-attention-700 mt-0.5">{conf.issue}</p>
                                 )}
                               </div>
                             </div>
                             {conf?.quote && (
-                              <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-gray-900 text-white text-xs rounded-xl p-3 shadow-2xl">
-                                <p className="text-gray-400 text-[10px] uppercase tracking-wider mb-1.5">Source</p>
-                                <p className="italic text-gray-100">&ldquo;{conf.quote}&rdquo;</p>
-                                {conf.section && <p className="text-gray-400 mt-1.5 text-[10px]">{conf.section}</p>}
+                              <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
+                                <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
+                                <p className="italic text-paper-100">&ldquo;{conf.quote}&rdquo;</p>
+                                {conf.section && <p className="text-ink-400 mt-1.5 text-[10px] font-mono">{conf.section}</p>}
                               </div>
                             )}
                           </div>
@@ -2005,27 +2212,27 @@ export function ContractDetailPage() {
 
                 {/* Contract-Type-Specific Fields */}
                 {typeFieldEntries.length > 0 && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-semibold text-gray-800">
+                      <h3 className="text-section text-ink-950">
                         {contract.type.replace(/_/g, ' ')} — Specific Terms
                       </h3>
-                      <span className="text-xs text-gray-400">{typeFieldEntries.length} fields extracted</span>
+                      <span className="text-dense text-ink-400 tabular-nums">{typeFieldEntries.length} fields extracted</span>
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                       {typeFieldEntries.map(([key, field]) => (
-                        <div key={key} className="group relative rounded-lg p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
-                          <p className="text-xs text-gray-500 mb-1 truncate">{field.label}</p>
+                        <div key={key} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
+                          <p className="text-dense text-ink-500 mb-1 truncate">{field.label}</p>
                           <div className="flex items-center gap-1.5">
-                            <p className="text-xs font-semibold text-gray-800 truncate flex-1">
+                            <p className="text-dense font-semibold text-ink-950 truncate flex-1">
                               {formatTermValue(key, field.value)}
                             </p>
                             <ConfidenceIcon confidence={field.confidence} />
                           </div>
                           {field.quote && (
-                            <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-gray-900 text-white text-xs rounded-xl p-3 shadow-2xl">
-                              <p className="text-gray-400 text-[10px] uppercase tracking-wider mb-1.5">Source</p>
-                              <p className="italic text-gray-100">&ldquo;{field.quote}&rdquo;</p>
+                            <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
+                              <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
+                              <p className="italic text-paper-100">&ldquo;{field.quote}&rdquo;</p>
                             </div>
                           )}
                         </div>
@@ -2036,9 +2243,9 @@ export function ContractDetailPage() {
 
                 {/* Custom Fields */}
                 {populatedFields.length > 0 && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
-                    <h3 className="text-sm font-semibold text-gray-800 mb-3">Custom Fields</h3>
-                    <div className="divide-y divide-gray-50">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
+                    <h3 className="text-section text-ink-950 mb-3">Custom Fields</h3>
+                    <div className="divide-y divide-paper-100">
                       {populatedFields.map((fd: FieldDef) => (
                         <DetailRow
                           key={fd.fieldKey}
@@ -2052,30 +2259,30 @@ export function ContractDetailPage() {
 
                 {/* AI Findings — extra terms the LLM found beyond defined fields */}
                 {aiFindings.length > 0 && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <button
                       onClick={() => setShowFindings(v => !v)}
                       className="flex items-center justify-between w-full mb-1"
                     >
                       <div className="flex items-center gap-2">
-                        <Sparkles className="h-4 w-4 text-purple-400" />
-                        <h3 className="text-sm font-semibold text-gray-800">AI Findings</h3>
-                        <span className="px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 text-xs font-medium">
+                        <Sparkles className="size-4 text-assist-600" />
+                        <h3 className="text-section text-ink-950">AI Findings</h3>
+                        <span className="px-1.5 py-0.5 rounded-full border border-assist-200 bg-assist-50 text-assist-700 text-[10.5px] font-semibold tabular-nums">
                           {aiFindings.length}
                         </span>
                       </div>
                       {showFindings
-                        ? <ChevronUp className="h-4 w-4 text-gray-400" />
-                        : <ChevronDown className="h-4 w-4 text-gray-400" />
+                        ? <ChevronUp className="size-4 text-ink-400" />
+                        : <ChevronDown className="size-4 text-ink-400" />
                       }
                     </button>
                     {showFindings && (
-                      <div className="mt-3 divide-y divide-gray-50">
+                      <div className="mt-3 divide-y divide-paper-100">
                         {aiFindings.map((f) => (
                           <div key={f.key} className="py-2.5 flex items-start justify-between gap-3">
-                            <span className="text-xs text-gray-500 w-1/3 flex-shrink-0">{f.label}</span>
+                            <span className="text-dense text-ink-500 w-1/3 flex-shrink-0">{f.label}</span>
                             <div className="flex items-center gap-2 flex-1 justify-end">
-                              <span className="text-xs text-gray-800 text-right">
+                              <span className="text-dense text-ink-950 text-right">
                                 {formatTermValue(f.key, f.value)}
                               </span>
                               <ConfidenceIcon confidence={f.confidence} />
@@ -2089,14 +2296,14 @@ export function ContractDetailPage() {
 
                 {/* Tags */}
                 {contract.tags?.length > 0 && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center gap-2 mb-3">
-                      <Tag className="h-4 w-4 text-gray-400" />
-                      <h3 className="text-sm font-semibold text-gray-800">Tags</h3>
+                      <Tag className="size-4 text-ink-400" />
+                      <h3 className="text-section text-ink-950">Tags</h3>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {contract.tags.map((tag: string) => (
-                        <span key={tag} className="px-3 py-1 bg-gray-100 rounded-full text-xs text-gray-600 font-medium">{tag}</span>
+                        <span key={tag} className="px-3 py-1 bg-paper-100 border border-paper-200 rounded-full text-[11.5px] text-ink-950">{tag}</span>
                       ))}
                     </div>
                   </div>
@@ -2107,8 +2314,8 @@ export function ContractDetailPage() {
               <div className="col-span-2 space-y-4">
 
                 {/* Contract Details */}
-                <div className="bg-white rounded-xl border shadow-sm p-5">
-                  <h3 className="text-sm font-semibold text-gray-800 mb-3">Contract Details</h3>
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
+                  <h3 className="text-section text-ink-950 mb-3">Contract Details</h3>
                   <div>
                     <DetailRow label="Owner" value={contract.owner?.name ?? '—'} />
                     <DetailRow label="Counterparty" value={contract.counterpartyName ?? contract.counterparty?.name ?? formatTermValue('parties', keyTerms.parties) !== '—' ? formatTermValue('parties', keyTerms.parties) : '—'} />
@@ -2131,19 +2338,19 @@ export function ContractDetailPage() {
 
                 {/* Risk Assessment */}
                 {contract.riskScore != null && (
-                  <div className="bg-white rounded-xl border shadow-sm p-5">
+                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center gap-2 mb-4">
-                      <TrendingUp className="h-4 w-4 text-gray-400" />
-                      <h3 className="text-sm font-semibold text-gray-800">Risk Assessment</h3>
+                      <TrendingUp className="size-4 text-ink-400" />
+                      <h3 className="text-section text-ink-950">Risk Assessment</h3>
                     </div>
                     <RiskMeter score={contract.riskScore} />
                     {riskFactors.length > 0 && (
                       <div className="mt-4">
-                        <p className="text-xs font-medium text-gray-500 mb-2">Risk Factors</p>
+                        <p className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-700 mb-2">Risk Factors</p>
                         <ul className="space-y-1.5">
                           {riskFactors.map((f, i) => (
-                            <li key={i} className="flex items-start gap-2 text-xs text-gray-600">
-                              <span className="w-1.5 h-1.5 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
+                            <li key={i} className="flex items-start gap-2 text-dense text-ink-700">
+                              <span className="size-1.5 rounded-full bg-risk-600 mt-1.5 flex-shrink-0" />
                               {f}
                             </li>
                           ))}
@@ -2151,9 +2358,9 @@ export function ContractDetailPage() {
                       </div>
                     )}
                     {contract.overallConfidence != null && (
-                      <div className="mt-4 pt-4 border-t">
-                        <p className="text-xs text-gray-400">
-                          Extraction confidence: <span className="font-semibold text-gray-700">{Math.round((contract.overallConfidence ?? 0) * 100)}%</span>
+                      <div className="mt-4 pt-4 border-t border-paper-200">
+                        <p className="text-dense text-ink-500">
+                          Extraction confidence: <span className="font-semibold text-ink-950 tabular-nums">{Math.round((contract.overallConfidence ?? 0) * 100)}%</span>
                         </p>
                       </div>
                     )}
@@ -2161,26 +2368,26 @@ export function ContractDetailPage() {
                 )}
 
                 {/* Versions quick view */}
-                <div className="bg-white rounded-xl border shadow-sm p-5">
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-sm font-semibold text-gray-800">Versions</h3>
-                    <button onClick={() => setTab('versions')} className="text-xs text-blue-600 hover:underline">View all</button>
+                    <h3 className="text-section text-ink-950">Versions</h3>
+                    <button onClick={() => setTab('versions')} className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2">View all</button>
                   </div>
                   {versions.length === 0 ? (
-                    <p className="text-xs text-gray-400">No versions yet</p>
+                    <p className="text-dense text-ink-400">No versions yet</p>
                   ) : (
                     <div className="space-y-2">
                       {versions.slice(0, 3).map((v: any) => (
                         <div key={v.id} className="flex items-center justify-between">
                           <div>
-                            <p className="text-xs font-medium text-gray-700">v{v.versionNumber}</p>
-                            <p className="text-[10px] text-gray-400">{new Date(v.createdAt).toLocaleDateString()}</p>
+                            <p className="text-dense font-medium text-ink-950 font-mono">v{v.versionNumber}</p>
+                            <p className="text-[10px] text-ink-400 tabular-nums">{new Date(v.createdAt).toLocaleDateString()}</p>
                           </div>
                           <button
                             onClick={() => handleDownload(v.id)}
-                            className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+                            className="p-1 rounded-chip hover:bg-paper-100 text-ink-400 hover:text-ink-950"
                           >
-                            <Download className="h-3.5 w-3.5" />
+                            <Download className="size-3.5" />
                           </button>
                         </div>
                       ))}
@@ -2189,15 +2396,15 @@ export function ContractDetailPage() {
                 </div>
 
                 {/* Contract Family */}
-                <div className="bg-white rounded-xl border shadow-sm p-5">
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <Link className="h-4 w-4 text-gray-400" />
-                      <h3 className="text-sm font-semibold text-gray-800">Contract Family</h3>
+                      <Link className="size-4 text-ink-400" />
+                      <h3 className="text-section text-ink-950">Contract Family</h3>
                     </div>
                     <button
                       onClick={() => setShowAddRelated(true)}
-                      className="text-xs text-blue-600 hover:underline"
+                      className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
                     >
                       + Add related
                     </button>
@@ -2206,14 +2413,14 @@ export function ContractDetailPage() {
                   {/* Parent */}
                   {familyData?.parent && (
                     <div className="mb-3">
-                      <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mb-1.5">Parent</p>
+                      <p className="text-[10.5px] font-semibold text-ink-700 uppercase tracking-[0.08em] mb-1.5">Parent</p>
                       <button
                         onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
-                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg border border-blue-200 bg-blue-50 hover:bg-blue-100 transition-colors text-left"
+                        className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md border border-paper-200 bg-paper-50 hover:bg-paper-100 transition-colors text-left"
                       >
-                        <ExternalLink className="h-3 w-3 text-blue-500 flex-shrink-0" />
-                        <span className="text-xs font-medium text-blue-800 truncate">{familyData.parent.title}</span>
-                        <span className="ml-auto text-[10px] text-blue-400 flex-shrink-0">{familyData.parent.type}</span>
+                        <ExternalLink className="size-3 text-ink-400 flex-shrink-0" />
+                        <span className="text-dense font-medium text-ink-950 truncate">{familyData.parent.title}</span>
+                        <span className="ml-auto text-[10px] text-ink-400 flex-shrink-0">{familyData.parent.type}</span>
                       </button>
                     </div>
                   )}
@@ -2225,12 +2432,12 @@ export function ContractDetailPage() {
                         <button
                           key={child.id}
                           onClick={() => navigate(`/contracts/${child.id}`)}
-                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-gray-50 transition-colors text-left"
+                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-paper-100 transition-colors text-left"
                         >
-                          <FileText className="h-3 w-3 text-gray-400 flex-shrink-0" />
-                          <span className="text-xs text-gray-700 truncate">{child.title}</span>
+                          <FileText className="size-3 text-ink-400 flex-shrink-0" />
+                          <span className="text-dense text-ink-700 truncate">{child.title}</span>
                           {child.relationshipType && (
-                            <span className="ml-auto text-[10px] text-gray-400 flex-shrink-0 capitalize">
+                            <span className="ml-auto text-[10px] text-ink-400 flex-shrink-0 capitalize">
                               {child.relationshipType.replace(/_/g, ' ')}
                             </span>
                           )}
@@ -2238,22 +2445,22 @@ export function ContractDetailPage() {
                       ))}
                     </div>
                   ) : !familyData?.parent ? (
-                    <p className="text-xs text-gray-400">No related documents yet.</p>
+                    <p className="text-dense text-ink-400">No related documents yet.</p>
                   ) : null}
                 </div>
 
                 {/* Attachments */}
-                <div className="bg-white rounded-xl border shadow-sm p-5">
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <Paperclip className="h-4 w-4 text-gray-400" />
-                      <h3 className="text-sm font-semibold text-gray-800">Attachments</h3>
-                      <span className="text-xs text-gray-400">(exhibits, schedules)</span>
+                      <Paperclip className="size-4 text-ink-400" />
+                      <h3 className="text-section text-ink-950">Attachments</h3>
+                      <span className="text-dense text-ink-400">(exhibits, schedules)</span>
                     </div>
                     <button
                       onClick={() => attachFileRef.current?.click()}
                       disabled={attachMutation.isPending}
-                      className="text-xs text-blue-600 hover:underline disabled:opacity-50"
+                      className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2 disabled:opacity-50"
                     >
                       {attachMutation.isPending ? 'Uploading…' : '+ Attach'}
                     </button>
@@ -2272,27 +2479,27 @@ export function ContractDetailPage() {
                     />
                   </div>
                   {(contract.attachments as any[] ?? []).length === 0 ? (
-                    <p className="text-xs text-gray-400">No attachments. Click "+ Attach" to add exhibits, schedules, or reference documents.</p>
+                    <p className="text-dense text-ink-400">No attachments. Click "+ Attach" to add exhibits, schedules, or reference documents.</p>
                   ) : (
                     <div className="space-y-1">
                       {(contract.attachments as any[]).map((att: any, idx: number) => (
-                        <div key={idx} className="flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-gray-50 group">
-                          <Paperclip className="h-3 w-3 text-gray-400 flex-shrink-0" />
-                          <span className="text-xs text-gray-700 truncate flex-1">{att.label || att.filename}</span>
-                          <span className="text-[10px] text-gray-400">{(att.size / 1024).toFixed(0)} KB</span>
+                        <div key={idx} className="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-paper-100 group">
+                          <Paperclip className="size-3 text-ink-400 flex-shrink-0" />
+                          <span className="text-dense text-ink-700 truncate flex-1">{att.label || att.filename}</span>
+                          <span className="text-[10px] text-ink-400 tabular-nums">{(att.size / 1024).toFixed(0)} KB</span>
                           <button
                             onClick={() => downloadAttachment(idx, att.filename)}
-                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-gray-200 text-gray-500 transition-all"
+                            className="p-1 rounded-chip opacity-0 group-hover:opacity-100 hover:bg-paper-200 text-ink-500 transition-all"
                             title="Download"
                           >
-                            <Download className="h-3 w-3" />
+                            <Download className="size-3" />
                           </button>
                           <button
                             onClick={() => deleteAttachment.mutate(idx)}
-                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-50 text-red-400 transition-all"
+                            className="p-1 rounded-chip opacity-0 group-hover:opacity-100 hover:bg-risk-50 text-risk-600 transition-all"
                             title="Remove"
                           >
-                            <Trash2 className="h-3 w-3" />
+                            <Trash2 className="size-3" />
                           </button>
                         </div>
                       ))}
@@ -2326,26 +2533,25 @@ export function ContractDetailPage() {
           return (
             <div className="p-6 max-w-4xl mx-auto">
               {!['INDEXING', 'DONE'].includes(contract?.analysisStatus ?? '') ? (
-                <div className="text-center py-16 text-gray-400">
-                  <Sparkles className="h-8 w-8 mx-auto mb-3 opacity-40" />
-                  <p className="text-sm">Clause extraction will appear here once analysis is complete.</p>
+                <div className="text-center py-16 text-ink-400">
+                  <Sparkles className="size-8 mx-auto mb-3 opacity-40" />
+                  <p className="text-body">Clause extraction will appear here once analysis is complete.</p>
                 </div>
               ) : allClauses.length === 0 ? (
-                <div className="text-center py-16 text-gray-400">
-                  <FileText className="h-8 w-8 mx-auto mb-3 opacity-40" />
-                  <p className="text-sm">No clauses extracted yet. Try re-analyzing this contract.</p>
+                <div className="text-center py-16 text-ink-400">
+                  <FileText className="size-8 mx-auto mb-3 opacity-40" />
+                  <p className="text-body">No clauses extracted yet. Try re-analyzing this contract.</p>
                 </div>
               ) : (
                 <>
                   {/* Filter bar */}
                   <div className="flex items-center gap-3 mb-6 flex-wrap">
                     <div className="flex-1 min-w-48">
-                      <input
+                      <Input
                         type="text"
                         placeholder="Search clauses…"
                         value={clauseSearch}
                         onChange={e => setClauseSearch(e.target.value)}
-                        className="w-full px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
                     <div className="flex gap-1.5">
@@ -2359,10 +2565,10 @@ export function ContractDetailPage() {
                         <button
                           key={f.key}
                           onClick={() => setClauseRatingFilter(f.key)}
-                          className={`px-2.5 py-1 text-xs rounded-full font-medium border transition-colors ${
+                          className={`px-2.5 py-1 text-[11.5px] rounded-full font-medium border transition-colors ${
                             clauseRatingFilter === f.key
-                              ? 'bg-blue-600 text-white border-blue-600'
-                              : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                              ? 'bg-ink-950 text-white border-ink-950'
+                              : 'bg-card text-ink-950 border-paper-200 hover:border-paper-300'
                           }`}
                         >
                           {f.label}
@@ -2373,7 +2579,7 @@ export function ContractDetailPage() {
 
                   {/* Clause list */}
                   {filtered.length === 0 ? (
-                    <p className="text-sm text-gray-400 text-center py-8">No clauses match this filter.</p>
+                    <p className="text-body text-ink-400 text-center py-8">No clauses match this filter.</p>
                   ) : (
                     <div className="space-y-3">
                       {filtered.map(clause => {
@@ -2408,11 +2614,11 @@ export function ContractDetailPage() {
             // a red "Invalid PDF structure" error.
             if (!hasOriginal) {
               return (
-                <div className="flex flex-col items-center justify-center h-64 bg-white rounded-xl border shadow-sm m-4" data-testid="no-original-pdf">
-                  <FileText className="h-8 w-8 text-gray-300 mb-3" />
-                  <p className="text-gray-700 text-sm font-medium">No original file</p>
-                  <p className="text-gray-400 text-xs mt-1 text-center max-w-sm">This contract was created from text or a template — there's no source PDF to display.</p>
-                  <Button variant="outline" size="sm" className="mt-3 text-xs" onClick={() => setDocView('styled')}>
+                <div className="flex flex-col items-center justify-center h-64 bg-card rounded-card border border-paper-200 shadow-e1 m-4" data-testid="no-original-pdf">
+                  <FileText className="size-8 text-ink-400 mb-3" />
+                  <p className="text-body font-medium text-ink-950">No original file</p>
+                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">This contract was created from text or a template — there's no source PDF to display.</p>
+                  <Button variant="outline" size="sm" className="mt-3" onClick={() => setDocView('styled')}>
                     Switch to Styled view
                   </Button>
                 </div>
@@ -2420,12 +2626,12 @@ export function ContractDetailPage() {
             }
             if (pdfError) {
               return (
-                <div className="flex flex-col items-center justify-center h-64 bg-white rounded-xl border shadow-sm m-4">
-                  <AlertCircle className="h-8 w-8 text-red-400 mb-3" />
-                  <p className="text-gray-700 text-sm font-medium">Failed to load original PDF</p>
-                  <p className="text-gray-400 text-xs mt-1 text-center max-w-sm">{pdfError}</p>
+                <div className="flex flex-col items-center justify-center h-64 bg-card rounded-card border border-paper-200 shadow-e1 m-4">
+                  <AlertCircle className="size-8 text-risk-600 mb-3" />
+                  <p className="text-body font-medium text-ink-950">Failed to load original PDF</p>
+                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">{pdfError}</p>
                   <Button variant="outline" className="mt-3" onClick={handleViewPdf}>Retry</Button>
-                  <Button variant="ghost" size="sm" className="mt-2 text-xs" onClick={() => setDocView('styled')}>
+                  <Button variant="ghost" size="xs" className="mt-2" onClick={() => setDocView('styled')}>
                     Switch to Styled view
                   </Button>
                 </div>
@@ -2433,15 +2639,17 @@ export function ContractDetailPage() {
             }
             if (!pdfUrl) {
               return (
-                <div className="flex flex-col items-center justify-center h-64 bg-gray-50">
-                  <Loader2 className="h-6 w-6 text-gray-300 mb-3 animate-spin" />
-                  <p className="text-sm text-gray-500">Loading original PDF…</p>
+                <div className="flex flex-col items-center justify-center h-64 bg-paper-50">
+                  <Loader2 className="size-6 text-ink-400 mb-3 animate-spin" />
+                  <p className="text-body text-ink-500">Loading original PDF…</p>
                 </div>
               )
             }
             return (
-              <div className="h-full overflow-hidden bg-gray-50 p-4">
-                <div className="bg-white rounded-sm shadow-sm h-full">
+              // The document canvas: paper on warm ground, and the only surface
+              // in the system allowed a drop shadow.
+              <div className="h-full overflow-hidden bg-paper-50 p-4">
+                <div className="bg-card rounded-paper shadow-page h-full">
                   <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
                     <Viewer fileUrl={pdfUrl} plugins={[layoutPlugin]} />
                   </Worker>
@@ -2532,28 +2740,28 @@ export function ContractDetailPage() {
         {/* ─── Versions ──────────────────────────────────────────────────── */}
         {tab === 'versions' && (
           <div className="p-6 max-w-3xl mx-auto">
-            <div className="bg-white rounded-xl border shadow-sm divide-y">
+            <div className="bg-card rounded-card border border-paper-200 shadow-e1 divide-y divide-paper-100">
               {versions.length === 0 ? (
-                <p className="p-8 text-sm text-gray-400 text-center">No versions yet</p>
+                <p className="p-8 text-body text-ink-400 text-center">No versions yet</p>
               ) : versions.map((v: any) => (
-                <div key={v.id} className="flex items-center justify-between p-4 hover:bg-gray-50">
+                <div key={v.id} className="flex items-center justify-between p-4 hover:bg-paper-50">
                   <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-xs font-bold text-blue-600">
+                    <div className="size-8 rounded-full bg-paper-100 border border-paper-200 flex items-center justify-center text-[11px] font-semibold font-mono text-ink-700">
                       v{v.versionNumber}
                     </div>
                     <div>
-                      <p className="text-sm font-medium text-gray-900">Version {v.versionNumber}</p>
-                      {v.changeNote && <p className="text-xs text-gray-500 mt-0.5">{v.changeNote}</p>}
-                      {v.changeSummary && <p className="text-xs text-blue-500 mt-0.5 italic">{v.changeSummary}</p>}
-                      <p className="text-xs text-gray-400 mt-0.5 flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
+                      <p className="text-body font-medium text-ink-950">Version {v.versionNumber}</p>
+                      {v.changeNote && <p className="text-dense text-ink-500 mt-0.5">{v.changeNote}</p>}
+                      {v.changeSummary && <p className="text-dense text-ink-500 mt-0.5 italic">{v.changeSummary}</p>}
+                      <p className="text-dense text-ink-400 mt-0.5 flex items-center gap-1">
+                        <Clock className="size-3" />
                         {new Date(v.createdAt).toLocaleString()}
                         {v.fileSize && ` · ${(v.fileSize / 1024).toFixed(0)} KB`}
                       </p>
                     </div>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => handleDownload(v.id)}>
-                    <Download className="h-3.5 w-3.5" />
+                  <Button variant="outline" size="icon" onClick={() => handleDownload(v.id)}>
+                    <Download className="size-3.5" />
                   </Button>
                 </div>
               ))}
@@ -2568,23 +2776,23 @@ export function ContractDetailPage() {
               {/* Left: Diff viewer */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-gray-700">Version diff</p>
+                  <p className="text-section text-ink-950">Version diff</p>
                   <div className="flex items-center gap-2">
                     <select
                       value={diffV1Id}
                       onChange={e => setDiffV1Id(e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                     >
                       <option value="">v1 (baseline)</option>
                       {versions.map((v: any) => (
                         <option key={v.id} value={v.id}>v{v.versionNumber}</option>
                       ))}
                     </select>
-                    <span className="text-xs text-gray-400">vs</span>
+                    <span className="text-dense text-ink-400">vs</span>
                     <select
                       value={diffV2Id}
                       onChange={e => setDiffV2Id(e.target.value)}
-                      className="text-xs border border-gray-200 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                     >
                       <option value="">v2 (redlines)</option>
                       {versions.map((v: any) => (
@@ -2595,7 +2803,7 @@ export function ContractDetailPage() {
                 </div>
                 {diffQuery.isLoading ? (
                   <div className="flex items-center justify-center py-12">
-                    <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+                    <Loader2 className="size-5 animate-spin text-ink-400" />
                   </div>
                 ) : diffQuery.data ? (
                   <DiffViewer
@@ -2605,7 +2813,7 @@ export function ContractDetailPage() {
                     v2Label={`v${versions.find((v: any) => v.id === diffV2Id)?.versionNumber ?? '2'}`}
                   />
                 ) : (
-                  <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-400 text-sm">
+                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-400 text-body">
                     Select two versions above to view tracked changes
                   </div>
                 )}
@@ -2640,23 +2848,25 @@ export function ContractDetailPage() {
           <div className="p-6 max-w-2xl mx-auto">
             {timeline.length === 0 ? (
               <div className="flex flex-col items-center py-16 gap-2">
-                <Clock className="h-8 w-8 text-gray-300" />
-                <p className="text-sm text-gray-400">No activity recorded yet</p>
+                <Clock className="size-8 text-ink-400" />
+                <p className="text-body text-ink-400">No activity recorded yet</p>
               </div>
             ) : (
               <div className="relative">
-                <div className="absolute left-5 top-0 bottom-0 w-px bg-gray-200" />
+                <div className="absolute left-5 top-0 bottom-0 w-px bg-paper-200" />
                 {timeline.map((e: any) => (
                   <div key={e.id} className="flex items-start gap-4 mb-4 relative pl-12">
-                    <div className="absolute left-3.5 top-1.5 w-3 h-3 rounded-full bg-white border-2 border-blue-400" />
-                    <div className="bg-white rounded-xl border shadow-sm px-4 py-3 flex-1">
+                    {/* A recorded event is history, not a live state — the node
+                        is a neutral rule marker, not an inflight dot. */}
+                    <div className="absolute left-3.5 top-1.5 size-3 rounded-full bg-card border-2 border-paper-300" />
+                    <div className="bg-card rounded-card border border-paper-200 shadow-e1 px-4 py-3 flex-1">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-gray-700">{e.action.replace(/_/g, ' ')}</span>
-                        <span className="text-xs text-gray-400">{new Date(e.createdAt).toLocaleString()}</span>
+                        <span className="text-dense font-semibold text-ink-950">{e.action.replace(/_/g, ' ')}</span>
+                        <span className="text-dense text-ink-400 tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
                       </div>
                       {e.userId && (
-                        <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                          <User className="h-3 w-3" /> {e.userId}
+                        <p className="text-dense text-ink-500 mt-1 flex items-center gap-1">
+                          <User className="size-3" /> {e.userId}
                         </p>
                       )}
                     </div>
@@ -2672,36 +2882,39 @@ export function ContractDetailPage() {
           <div className="p-6 max-w-3xl mx-auto space-y-6">
             {/* Status banner */}
             {contract?.status === 'PENDING_APPROVAL' && (
-              <div className="flex items-center gap-2 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800">
-                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+              <div className="flex items-center gap-2 p-3 rounded-md bg-info-50 border border-info-200 text-body text-info-700">
+                <Loader2 className="size-4 animate-spin text-info-600" />
                 Contract is pending approval — waiting for approver decision.
               </div>
             )}
             {contract?.status === 'APPROVED' && (
-              <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-800">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <div className="flex items-center gap-2 p-3 rounded-md bg-brand-50 border border-brand-200 text-body text-brand-700">
+                <CheckCircle2 className="size-4 text-brand-700" />
                 Contract approved. Ready for execution.
               </div>
             )}
 
             {/* No instance yet — show submit prompt */}
             {!approvalInstanceData && !['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '') && (
-              <div className="text-center py-10 border-2 border-dashed rounded-xl border-gray-200">
-                <CheckCircle2 className="h-10 w-10 text-gray-300 mx-auto mb-3" />
-                <p className="text-sm font-semibold text-gray-600 mb-1">Not yet in review</p>
-                <p className="text-sm text-gray-400 mb-4">Send this contract to the approval workflow to start the review.</p>
+              <div className="text-center py-10 border-2 border-dashed rounded-card border-paper-200 bg-paper-50">
+                <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
+                <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
+                <p className="text-dense text-ink-500 mb-4">Send this contract to the approval workflow to start the review.</p>
+                {/* Same action the header CTA already offers, so it doesn't
+                    take a second ink fill. */}
                 <Button
+                  variant="outline"
                   size="sm"
                   onClick={() => submitForApproval.mutate(undefined)}
                   disabled={submitForApproval.isPending}
                   className="gap-1.5"
                 >
                   {submitForApproval.isPending
-                    ? <><Loader2 className="h-4 w-4 animate-spin" />Submitting…</>
+                    ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
                     : <>Send for Review</>}
                 </Button>
                 {submitForApproval.isError && (
-                  <p className="text-xs text-red-600 mt-2">
+                  <p className="text-dense text-risk-700 mt-2">
                     {(submitForApproval.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to submit'}
                   </p>
                 )}
@@ -2711,7 +2924,7 @@ export function ContractDetailPage() {
             {/* My pending step on this contract */}
             {approvalData && (
               <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Your Pending Approval</h3>
+                <h3 className="text-section text-ink-950 mb-3">Your Pending Approval</h3>
                 <ApprovalCard
                   stepId={approvalData.stepId}
                   instanceId={approvalData.instanceId}
@@ -2731,8 +2944,8 @@ export function ContractDetailPage() {
             {/* Timeline */}
             {approvalInstanceData && (
               <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Approval Timeline</h3>
-                <div className="bg-white rounded-xl border shadow-sm p-5">
+                <h3 className="text-section text-ink-950 mb-3">Approval Timeline</h3>
+                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                   <ApprovalTimeline
                     instance={approvalInstanceData}
                     steps={approvalInstanceData.steps ?? []}
@@ -2850,11 +3063,11 @@ export function ContractDetailPage() {
               className={cn(
                 'fixed right-4 bottom-4 z-30 xl:hidden',
                 'inline-flex items-center gap-1.5 px-4 py-2 rounded-full',
-                'bg-gray-900 text-white shadow-lg hover:bg-gray-800',
-                'text-xs font-medium',
+                'bg-ink-950 text-white shadow-e2 hover:bg-ink-700',
+                'text-dense font-semibold',
               )}
             >
-              <ChevronUp className="h-3.5 w-3.5" />
+              <ChevronUp className="size-3.5" />
               Details
             </button>
           )}
@@ -2863,18 +3076,23 @@ export function ContractDetailPage() {
       <aside
         role="complementary"
         aria-label="Contract rail"
+        // Folded on xl+ the rail leaves the layout entirely — its 320px is
+        // exactly what the document gets back.
         className={cn(
           // B.5.16 — responsive positioning.
           isXl
-            ? 'hidden xl:flex w-80 border-l bg-white overflow-y-auto flex-col'
+            ? cn(
+                'w-rail border-l border-paper-200 bg-card overflow-y-auto flex-col',
+                railCollapsed ? 'hidden' : 'hidden xl:flex',
+              )
             : isMd
               ? cn(
-                  'fixed inset-y-0 right-0 z-40 w-[min(420px,100vw)] bg-white shadow-2xl border-l overflow-y-auto flex flex-col transition-transform',
+                  'fixed inset-y-0 right-0 z-40 w-[min(420px,100vw)] bg-card shadow-e3 border-l border-paper-200 overflow-y-auto flex flex-col transition-transform',
                   railOpen ? 'translate-x-0' : 'translate-x-full',
                 )
               : cn(
                   // Mobile bottom sheet: always anchored to bottom, 64px peek when closed, near-full when open.
-                  'fixed inset-x-0 bottom-0 z-40 bg-white shadow-2xl border-t rounded-t-2xl overflow-y-auto flex flex-col transition-[max-height]',
+                  'fixed inset-x-0 bottom-0 z-40 bg-card shadow-e3 border-t border-paper-200 rounded-t-card overflow-y-auto flex flex-col transition-[max-height]',
                   railOpen ? 'max-h-[85vh]' : 'max-h-16',
                 ),
           // When the focused-review drawer is showing, hide the normal rail.
@@ -2896,7 +3114,7 @@ export function ContractDetailPage() {
               if (!isMd) setRailOpen(o => !o)
             }}
             className={cn(
-              'flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50',
+              'flex items-center justify-between px-4 py-2 border-b border-paper-200 bg-paper-50',
               !isMd && 'cursor-pointer',
             )}
           >
@@ -2904,19 +3122,19 @@ export function ContractDetailPage() {
               {!isMd && (
                 <span
                   aria-hidden
-                  className="inline-block h-1 w-10 rounded-full bg-gray-300"
+                  className="inline-block h-1 w-10 rounded-full bg-paper-300"
                 />
               )}
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-600">
+              <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-700">
                 Details
               </span>
             </div>
             <button
               onClick={(e) => { e.stopPropagation(); setRailOpen(false) }}
-              className="p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100"
+              className="p-1 rounded-chip text-ink-400 hover:text-ink-950 hover:bg-paper-100"
               aria-label="Close details"
             >
-              <X className="h-4 w-4" />
+              <X className="size-4" />
             </button>
           </div>
         )}
@@ -2937,15 +3155,16 @@ export function ContractDetailPage() {
           const pct = Math.round((reviewedCount / risky.length) * 100)
           const complete = reviewedCount === risky.length
 
-          // Severity dot colour per risk rating
+          // Severity dot colour per risk rating — the same five meanings the
+          // rest of the product uses, so a dot here reads like a dot anywhere.
           const riskDot = (rating: string | null | undefined): string => {
-            if (rating === 'unfavorable') return 'bg-red-500'
-            if (rating === 'unusual') return 'bg-amber-500'
-            return 'bg-blue-500' // deviation / neutral
+            if (rating === 'unfavorable') return MEANING_CLASS.risk.dot
+            if (rating === 'unusual') return MEANING_CLASS.turn.dot
+            return MEANING_CLASS.inflight.dot // deviation / neutral
           }
 
           return (
-            <div className="px-5 pt-4 pb-3 border-b border-gray-100" data-testid="review-progress">
+            <div className="px-5 pt-4 pb-3 border-b border-paper-200" data-testid="review-progress">
               {/* Click the row header to expand/collapse the checklist */}
               <button
                 type="button"
@@ -2954,27 +3173,29 @@ export function ContractDetailPage() {
                 data-testid="review-progress-toggle"
                 className="w-full flex items-center justify-between mb-1.5 group"
               >
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-gray-600 inline-flex items-center gap-1">
+                <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-700 inline-flex items-center gap-1">
                   Review progress
                   <ChevronRight
                     className={cn(
-                      'h-3 w-3 text-gray-400 transition-transform',
+                      'size-3 text-ink-400 transition-transform',
                       reviewExpanded && 'rotate-90',
                     )}
                   />
                 </span>
                 <span className={cn(
-                  'text-xs tabular-nums font-medium',
-                  complete ? 'text-emerald-700' : 'text-gray-600',
+                  'text-[10.5px] tabular-nums font-medium',
+                  complete ? 'text-brand-700' : 'text-ink-500',
                 )}>
                   {reviewedCount} / {risky.length}{complete && ' ✓'}
                 </span>
               </button>
-              <div className="h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+              {/* Progress itself carries no meaning until it lands: ink while
+                  you work, brand once the review is actually complete. */}
+              <div className="h-1 w-full rounded-full bg-paper-100 overflow-hidden">
                 <div
                   className={cn(
                     'h-full transition-all',
-                    complete ? 'bg-emerald-500' : 'bg-blue-500',
+                    complete ? 'bg-brand-700' : 'bg-ink-950',
                   )}
                   style={{ width: `${pct}%` }}
                 />
@@ -2991,24 +3212,24 @@ export function ContractDetailPage() {
                         key={c.id}
                         data-testid={`review-row-${c.id}`}
                         className={cn(
-                          'group flex items-center gap-2 text-[11.5px] rounded px-1.5 py-1 transition-colors',
-                          isReviewed ? 'opacity-60 hover:bg-gray-50' : 'hover:bg-blue-50',
+                          'group flex items-center gap-2 text-[11.5px] rounded-chip px-1.5 py-1 transition-colors',
+                          isReviewed ? 'opacity-60 hover:bg-paper-100' : 'hover:bg-paper-100',
                         )}
                       >
                         <span
                           className={cn(
-                            'h-1.5 w-1.5 rounded-full shrink-0',
-                            isReviewed ? 'bg-emerald-500' : riskDot(c.riskRating),
+                            'size-1.5 rounded-full shrink-0',
+                            isReviewed ? MEANING_CLASS.binding.dot : riskDot(c.riskRating),
                           )}
                         />
                         <button
                           type="button"
                           onClick={() => setFocusedClauseId(c.id)}
-                          className="flex-1 min-w-0 text-left truncate text-gray-800 hover:text-blue-700"
+                          className="flex-1 min-w-0 text-left truncate text-ink-950 hover:underline"
                           title={`${cleanType}${c.sectionRef ? ' · §' + c.sectionRef : ''}`}
                         >
                           {cleanType}
-                          {c.sectionRef && <span className="text-gray-400 ml-1">§{c.sectionRef}</span>}
+                          {c.sectionRef && <span className="text-ink-400 ml-1 font-mono">§{c.sectionRef}</span>}
                         </button>
                         {!isReviewed && (
                           <button
@@ -3019,14 +3240,14 @@ export function ContractDetailPage() {
                               updateReviewState.mutate({ clauseId: c.id, state: 'reviewed' })
                             }}
                             data-testid={`review-mark-${c.id}`}
-                            className="text-[10.5px] text-blue-700 hover:underline opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                            className="text-[10.5px] font-semibold text-ink-950 hover:underline opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                           >
                             Mark reviewed
                           </button>
                         )}
                         {isReviewed && (
-                          <span className="text-[10.5px] text-emerald-700 shrink-0 inline-flex items-center gap-0.5">
-                            <CheckSquare className="h-3 w-3" />
+                          <span className="text-[10.5px] text-brand-700 shrink-0 inline-flex items-center gap-0.5">
+                            <CheckSquare className="size-3" />
                             done
                           </span>
                         )}
@@ -3048,7 +3269,7 @@ export function ContractDetailPage() {
                         setReviewStates(newStates)
                       }}
                       data-testid="review-mark-all"
-                      className="mt-1.5 text-[11px] text-blue-700 hover:underline font-medium"
+                      className="mt-1.5 text-[11px] text-ink-950 hover:underline font-semibold"
                     >
                       ✓ Mark all {risky.length - reviewedCount} as reviewed
                     </button>
@@ -3075,40 +3296,42 @@ export function ContractDetailPage() {
             {precedentsData?.riskDeltaLabel && (
               <div
                 className={cn(
-                  'mb-2 inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full border',
+                  'mb-2 inline-flex items-center gap-1.5 text-[11.5px] px-2 py-1 rounded-full border',
                   /higher/.test(precedentsData.riskDeltaLabel)
-                    ? 'bg-red-50 text-red-700 border-red-200'
+                    ? 'bg-risk-50 text-risk-700 border-risk-200'
                     : /lower/.test(precedentsData.riskDeltaLabel)
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                    : 'bg-gray-50 text-gray-600 border-gray-200',
+                    ? 'bg-brand-50 text-brand-700 border-brand-200'
+                    : 'bg-paper-50 text-ink-700 border-paper-200',
                 )}
                 title="Compared to signed peers of the same contract type"
               >
-                <TrendingUp className="h-3 w-3" />
+                <TrendingUp className="size-3" />
                 {precedentsData.riskDeltaLabel}
               </div>
             )}
 
             {(!precedentsData?.data || precedentsData.data.length === 0) ? (
-              <p className="text-xs text-gray-400 italic">
+              <p className="text-dense text-ink-400 italic">
                 No signed precedents of this type yet in your workspace.
               </p>
             ) : (
               <ul className="space-y-2.5">
                 {precedentsData.data.map((p: any) => (
                   <li key={p.contractId} className="flex items-start gap-2.5">
-                    <div className="h-6 px-1.5 rounded bg-violet-50 text-violet-700 text-[10px] font-semibold flex items-center justify-center flex-shrink-0">
+                    {/* Vector similarity is a machine-computed score, so the
+                        assist accent is earned here. */}
+                    <div className="h-6 px-1.5 rounded-chip border border-assist-200 bg-assist-50 text-assist-700 text-[10px] font-semibold tabular-nums flex items-center justify-center flex-shrink-0">
                       {Math.round((p.similarity ?? 0) * 100)}%
                     </div>
                     <div className="min-w-0 flex-1">
                       <button
                         onClick={() => navigate(`/contracts/${p.contractId}`)}
-                        className="text-sm text-gray-900 hover:text-blue-700 hover:underline truncate text-left w-full"
+                        className="text-body text-ink-950 hover:underline truncate text-left w-full"
                         title={p.title}
                       >
                         {p.title}
                       </button>
-                      <div className="text-[11px] text-gray-400 flex items-center gap-1.5 flex-wrap">
+                      <div className="text-[11px] text-ink-400 flex items-center gap-1.5 flex-wrap">
                         {p.counterparty && <span>{p.counterparty}</span>}
                         {p.signedAt && (
                           <>
@@ -3123,12 +3346,11 @@ export function ContractDetailPage() {
                             <span>·</span>
                             <span
                               className={cn(
-                                p.riskScore >= 0.67 ? 'text-red-500'
-                                  : p.riskScore >= 0.34 ? 'text-amber-600'
-                                  : 'text-emerald-600',
+                                'tabular-nums',
+                                MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(p.riskScore)!)]].fg,
                               )}
                             >
-                              Risk {Math.round(p.riskScore * 100)}%
+                              Risk {normalizeRisk(p.riskScore)}
                             </span>
                           </>
                         )}
@@ -3143,9 +3365,9 @@ export function ContractDetailPage() {
 
         <RailSection title="Overview" defaultOpen>
           {contract.summary ? (
-            <p className="text-sm text-gray-700 leading-relaxed">{contract.summary}</p>
+            <p className="text-body text-ink-700">{contract.summary}</p>
           ) : (
-            <p className="text-sm text-gray-400 italic">
+            <p className="text-body text-ink-400 italic">
               {contract.analysisStatus === 'DONE'
                 ? 'No AI summary available.'
                 : contract.analysisStatus === 'FAILED'
@@ -3262,10 +3484,10 @@ export function ContractDetailPage() {
                         if (match) match.scrollIntoView({ behavior: 'smooth', block: 'start' })
                       }}
                       title={`${n.title}${n.page ? ` — page ${n.page}` : ''}`}
-                      className="text-left w-full truncate py-0.5 px-1 rounded hover:bg-blue-50 hover:text-blue-700 transition-colors flex items-baseline gap-1.5"
+                      className="text-left w-full truncate py-0.5 px-1 rounded-chip text-ink-700 hover:bg-paper-100 hover:text-ink-950 transition-colors flex items-baseline gap-1.5"
                     >
                       {n.ref && (
-                        <span className="font-mono text-[10.5px] text-gray-500 flex-shrink-0">
+                        <span className="font-mono text-[10.5px] text-ink-500 flex-shrink-0">
                           {n.ref}
                         </span>
                       )}
@@ -3273,7 +3495,7 @@ export function ContractDetailPage() {
                       {n.page && (
                         <span
                           data-testid={`toc-page-${n.id}`}
-                          className="font-mono text-[9.5px] text-gray-400 flex-shrink-0 tabular-nums"
+                          className="font-mono text-[9.5px] text-ink-400 flex-shrink-0 tabular-nums"
                         >
                           p.{n.page}
                         </span>
@@ -3327,31 +3549,29 @@ export function ContractDetailPage() {
           title="Risks"
           count={
             contract.riskScore != null
-              ? `${Math.round(contract.riskScore * 100)}%`
+              ? `${normalizeRisk(contract.riskScore)}`
               : riskFactors.length || null
           }
         >
           {contract.riskScore != null && (
             <div className="mb-3">
-              <div className="flex items-center justify-between text-xs mb-1.5">
+              <div className="flex items-center justify-between text-dense mb-1.5">
                 <span className={cn(
                   'font-medium',
-                  contract.riskScore >= 0.67 ? 'text-red-700' :
-                  contract.riskScore >= 0.34 ? 'text-amber-700' : 'text-emerald-700',
+                  MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].fg,
                 )}>
-                  {contract.riskScore >= 0.67 ? 'High Risk' :
-                   contract.riskScore >= 0.34 ? 'Medium Risk' : 'Low Risk'}
+                  {(() => { const b = riskBand(normalizeRisk(contract.riskScore)!)
+                    return b === 'high' ? 'High Risk' : b === 'medium' ? 'Medium Risk' : 'Low Risk' })()}
                 </span>
-                <span className="text-gray-500 tabular-nums">{Math.round(contract.riskScore * 100)}%</span>
+                <span className="text-ink-500 tabular-nums">{normalizeRisk(contract.riskScore)}</span>
               </div>
-              <div className="h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+              <div className="h-1 w-full rounded-full bg-paper-100 overflow-hidden">
                 <div
                   className={cn(
                     'h-full rounded-full transition-all',
-                    contract.riskScore >= 0.67 ? 'bg-red-500' :
-                    contract.riskScore >= 0.34 ? 'bg-amber-500' : 'bg-emerald-500',
+                    MEANING_CLASS[RISK_TO_MEANING[riskBand(normalizeRisk(contract.riskScore)!)]].dot,
                   )}
-                  style={{ width: `${Math.round(contract.riskScore * 100)}%` }}
+                  style={{ width: `${normalizeRisk(contract.riskScore)}%` }}
                 />
               </div>
             </div>
@@ -3359,14 +3579,14 @@ export function ContractDetailPage() {
           {riskFactors.length > 0 ? (
             <ul className="space-y-1.5">
               {riskFactors.map((rf, i) => (
-                <li key={i} className="flex items-start gap-2 text-sm text-gray-700">
-                  <span className="mt-1.5 h-1 w-1 rounded-full bg-red-400 flex-shrink-0" />
+                <li key={i} className="flex items-start gap-2 text-dense text-ink-700">
+                  <span className="mt-1.5 size-1 rounded-full bg-risk-600 flex-shrink-0" />
                   <span>{rf}</span>
                 </li>
               ))}
             </ul>
           ) : contract.riskScore == null ? (
-            <p className="text-sm text-gray-400 italic">No risk analysis yet.</p>
+            <p className="text-body text-ink-400 italic">No risk analysis yet.</p>
           ) : null}
         </RailSection>
 
@@ -3377,9 +3597,9 @@ export function ContractDetailPage() {
               {presentFlags.map(([k, label]) => (
                 <span
                   key={k}
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 text-xs font-medium border border-amber-100"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-attention-50 text-attention-700 text-[11.5px] font-medium border border-attention-200"
                 >
-                  <AlertTriangle className="h-3 w-3" /> {label}
+                  <AlertTriangle className="size-3" /> {label}
                 </span>
               ))}
             </div>
@@ -3394,7 +3614,7 @@ export function ContractDetailPage() {
             clausesData?.data?.length ? (
               <button
                 onClick={() => setTab('clauses')}
-                className="text-[11px] font-medium text-blue-600 hover:underline"
+                className="text-[11px] font-semibold text-ink-950 hover:underline"
               >
                 View all
               </button>
@@ -3404,15 +3624,15 @@ export function ContractDetailPage() {
           {clausesData?.data?.length ? (
             <ul className="space-y-2">
               {clausesData.data.slice(0, 6).map((c: any) => (
-                <li key={c.id} className="text-sm">
-                  <div className="font-medium text-gray-900 truncate">
+                <li key={c.id} className="text-dense">
+                  <div className="font-medium text-ink-950 truncate">
                     {CLAUSE_TYPE_LABELS[c.clauseType] ?? c.clauseType.replace(/_/g, ' ')}
                   </div>
                   {c.riskRating && (
                     <div className={cn(
-                      'text-xs mt-0.5',
-                      c.riskRating === 'HIGH' ? 'text-red-600' :
-                      c.riskRating === 'MEDIUM' ? 'text-amber-600' : 'text-emerald-600',
+                      'text-[11px] mt-0.5',
+                      c.riskRating === 'HIGH' ? MEANING_CLASS.risk.fg :
+                      c.riskRating === 'MEDIUM' ? MEANING_CLASS.turn.fg : MEANING_CLASS.binding.fg,
                     )}>
                       {c.riskRating.toLowerCase()} risk
                     </div>
@@ -3420,11 +3640,11 @@ export function ContractDetailPage() {
                 </li>
               ))}
               {clausesData.data.length > 6 && (
-                <li className="text-xs text-gray-400">+ {clausesData.data.length - 6} more</li>
+                <li className="text-dense text-ink-400">+ {clausesData.data.length - 6} more</li>
               )}
             </ul>
           ) : (
-            <p className="text-sm text-gray-400 italic">No clauses extracted yet.</p>
+            <p className="text-body text-ink-400 italic">No clauses extracted yet.</p>
           )}
         </RailSection>
 
@@ -3448,12 +3668,12 @@ export function ContractDetailPage() {
             {/* Parent contract — hierarchical link */}
             {familyData?.parent && (
               <li className="flex items-start gap-2.5">
-                <Link className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+                <Link className="size-3.5 text-ink-400 mt-0.5 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">Parent</div>
+                  <div className="text-[10.5px] uppercase tracking-[0.08em] text-ink-500 font-semibold">Parent</div>
                   <button
                     onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
-                    className="text-sm text-blue-700 hover:underline truncate text-left w-full"
+                    className="text-dense text-ink-950 hover:underline truncate text-left w-full"
                   >
                     {familyData.parent.title}
                   </button>
@@ -3464,14 +3684,14 @@ export function ContractDetailPage() {
             {/* Versions */}
             {versions.map((v: any) => (
               <li key={v.id} className="flex items-start gap-2.5">
-                <div className="h-5 w-5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-semibold flex items-center justify-center flex-shrink-0">
+                <div className="size-5 rounded-full bg-paper-100 border border-paper-200 text-ink-700 text-[9.5px] font-semibold font-mono flex items-center justify-center flex-shrink-0">
                   v{v.versionNumber}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-gray-900 font-medium truncate">
+                  <div className="text-dense text-ink-950 font-medium truncate">
                     {v.changeNote?.replace(/\s*\(\s*\)\s*$/, '') || `Version ${v.versionNumber}`}
                   </div>
-                  <div className="text-[11px] text-gray-400">
+                  <div className="text-[11px] text-ink-400 tabular-nums">
                     {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </div>
                 </div>
@@ -3481,10 +3701,10 @@ export function ContractDetailPage() {
             {/* Attachments */}
             {((contract.attachments as any[] ?? []) as any[]).map((att: any, i: number) => (
               <li key={`att-${i}`} className="flex items-start gap-2.5">
-                <Paperclip className="h-3.5 w-3.5 text-gray-400 mt-1 flex-shrink-0" />
+                <Paperclip className="size-3.5 text-ink-400 mt-1 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm text-gray-700 truncate">{att.label || att.filename}</div>
-                  <div className="text-[11px] text-gray-400">Attachment</div>
+                  <div className="text-dense text-ink-700 truncate">{att.label || att.filename}</div>
+                  <div className="text-[11px] text-ink-400">Attachment</div>
                 </div>
               </li>
             ))}
@@ -3492,14 +3712,16 @@ export function ContractDetailPage() {
             {/* Children (amendments, SOWs, etc.) */}
             {familyData?.children && (familyData.children as any[]).map((child: any) => (
               <li key={`child-${child.id}`} className="flex items-start gap-2.5">
-                <Link className="h-3.5 w-3.5 text-emerald-500 mt-0.5 flex-shrink-0" />
+                {/* A child agreement is a relationship, not a binding state —
+                    emerald here was decoration, so it's gone. */}
+                <Link className="size-3.5 text-ink-400 mt-0.5 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-wide text-gray-400 font-medium">
+                  <div className="text-[10.5px] uppercase tracking-[0.08em] text-ink-500 font-semibold">
                     {child.relationshipType ?? 'Related'}
                   </div>
                   <button
                     onClick={() => navigate(`/contracts/${child.id}`)}
-                    className="text-sm text-emerald-700 hover:underline truncate text-left w-full"
+                    className="text-dense text-ink-950 hover:underline truncate text-left w-full"
                   >
                     {child.title}
                   </button>
@@ -3518,10 +3740,20 @@ export function ContractDetailPage() {
           >
             {approvalData ? (
               <div className="space-y-2">
-                <div className="text-xs text-gray-500">
-                  Waiting on you: <span className="font-medium text-gray-900">{approvalData.stepName}</span>
+                <div className="text-dense text-ink-500">
+                  Waiting on you: <span className="font-medium text-ink-950">{approvalData.stepName}</span>
                 </div>
-                <button
+                <Button
+                  /*
+                   * Outline, not the ink fill. At PENDING_APPROVAL the header
+                   * already carries an ink "Send for signature", and the real
+                   * decision lives in the DecisionStrip above the document —
+                   * this only scrolls to it. Two ink fills on one screen is two
+                   * primaries, and the design system allows one; the navigation
+                   * is the one that steps back.
+                   */
+                  variant="outline"
+                  className="w-full"
                   onClick={() => {
                     // Wave 2.3 — scroll to the real DecisionStrip (Approve /
                     // Reject / Delegate) that renders above the document when
@@ -3535,17 +3767,16 @@ export function ContractDetailPage() {
                       setTab('approval')
                     }
                   }}
-                  className="w-full text-center py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
                 >
                   Review & Decide
-                </button>
+                </Button>
               </div>
             ) : approvalInstanceData?.instance ? (
-              <p className="text-sm text-gray-600">
-                Status: <span className="font-medium">{approvalInstanceData.instance.status}</span>
+              <p className="text-body text-ink-700">
+                Status: <span className="font-medium text-ink-950">{approvalInstanceData.instance.status}</span>
               </p>
             ) : (
-              <p className="text-sm text-gray-400 italic">Not yet submitted for approval.</p>
+              <p className="text-body text-ink-400 italic">Not yet submitted for approval.</p>
             )}
           </RailSection>
         )}
@@ -3556,11 +3787,11 @@ export function ContractDetailPage() {
           count={commentCount || null}
         >
           {commentCount ? (
-            <p className="text-sm text-gray-600">
+            <p className="text-body text-ink-700">
               {commentCount} comment{commentCount === 1 ? '' : 's'}. Full thread in the editor's inline comments (coming in B.3).
             </p>
           ) : (
-            <p className="text-sm text-gray-400 italic">No comments yet.</p>
+            <p className="text-body text-ink-400 italic">No comments yet.</p>
           )}
         </RailSection>
 
@@ -3572,21 +3803,21 @@ export function ContractDetailPage() {
           {timeline.length ? (
             <ol className="space-y-2">
               {timeline.slice(0, 8).map((evt: any, i: number) => (
-                <li key={evt.id ?? i} className="flex gap-2 text-xs">
-                  <span className="text-gray-400 tabular-nums min-w-[3.5rem]">
+                <li key={evt.id ?? i} className="flex gap-2 text-dense">
+                  <span className="text-ink-400 tabular-nums min-w-[3.5rem]">
                     {new Date(evt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </span>
-                  <span className="text-gray-700">
+                  <span className="text-ink-700">
                     {evt.action?.replace(/_/g, ' ').toLowerCase().replace(/\b./g, (c: string) => c.toUpperCase())}
                   </span>
                 </li>
               ))}
               {timeline.length > 8 && (
-                <li className="text-xs text-gray-400">+ {timeline.length - 8} more events</li>
+                <li className="text-dense text-ink-400">+ {timeline.length - 8} more events</li>
               )}
             </ol>
           ) : (
-            <p className="text-sm text-gray-400 italic">No activity yet.</p>
+            <p className="text-body text-ink-400 italic">No activity yet.</p>
           )}
         </RailSection>
       </aside>
@@ -3602,25 +3833,25 @@ export function ContractDetailPage() {
       {/* Binder split modal */}
       {showSplitModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg">
-            <div className="flex items-center justify-between p-5 border-b">
+          <div className="bg-card rounded-card shadow-e3 w-full max-w-lg">
+            <div className="flex items-center justify-between p-5 border-b border-paper-200">
               <div>
-                <h2 className="text-lg font-semibold">Split into separate contracts</h2>
-                <p className="text-xs text-gray-500 mt-0.5">Set the page range, title, and type for each agreement</p>
+                <h2 className="text-section text-ink-950">Split into separate contracts</h2>
+                <p className="text-dense text-ink-500 mt-0.5">Set the page range, title, and type for each agreement</p>
               </div>
-              <button onClick={() => setShowSplitModal(false)} className="text-gray-400 hover:text-gray-600">
-                <XCircle className="h-5 w-5" />
+              <button onClick={() => setShowSplitModal(false)} className="text-ink-400 hover:text-ink-950">
+                <XCircle className="size-5" />
               </button>
             </div>
             <div className="p-5 space-y-4 max-h-96 overflow-y-auto">
               {splitSpecs.map((spec, i) => (
-                <div key={i} className="border rounded-lg p-4 space-y-3">
+                <div key={i} className="border border-paper-200 rounded-md p-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-gray-600">Agreement {i + 1}</span>
+                    <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-ink-700">Agreement {i + 1}</span>
                     {splitSpecs.length > 2 && (
                       <button
                         onClick={() => setSplitSpecs(prev => prev.filter((_, j) => j !== i))}
-                        className="text-xs text-red-400 hover:text-red-600"
+                        className="text-dense text-risk-700 hover:text-risk-900 hover:underline"
                       >
                         Remove
                       </button>
@@ -3630,33 +3861,30 @@ export function ContractDetailPage() {
                     value={spec.title}
                     onChange={e => setSplitSpecs(prev => prev.map((s, j) => j === i ? { ...s, title: e.target.value } : s))}
                     placeholder="Agreement title"
-                    className="text-sm"
                   />
                   <div className="flex gap-2">
                     <div className="flex-1">
-                      <label className="text-xs text-gray-500 mb-1 block">Page start</label>
+                      <label className="text-dense text-ink-500 mb-1 block">Page start</label>
                       <Input
                         type="number" min={1}
                         value={spec.pageStart}
                         onChange={e => setSplitSpecs(prev => prev.map((s, j) => j === i ? { ...s, pageStart: parseInt(e.target.value) || 1 } : s))}
-                        className="text-sm"
                       />
                     </div>
                     <div className="flex-1">
-                      <label className="text-xs text-gray-500 mb-1 block">Page end</label>
+                      <label className="text-dense text-ink-500 mb-1 block">Page end</label>
                       <Input
                         type="number" min={1}
                         value={spec.pageEnd}
                         onChange={e => setSplitSpecs(prev => prev.map((s, j) => j === i ? { ...s, pageEnd: parseInt(e.target.value) || 1 } : s))}
-                        className="text-sm"
                       />
                     </div>
                     <div className="flex-1">
-                      <label className="text-xs text-gray-500 mb-1 block">Type</label>
+                      <label className="text-dense text-ink-500 mb-1 block">Type</label>
                       <select
                         value={spec.type}
                         onChange={e => setSplitSpecs(prev => prev.map((s, j) => j === i ? { ...s, type: e.target.value } : s))}
-                        className="w-full rounded-md border border-gray-300 px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="h-8 w-full rounded-md border border-input bg-card px-2 text-[13px] text-ink-950 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
                       >
                         {CONTRACT_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
                       </select>
@@ -3666,19 +3894,19 @@ export function ContractDetailPage() {
               ))}
               <button
                 onClick={() => setSplitSpecs(prev => [...prev, { pageStart: 1, pageEnd: 10, title: `Agreement ${prev.length + 1}`, type: 'OTHER' }])}
-                className="text-xs text-blue-600 hover:underline"
+                className="text-dense text-ink-950 hover:underline underline-offset-2 font-medium"
               >
                 + Add another split
               </button>
             </div>
-            <div className="flex justify-end gap-2 px-5 py-4 border-t bg-gray-50 rounded-b-xl">
+            <div className="flex justify-end gap-2 px-5 py-4 border-t border-paper-200 bg-paper-50 rounded-b-card">
               <Button variant="outline" onClick={() => setShowSplitModal(false)}>Cancel</Button>
               <Button
                 onClick={() => splitMutation.mutate(splitSpecs)}
                 disabled={splitMutation.isPending || splitSpecs.length < 2}
               >
                 {splitMutation.isPending
-                  ? <><Loader2 className="h-4 w-4 animate-spin mr-1.5" /> Splitting…</>
+                  ? <><Loader2 className="size-4 animate-spin mr-1.5" /> Splitting…</>
                   : `Create ${splitSpecs.length} contracts`}
               </Button>
             </div>

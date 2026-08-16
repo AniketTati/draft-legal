@@ -3,10 +3,13 @@
  * Triggered from "New Contract" button or chat draft flow.
  * Shows published templates with type filter + match score.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileText, Globe, Loader2, X } from 'lucide-react'
+import { FileText, Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Chip, EmptyState } from '@/components/ui/primitives'
 import { cn } from '@/lib/utils'
 import type { Template } from '@clm/types'
 
@@ -37,32 +40,46 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
 
   const templates: Template[] = data?.data ?? []
 
+  // Escape closes it. This is a picker, not a form — there is nothing to lose,
+  // and a modal that ignores Escape is a modal a keyboard user is stuck in.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Select template"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/40 p-4"
+      onClick={onClose}
+    >
+      <div className="w-full max-w-2xl bg-card rounded-card shadow-e3 overflow-hidden" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-paper-200">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Select Template</h2>
-            <p className="text-sm text-gray-500">Choose a template to start your contract draft</p>
+            <h2 className="text-section text-ink-950">Select Template</h2>
+            <p className="text-dense text-ink-500">Choose a template to start your contract draft</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-3 px-6 py-3 border-b border-gray-100 bg-gray-50">
-          <input
+        <div className="flex items-center gap-3 px-6 py-3 border-b border-paper-200 bg-paper-50">
+          <Input
             value={q}
             onChange={e => setQ(e.target.value)}
             placeholder="Search templates..."
-            className="flex-1 text-sm border border-gray-200 rounded px-3 py-1.5 outline-none focus:border-blue-400 bg-white"
+            className="flex-1"
           />
           <select
             value={filterType}
             onChange={e => setFilterType(e.target.value)}
-            className="text-sm border border-gray-200 rounded px-3 py-1.5 outline-none bg-white"
+            className="h-8 rounded-md border border-input bg-card px-2.5 text-[13px] text-ink-950 outline-none"
           >
             <option value="">All Types</option>
             {CONTRACT_TYPES.map(t => <option key={t}>{t}</option>)}
@@ -70,17 +87,19 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
         </div>
 
         {/* Template list */}
-        <div className="max-h-96 overflow-y-auto divide-y divide-gray-100">
+        <div className="max-h-96 overflow-y-auto divide-y divide-paper-100">
           {isLoading && (
             <div className="flex items-center justify-center py-10">
-              <Loader2 className="w-6 h-6 text-gray-400 animate-spin" />
+              <Loader2 className="size-5 text-ink-400 animate-spin" />
             </div>
           )}
           {!isLoading && !templates.length && (
-            <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-              <FileText className="w-10 h-10 mb-2" />
-              <p className="text-sm">No published templates found</p>
-              <p className="text-xs mt-1">Create and publish a template first</p>
+            <div className="p-5">
+              <EmptyState
+                icon={<FileText />}
+                title="No published templates found"
+                description="Create and publish a template first"
+              />
             </div>
           )}
           {templates.map(t => (
@@ -89,30 +108,41 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
               onClick={() => onSelect(t)}
               data-testid={`template-pick-${t.id}`}
               className={cn(
-                'w-full text-left px-6 py-4 hover:bg-blue-50 transition-colors',
-                preferredType && t.contractType === preferredType && 'bg-green-50 border-l-4 border-green-400',
+                'w-full text-left px-6 py-4 transition-colors hover:bg-paper-50',
+                // The type match is a recommendation, not a binding state — so
+                // it's marked in ink (the system pointing), not in brand green.
+                preferredType && t.contractType === preferredType && 'bg-paper-50 border-l-2 border-ink-950',
               )}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-gray-400 shrink-0" />
-                    <span className="font-medium text-gray-900">{t.name}</span>
-                    <Globe className="w-3.5 h-3.5 text-green-500" />
+                    <FileText className="size-3.5 text-ink-400 shrink-0" />
+                    {/*
+                      The globe next to every name said "published" on a list
+                      that is filtered to published — a glyph on 100% of rows
+                      carries no information, so it is gone. The name gets the
+                      space instead.
+                    */}
+                    <span className="text-body font-medium text-ink-950">{t.name}</span>
                     {preferredType && t.contractType === preferredType && (
-                      <span className="text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full">Recommended</span>
+                      <Chip>Recommended</Chip>
                     )}
                   </div>
                   {t.description && (
-                    <p className="text-sm text-gray-500 mt-0.5 line-clamp-1">{t.description}</p>
+                    <p className="text-dense text-ink-500 mt-0.5 line-clamp-1">{t.description}</p>
                   )}
                   <div className="flex items-center gap-2 mt-1">
                     {t.contractType && (
-                      <span className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">{t.contractType}</span>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded-chip border border-paper-200 bg-paper-100 text-ink-700">{t.contractType}</span>
                     )}
-                    <span className="text-xs text-gray-400">{(t.sections?.length ?? 0)} sections</span>
-                    <span className="text-xs text-gray-400">·</span>
-                    <span className="text-xs text-gray-400">used {t.usageCount}×</span>
+                    {/* Facts in one string — a wrap can't strand a separator. */}
+                    <span className="text-[11px] tabular-nums text-ink-400">
+                      {[
+                        `${t.sections?.length ?? 0} sections`,
+                        ...((t.usageCount ?? 0) > 0 ? [`used ${t.usageCount}×`] : []),
+                      ].join(' · ')}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -121,14 +151,9 @@ export function TemplateSelectorModal({ onSelect, onClose, preferredType }: Prop
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3 border-t border-gray-200 bg-gray-50">
-          <p className="text-xs text-gray-400">{templates.length} templates available</p>
-          <button
-            onClick={onClose}
-            className="text-sm px-4 py-1.5 bg-gray-100 rounded-lg hover:bg-gray-200 text-gray-600"
-          >
-            Cancel
-          </button>
+        <div className="flex items-center justify-between px-6 py-3 border-t border-paper-200 bg-paper-50">
+          <p className="text-[11px] tabular-nums text-ink-400">{templates.length} templates available</p>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
         </div>
       </div>
     </div>

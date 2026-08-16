@@ -54,14 +54,17 @@ export function DefinedTermsRailSection({ editor }: { editor: Editor | null }) {
       count={state.flags.length > 0 ? state.flags.length : null}
     >
       <div className="space-y-2" data-testid="defined-terms-section">
+        {/* A defined term is something the model found, not a state the contract
+            is in — so these wear the assist accent that marks the dotted
+            underline in the document, not the in-flight blue. */}
         <div className="flex flex-wrap gap-1" data-testid="defined-terms-list">
           {state.terms.map(t => (
             <span
               key={t.canonical}
-              className="inline-flex items-center gap-0.5 text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-blue-50 text-blue-900 border border-blue-200"
+              className="inline-flex items-center gap-0.5 text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded-chip bg-assist-50 text-assist-900 border border-assist-200"
               data-testid={`defined-term-${t.canonical.toLowerCase().replace(/\s+/g, '-')}`}
             >
-              <BookOpen className="h-2.5 w-2.5" />
+              <BookOpen className="size-2.5" />
               {t.canonical}
             </span>
           ))}
@@ -73,20 +76,20 @@ export function DefinedTermsRailSection({ editor }: { editor: Editor | null }) {
           </div>
         ) : (
           <>
-            <div className="text-[11px] text-gray-700" data-testid="defined-terms-flag-count">
-              <span className="font-medium text-blue-900">{state.flags.length} inconsistent usage{state.flags.length === 1 ? '' : 's'}</span> — the author typed a variant of a defined term.
+            <div className="text-[11px] text-ink-700" data-testid="defined-terms-flag-count">
+              <span className="font-medium text-assist-700 tabular-nums">{state.flags.length} inconsistent usage{state.flags.length === 1 ? '' : 's'}</span> — the author typed a variant of a defined term.
             </div>
             <ul className="space-y-1">
               {state.flags.slice(0, 6).map((f, i) => (
                 <li
                   key={i}
-                  className="text-[11px] border border-border rounded-md px-2 py-1 bg-white/60 flex items-center justify-between"
+                  className="text-[11px] border border-border rounded-md px-2 py-1 bg-card/60 flex items-center justify-between"
                   data-testid={`defined-term-flag-${i}`}
                 >
                   <span>
-                    <span className="font-mono text-blue-900 underline decoration-dotted">{f.found}</span>
+                    <span className="font-mono text-assist-700 underline decoration-dotted">{f.found}</span>
                     {' → '}
-                    <span className="font-mono font-medium text-gray-900">{f.term}</span>
+                    <span className="font-mono font-medium text-ink-950">{f.term}</span>
                   </span>
                 </li>
               ))}
@@ -96,12 +99,12 @@ export function DefinedTermsRailSection({ editor }: { editor: Editor | null }) {
             </ul>
             <Button
               size="sm"
-              variant="outline"
+              variant="assistOutline"
               onClick={handleNormalize}
               data-testid="defined-terms-normalize-btn"
               className="gap-1 text-[11px]"
             >
-              <Wand2 className="h-3 w-3" />
+              <Wand2 className="size-3" />
               Apply defined term everywhere
             </Button>
           </>

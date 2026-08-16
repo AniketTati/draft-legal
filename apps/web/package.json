@@ -9,6 +9,7 @@
     "build:check": "pnpm build && node scripts/check-bundle-size.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
+    "lint:ds": "node scripts/check-design-system.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

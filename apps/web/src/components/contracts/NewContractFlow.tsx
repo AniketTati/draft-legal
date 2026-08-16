@@ -10,6 +10,8 @@ import { Loader2, X, ArrowLeft, Wand2 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
 import { TemplateSelectorModal } from '@/components/TemplateSelectorModal'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import type { Template } from '@clm/types'
 
 interface Props {
@@ -73,58 +75,56 @@ export function NewContractFlow({ onClose, onCreated }: Props) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden">
+      <div className="w-full max-w-lg bg-card rounded-card shadow-e3 overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-200">
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-paper-200">
           <button
             onClick={() => setStep('template')}
-            className="text-gray-400 hover:text-gray-600"
+            className="text-ink-400 hover:text-ink-700"
             title="Back to templates"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="size-4" />
           </button>
           <div className="flex-1">
-            <h2 className="text-lg font-semibold text-gray-900">Draft Details</h2>
-            <p className="text-sm text-gray-500">
-              Template: <span className="font-medium text-gray-700">{selectedTemplate?.name}</span>
+            <h2 className="text-section text-ink-950">Draft Details</h2>
+            <p className="text-dense text-ink-500">
+              Template: <span className="font-medium text-ink-700">{selectedTemplate?.name}</span>
             </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <X className="w-5 h-5" />
+          <button onClick={onClose} className="text-ink-400 hover:text-ink-700">
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Form */}
         <div className="px-6 py-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Contract title <span className="text-red-500">*</span>
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
+              Contract title <span className="text-risk-600">*</span>
             </label>
-            <input
+            <Input
               value={title}
               onChange={e => setTitle(e.target.value)}
               placeholder="e.g. NDA with Acme Corp"
               data-testid="draft-title-input"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
               Counterparty name
             </label>
-            <input
+            <Input
               value={counterparty}
               onChange={e => setCounterparty(e.target.value)}
               placeholder="e.g. Acme Corporation"
               data-testid="draft-counterparty-input"
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200"
             />
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-dense font-medium text-ink-700 mb-1.5">
               Additional context for AI
             </label>
             <textarea
@@ -132,12 +132,12 @@ export function NewContractFlow({ onClose, onCreated }: Props) {
               onChange={e => setContext(e.target.value)}
               placeholder="e.g. 2-year term, mutual NDA, governing law Delaware, SaaS licensing deal..."
               rows={3}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-200 resize-none"
+              className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             />
           </div>
 
           {draftMutation.isError && (
-            <p className="text-sm text-red-600" data-testid="draft-error">
+            <p className="text-dense text-risk-700" data-testid="draft-error">
               {(() => {
                 // P61 audit (2026-05-02). Surface the API's typed detail
                 // (NO_TEMPLATE_MATCH, etc.) instead of a generic "failed"
@@ -152,30 +152,26 @@ export function NewContractFlow({ onClose, onCreated }: Props) {
           )}
 
           {draftMutation.isPending && (
-            <div className="flex items-center gap-2 text-sm text-blue-600">
-              <Loader2 className="w-4 h-4 animate-spin" />
+            <div className="flex items-center gap-2 text-dense text-ink-500">
+              <Loader2 className="size-4 animate-spin" />
               Generating draft with AI… this takes 20–40 seconds
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50">
-          <button
-            onClick={onClose}
-            className="text-sm px-4 py-2 text-gray-600 hover:text-gray-900"
-          >
+        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-paper-200 bg-paper-50">
+          <Button variant="ghost" onClick={onClose}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
             onClick={() => draftMutation.mutate()}
             disabled={!canSubmit}
             data-testid="draft-generate-btn"
-            className="flex items-center gap-2 text-sm px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            <Wand2 className="w-4 h-4" />
+            <Wand2 className="size-3.5" />
             Generate Draft
-          </button>
+          </Button>
         </div>
       </div>
     </div>

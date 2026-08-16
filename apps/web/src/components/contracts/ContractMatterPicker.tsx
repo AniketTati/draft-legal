@@ -80,10 +80,12 @@ export function ContractMatterPicker({
 
   if (effectiveCurrent) {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10.5px] font-medium text-indigo-900"
+      // A matter is a human filing cabinet, not machine output — the indigo it
+      // used to wear belongs to the assistant, so this is a plain neutral chip.
+      <span className="inline-flex items-center gap-1 rounded-full border border-paper-200 bg-paper-100 px-2 py-0.5 text-[10.5px] font-medium text-ink-950"
             data-testid="contract-matter-badge"
             data-matter-id={effectiveCurrent.id}>
-        <Briefcase className="h-3 w-3" />
+        <Briefcase className="size-3" />
         <Link to={`/matters/${effectiveCurrent.id}`} className="hover:underline truncate max-w-[180px]">
           {effectiveCurrent.name}
         </Link>
@@ -92,9 +94,9 @@ export function ContractMatterPicker({
           onClick={() => assign.mutate(null)}
           title="Unlink from matter"
           data-testid="contract-matter-unlink"
-          className="hover:bg-indigo-200 rounded-full p-0.5"
+          className="hover:bg-paper-200 rounded-full p-0.5"
         >
-          <X className="h-2.5 w-2.5" />
+          <X className="size-2.5" />
         </button>
       </span>
     )
@@ -106,9 +108,9 @@ export function ContractMatterPicker({
         type="button"
         onClick={() => setOpen(true)}
         data-testid="contract-matter-add-btn"
-        className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 px-2 py-0.5 text-[10.5px] text-muted-foreground hover:text-indigo-700 hover:border-indigo-300"
+        className="inline-flex items-center gap-1 rounded-full border border-dashed border-paper-300 px-2 py-0.5 text-[10.5px] text-muted-foreground hover:text-ink-950 hover:border-ink-400"
       >
-        <Briefcase className="h-3 w-3" /> Add to matter
+        <Briefcase className="size-3" /> Add to matter
       </button>
     )
   }
@@ -117,18 +119,18 @@ export function ContractMatterPicker({
     <div className="relative">
       <div
         data-testid="contract-matter-picker"
-        className="absolute top-6 left-0 z-20 w-80 rounded-lg border border-border bg-card shadow-lg"
+        className="absolute top-6 left-0 z-20 w-80 rounded-card border border-border bg-card shadow-e2"
       >
         <div className="p-2 border-b border-border">
           <div className="relative">
-            <Search className="absolute left-2 top-2 h-3 w-3 text-muted-foreground" />
+            <Search className="absolute left-2 top-2 size-3 text-muted-foreground" />
             <input
               type="text"
               placeholder="Search open matters…"
               value={search}
               onChange={e => setSearch(e.target.value)}
               autoFocus
-              className="w-full pl-7 pr-2 py-1 text-[12px] rounded border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="w-full pl-7 pr-2 py-1 text-[12px] rounded-md border border-input bg-card placeholder:text-ink-400 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
               data-testid="contract-matter-picker-search"
             />
           </div>
@@ -145,21 +147,21 @@ export function ContractMatterPicker({
                 type="button"
                 onClick={() => assign.mutate(m.id)}
                 data-testid={`contract-matter-pick-${m.id}`}
-                className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 flex items-baseline gap-2"
+                className="w-full text-left px-3 py-1.5 hover:bg-paper-100 flex items-baseline gap-2"
               >
-                <Briefcase className="h-3 w-3 text-indigo-600 flex-shrink-0" />
-                <span className="font-medium text-[12px] text-gray-900 truncate">{m.name}</span>
+                <Briefcase className="size-3 text-ink-400 flex-shrink-0" />
+                <span className="font-medium text-[12px] text-ink-950 truncate">{m.name}</span>
                 {m.counterpartyName && <span className="text-[10.5px] text-muted-foreground truncate">· {m.counterpartyName}</span>}
-                <span className="ml-auto text-[10px] text-muted-foreground">{m.contractCount}</span>
+                <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">{m.contractCount}</span>
               </button>
             </li>
           ))}
         </ul>
         <div className="px-2 py-1.5 border-t border-border flex items-center justify-between text-[10.5px]">
-          <Link to="/matters" className="text-indigo-600 hover:underline" onClick={() => setOpen(false)}>
+          <Link to="/matters" className="text-ink-950 hover:underline" onClick={() => setOpen(false)}>
             + New matter
           </Link>
-          <button type="button" onClick={() => setOpen(false)} className="text-muted-foreground hover:text-gray-900">
+          <button type="button" onClick={() => setOpen(false)} className="text-muted-foreground hover:text-ink-950">
             Cancel
           </button>
         </div>

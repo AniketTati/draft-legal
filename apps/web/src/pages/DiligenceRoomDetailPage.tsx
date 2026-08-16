@@ -10,6 +10,10 @@ import { useParams, Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { AssistMark } from '@/components/ui/assist'
+import { RiskMeter } from '@/components/ui/primitives'
+import { StatusPill } from '@/components/ui/status-pill'
+import { statusMeta, type Meaning } from '@/lib/status'
 import {
   FolderOpen, Upload, Loader2, AlertCircle, ArrowLeft, ArrowRight,
   Download, CheckCircle2, AlertTriangle, FileText, RefreshCw,
@@ -55,28 +59,32 @@ function formatMoney(n: number | null, currency = 'USD'): string {
   return `${currency} ${n.toFixed(0)}`
 }
 
-function riskBadge(score: number | null) {
-  if (score == null) return { text: '—', tone: 'text-gray-400' }
-  const pct = Math.round(score * 100)
-  if (score >= 0.8)  return { text: `${pct}`, tone: 'text-red-700 bg-red-50 border-red-200' }
-  if (score >= 0.6)  return { text: `${pct}`, tone: 'text-orange-700 bg-orange-50 border-orange-200' }
-  if (score >= 0.3)  return { text: `${pct}`, tone: 'text-amber-700 bg-amber-50 border-amber-200' }
-  return { text: `${pct}`, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' }
-}
+/*
+ * Both local color maps are gone. Risk now renders as the system's RiskMeter,
+ * which shares its thresholds with lib/status, and the analysis state renders
+ * as a StatusPill — every one of these keys already lives in the status map.
+ */
+const IN_PROGRESS = ['ANALYZING', 'PARSING', 'EXTRACTING', 'INDEXING', 'CLASSIFYING', 'SPLITTING']
 
-function statusBadge(s: string) {
-  const tones: Record<string, string> = {
-    DONE:        'bg-emerald-50 border-emerald-200 text-emerald-700',
-    FAILED:      'bg-red-50 border-red-200 text-red-700',
-    PENDING:     'bg-gray-100 border-gray-200 text-gray-600',
-    ANALYZING:   'bg-blue-50 border-blue-200 text-blue-700',
-    PARSING:     'bg-blue-50 border-blue-200 text-blue-700',
-    EXTRACTING:  'bg-blue-50 border-blue-200 text-blue-700',
-    INDEXING:    'bg-blue-50 border-blue-200 text-blue-700',
-    CLASSIFYING: 'bg-blue-50 border-blue-200 text-blue-700',
-    SPLITTING:   'bg-blue-50 border-blue-200 text-blue-700',
-  }
-  return tones[s] ?? tones.PENDING
+/** Below this the extraction is a suggestion, not a reading. */
+const LOW_CONFIDENCE = 0.7
+
+/**
+ * The term as one fact with two ends, stacked.
+ *
+ * Effective and Expiry were two full-width columns and together they cost about
+ * 170px — enough, at this window width, to push Risk and the row link off the
+ * right edge of the table. Stacked, the same two dates read down instead of
+ * across and cost half that.
+ */
+function formatTerm(eff: string | null, exp: string | null): React.ReactNode {
+  if (!eff && !exp) return <span className="text-ink-400">—</span>
+  return (
+    <span className="block tabular-nums leading-tight">
+      <span className="block">{eff ?? '—'}</span>
+      <span className="block text-ink-500">→ {exp ?? '—'}</span>
+    </span>
+  )
 }
 
 export function DiligenceRoomDetailPage() {
@@ -84,6 +92,7 @@ export function DiligenceRoomDetailPage() {
   const qc = useQueryClient()
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [dragActive, setDragActive] = useState(false)
+  const [showFailedOnly, setShowFailedOnly] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const { data: room, isLoading: roomLoading } = useQuery<ApiRoom>({
@@ -154,38 +163,49 @@ export function DiligenceRoomDetailPage() {
   }
 
   if (roomLoading) {
-    return <div className="flex items-center justify-center py-16"><Loader2 className="h-5 w-5 animate-spin text-gray-300" /></div>
+    return <div className="flex items-center justify-center py-16"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
   }
   if (!room) {
     return (
       <div className="px-6 py-6 max-w-7xl mx-auto">
-        <div className="flex items-start gap-2 p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 mt-0.5" />
+        <div className="flex items-start gap-2 p-4 rounded-md bg-risk-50 border border-risk-200 text-dense text-risk-700">
+          <AlertCircle className="size-4 mt-0.5" />
           Room not found.
         </div>
-        <Link to="/diligence" className="text-sm text-violet-600 mt-4 inline-flex items-center gap-1">
-          <ArrowLeft className="h-3.5 w-3.5" /> Back to all rooms
+        <Link to="/diligence" className="text-dense text-ink-950 hover:text-brand-700 mt-4 inline-flex items-center gap-1">
+          <ArrowLeft className="size-3.5" /> Back to all rooms
         </Link>
       </div>
     )
   }
 
-  const items = results?.data ?? []
+  const allItems = results?.data ?? []
+  const failedCount = allItems.filter(d => d.analysisStatus === 'FAILED').length
+  const items = showFailedOnly ? allItems.filter(d => d.analysisStatus === 'FAILED') : allItems
   const hasAnyDone = (room.progress?.done ?? 0) > 0
+  // Once a room holds documents, the drop zone is no longer the point of the
+  // page — the extraction table is. It collapses to a single line and keeps
+  // working as a drop target.
+  const roomHasDocs = allItems.length > 0
 
   return (
     <div className="px-6 py-6 max-w-7xl mx-auto" data-testid="diligence-detail-page">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-2">
         <div className="flex-1 min-w-0">
-          <Link to="/diligence" className="text-xs text-gray-500 hover:text-violet-600 inline-flex items-center gap-1 mb-2">
-            <ArrowLeft className="h-3.5 w-3.5" /> All rooms
+          <Link to="/diligence" className="text-[11.5px] text-ink-500 hover:text-ink-950 inline-flex items-center gap-1 mb-2">
+            <ArrowLeft className="size-3.5" /> All rooms
           </Link>
           <div className="flex items-center gap-3">
-            <FolderOpen className="h-5 w-5 text-violet-600" />
-            <h1 className="text-2xl font-semibold text-gray-900">{room.name}</h1>
+            <FolderOpen className="size-4 text-ink-400" />
+            <h1 className="text-title text-ink-950">{room.name}</h1>
+            {/* An archived room looked exactly like a live one, which is how a
+                reviewer spends an afternoon in last quarter's diligence. */}
+            {room.status && room.status !== 'ACTIVE' && (
+              <StatusPill status={room.status} />
+            )}
           </div>
-          {room.description && <p className="text-sm text-gray-500 mt-1">{room.description}</p>}
+          {room.description && <p className="text-dense text-ink-500 mt-1">{room.description}</p>}
         </div>
         <Button
           onClick={handleExport}
@@ -195,29 +215,55 @@ export function DiligenceRoomDetailPage() {
           data-testid="export-csv-btn"
           className="gap-1.5"
         >
-          <Download className="h-4 w-4" />
+          <Download className="size-3.5" />
           Export CSV
         </Button>
       </div>
 
       {exportError && (
-        <p className="text-[11px] text-red-600" data-testid="export-error">{exportError}</p>
+        <p className="text-[11px] text-risk-700" data-testid="export-error">{exportError}</p>
       )}
 
-      {/* Progress strip */}
-      <div className="grid grid-cols-3 gap-3 mt-5 mb-5">
-        <ProgressCard label="Documents"  value={room.documentCount}                tone="violet"  icon={FileText}        />
-        <ProgressCard label="Processed"  value={room.progress.done}                tone="emerald" icon={CheckCircle2}    />
-        <ProgressCard label="Processing" value={room.progress.processing}          tone="blue"    icon={RefreshCw} animate={room.progress.processing > 0} />
+      {/*
+        The strip used to read Documents / Processed / Processing — so on this
+        room it said 18, 12, 0 and left the reader to work out where the other
+        six went. Six of eighteen documents failed to extract: that is the most
+        important number on the page and it was not on the strip at all, only in
+        a sentence below it. Failures get a card whenever there are any.
+      */}
+      <div className={`grid gap-3 mt-5 mb-5 ${room.progress.failed > 0 ? 'grid-cols-2 lg:grid-cols-4' : 'grid-cols-3'}`}>
+        <ProgressCard label="Documents"  value={room.documentCount}                tone="neutral"  icon={FileText}        />
+        <ProgressCard label="Extracted"  value={room.progress.done}                tone="binding"  icon={CheckCircle2}    />
+        <ProgressCard label="Processing" value={room.progress.processing}          tone="inflight" icon={RefreshCw} animate={room.progress.processing > 0} />
+        {room.progress.failed > 0 && (
+          <ProgressCard label="Failed"   value={room.progress.failed}              tone="risk"     icon={AlertTriangle}   />
+        )}
       </div>
       {room.progress.failed > 0 && (
-        <div className="mb-4 p-3 rounded-md bg-red-50 border border-red-200 text-sm text-red-800 flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-          {room.progress.failed} {room.progress.failed === 1 ? 'document' : 'documents'} failed to extract — open them to inspect.
+        <div className="mb-4 p-3 rounded-md bg-risk-50 border border-risk-200 text-dense text-risk-900 flex items-center gap-2 flex-wrap">
+          <AlertTriangle className="size-4 flex-shrink-0" />
+          <span className="flex-1 min-w-[220px]">
+            {room.progress.failed} {room.progress.failed === 1 ? 'document' : 'documents'} failed to extract.
+            Nothing below them is a model reading — open them to inspect.
+          </span>
+          {/* "Open them to inspect" without a way to find them, in a table of
+              eighteen, is an instruction to scroll. */}
+          {failedCount > 0 && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => setShowFailedOnly(v => !v)}
+              aria-pressed={showFailedOnly}
+              data-testid="toggle-failed-only"
+            >
+              {showFailedOnly ? 'Show all documents' : `Show the ${failedCount} failed`}
+            </Button>
+          )}
         </div>
       )}
 
-      {/* Upload zone */}
+      {/* Upload zone — full drop target while the room is empty, a quiet bar
+          once it has content and the table is the thing worth the space. */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragActive(true) }}
         onDragLeave={(e) => { e.preventDefault(); setDragActive(false) }}
@@ -227,31 +273,58 @@ export function DiligenceRoomDetailPage() {
           handleFiles(e.dataTransfer.files)
         }}
         data-testid="upload-zone"
-        className={`mb-6 rounded-xl border-2 border-dashed p-8 text-center transition-colors ${
+        className={`mb-6 rounded-card border-2 border-dashed text-center transition-colors ${
+          roomHasDocs ? 'p-3' : 'p-8'
+        } ${
           dragActive
-            ? 'border-violet-400 bg-violet-50'
-            : 'border-gray-300 bg-white hover:border-violet-300 hover:bg-violet-50/30'
+            // The drop target is an action surface, so the "armed" state is ink.
+            ? 'border-ink-950 bg-paper-100'
+            : 'border-paper-300 bg-card hover:border-ink-400 hover:bg-paper-50'
         }`}
       >
-        <Upload className={`h-8 w-8 mx-auto mb-2 ${dragActive ? 'text-violet-500' : 'text-gray-400'}`} />
-        <div className="text-sm font-medium text-gray-900 mb-1">
-          {upload.isPending ? 'Uploading…' : 'Drop contracts here or click to browse'}
-        </div>
-        <div className="text-xs text-gray-500 mb-3">PDF or DOCX · up to 50 files per upload</div>
-        <Button
-          onClick={() => fileInputRef.current?.click()}
-          disabled={upload.isPending}
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          data-testid="upload-btn"
-        >
-          {upload.isPending ? (
-            <><Loader2 className="h-4 w-4 animate-spin" /> Uploading {(upload.variables as File[])?.length ?? 0}…</>
-          ) : (
-            <><Upload className="h-4 w-4" /> Browse files</>
-          )}
-        </Button>
+        {roomHasDocs ? (
+          <div className="flex items-center justify-center gap-3 flex-wrap">
+            <span className="text-[11.5px] text-ink-500 inline-flex items-center gap-1.5">
+              <Upload className={`size-3.5 ${dragActive ? 'text-ink-950' : 'text-ink-400'}`} />
+              {upload.isPending ? 'Uploading…' : 'Drop more contracts here — PDF or DOCX, up to 50 per upload'}
+            </span>
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={upload.isPending}
+              variant="outline"
+              size="xs"
+              data-testid="upload-btn"
+            >
+              {upload.isPending ? (
+                <><Loader2 className="animate-spin" /> Uploading {(upload.variables as File[])?.length ?? 0}…</>
+              ) : (
+                <><Upload /> Browse files</>
+              )}
+            </Button>
+          </div>
+        ) : (
+          <>
+            <Upload className={`size-6 mx-auto mb-2 ${dragActive ? 'text-ink-950' : 'text-ink-400'}`} />
+            <div className="text-body font-medium text-ink-950 mb-1">
+              {upload.isPending ? 'Uploading…' : 'Drop contracts here or click to browse'}
+            </div>
+            <div className="text-[11.5px] text-ink-500 mb-3">PDF or DOCX · up to 50 files per upload</div>
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={upload.isPending}
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              data-testid="upload-btn"
+            >
+              {upload.isPending ? (
+                <><Loader2 className="animate-spin" /> Uploading {(upload.variables as File[])?.length ?? 0}…</>
+              ) : (
+                <><Upload /> Browse files</>
+              )}
+            </Button>
+          </>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -261,7 +334,7 @@ export function DiligenceRoomDetailPage() {
           onChange={e => handleFiles(e.target.files)}
         />
         {uploadError && (
-          <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2 inline-block">
+          <div className="mt-3 text-[11.5px] text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2 inline-block">
             {uploadError}
           </div>
         )}
@@ -269,80 +342,120 @@ export function DiligenceRoomDetailPage() {
 
       {/* Results table */}
       {items.length === 0 ? (
-        <div className="text-center py-12 px-6 border border-dashed border-gray-200 rounded-xl">
-          <FileText className="h-7 w-7 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500">No documents in this room yet. Upload some to start.</p>
+        <div className="text-center py-12 px-6 border border-dashed border-paper-300 rounded-card">
+          <FileText className="size-6 text-ink-400 mx-auto mb-2" />
+          <p className="text-dense text-ink-500">
+            {showFailedOnly
+              ? 'No failed documents — every extraction in this room succeeded.'
+              : 'No documents in this room yet. Upload some to start.'}
+          </p>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <header className="flex items-center justify-between px-5 py-3 bg-gray-50 border-b border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-900">Cross-document extraction</h3>
-            <span className="text-xs text-gray-500">{items.length} {items.length === 1 ? 'doc' : 'docs'}</span>
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <header className="flex items-center justify-between px-5 py-3 bg-paper-50 border-b border-paper-200">
+            {/* Every value in this table was read out of a PDF by the model, so
+                the table carries the machine mark. */}
+            <h3 className="text-section text-ink-950 flex items-center gap-2">
+              <AssistMark />
+              Cross-document extraction
+            </h3>
+            <span className="text-[11.5px] tabular-nums text-ink-500">
+              {showFailedOnly ? `${items.length} failed of ${allItems.length}` : `${items.length} ${items.length === 1 ? 'doc' : 'docs'}`}
+            </span>
           </header>
+          {/*
+            Effective and Expiry were two columns, which pushed Risk, Status and
+            the row link off the right edge at this window width — so the two
+            things a diligence reviewer is here for (how risky, did it even
+            extract) were behind a horizontal scroll they had no reason to
+            suspect. A term is one fact with two ends, so it is one column.
+          */}
           <div className="overflow-x-auto">
-            <table className="w-full text-sm" data-testid="results-table">
-              <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500 border-b border-gray-200">
+            <table className="w-full text-dense" data-testid="results-table">
+              <thead className="bg-paper-50 text-[10px] uppercase tracking-[0.09em] text-ink-400 border-b border-paper-200">
                 <tr>
-                  <th className="text-left px-4 py-2.5 font-medium">Title</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Counterparty</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Value</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Effective</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Expiry</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Risk</th>
-                  <th className="text-left px-4 py-2.5 font-medium">Status</th>
-                  <th className="text-right px-4 py-2.5 font-medium"></th>
+                  <th className="text-left px-3 py-2 font-semibold">Title</th>
+                  <th className="text-left px-3 py-2 font-semibold">Counterparty</th>
+                  <th className="text-right px-3 py-2 font-semibold">Value</th>
+                  <th className="text-left px-3 py-2 font-semibold">Term</th>
+                  <th className="text-left px-3 py-2 font-semibold">Risk</th>
+                  <th className="text-right px-3 py-2 font-semibold"><span className="sr-only">Open</span></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody className="divide-y divide-paper-100">
                 {items.map(d => {
-                  const risk = riskBadge(d.riskScore)
+                  const failed = d.analysisStatus === 'FAILED'
+                  const lowConfidence =
+                    !failed && d.overallConfidence != null && d.overallConfidence < LOW_CONFIDENCE
                   return (
-                    <tr key={d.id} className="hover:bg-gray-50" data-testid={`result-row-${d.id}`}>
-                      <td className="px-4 py-2.5 max-w-[260px]">
-                        <div className="font-medium text-gray-900 truncate" title={d.title}>{d.title}</div>
-                        {d.type && d.type !== 'OTHER' && (
-                          <div className="text-[10px] uppercase tracking-wider font-mono text-gray-400 mt-0.5">
-                            {d.type}
-                          </div>
-                        )}
+                    <tr
+                      key={d.id}
+                      className={`hover:bg-paper-50 ${failed ? 'bg-risk-50/60' : ''}`}
+                      data-testid={`result-row-${d.id}`}
+                      data-analysis-status={d.analysisStatus}
+                    >
+                      <td className={`px-3 py-2 max-w-[220px] ${failed ? 'border-l-2 border-l-risk-600' : ''}`}>
+                        <div className="text-[13px] font-medium text-ink-950 truncate" title={d.title}>{d.title}</div>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {d.type && d.type !== 'OTHER' && (
+                            <span className="text-[10px] uppercase tracking-[0.09em] font-mono text-ink-400">
+                              {d.type}
+                            </span>
+                          )}
+                          {/*
+                            Extraction state lives under the title rather than in
+                            a column of its own. Twelve of these eighteen rows
+                            say "Done", which is the state that needs no words —
+                            and the column it occupied was what pushed Risk and
+                            the row link off the right edge. A failed or still-
+                            running extraction is the exception, so it speaks;
+                            `wash` because a failed row is precisely the
+                            "single row-level exception" that tone exists for.
+                          */}
+                          {d.analysisStatus !== 'DONE' && (
+                            <StatusPill status={d.analysisStatus} tone={failed ? 'wash' : 'dot'}>
+                              {IN_PROGRESS.includes(d.analysisStatus) && (
+                                <Loader2 className="size-3 animate-spin" />
+                              )}
+                              {statusMeta(d.analysisStatus).label}
+                            </StatusPill>
+                          )}
+                          {/* "The mark scales with how sure it is" — a hollow
+                              diamond for a reading the model itself doubts. */}
+                          {lowConfidence && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] text-ink-500"
+                              title={`Model confidence ${Math.round((d.overallConfidence ?? 0) * 100)}% — verify against the document`}
+                            >
+                              <AssistMark confidence="low" />
+                              {Math.round((d.overallConfidence ?? 0) * 100)}% confidence
+                            </span>
+                          )}
+                        </div>
                       </td>
-                      <td className="px-4 py-2.5 text-xs">
-                        {d.counterpartyName ?? <span className="text-gray-400">—</span>}
+                      <td className="px-3 py-2 text-ink-700">
+                        {d.counterpartyName ?? <span className="text-ink-400">—</span>}
                       </td>
-                      <td className="px-4 py-2.5 text-xs whitespace-nowrap font-medium text-gray-800 tabular-nums">
+                      <td className="px-3 py-2 whitespace-nowrap text-right font-medium text-ink-950 tabular-nums">
                         {formatMoney(d.value, d.currency ?? 'USD')}
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-gray-700 whitespace-nowrap">
-                        {d.effectiveDate ?? <span className="text-gray-400">—</span>}
+                      <td className="px-3 py-2 text-ink-700 whitespace-nowrap text-[11.5px]">
+                        {formatTerm(d.effectiveDate, d.expiryDate)}
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-gray-700 whitespace-nowrap">
-                        {d.expiryDate ?? <span className="text-gray-400">—</span>}
-                      </td>
-                      <td className="px-4 py-2.5">
+                      <td className="px-3 py-2">
                         {d.riskScore != null ? (
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md text-xs font-medium border ${risk.tone}`}>
-                            {risk.text}
-                          </span>
+                          <RiskMeter score={d.riskScore} className="w-[72px]" />
                         ) : (
-                          <span className="text-xs text-gray-400">—</span>
+                          <span className="text-ink-400" title={failed ? 'Extraction failed — never scored' : 'Not scored'}>—</span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5">
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border ${statusBadge(d.analysisStatus)}`}>
-                          {d.analysisStatus === 'DONE' && <CheckCircle2 className="h-3 w-3" />}
-                          {['ANALYZING', 'PARSING', 'EXTRACTING', 'INDEXING', 'CLASSIFYING', 'SPLITTING'].includes(d.analysisStatus) && (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          )}
-                          {d.analysisStatus === 'FAILED' && <AlertTriangle className="h-3 w-3" />}
-                          {d.analysisStatus.charAt(0) + d.analysisStatus.slice(1).toLowerCase()}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-3 py-2 text-right">
                         <Link
                           to={`/contracts/${d.id}`}
-                          className="inline-flex items-center gap-0.5 text-xs text-violet-600 hover:text-violet-700 font-medium"
+                          aria-label={`Open ${d.title}`}
+                          className="inline-flex items-center gap-0.5 text-[11.5px] text-ink-950 hover:text-brand-700 font-medium"
                         >
-                          Open <ArrowRight className="h-3 w-3" />
+                          Open <ArrowRight className="size-3" />
                         </Link>
                       </td>
                     </tr>
@@ -360,23 +473,24 @@ export function DiligenceRoomDetailPage() {
 function ProgressCard({ label, value, tone, icon: Icon, animate }: {
   label: string
   value: number
-  tone: 'violet' | 'emerald' | 'blue'
+  tone: Extract<Meaning, 'neutral' | 'binding' | 'inflight' | 'risk'>
   icon: React.ComponentType<{ className?: string }>
   animate?: boolean
 }) {
   const toneClass = {
-    violet:  'text-violet-700 bg-violet-50',
-    emerald: 'text-emerald-700 bg-emerald-50',
-    blue:    'text-blue-700 bg-blue-50',
+    neutral:  'text-ink-700 bg-paper-100',
+    binding:  'text-brand-700 bg-brand-100',
+    inflight: 'text-info-700 bg-info-100',
+    risk:     'text-risk-700 bg-risk-100',
   }[tone]
   return (
-    <div className="border border-gray-200 rounded-xl p-3 bg-white flex items-center gap-3">
-      <div className={`h-9 w-9 rounded-lg flex items-center justify-center ${toneClass}`}>
-        <Icon className={`h-4 w-4 ${animate ? 'animate-spin' : ''}`} />
+    <div className="border border-paper-200 rounded-card p-4 bg-card flex items-center gap-3">
+      <div className={`size-9 rounded-card flex items-center justify-center ${toneClass}`}>
+        <Icon className={`size-4 ${animate ? 'animate-spin' : ''}`} />
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-xs text-gray-500">{label}</div>
-        <div className="text-2xl font-semibold tabular-nums text-gray-900">{value}</div>
+        <div className="text-[11px] text-ink-500">{label}</div>
+        <div className="text-[24px] font-semibold tracking-[-0.02em] tabular-nums text-ink-950">{value}</div>
       </div>
     </div>
   )

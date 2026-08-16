@@ -12,18 +12,29 @@
  */
 import { useCollabProvider } from '@/lib/collab'
 import { Wifi, WifiOff, Loader2 } from 'lucide-react'
+import { cn } from '@/lib/utils'
+import { MEANING_CLASS } from '@/lib/status'
 
 export function CollabStatusBadge({ contractId }: { contractId: string }) {
   const collab = useCollabProvider(contractId)
   if (!collab) return null
 
   const { status } = collab
+  // Connecting is the system's turn, not the user's, so it reads inflight
+  // rather than attention.
+  //
+  // "Connected" is deliberately NEUTRAL, not binding. Emerald means a legal
+  // state — approved, executed, signed — and the design system spends it
+  // sparingly; a websocket that is merely working is the ordinary case, and a
+  // permanently-green badge in the contract header would burn the brand color
+  // on the one thing that is true almost all of the time.
   const config = {
-    connecting:   { icon: Loader2,  cls: 'text-amber-700 bg-amber-50 border-amber-200',      label: 'Connecting…', spin: true  },
-    connected:    { icon: Wifi,     cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', label: 'Sync on',     spin: false },
-    disconnected: { icon: WifiOff,  cls: 'text-gray-600 bg-gray-100 border-gray-200',         label: 'Offline',     spin: false },
+    connecting:   { icon: Loader2,  meaning: 'inflight' as const, label: 'Connecting…', spin: true  },
+    connected:    { icon: Wifi,     meaning: 'neutral'  as const, label: 'Sync on',     spin: false },
+    disconnected: { icon: WifiOff,  meaning: 'neutral'  as const, label: 'Offline',     spin: false },
   }[status]
   const Icon = config.icon
+  const m = MEANING_CLASS[config.meaning]
 
   return (
     <span
@@ -33,9 +44,12 @@ export function CollabStatusBadge({ contractId }: { contractId: string }) {
           ? 'Connected to the collaboration server — document changes are persisted. Live multi-cursor co-editing is rolling out.'
           : `Collaboration server: ${config.label}`
       }
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium border ${config.cls}`}
+      className={cn(
+        'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-dense font-medium border',
+        m.wash, m.washFg, m.washBorder,
+      )}
     >
-      <Icon className={`h-3 w-3 ${config.spin ? 'animate-spin' : ''}`} />
+      <Icon className={cn('size-3', config.spin && 'animate-spin')} />
       {config.label}
     </span>
   )

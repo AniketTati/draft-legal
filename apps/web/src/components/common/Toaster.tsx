@@ -68,10 +68,17 @@ function push(args: Omit<Toast, 'id'>) {
 
 // ─── React component ──────────────────────────────────────────────────────────
 
+// An error reports a failure (risk) and an info toast describes a state the
+// user didn't ask about (in flight). Success stays NEUTRAL: every toast.success
+// in this product is an acknowledgement — "Profile saved", "Copied", "Cost cap
+// updated" — and none of them is approved, executed or signed. Brand is the
+// binding colour, spent sparingly; firing it on every settings write is exactly
+// the generic success-green the system removed. (ProfilePage and SettingsPage
+// already render their own inline "saved" state neutral for the same reason.)
 const KIND_META: Record<Kind, { icon: typeof CheckCircle2; cls: string }> = {
-  success: { icon: CheckCircle2, cls: 'bg-white border-emerald-200 text-emerald-900' },
-  error:   { icon: AlertCircle,  cls: 'bg-white border-red-300    text-red-900' },
-  info:    { icon: Info,         cls: 'bg-white border-blue-200   text-blue-900' },
+  success: { icon: CheckCircle2, cls: 'bg-card border-paper-200 text-ink-950' },
+  error:   { icon: AlertCircle,  cls: 'bg-card border-risk-200  text-risk-700' },
+  info:    { icon: Info,         cls: 'bg-card border-info-200  text-info-700' },
 }
 
 export function Toaster() {
@@ -96,22 +103,22 @@ export function Toaster() {
             key={t.id}
             role={t.kind === 'error' ? 'alert' : 'status'}
             data-testid={`toast-${t.kind}`}
-            className={`pointer-events-auto flex items-start gap-2.5 rounded-lg border px-3.5 py-3 shadow-lg min-w-[18rem] max-w-[22rem] animate-in slide-in-from-right-4 fade-in-0 ${cls}`}
+            className={`pointer-events-auto flex items-start gap-2.5 rounded-card border px-3.5 py-3 shadow-e3 min-w-[18rem] max-w-[22rem] animate-in slide-in-from-right-4 fade-in-0 ${cls}`}
           >
-            <Icon className="h-4 w-4 shrink-0 mt-0.5" />
+            <Icon className="size-4 shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium leading-tight">{t.title}</p>
+              <p className="text-body font-medium">{t.title}</p>
               {t.description && (
-                <p className="text-xs opacity-80 mt-0.5 leading-relaxed">{t.description}</p>
+                <p className="text-dense opacity-80 mt-0.5">{t.description}</p>
               )}
             </div>
             <button
               type="button"
               onClick={() => toast.dismiss(t.id)}
               aria-label="Dismiss notification"
-              className="shrink-0 p-0.5 rounded text-current opacity-60 hover:opacity-100 transition-opacity"
+              className="shrink-0 p-0.5 rounded-chip text-current opacity-60 hover:opacity-100 transition-opacity"
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="size-3.5" />
             </button>
           </div>
         )

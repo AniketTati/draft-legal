@@ -14,6 +14,7 @@
  */
 import { Component, type ReactNode, type ErrorInfo } from 'react'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 
 interface Props {
   children: ReactNode
@@ -46,30 +47,36 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children
     if (this.props.fallback) return this.props.fallback(error, this.reset)
     return (
-      <div className="m-6 max-w-lg rounded-xl border border-amber-200 bg-amber-50/60 p-5" role="alert">
+      /*
+       * Risk, not attention: a subtree that failed to render is a failure, not
+       * something waiting on the user. Amber in this system means "your turn".
+       */
+      <div className="m-6 max-w-lg rounded-card border border-risk-200 bg-risk-50 p-5" role="alert">
         <div className="flex items-start gap-3">
-          <div className="h-9 w-9 rounded-lg bg-amber-100 flex items-center justify-center flex-shrink-0">
-            <AlertTriangle className="h-5 w-5 text-amber-700" />
+          <div className="size-9 rounded-md bg-risk-100 flex items-center justify-center flex-shrink-0">
+            <AlertTriangle className="size-5 text-risk-700" />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-gray-900">
+            <h3 className="text-body font-semibold text-ink-950">
               Something went wrong{this.props.label ? ` rendering ${this.props.label}` : ''}
             </h3>
-            <p className="mt-1 text-[12.5px] text-gray-700 leading-snug">
+            <p className="mt-1 text-dense text-ink-700">
               The page caught an error before it could blank. You can retry, or
               navigate elsewhere and come back.
             </p>
-            <pre className="mt-2 text-[11px] text-amber-900 bg-white/60 border border-amber-200 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
+            <pre className="mt-2 text-[11px] text-risk-900 bg-card border border-risk-200 rounded-chip px-2 py-1.5 overflow-x-auto whitespace-pre-wrap">
               {error.message.slice(0, 600)}
             </pre>
-            <button
+            <Button
               type="button"
+              variant="outline"
+              size="xs"
               onClick={this.reset}
-              className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-amber-300 bg-white text-[12px] font-medium text-amber-900 hover:bg-amber-100"
+              className="mt-3"
             >
-              <RefreshCw className="h-3 w-3" />
+              <RefreshCw className="size-3" />
               Retry
-            </button>
+            </Button>
           </div>
         </div>
       </div>

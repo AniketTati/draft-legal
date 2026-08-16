@@ -78,24 +78,26 @@ export function CompleteObligationModal({ obligationId, description, open, onClo
       data-testid="complete-obligation-modal"
     >
       <div
-        className="bg-white rounded-xl max-w-md w-full shadow-2xl my-8"
+        className="bg-card rounded-card max-w-md w-full shadow-e3 my-8"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
+        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+            <h2 className="text-section text-ink-950 flex items-center gap-2">
+              {/* The emerald is spent on the decision button below, so the
+                  header glyph stays neutral — one colored element. */}
+              <CheckCircle2 className="size-4 text-ink-500" />
               Mark obligation complete
             </h2>
-            <p className="text-xs text-gray-500 mt-1 leading-relaxed line-clamp-2">{description}</p>
+            <p className="text-dense text-ink-500 mt-1 leading-relaxed line-clamp-2">{description}</p>
           </div>
           <button
             onClick={onClose}
             aria-label="Close"
-            className="p-1 rounded hover:bg-gray-100 text-gray-400"
+            className="p-1 rounded-chip hover:bg-paper-100 text-ink-400"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
@@ -103,8 +105,8 @@ export function CompleteObligationModal({ obligationId, description, open, onClo
         <div className="px-6 py-5 space-y-4">
           {/* Note */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Completion note <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-body font-medium text-ink-700 mb-1">
+              Completion note <span className="text-ink-400 font-normal">(optional)</span>
             </label>
             <textarea
               value={note}
@@ -112,40 +114,40 @@ export function CompleteObligationModal({ obligationId, description, open, onClo
               placeholder="What was done? Reference numbers, payment date, etc."
               rows={3}
               data-testid="obligation-note"
-              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400 resize-y"
+              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 resize-y"
             />
           </div>
 
           {/* Evidence */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Evidence file <span className="text-gray-400 font-normal">(optional, 25MB max)</span>
+            <label className="block text-body font-medium text-ink-700 mb-1">
+              Evidence file <span className="text-ink-400 font-normal">(optional, 25MB max)</span>
             </label>
             {!file ? (
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 data-testid="obligation-pick-file"
-                className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-gray-200 rounded-md hover:border-blue-400 hover:bg-blue-50/40 transition-colors text-sm text-gray-600"
+                className="w-full flex items-center justify-center gap-2 py-3 border-2 border-dashed border-paper-300 rounded-md hover:border-ink-400 hover:bg-paper-50 transition-colors text-body text-ink-700"
               >
-                <Paperclip className="h-4 w-4" />
+                <Paperclip className="size-4" />
                 Attach evidence (PDF, image, CSV…)
               </button>
             ) : (
-              <div className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-sm" data-testid="obligation-attached-file">
-                <Paperclip className="h-4 w-4 text-gray-500 flex-shrink-0" />
+              <div className="flex items-center gap-2 px-3 py-2 bg-paper-50 border border-paper-200 rounded-md text-body" data-testid="obligation-attached-file">
+                <Paperclip className="size-4 text-ink-500 flex-shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-gray-900 truncate">{file.name}</div>
-                  <div className="text-xs text-gray-500">{formatBytes(file.size)}</div>
+                  <div className="font-medium text-ink-950 truncate">{file.name}</div>
+                  <div className="text-[11px] text-ink-500 tabular-nums">{formatBytes(file.size)}</div>
                 </div>
                 <button
                   type="button"
                   onClick={() => onPickFile(null)}
                   data-testid="obligation-remove-file"
-                  className="text-gray-400 hover:text-red-600"
+                  className="text-ink-400 hover:text-risk-600"
                   aria-label="Remove file"
                 >
-                  <X className="h-4 w-4" />
+                  <X className="size-4" />
                 </button>
               </div>
             )}
@@ -158,27 +160,29 @@ export function CompleteObligationModal({ obligationId, description, open, onClo
           </div>
 
           {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+            <div className="text-body text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-xl">
+        <div className="px-6 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose} disabled={complete.isPending}>
             Cancel
           </Button>
+          {/* Marking an obligation done is a binding act, which is what the
+              brand variant exists for. */}
           <Button
+            variant="brand"
             onClick={() => complete.mutate()}
             disabled={complete.isPending}
             data-testid="obligation-complete-confirm"
-            className="bg-emerald-600 hover:bg-emerald-700"
           >
             {complete.isPending ? (
-              <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Saving…</>
+              <><Loader2 className="size-4 animate-spin mr-1" /> Saving…</>
             ) : (
-              <><CheckCircle2 className="h-4 w-4 mr-1" /> Mark complete</>
+              <><CheckCircle2 className="size-4 mr-1" /> Mark complete</>
             )}
           </Button>
         </div>

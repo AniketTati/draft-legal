@@ -49,13 +49,10 @@ interface Props {
   className?: string
 }
 
-const ROLE_COLORS: Record<string, string> = {
-  ADMIN:            'bg-blue-50 text-blue-700',
-  LEGAL_COUNSEL:    'bg-violet-50 text-violet-700',
-  LEGAL_OPS:        'bg-indigo-50 text-indigo-700',
-  APPROVER:         'bg-emerald-50 text-emerald-700',
-  CONTRACT_MANAGER: 'bg-amber-50 text-amber-700',
-}
+// A role is a neutral fact about a person, not one of the five meanings — it is
+// not in flight, not your turn, not binding. The per-role palette went with the
+// migration: five colors in one row means none of them read.
+const ROLE_PILL = 'rounded-chip px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide bg-paper-100 text-ink-700'
 
 function initials(name: string): string {
   return name
@@ -155,24 +152,24 @@ export function UserPicker({
         <div
           data-testid={testId}
           className={cn(
-            'flex items-center gap-2 rounded-md border px-2.5 py-1.5 bg-background',
-            invalid ? 'border-red-400 ring-1 ring-red-200' : 'border-input',
+            'flex items-center gap-2 rounded-md border px-2.5 py-1.5 bg-card',
+            invalid ? 'border-risk-600 ring-1 ring-risk-200' : 'border-input',
           )}
         >
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-100 text-[10px] font-semibold text-violet-700">
+          <div className="flex size-6 shrink-0 items-center justify-center rounded-full bg-paper-100 ring-1 ring-paper-200 text-[10px] font-semibold text-ink-700">
             {initials(selected.name)}
           </div>
           <div className="flex-1 min-w-0 leading-tight">
-            <p className="text-sm font-medium text-foreground truncate">{selected.name}</p>
-            <p className="text-[11px] text-muted-foreground truncate">{selected.email}</p>
+            <p className="text-[13px] font-medium text-ink-950 truncate">{selected.name}</p>
+            <p className="text-[11px] text-ink-500 truncate">{selected.email}</p>
           </div>
           <button
             type="button"
             onClick={clear}
             aria-label="Clear selected user"
-            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+            className="p-1 rounded-md hover:bg-paper-100 text-ink-400 hover:text-ink-700"
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="size-3.5" />
           </button>
         </div>
       ) : (
@@ -186,22 +183,22 @@ export function UserPicker({
           placeholder={placeholder}
           data-testid={testId}
           className={cn(
-            'w-full rounded-md border bg-background px-3 py-1.5 text-sm placeholder:text-muted-foreground',
+            'w-full rounded-md border bg-card px-3 py-1.5 text-[13px] text-ink-950 placeholder:text-ink-400',
             'focus:outline-none focus:ring-1',
             invalid
-              ? 'border-red-400 focus:ring-red-400'
-              : 'border-input focus:ring-primary/50',
+              ? 'border-risk-600 focus:ring-risk-600'
+              : 'border-input focus:ring-ring',
           )}
         />
       )}
 
       {open && !selected && (
         <div
-          className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-auto rounded-md border border-border bg-card shadow-lg"
+          className="absolute left-0 right-0 top-full z-40 mt-1 max-h-72 overflow-auto rounded-md border border-paper-200 bg-card shadow-e2"
           role="listbox"
         >
           {filtered.length === 0 ? (
-            <div className="px-3 py-2.5 text-xs text-muted-foreground">
+            <div className="px-3 py-2.5 text-dense text-ink-500">
               {users.length === 0 ? 'Loading teammates…' : 'No teammates match that search.'}
             </div>
           ) : (
@@ -217,38 +214,35 @@ export function UserPicker({
                   onClick={() => pick(u)}
                   className={cn(
                     'w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors',
-                    i === highlighted ? 'bg-accent/60' : 'hover:bg-accent/40',
+                    i === highlighted ? 'bg-paper-100' : 'hover:bg-paper-100',
                   )}
                 >
-                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 text-[10px] font-semibold text-violet-700">
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-paper-100 ring-1 ring-paper-200 text-[10px] font-semibold text-ink-700">
                     {initials(u.name)}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <p className="text-sm font-medium text-foreground truncate">{u.name}</p>
+                      <p className="text-[13px] font-medium text-ink-950 truncate">{u.name}</p>
                       {primaryRole && (
-                        <span className={cn(
-                          'rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide',
-                          ROLE_COLORS[primaryRole] ?? 'bg-muted text-muted-foreground',
-                        )}>
+                        <span className={ROLE_PILL}>
                           {primaryRole.replace(/_/g, ' ')}
                         </span>
                       )}
                     </div>
-                    <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                    <p className="text-dense text-ink-500 truncate">{u.email}</p>
                   </div>
                   {i === highlighted && (
-                    <Check className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <Check className="size-4 text-ink-400 shrink-0" />
                   )}
                 </button>
               )
             })
           )}
-          <div className="border-t border-border/60 px-3 py-1.5 text-[10px] text-muted-foreground bg-muted/30 flex items-center gap-3">
+          <div className="border-t border-paper-200 px-3 py-1.5 text-[10px] text-ink-400 bg-paper-50 flex items-center gap-3">
             <span>↑ ↓ navigate</span>
             <span>↵ select</span>
             <span>esc close</span>
-            <span className="ml-auto inline-flex items-center gap-1"><UserIcon className="h-3 w-3" /> {filtered.length} teammate{filtered.length === 1 ? '' : 's'}</span>
+            <span className="ml-auto inline-flex items-center gap-1"><UserIcon className="size-3" /> {filtered.length} teammate{filtered.length === 1 ? '' : 's'}</span>
           </div>
         </div>
       )}

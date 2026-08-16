@@ -6,48 +6,98 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Design system v1 tokens ─────────────────────────────────────────────────
+   Source of truth: "draftLegal Design System" §07 Handoff.
+
+   Three rules the tokens encode:
+     1. Ink acts. Color means something.  → --primary is ink, not a hue, so no
+        chromatic color has to fight for the button.
+     2. Borders before shadows.           → --border/--input carry structure;
+                                             elevation is reserved for overlays.
+     3. The document is the hero.         → neutrals are warm (paper), not slate.
+
+   Meaning is fixed and exhaustive — five meanings, one accent each:
+     neutral   nothing is happening         (ink-400)
+     --info    in flight, someone else's turn
+     --attention  your turn — the only color that earns a badge count
+     --brand   binding: approved, executed, signed
+     --destructive  risk: legal exposure, failure, expiry — never decoration
+     --assist  machine-authored. Indigo + diamond, and nothing else may use it.
+   ────────────────────────────────────────────────────────────────────────── */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    /* neutrals — warm, not slate */
+    --background:            40 12% 98%;   /* #FAFAF9 app ground */
+    --foreground:            40  8%  9%;   /* #17161A ink        */
+    --card:                   0  0% 100%;
+    --card-foreground:       40  8%  9%;
+    --popover:                0  0% 100%;
+    --popover-foreground:    40  8%  9%;
+    --muted:                 40  8% 96%;   /* #F4F4F2 hover, fill */
+    --muted-foreground:      40  5% 40%;   /* #6A6862 muted text — darkened
+                                              from #7A7873 (4.22:1) for AA */
+    --border:                40  7% 90%;   /* #E7E6E3 */
+    --input:                 40  6% 82%;   /* #D3D2CE */
+
+    /* ink acts */
+    --primary:               40  8%  9%;
+    --primary-foreground:     0  0% 100%;
+    --secondary:             40  8% 96%;
+    --secondary-foreground:  40  6% 32%;   /* #57554F */
+    --accent:                40  8% 96%;
+    --accent-foreground:     40  8%  9%;
+    --ring:                 162 94% 24%;   /* emerald focus — brand shows up in
+                                              interaction, not in fills */
+
+    /* meaning */
+    --brand:                162 94% 24%;   /* #047857 binding   */
+    --brand-foreground:       0  0% 100%;
+    --info:                 221 83% 53%;   /* #2563EB in flight */
+    --attention:             32 95% 41%;   /* #CC7005 your turn — darkened
+                                              from the spec's #D97706 for 3:1 */
+    --destructive:            0 72% 51%;   /* #DC2626 risk      */
+    --destructive-foreground: 0  0% 100%;
+    --assist:               243 75% 59%;   /* #4F46E5 machine   */
+    --assist-foreground:      0  0% 100%;
+
+    --radius: 0.375rem;                    /* 6px */
   }
 
+  /*
+   * Dark mode is deliberately NOT a shipped theme — the design system holds it
+   * until the document canvas has a paper-in-dark answer ("Open, for you to
+   * decide"). These values exist so `.dark` stays token-valid rather than
+   * falling back to the old blue shadcn set; they are not a designed theme and
+   * no screen is tuned against them.
+   */
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --background:            40  8%  7%;
+    --foreground:            40  8% 96%;
+    --card:                  40  8%  9%;
+    --card-foreground:       40  8% 96%;
+    --popover:               40  8%  9%;
+    --popover-foreground:    40  8% 96%;
+    --muted:                 40  6% 16%;
+    --muted-foreground:      40  4% 64%;
+    --border:                40  6% 20%;
+    --input:                 40  6% 26%;
+
+    --primary:               40  8% 96%;
+    --primary-foreground:    40  8%  9%;
+    --secondary:             40  6% 16%;
+    --secondary-foreground:  40  8% 96%;
+    --accent:                40  6% 16%;
+    --accent-foreground:     40  8% 96%;
+    --ring:                 162 84% 39%;
+
+    --brand:                162 84% 39%;
+    --brand-foreground:      40  8%  7%;
+    --info:                 217 91% 60%;
+    --attention:             38 92% 50%;
+    --destructive:            0 84% 60%;
+    --destructive-foreground: 0  0% 100%;
+    --assist:               239 84% 67%;
+    --assist-foreground:     40  8%  7%;
   }
 }
 
@@ -56,7 +106,19 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+    /* Body — 13.5/1.6 is the default reading size in the type scale. */
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+  /* Every figure in a table, a risk score, or a currency cell aligns on the
+     decimal. Cheaper to make this the default than to remember the class. */
+  table,
+  [data-tabular] {
+    font-variant-numeric: tabular-nums;
+  }
+  ::selection {
+    background: hsl(var(--brand) / 0.14);
   }
 }
 
@@ -104,12 +166,14 @@
 .ProseMirror em     { font-style: italic; }
 .ProseMirror table  { border-collapse: collapse; width: 100%; }
 .ProseMirror td,
-.ProseMirror th     { border: 1px solid #d1d5db; padding: 0.4rem 0.6rem; vertical-align: top; }
-.ProseMirror th     { background: #f9fafb; font-weight: 600; }
-/* P6.4 — Defined-term guard: blue dotted underline on variants. */
+.ProseMirror th     { border: 1px solid hsl(var(--input)); padding: 0.4rem 0.6rem; vertical-align: top; }
+.ProseMirror th     { background: hsl(var(--muted)); font-weight: 600; }
+/* P6.4 — Defined-term guard: dotted underline on variants. Indigo, because a
+   defined term is a machine-detected annotation — dotted indigo is the system's
+   single mark for "the model read this". */
 .ProseMirror .defined-term-flag {
-  border-bottom: 1.5px dotted #3b82f6;   /* blue-500 */
-  background: rgba(59, 130, 246, 0.06);  /* very faint blue wash */
+  border-bottom: 1.5px dotted hsl(var(--assist));
+  background: hsl(var(--assist) / 0.06);
   cursor: help;
   border-radius: 2px;
   padding: 0 1px;
@@ -119,9 +183,11 @@
    in the widget can anchor off to the left gutter. */
 .ProseMirror p { position: relative; }
 .clause-classifier-badge { z-index: 2; }
-/* P6.1 — Ghost-text completion (Copilot-style inline suggestion) */
+/* P6.1 — Ghost-text completion (Copilot-style inline suggestion). The model
+   wrote this, so it is marked in assist indigo, not neutral gray — held at 70%
+   so an unaccepted suggestion still reads as lighter than committed text. */
 .ProseMirror .ghost-text {
-  color: #9ca3af;                     /* gray-400 — visible but faint */
+  color: hsl(var(--assist) / 0.7);
   font-style: italic;
   user-select: none;
   pointer-events: none;
@@ -131,7 +197,7 @@
 .ProseMirror .ghost-text::after {
   content: ' ⇥';                      /* Tab-key hint */
   font-size: 0.75em;
-  color: #d1d5db;                     /* gray-300 */
+  color: hsl(var(--assist) / 0.45);
   font-style: normal;
   margin-left: 0.25rem;
 }
@@ -150,4 +216,337 @@
 
 .ProseMirror [style*="text-align: justify"],
 .ProseMirror [style*="text-align:justify"] { text-align: justify !important; }
+
+/* ─── Reduced motion ──────────────────────────────────────────────────────────
+   The product had no prefers-reduced-motion handling at all: every hover
+   transition, every slide-in rail, and one perpetual `animate-ping` ran
+   regardless of the OS setting. For a user with a vestibular disorder that is
+   not a polish issue, it is a "cannot use the app" issue.
+
+   Motion is neutralised rather than deleted (1ms, not 0) so transitionend /
+   animationend listeners still fire and nothing hangs waiting for a callback
+   that never comes. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+  html,
+  body {
+    scroll-behavior: auto !important;
+  }
+
+  /* The busy spinner is the exception, and deliberately so. Freezing it does
+     not remove motion from the page, it removes the only signal that the app
+     is still working — a stopped spinner reads as "finished" or "hung". WCAG
+     2.2.2 exempts a loading indicator for the same reason. So it keeps
+     turning, at roughly half speed: small, centred, constant-velocity
+     rotation, which is the mildest shape motion can take. */
+  .animate-spin {
+    animation: spin 1.8s linear infinite !important;
+  }
+}
+
+/* ─── Print ───────────────────────────────────────────────────────────────────
+   In-house counsel print constantly — board packs, closing binders, litigation
+   holds, audit requests — and until now Ctrl+P produced the app, not the
+   record: sidebar, header, breadcrumbs and the assistant rail took roughly
+   half the sheet, and the shell's `h-screen` + `overflow-hidden` meant page
+   one was also the last page.
+
+   Two rules drive everything below:
+     1. The record prints; the app does not. Chrome is what you cannot act on
+        with a pen.
+     2. It has to survive a mono office printer. Colour is a meaning in this
+        design system, and greyscale destroys hue — so every status that
+        carries meaning must ALSO carry a word and a shape. */
+@page {
+  margin: 16mm 14mm;
+}
+
+@media print {
+  /* ── Release the app viewport ───────────────────────────────────────────── */
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+    background: hsl(var(--card)) !important;
+  }
+  /* The shell fixes its height and lets the panes scroll. Printed, an
+     unreleased scroller silently clips everything below the fold. */
+  main,
+  [class*="h-screen"],
+  [class*="overflow-hidden"],
+  [class*="overflow-auto"],
+  [class*="overflow-y-auto"],
+  [class*="overflow-x-auto"] {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  /* `h-full` is released only where it is also a scroller. Released blindly it
+     would flatten every progress bar in the product, since a meter's fill is
+     `h-full` inside a fixed-height track. */
+  [class*="h-full"][class*="overflow-"] {
+    height: auto !important;
+  }
+  /* Sticky/fixed boxes either repeat on every sheet or land on top of the
+     text they were floating over. */
+  [class*="sticky"],
+  [class*="fixed"] {
+    position: static !important;
+  }
+  /* Truncation is a screen affordance — on paper the space is not contested,
+     and a clipped counterparty name in a binder is a defect. */
+  .truncate,
+  [class*="line-clamp"] {
+    overflow: visible !important;
+    text-overflow: clip !important;
+    white-space: normal !important;
+    -webkit-line-clamp: unset !important;
+  }
+  /* `line-clamp-*` also sets display:-webkit-box, which keeps the clamp alive
+     in some engines even with the count unset. `.truncate` is deliberately not
+     in here: it is often on a flex parent, and forcing block would collapse
+     the row it is laying out. */
+  [class*="line-clamp"] {
+    display: block !important;
+  }
+
+  /* ── Chrome out ─────────────────────────────────────────────────────────── */
+  /* Everything below the sidebar's logo block is navigation — the route list
+     and the Settings/collapse footer. Written as "not the first child" so a
+     new sidebar section does not quietly start printing. */
+  [data-testid="app-sidebar"] > *:not(:first-child),
+  [data-testid="breadcrumbs"],
+  [data-testid="side-agent-rail"],
+  [data-testid="toaster"],
+  [data-testid^="coach-mark"],
+  header[class*="h-header"],
+  /* The rail's own opener/closer. The rail is unconditionally expanded below,
+     so both are not just unprintable, they are wrong. */
+  [aria-label="Open details rail"],
+  [aria-label="Close details"],
+  [role="dialog"],
+  [role="alertdialog"],
+  [role="tooltip"],
+  [data-radix-popper-content-wrapper],
+  /*
+   * Every Button from @/components/ui/button. `ring-offset-background` is in
+   * the primitive's base class and nowhere else in the app, which makes it the
+   * one honest selector for "this is an action, not content" — better than
+   * hiding `button`, since the table of contents, the rail's disclosure
+   * headers and the clause list are all buttons that carry real text.
+   */
+  [class*="ring-offset-background"] {
+    display: none !important;
+  }
+  /*
+   * Kept in its own rule on purpose: one unsupported selector invalidates the
+   * whole comma list, and if :has() were in the block above then a browser
+   * without it would print the entire sidebar, header and assistant rail. Here
+   * the worst case is that a few controls print.
+   *
+   * The contract header's hand-rolled controls — back, copy-id, Styled/Original
+   * — plus the in-record tab strip and any segmented toggle. The title and the
+   * metadata row beside them stay, so this hides the controls, not the bar.
+   */
+  div:has(> [data-testid="contract-meta-row"]) button,
+  div:has(> [data-testid="tab-back-to-document"]),
+  div:has(> button[aria-pressed]),
+  /* A control whose entire content is an icon — dismiss, close, copy-id,
+     undo/redo — has nothing to say on paper by definition. */
+  button:has(> svg:only-child),
+  /*
+   * Empty fields, and the icon-and-input wrapper around them: a blank search
+   * box is on top of every list in the product and says nothing on paper. A
+   * field with a VALUE is data, not chrome — a filtered repository print
+   * should still show what it was filtered by — so this keys off
+   * :placeholder-shown rather than hiding inputs outright.
+   */
+  input:placeholder-shown,
+  div:has(> input:placeholder-shown) {
+    display: none !important;
+  }
+
+  /* ── Masthead: wordmark + the record's own title ─────────────────────────── */
+  [data-testid="app-sidebar"] {
+    display: block !important;
+    border: 0 !important;
+    border-bottom: 1px solid hsl(var(--border)) !important;
+  }
+  /*
+   * The shell is a flex row, so the sidebar has to stop being a column before
+   * it can be a band across the top. Both halves of that live in one :has()
+   * rule deliberately: the sidebar is `shrink-0`, so widening it inside a
+   * still-flex row would squeeze `main` to nothing. Paired, a browser without
+   * :has() just keeps a narrow wordmark column — plainer, never broken.
+   */
+  div:has(> [data-testid="app-sidebar"]) {
+    display: block !important;
+  }
+  div:has(> [data-testid="app-sidebar"]) > [data-testid="app-sidebar"] {
+    width: 100% !important;
+  }
+  [data-testid="app-sidebar"] > div:first-child {
+    display: block !important;
+    height: auto !important;
+    padding: 0 0 3mm 0 !important;
+    border: 0 !important;
+  }
+  /* A printed sheet is ~816px wide, i.e. below `lg`, so the sidebar would otherwise
+     print its collapsed "dL" mark. The full wordmark is the one that reads as
+     letterhead. */
+  [data-testid="logo-home-link"] > span:first-child {
+    display: none !important;
+  }
+  [data-testid="logo-home-link"] > span:last-child {
+    display: inline-flex !important;
+  }
+
+  /* ── The document is the hero ───────────────────────────────────────────── */
+  main {
+    width: 100% !important;
+    flex: none !important;
+  }
+  /* The contract rail (key terms, obligations, table of contents) is the
+     record's substance, not chrome — but it is `hidden xl:flex`, and a printed
+     sheet is narrower than `xl`, so it would silently vanish. Restore it as a
+     full-width appendix on its own sheet, which is how a binder is assembled
+     anyway: document first, then the summary. */
+  aside[aria-label="Contract rail"] {
+    display: block !important;
+    max-height: none !important;
+    transform: none !important;
+    border: 0 !important;
+    border-top: 1px solid hsl(var(--border)) !important;
+    box-shadow: none !important;
+    break-before: page;
+    page-break-before: always;
+  }
+  /* Paired for the same reason as the sidebar band: the document column is
+     `min-w-0`, so widening the rail while the row is still a flex row starves
+     the document to zero width. Unstack first, then widen — or do neither. */
+  div:has(> aside[aria-label="Contract rail"]) {
+    display: block !important;
+  }
+  div:has(> aside[aria-label="Contract rail"]) > aside[aria-label="Contract rail"] {
+    width: 100% !important;
+  }
+  /* In-app links are SPA routes; printing them as links (or as URLs) is noise. */
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  /* ── Pagination ─────────────────────────────────────────────────────────── */
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tr,
+  img,
+  figure,
+  blockquote,
+  pre,
+  [data-testid^="contract-row-"],
+  [data-testid^="review-row-"],
+  [class*="rounded-card"] {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  h1, h2, h3, h4 {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  p, li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* ── Meaning must survive greyscale ─────────────────────────────────────── */
+  /*
+   * StatusPill and MeaningDot already carry their label as text, so the word
+   * ("Expired", "Executed") always prints. The dot is the part that dies: five
+   * meanings become five middling greys, and worse, browsers drop background
+   * colour when printing, so by default the dot does not print at all.
+   *
+   * So the dot is re-cut for paper along two axes that survive a mono laser —
+   * SHAPE (circle vs square) and FILL (hollow / half / solid) — giving five
+   * distinguishable marks. The 6px meaning dot is the only thing targeted;
+   * larger brand-coloured circles (stepper nodes, avatars) are left alone.
+   *
+   *   neutral   hollow circle    nothing is happening
+   *   inflight  half-tone circle someone else's turn
+   *   turn      half-tone square this user's turn
+   *   binding   solid circle     approved / executed / signed
+   *   risk      solid square     exposure, failure, expiry
+   */
+  .size-1\.5.rounded-full.bg-ink-350,
+  .size-1\.5.rounded-full.bg-info-600,
+  .size-1\.5.rounded-full.bg-attention-600,
+  .size-1\.5.rounded-full.bg-brand-700,
+  .size-1\.5.rounded-full.bg-risk-600 {
+    width: 7px !important;
+    height: 7px !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .size-1\.5.rounded-full.bg-ink-350 {
+    background: transparent !important;
+    box-shadow: inset 0 0 0 1px hsl(var(--foreground));
+  }
+  .size-1\.5.rounded-full.bg-info-600 {
+    background: hsl(var(--foreground) / 0.45) !important;
+  }
+  .size-1\.5.rounded-full.bg-attention-600 {
+    background: hsl(var(--foreground) / 0.45) !important;
+    border-radius: 0 !important;
+  }
+  .size-1\.5.rounded-full.bg-brand-700 {
+    background: hsl(var(--foreground)) !important;
+  }
+  .size-1\.5.rounded-full.bg-risk-600 {
+    background: hsl(var(--foreground)) !important;
+    border-radius: 0 !important;
+  }
+  /* RiskMeter prints its number, but the bar is a background fill and would
+     otherwise come out as an empty track. Outline the track, ink the fill.
+
+     The height and overflow are restated because the scroller release above
+     matches this element too — the track carries `overflow-hidden` to clip its
+     own fill, not because it scrolls, so `height: auto` collapsed it to nothing
+     and took the `h-full` fill with it. Same trap the `h-full` rule above calls
+     out, one element further up. Later rule, equal specificity, so this wins. */
+  [role="meter"] {
+    height: 4px !important;
+    overflow: hidden !important;
+    box-shadow: inset 0 0 0 1px hsl(var(--foreground) / 0.35);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  [role="meter"] > * {
+    background: hsl(var(--foreground)) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Chrome's "Background graphics" box is OFF by default, which turns every
+     inverted surface — the analysis banner, an executed step, a status strip —
+     into white text on white paper. These are the only places the fill is
+     load-bearing, so they opt back in explicitly rather than the whole page
+     doing so and flooding the toner. */
+  [class*="text-white"] {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Wash pills lose their tint (backgrounds are dropped), so the border is all
+     that is left to hold the pill together. */
+  [class*="rounded-full"][class*="border-"] {
+    border-color: hsl(var(--foreground) / 0.35) !important;
+  }
+}
 

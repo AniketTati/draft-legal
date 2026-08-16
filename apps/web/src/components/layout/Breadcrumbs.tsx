@@ -128,20 +128,20 @@ export function Breadcrumbs() {
     <nav
       aria-label="Breadcrumb"
       data-testid="breadcrumbs"
-      className="flex items-center gap-1 px-6 py-2 text-xs text-muted-foreground border-b border-border bg-muted/20"
+      className="flex items-center gap-1 px-6 py-2 text-dense text-ink-500 border-b border-paper-200 bg-paper-50"
     >
       {crumbs.map((c, i) => {
         const isLast = i === crumbs.length - 1
         return (
           <div key={i} className="flex items-center gap-1 min-w-0">
-            {i > 0 && <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />}
+            {i > 0 && <ChevronRight className="size-3 text-ink-400 shrink-0" />}
             {c.to && !isLast ? (
-              <Link to={c.to} className="hover:text-foreground transition-colors truncate">
+              <Link to={c.to} className="hover:text-ink-950 transition-colors truncate">
                 {c.label}
               </Link>
             ) : (
               <span
-                className={`truncate ${isLast ? 'text-foreground font-medium' : ''}`}
+                className={`truncate ${isLast ? 'text-ink-950 font-medium' : ''}`}
                 aria-current={isLast ? 'page' : undefined}
               >
                 {c.label}

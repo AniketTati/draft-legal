@@ -99,48 +99,48 @@ export function SendForReviewDialog({
       <div
         onClick={(e) => e.stopPropagation()}
         data-testid="send-for-review-dialog"
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 flex flex-col max-h-[90vh]"
+        className="bg-card rounded-card shadow-e3 w-full max-w-md mx-4 flex flex-col max-h-[90vh]"
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div className="px-6 py-4 border-b border-paper-200 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Send for review</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <h2 className="text-section text-ink-950">Send for review</h2>
+            <p className="text-dense text-ink-500 mt-1">
               Pick a workflow and (optionally) leave a note for the reviewer.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
+            className="p-1.5 rounded-md hover:bg-paper-100 text-ink-500"
             aria-label="Close"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Body */}
         <div className="px-6 py-5 space-y-4 overflow-y-auto">
           {loadingWorkflows ? (
-            <div className="flex items-center justify-center py-6 text-gray-400 gap-2 text-sm">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading workflows…
+            <div className="flex items-center justify-center py-6 text-ink-400 gap-2 text-body">
+              <Loader2 className="size-4 animate-spin" /> Loading workflows…
             </div>
           ) : workflows.length === 0 ? (
-            <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3 inline-flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+            <div className="text-body text-attention-700 bg-attention-50 border border-attention-200 rounded-md p-3 inline-flex items-start gap-2">
+              <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
               <div>
                 <p className="font-medium">No workflows configured</p>
-                <p className="text-xs mt-1 leading-relaxed">An admin needs to create a workflow first via Admin → Approvals.</p>
+                <p className="text-dense mt-1 leading-relaxed">An admin needs to create a workflow first via Admin → Approvals.</p>
               </div>
             </div>
           ) : (
             <>
               <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Workflow</label>
+                <label className="block text-dense font-semibold text-ink-700 mb-1.5">Workflow</label>
                 <select
                   value={effectiveWorkflowId ?? ''}
                   onChange={e => setSelectedWorkflowId(e.target.value || null)}
                   data-testid="send-for-review-workflow"
-                  className="w-full h-10 text-sm border border-gray-200 rounded-md px-3 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 bg-white"
+                  className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 >
                   {workflows.map(w => (
                     <option key={w.id} value={w.id}>
@@ -150,29 +150,31 @@ export function SendForReviewDialog({
                   ))}
                 </select>
                 {effectiveWorkflow?.description && (
-                  <p className="text-[11px] text-gray-500 mt-1.5">{effectiveWorkflow.description}</p>
+                  <p className="text-[11px] text-ink-500 mt-1.5">{effectiveWorkflow.description}</p>
                 )}
               </div>
 
               {/* Reviewer chain preview */}
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                <div className="text-[10.5px] uppercase tracking-wider font-semibold text-gray-500 mb-1.5">
+              <div className="bg-paper-50 border border-paper-200 rounded-md p-3">
+                <div className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-ink-700 mb-1.5">
                   First reviewer
                 </div>
-                <div className="text-[13px] text-gray-800 inline-flex items-center gap-1.5">
-                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                {/* Neutral tick: naming the next reviewer is a fact, not an
+                    approval that has already happened. */}
+                <div className="text-[13px] text-ink-950 inline-flex items-center gap-1.5">
+                  <CheckCircle2 className="size-3.5 text-ink-400" />
                   {firstStepLabel}
                 </div>
                 {(effectiveWorkflow?.steps?.length ?? 0) > 1 && (
-                  <p className="text-[11px] text-gray-500 mt-1.5">
+                  <p className="text-[11px] text-ink-500 mt-1.5">
                     Then {effectiveWorkflow!.steps.length - 1} more {effectiveWorkflow!.steps.length - 1 === 1 ? 'step' : 'steps'} in sequence.
                   </p>
                 )}
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1.5">
-                  Message <span className="text-gray-400 font-normal">(optional)</span>
+                <label className="block text-dense font-semibold text-ink-700 mb-1.5">
+                  Message <span className="text-ink-400 font-normal">(optional)</span>
                 </label>
                 <textarea
                   value={message}
@@ -180,13 +182,13 @@ export function SendForReviewDialog({
                   rows={3}
                   placeholder="Anything the reviewer should know? (e.g. urgency, key terms to focus on)"
                   data-testid="send-for-review-message"
-                  className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+                  className="w-full resize-none rounded-md border border-input bg-card px-[11px] py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 />
               </div>
 
               {submit.isError && (
-                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md p-2.5 inline-flex items-start gap-1.5">
-                  <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+                <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md p-2.5 inline-flex items-start gap-1.5">
+                  <AlertCircle className="size-3.5 mt-0.5 flex-shrink-0" />
                   <span>{(submit.error as { response?: { data?: { error?: string; detail?: string } } })?.response?.data?.error ?? (submit.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Could not submit. Try again.'}</span>
                 </div>
               )}
@@ -195,20 +197,21 @@ export function SendForReviewDialog({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-end gap-2">
+        <div className="px-6 py-3.5 border-t border-paper-200 bg-paper-50 rounded-b-card flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={onClose} disabled={submit.isPending}>
             Cancel
           </Button>
+          {/* Sending is the dialog's one action, so it is the ink primary —
+              the indigo it used to wear belongs to the machine now. */}
           <Button
             size="sm"
             onClick={() => submit.mutate()}
             disabled={!effectiveWorkflowId || submit.isPending || workflows.length === 0}
             data-testid="send-for-review-confirm"
-            className="gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white"
           >
             {submit.isPending
-              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Sending…</>
-              : <>Send <ArrowRight className="h-3.5 w-3.5" /></>}
+              ? <><Loader2 className="size-3.5 animate-spin" /> Sending…</>
+              : <>Send <ArrowRight className="size-3.5" /></>}
           </Button>
         </div>
       </div>

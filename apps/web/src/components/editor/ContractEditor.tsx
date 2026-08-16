@@ -38,6 +38,11 @@ import {
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Eyebrow } from '@/components/ui/primitives'
+import { AssistMark } from '@/components/ui/assist'
+import { MEANING_CLASS, type Meaning } from '@/lib/status'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -85,19 +90,18 @@ function ToolbarBtn({
   children: React.ReactNode
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-xs"
       onClick={onClick}
       title={title}
-      className={cn(
-        'flex items-center justify-center w-8 h-8 rounded text-sm transition-colors',
-        active
-          ? 'bg-blue-100 text-blue-700'
-          : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900',
-      )}
+      // Active is a pressed state, not a status — it stays in ink rather than
+      // taking the blue it used to wear.
+      className={cn(active && 'bg-paper-100 text-ink-950')}
     >
       {children}
-    </button>
+    </Button>
   )
 }
 
@@ -125,16 +129,16 @@ function SectionOutline({ html }: { html: string }) {
   }
 
   return (
-    <div className="w-52 shrink-0 border-r border-gray-200 bg-gray-50 overflow-y-auto p-3 hidden lg:block">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sections</p>
+    <div className="w-52 shrink-0 border-r border-paper-200 bg-paper-50 overflow-y-auto p-3 hidden lg:block">
+      <Eyebrow className="mb-2">Sections</Eyebrow>
       <nav className="space-y-0.5">
         {parsed.map((h, i) => (
           <div
             key={i}
             onClick={() => scrollToHeading(i)}
             className={cn(
-              'text-sm text-gray-600 cursor-pointer hover:text-gray-900 truncate py-0.5',
-              h.level === 3 && 'pl-3 text-xs',
+              'text-dense text-ink-500 cursor-pointer hover:text-ink-950 truncate py-0.5',
+              h.level === 3 && 'pl-3 text-[11.5px]',
             )}
           >
             {h.text}
@@ -146,6 +150,19 @@ function SectionOutline({ html }: { html: string }) {
 }
 
 // ─── Clause Library Panel ─────────────────────────────────────────────────────
+
+/*
+ * A clause's riskRating is a rating, not a lifecycle status, so it is not a key
+ * in lib/status's STATUS map — but the color still comes from there, so a
+ * "favorable" clause wears the same green as an executed contract, and
+ * "standard" stays neutral because a house-standard clause carries no verdict.
+ */
+const CLAUSE_RISK_MEANING: Record<string, Meaning> = {
+  favorable: 'binding',
+  unfavorable: 'risk',
+  neutral: 'neutral',
+  standard: 'neutral',
+}
 
 function ClauseLibraryPanel({
   onInsert,
@@ -174,53 +191,52 @@ function ClauseLibraryPanel({
   }, [debouncedQ])
 
   return (
-    <div className="w-72 shrink-0 border-l border-gray-200 bg-white flex flex-col">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200">
-        <div className="flex items-center gap-1.5 text-sm font-medium text-gray-700">
-          <BookOpen className="w-4 h-4" />
+    <div className="w-72 shrink-0 border-l border-paper-200 bg-card flex flex-col">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-paper-200">
+        <div className="flex items-center gap-1.5 text-dense font-medium text-ink-700">
+          <BookOpen className="size-3.5" />
           Clause Library
         </div>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+        <Button onClick={onClose} variant="ghost" size="icon-xs" className="text-ink-400"><X /></Button>
       </div>
-      <div className="px-3 py-2 border-b border-gray-100">
-        <input
+      <div className="px-3 py-2 border-b border-paper-200">
+        <Input
           value={q}
           onChange={e => setQ(e.target.value)}
           placeholder="Search clauses..."
-          className="w-full text-sm border border-gray-200 rounded px-2 py-1.5 outline-none focus:border-blue-400"
         />
       </div>
       <div className="flex-1 overflow-y-auto">
-        {loading && <p className="text-xs text-gray-400 p-3">Loading...</p>}
+        {loading && <p className="text-dense text-ink-400 p-3">Loading...</p>}
         {!loading && !clauses.length && (
-          <p className="text-xs text-gray-400 p-3">No clauses found</p>
+          <p className="text-dense text-ink-400 p-3">No clauses found</p>
         )}
-        {clauses.map(c => (
-          <div
-            key={c.id}
-            className="px-3 py-2 border-b border-gray-100 hover:bg-blue-50 cursor-pointer group"
-            onClick={() => onInsert(c.content)}
-          >
-            <div className="flex items-start justify-between gap-1">
-              <p className="text-sm font-medium text-gray-800 leading-snug">{c.title}</p>
-              <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-blue-500 shrink-0 mt-0.5" />
+        {clauses.map(c => {
+          const rating = MEANING_CLASS[CLAUSE_RISK_MEANING[c.riskRating ?? ''] ?? 'neutral']
+          return (
+            <div
+              key={c.id}
+              className="px-3 py-2 border-b border-paper-200 hover:bg-paper-100 cursor-pointer group"
+              onClick={() => onInsert(c.content)}
+            >
+              <div className="flex items-start justify-between gap-1">
+                <p className="text-dense font-medium text-ink-950 leading-snug">{c.title}</p>
+                <ChevronRight className="size-3.5 text-paper-300 group-hover:text-ink-700 shrink-0 mt-0.5" />
+              </div>
+              {c.category?.name && (
+                <p className="text-[11.5px] text-ink-400 mt-0.5">{c.category.name}</p>
+              )}
+              {c.riskRating && (
+                <span className={cn(
+                  'inline-block text-[11px] px-1.5 py-0.5 rounded-chip border mt-1',
+                  rating.wash, rating.washFg, rating.washBorder,
+                )}>
+                  {c.riskRating}
+                </span>
+              )}
             </div>
-            {c.category?.name && (
-              <p className="text-xs text-gray-400 mt-0.5">{c.category.name}</p>
-            )}
-            {c.riskRating && (
-              <span className={cn(
-                'inline-block text-xs px-1.5 py-0.5 rounded mt-1',
-                c.riskRating === 'favorable' && 'bg-green-100 text-green-700',
-                c.riskRating === 'unfavorable' && 'bg-red-100 text-red-700',
-                c.riskRating === 'neutral' && 'bg-gray-100 text-gray-600',
-                c.riskRating === 'standard' && 'bg-blue-100 text-blue-700',
-              )}>
-                {c.riskRating}
-              </span>
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -241,29 +257,33 @@ function FindReplacePanel({
   const [replace, setReplace] = useState('')
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-50 border-b border-yellow-200 text-sm">
-      <Search className="w-4 h-4 text-yellow-600" />
-      <input
+    // Find & replace is a tool, not a state — nothing here is blocked on the
+    // user, so the amber it used to wear was decoration and it goes neutral.
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-paper-50 border-b border-paper-200 text-dense">
+      <Search className="size-4 text-ink-400" />
+      <Input
         value={find}
         onChange={e => setFind(e.target.value)}
         placeholder="Find..."
-        className="border border-yellow-300 rounded px-2 py-1 text-sm w-36 outline-none"
+        className="w-36"
       />
-      <input
+      <Input
         value={replace}
         onChange={e => setReplace(e.target.value)}
         placeholder="Replace..."
-        className="border border-yellow-300 rounded px-2 py-1 text-sm w-36 outline-none"
+        className="w-36"
       />
-      <button
+      <Button
         onClick={() => onFind(find)}
-        className="text-xs px-2 py-1 bg-yellow-100 rounded hover:bg-yellow-200"
-      >Find</button>
-      <button
+        variant="outline"
+        size="xs"
+      >Find</Button>
+      <Button
         onClick={() => onReplace(find, replace)}
-        className="text-xs px-2 py-1 bg-yellow-100 rounded hover:bg-yellow-200"
-      >Replace All</button>
-      <button onClick={onClose}><X className="w-4 h-4 text-gray-400 hover:text-gray-600" /></button>
+        variant="outline"
+        size="xs"
+      >Replace All</Button>
+      <Button onClick={onClose} variant="ghost" size="icon-xs" className="text-ink-400"><X /></Button>
     </div>
   )
 }
@@ -416,11 +436,13 @@ export function ContractEditor({
     const insertedFrom = range.from
     const insertedTo = editor.state.selection.from
 
-    // Highlight the inserted text green + scroll into view
+    // Flash the inserted range in the assist wash (assist-200) + scroll into
+    // view. It was a green highlight, but green means BINDING in this system
+    // and machine-authored text is what this range actually is.
     if (insertedFrom < insertedTo) {
       editor.chain()
         .setTextSelection({ from: insertedFrom, to: insertedTo })
-        .setHighlight({ color: '#bbf7d0' })
+        .setHighlight({ color: '#C7D2FE' })
         .scrollIntoView()
         .run()
 
@@ -521,132 +543,139 @@ export function ContractEditor({
   const currentHtml = editor.getHTML()
 
   return (
-    <div className="relative flex flex-col h-full bg-white border border-gray-200 rounded-lg overflow-hidden">
+    <div className="relative flex flex-col h-full bg-card border border-paper-200 rounded-card overflow-hidden">
       {exportError && (
         <div
           role="alert"
           data-testid="editor-export-error"
-          className="flex items-start justify-between gap-3 px-3 py-2 text-sm bg-red-50 border-b border-red-200 text-red-800"
+          className="flex items-start justify-between gap-3 px-3 py-2 text-dense bg-risk-50 border-b border-risk-200 text-risk-700"
         >
           <span className="min-w-0 break-words">{exportError}</span>
           <button
             type="button"
             onClick={() => setExportError(null)}
-            className="shrink-0 text-red-700 hover:text-red-900 font-medium"
+            className="shrink-0 text-risk-700 hover:text-risk-900 font-medium"
           >
             Dismiss
           </button>
         </div>
       )}
       {/* ── Toolbar ── */}
-      <div className="flex items-center flex-wrap gap-0.5 px-2 py-1.5 border-b border-gray-200 bg-gray-50">
+      <div className="flex items-center flex-wrap gap-0.5 px-2 py-1.5 border-b border-paper-200 bg-paper-50">
         {/* History */}
-        <ToolbarBtn onClick={() => editor.chain().focus().undo().run()} title="Undo"><Undo className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().redo().run()} title="Redo"><Redo className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().undo().run()} title="Undo"><Undo /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().redo().run()} title="Redo"><Redo /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Headings */}
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1"><Heading1 className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2"><Heading2 className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3"><Heading3 className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} active={editor.isActive('heading', { level: 1 })} title="Heading 1"><Heading1 /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} active={editor.isActive('heading', { level: 2 })} title="Heading 2"><Heading2 /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()} active={editor.isActive('heading', { level: 3 })} title="Heading 3"><Heading3 /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Inline formatting */}
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold"><Bold className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic"><Italic className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive('underline')} title="Underline"><UnderlineIcon className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough"><Strikethrough className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold"><Bold /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleItalic().run()} active={editor.isActive('italic')} title="Italic"><Italic /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleUnderline().run()} active={editor.isActive('underline')} title="Underline"><UnderlineIcon /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleStrike().run()} active={editor.isActive('strike')} title="Strikethrough"><Strikethrough /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Alignment */}
-        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('left').run()} active={editor.isActive({ textAlign: 'left' })} title="Align Left"><AlignLeft className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('center').run()} active={editor.isActive({ textAlign: 'center' })} title="Align Center"><AlignCenter className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('right').run()} active={editor.isActive({ textAlign: 'right' })} title="Align Right"><AlignRight className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('left').run()} active={editor.isActive({ textAlign: 'left' })} title="Align Left"><AlignLeft /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('center').run()} active={editor.isActive({ textAlign: 'center' })} title="Align Center"><AlignCenter /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().setTextAlign('right').run()} active={editor.isActive({ textAlign: 'right' })} title="Align Right"><AlignRight /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Lists */}
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List"><List className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Numbered List"><ListOrdered className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleBulletList().run()} active={editor.isActive('bulletList')} title="Bullet List"><List /></ToolbarBtn>
+        <ToolbarBtn onClick={() => editor.chain().focus().toggleOrderedList().run()} active={editor.isActive('orderedList')} title="Numbered List"><ListOrdered /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Table */}
-        <ToolbarBtn onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} title="Insert Table"><TableIcon className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} title="Insert Table"><TableIcon /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Tools */}
-        <ToolbarBtn onClick={() => setShowClausePanel(p => !p)} active={showClausePanel} title="Clause Library"><BookOpen className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => setShowFindReplace(p => !p)} active={showFindReplace} title="Find & Replace"><Search className="w-4 h-4" /></ToolbarBtn>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <ToolbarBtn onClick={() => setShowClausePanel(p => !p)} active={showClausePanel} title="Clause Library"><BookOpen /></ToolbarBtn>
+        <ToolbarBtn onClick={() => setShowFindReplace(p => !p)} active={showFindReplace} title="Find & Replace"><Search /></ToolbarBtn>
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* AI Assist — acts on selected text */}
-        <div className="relative flex items-center gap-0.5 border border-purple-200 rounded px-1 bg-purple-50">
+        <div className="relative flex items-center gap-0.5 border border-assist-200 rounded-md px-1 bg-assist-50">
           {assistLoading
-            ? <><Loader2 className="w-3.5 h-3.5 text-purple-500 animate-spin ml-1" /><span className="text-xs text-purple-600 px-1">Thinking…</span></>
-            : <Wand2 className="w-3.5 h-3.5 text-purple-500 mr-0.5" />
+            ? <><Loader2 className="size-3.5 text-assist-600 animate-spin ml-1" /><span className="text-[11.5px] text-assist-700 px-1">Thinking…</span></>
+            : <Wand2 className="size-3.5 text-assist-600 mr-0.5" />
           }
           {ASSIST_ACTIONS.map(a => (
-            <button
+            <Button
               key={a.action}
               type="button"
+              variant="ghost"
+              size="xs"
               onClick={() => handleAssist(a.action)}
               disabled={assistLoading}
               title={`AI: ${a.label} (select text first)`}
-              className="text-xs px-1.5 py-1 rounded hover:bg-purple-100 text-purple-700 disabled:opacity-50 transition-colors"
+              className="px-1.5 text-assist-700 hover:bg-assist-200 hover:text-assist-900 disabled:border-transparent disabled:bg-transparent disabled:text-assist-700 disabled:opacity-50"
             >
               {a.label}
-            </button>
+            </Button>
           ))}
           {assistHint && (
-            <div className="absolute top-full left-0 mt-1 z-10 px-2 py-1 bg-gray-800 text-white text-xs rounded shadow whitespace-nowrap">
+            <div className="absolute top-full left-0 mt-1 z-10 px-2 py-1 bg-ink-950 text-white text-[11.5px] rounded-md shadow-e2 whitespace-nowrap">
               Select text first
             </div>
           )}
         </div>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Document AI — whole-document operations */}
         <div className="relative">
-          <button
+          {/* Blue read as "primary action" here, but this asks the machine to
+              rewrite the document — that is assist, not ink. */}
+          <Button
             type="button"
+            variant="assistOutline"
+            size="xs"
             onClick={() => setShowDocAiMenu(p => !p)}
             disabled={!!docAiLoading}
             title="Document AI"
-            className="flex items-center gap-1 text-xs px-2 py-1.5 border border-blue-200 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50 transition-colors"
+            className="disabled:border-assist-200 disabled:bg-card disabled:text-assist-700 disabled:opacity-50"
           >
             {docAiLoading ? (
-              <><Loader2 className="w-3.5 h-3.5 animate-spin" />{docAiLoading === 'fix_layout' ? 'Fixing…' : 'Rewriting…'}</>
+              <><Loader2 className="animate-spin" />{docAiLoading === 'fix_layout' ? 'Fixing…' : 'Rewriting…'}</>
             ) : (
-              <><Wand2 className="w-3.5 h-3.5" />Doc AI ▾</>
+              <><Wand2 />Doc AI ▾</>
             )}
-          </button>
+          </Button>
           {showDocAiMenu && (
-            <div className="absolute top-full left-0 mt-1 z-20 w-48 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+            <div className="absolute top-full left-0 mt-1 z-20 w-48 bg-card border border-paper-200 rounded-md shadow-e2 overflow-hidden">
               <button
                 onClick={() => handleDocumentAi('fix_layout')}
-                className="w-full text-left px-3 py-2.5 text-sm hover:bg-blue-50 text-gray-700"
+                className="w-full text-left px-3 py-2.5 text-dense hover:bg-assist-50 text-ink-700"
               >
                 ✨ Fix Layout
-                <p className="text-xs text-gray-400 mt-0.5">Clean up PDF extraction artifacts</p>
+                <p className="text-[11px] text-ink-400 mt-0.5">Clean up PDF extraction artifacts</p>
               </button>
               <button
                 onClick={() => { setShowDocAiMenu(false); setDocAiConfirm(true) }}
-                className="w-full text-left px-3 py-2.5 text-sm hover:bg-blue-50 text-gray-700 border-t border-gray-100"
+                className="w-full text-left px-3 py-2.5 text-dense hover:bg-assist-50 text-ink-700 border-t border-paper-200"
               >
                 📝 Rewrite Document
-                <p className="text-xs text-gray-400 mt-0.5">AI rewrites full document</p>
+                <p className="text-[11px] text-ink-400 mt-0.5">AI rewrites full document</p>
               </button>
             </div>
           )}
         </div>
-        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <div className="w-px h-5 bg-paper-300 mx-1" />
 
         {/* Export */}
-        <ToolbarBtn onClick={() => handleExport('pdf')} title="Export PDF"><FileText className="w-4 h-4" /></ToolbarBtn>
-        <ToolbarBtn onClick={() => handleExport('docx')} title="Export DOCX"><Download className="w-4 h-4" /></ToolbarBtn>
+        <ToolbarBtn onClick={() => handleExport('pdf')} title="Export PDF"><FileText /></ToolbarBtn>
+        <ToolbarBtn onClick={() => handleExport('docx')} title="Export DOCX"><Download /></ToolbarBtn>
 
         {/* Save */}
         {onSave && !readOnly && (
-          <button
+          <Button
+            size="xs"
             disabled={saveState === 'saving'}
             onClick={async () => {
               setSaveState('saving')
@@ -660,19 +689,21 @@ export function ContractEditor({
                 setTimeout(() => setSaveState('idle'), 3000)
               }
             }}
-            className={`ml-auto text-xs px-3 py-1.5 rounded transition-colors ${
-              saveState === 'saved'  ? 'bg-emerald-600 text-white' :
-              saveState === 'error'  ? 'bg-red-600 text-white' :
-              saveState === 'saving' ? 'bg-blue-400 text-white cursor-not-allowed' :
-              'bg-blue-600 text-white hover:bg-blue-700'
-            }`}
+            // The one ink primary in this view. "Saved!" stays ink — a
+            // successful save is not BINDING, and the label already carries the
+            // confirmation. Only the failure earns a meaning color.
+            className={cn(
+              'ml-auto',
+              saveState === 'error' &&
+                'border-risk-200 bg-risk-50 text-risk-700 hover:border-risk-200 hover:bg-risk-100',
+            )}
           >
             {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved!' : saveState === 'error' ? 'Save failed' : 'Save Draft'}
-          </button>
+          </Button>
         )}
 
         {/* Word count */}
-        <span className="ml-2 text-xs text-gray-400 whitespace-nowrap">{wordCount} words</span>
+        <span className="ml-2 text-[11.5px] text-ink-400 whitespace-nowrap tabular-nums">{wordCount} words</span>
       </div>
 
       {/* ── Find & Replace Bar ── */}
@@ -686,52 +717,59 @@ export function ContractEditor({
 
       {/* ── AI Error Banner ── */}
       {assistError && (
-        <div className="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center justify-between">
-          <p className="text-xs text-red-700">{assistError}</p>
-          <button onClick={() => setAssistError(null)}><X className="w-3.5 h-3.5 text-red-400 hover:text-red-600" /></button>
+        <div className="px-4 py-2 bg-risk-50 border-b border-risk-200 flex items-center justify-between">
+          <p className="text-dense text-risk-700">{assistError}</p>
+          <button onClick={() => setAssistError(null)}><X className="size-3.5 text-risk-600 hover:text-risk-700" /></button>
         </div>
       )}
 
       {/* ── Doc AI Save Reminder ── */}
       {docAiDone && (
-        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between gap-3">
-          <p className="text-xs text-amber-800">Doc AI updated the document — click <strong>Save Draft</strong> to keep the changes.</p>
-          <button onClick={() => setDocAiDone(false)}><X className="w-3.5 h-3.5 text-amber-500 hover:text-amber-700" /></button>
+        // Attention, not assist: the machine is done and the save is now
+        // blocked on the user.
+        <div className="px-4 py-2 bg-attention-50 border-b border-attention-200 flex items-center justify-between gap-3">
+          <p className="text-dense text-attention-700">Doc AI updated the document — click <strong>Save Draft</strong> to keep the changes.</p>
+          <button onClick={() => setDocAiDone(false)}><X className="size-3.5 text-attention-600 hover:text-attention-700" /></button>
         </div>
       )}
 
       {/* ── AI Assist Result Banner ── */}
       {assistResult && (
-        <div className="px-4 py-3 bg-purple-50 border-b border-purple-200">
+        <div className="px-4 py-3 bg-assist-50 border-b border-assist-200">
           {/* Header row */}
           <div className="flex items-center justify-between mb-2">
-            <p className="text-xs font-semibold text-purple-700">AI Suggestion</p>
+            <p className="flex items-center gap-[7px] text-eyebrow uppercase text-assist-700"><AssistMark />AI Suggestion</p>
             <div className="flex gap-2 shrink-0">
-              <button
+              <Button
                 onClick={applyAssistResult}
-                className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
-              >Apply</button>
-              <button
+                variant="assist"
+                size="xs"
+              >Apply</Button>
+              <Button
                 onClick={() => { setAssistResult(null); setAssistOriginalText(null); assistSelectionRef.current = null }}
-                className="text-xs px-2 py-1 bg-gray-100 rounded hover:bg-gray-200"
-              >Dismiss</button>
+                variant="outline"
+                size="xs"
+              >Dismiss</Button>
             </div>
           </div>
-          {/* Before / After diff */}
-          <div className="rounded border border-gray-200 overflow-hidden text-sm">
+          {/* Before / After diff. Not red/green: neither side is legal exposure
+              or a binding fact. The struck-out original goes quiet in ink, and
+              the proposed replacement takes the assist accent because that is
+              exactly what it is — text the machine wrote. */}
+          <div className="rounded-md border border-assist-200 bg-card overflow-hidden text-dense">
             {assistOriginalText && (
-              <div className="flex gap-2 px-3 py-2 bg-red-50 border-b border-gray-200">
-                <span className="text-red-400 font-bold shrink-0">−</span>
-                <p className="text-red-700 line-through leading-snug line-clamp-4">{assistOriginalText}</p>
+              <div className="flex gap-2 px-3 py-2 bg-paper-50 border-b border-paper-200">
+                <span className="text-ink-400 font-bold shrink-0">−</span>
+                <p className="text-ink-500 line-through leading-snug line-clamp-4">{assistOriginalText}</p>
               </div>
             )}
-            <div className="flex gap-2 px-3 py-2 bg-green-50">
-              <span className="text-green-500 font-bold shrink-0">+</span>
-              <p className="text-green-800 leading-snug line-clamp-5">{assistResult.revisedText}</p>
+            <div className="flex gap-2 px-3 py-2">
+              <span className="text-assist-600 font-bold shrink-0">+</span>
+              <p className="text-assist-900 leading-snug line-clamp-5">{assistResult.revisedText}</p>
             </div>
           </div>
           {/* Explanation */}
-          <p className="text-xs text-gray-500 mt-1.5 italic">{assistResult.explanation}</p>
+          <p className="text-[11.5px] text-ink-500 mt-1.5 italic">{assistResult.explanation}</p>
         </div>
       )}
 
@@ -744,7 +782,10 @@ export function ContractEditor({
         <div className="flex-1 overflow-y-auto">
           <EditorContent
             editor={editor}
-            className="prose prose-sm max-w-none p-6 min-h-full focus:outline-none [&_.template-variable-unfilled]:bg-amber-100 [&_.template-variable-unfilled]:border [&_.template-variable-unfilled]:border-amber-300 [&_.template-variable-unfilled]:rounded [&_.template-variable-unfilled]:px-1 [&_.clause-library-ref]:border-l-4 [&_.clause-library-ref]:border-blue-300 [&_.clause-library-ref]:pl-3 [&_.clause-library-ref]:my-2 [&_.contract-section]:mb-6"
+            // An unfilled variable is attention — the document cannot go out
+            // until this user fills it. The clause-library rule is only a
+            // provenance mark, so it loses its blue and becomes a paper rule.
+            className="prose prose-sm max-w-none p-6 min-h-full focus:outline-none [&_.template-variable-unfilled]:bg-attention-100 [&_.template-variable-unfilled]:border [&_.template-variable-unfilled]:border-attention-200 [&_.template-variable-unfilled]:rounded-chip [&_.template-variable-unfilled]:px-1 [&_.clause-library-ref]:border-l-4 [&_.clause-library-ref]:border-paper-300 [&_.clause-library-ref]:pl-3 [&_.clause-library-ref]:my-2 [&_.contract-section]:mb-6"
           />
         </div>
 
@@ -759,21 +800,25 @@ export function ContractEditor({
 
       {/* ── Rewrite Document Confirm Dialog ── */}
       {docAiConfirm && (
-        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/30">
-          <div className="bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4">
-            <h3 className="text-base font-semibold text-gray-900 mb-2">Rewrite entire document?</h3>
-            <p className="text-sm text-gray-500 mb-5">
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-ink-950/30">
+          <div className="bg-card rounded-card border border-paper-200 shadow-e3 p-6 max-w-sm mx-4">
+            <h3 className="text-section text-ink-950 mb-2">Rewrite entire document?</h3>
+            <p className="text-body text-ink-500 mb-5">
               The AI will rewrite the full document content. Your current text will be replaced. This cannot be undone unless you have a saved version.
             </p>
             <div className="flex gap-3 justify-end">
-              <button
+              <Button
                 onClick={() => setDocAiConfirm(false)}
-                className="text-sm px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
-              >Cancel</button>
-              <button
+                variant="outline"
+                size="md"
+              >Cancel</Button>
+              {/* Confirms a machine rewrite, so it is assist rather than the
+                  view's ink primary (Save Draft). */}
+              <Button
                 onClick={() => handleDocumentAi('rewrite_document')}
-                className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-              >Rewrite</button>
+                variant="assist"
+                size="md"
+              >Rewrite</Button>
             </div>
           </div>
         </div>

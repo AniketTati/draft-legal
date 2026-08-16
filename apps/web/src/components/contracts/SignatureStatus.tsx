@@ -14,6 +14,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { MEANING_CLASS, statusMeaning } from '@/lib/status'
 import {
   Loader2, CheckCircle2, XCircle, Clock, Copy, Mail,
   PenLine, Ban, AlertCircle, Eye, Send,
@@ -53,27 +54,30 @@ interface SignatureRequestData {
   events: EventData[]
 }
 
-const STATUS_PILL: Record<string, { bg: string; fg: string; label: string }> = {
-  PENDING:   { bg: 'bg-amber-50 border-amber-200',   fg: 'text-amber-700',   label: 'Awaiting signatures' },
-  COMPLETED: { bg: 'bg-emerald-50 border-emerald-200', fg: 'text-emerald-700', label: 'Fully signed' },
-  VOIDED:    { bg: 'bg-gray-100 border-gray-200',     fg: 'text-gray-600',    label: 'Voided' },
-  EXPIRED:   { bg: 'bg-red-50 border-red-200',        fg: 'text-red-700',     label: 'Expired' },
+// Words only. Every color on this panel now comes from the status's meaning in
+// lib/status, so a request that is PENDING here reads the same as a PENDING
+// anything else in the product.
+const REQUEST_LABEL: Record<string, string> = {
+  PENDING:   'Awaiting signatures',
+  COMPLETED: 'Fully signed',
+  VOIDED:    'Voided',
+  EXPIRED:   'Expired',
 }
 
-const SIGNER_PILL: Record<string, { bg: string; fg: string; icon: React.ComponentType<{ className?: string }> }> = {
-  PENDING:  { bg: 'bg-amber-50',   fg: 'text-amber-700',   icon: Clock },
-  SIGNED:   { bg: 'bg-emerald-50', fg: 'text-emerald-700', icon: CheckCircle2 },
-  DECLINED: { bg: 'bg-red-50',     fg: 'text-red-700',     icon: XCircle },
+const SIGNER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
+  PENDING:  Clock,
+  SIGNED:   CheckCircle2,
+  DECLINED: XCircle,
 }
 
 const EVENT_LABEL: Record<EventData['kind'], { icon: React.ComponentType<{ className?: string }>; color: string; label: string }> = {
-  SENT:      { icon: Send,        color: 'text-blue-600',    label: 'Sent for signature' },
-  VIEWED:    { icon: Eye,         color: 'text-gray-500',    label: 'Viewed by signer' },
-  SIGNED:    { icon: CheckCircle2,color: 'text-emerald-600', label: 'Signed' },
-  DECLINED:  { icon: XCircle,     color: 'text-red-600',     label: 'Declined' },
-  VOIDED:    { icon: Ban,         color: 'text-gray-500',    label: 'Voided' },
-  REMINDED:  { icon: Mail,        color: 'text-blue-500',    label: 'Reminder sent' },
-  COMPLETED: { icon: CheckCircle2,color: 'text-emerald-700', label: 'Fully completed' },
+  SENT:      { icon: Send,        color: 'text-info-600',  label: 'Sent for signature' },
+  VIEWED:    { icon: Eye,         color: 'text-ink-500',   label: 'Viewed by signer' },
+  SIGNED:    { icon: CheckCircle2,color: 'text-brand-700', label: 'Signed' },
+  DECLINED:  { icon: XCircle,     color: 'text-risk-600',  label: 'Declined' },
+  VOIDED:    { icon: Ban,         color: 'text-ink-500',   label: 'Voided' },
+  REMINDED:  { icon: Mail,        color: 'text-info-600',  label: 'Reminder sent' },
+  COMPLETED: { icon: CheckCircle2,color: 'text-brand-700', label: 'Fully completed' },
 }
 
 function relTime(iso: string | null | undefined): string {
@@ -139,8 +143,8 @@ export function SignatureStatus({
   const requests = data?.data ?? []
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 text-xs text-gray-500 py-2">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      <div className="flex items-center gap-2 text-dense text-ink-500 py-2">
+        <Loader2 className="size-3.5 animate-spin" />
         Loading signature status…
       </div>
     )
@@ -160,16 +164,19 @@ export function SignatureStatus({
   return (
     <div className="space-y-4" data-testid="signature-status">
       {requests.map((sr) => {
-        const pill = STATUS_PILL[sr.status] ?? STATUS_PILL.PENDING
+        const meaning = MEANING_CLASS[statusMeaning(sr.status)]
+        const pillLabel = REQUEST_LABEL[sr.status] ?? REQUEST_LABEL.PENDING
         const signedCount = sr.signers.filter(s => s.status === 'SIGNED').length
         const total = sr.signers.length
         const daysToExpiry = sr.expiresAt
           ? Math.max(0, Math.ceil((new Date(sr.expiresAt).getTime() - Date.now()) / 86_400_000))
           : null
+        // The card stays paper; the status line is the one colored thing on it,
+        // so a rail of these reads as a list rather than a wash.
         return (
           <div
             key={sr.id}
-            className={`rounded-xl border p-4 ${pill.bg}`}
+            className="rounded-card border border-paper-200 bg-card p-4"
             data-testid={`signature-request-${sr.id}`}
           >
             {/* Header: status + counts. Actions live on a separate row
@@ -178,28 +185,28 @@ export function SignatureStatus({
                 two lines and the Void icon was cut off the right edge). */}
             <div className="mb-3">
               <div className="flex items-center gap-2 flex-wrap">
-                <PenLine className={`h-4 w-4 flex-shrink-0 ${pill.fg}`} />
-                <span className={`text-sm font-semibold ${pill.fg}`}>{pill.label}</span>
-                <span className="text-xs text-gray-500">
+                <PenLine className={`size-4 flex-shrink-0 ${meaning.fg}`} />
+                <span className={`text-body font-semibold ${meaning.fg}`}>{pillLabel}</span>
+                <span className="text-dense text-ink-500 tabular-nums">
                   · {signedCount}/{total} signed
                 </span>
               </div>
-              <div className="text-xs text-gray-500 mt-1 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+              <div className="text-dense text-ink-500 mt-1 flex items-center gap-x-2 gap-y-0.5 flex-wrap">
                 <span>Sent {relTime(sr.createdAt)}</span>
                 {sr.expiresAt && sr.status === 'PENDING' && (
                   <span className="inline-flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
+                    <Clock className="size-3" />
                     {daysToExpiry === 0 ? 'Expires today' : `Expires in ${daysToExpiry}d`}
                   </span>
                 )}
                 {sr.signOrder === 'SEQUENTIAL' && (
-                  <span className="text-gray-400">· Sequential signing</span>
+                  <span className="text-ink-400">· Sequential signing</span>
                 )}
                 {sr.completedAt && (
                   <span>· Completed {relTime(sr.completedAt)}</span>
                 )}
                 {sr.voidedReason && (
-                  <span className="text-red-600 break-words">· {sr.voidedReason}</span>
+                  <span className="text-risk-700 break-words">· {sr.voidedReason}</span>
                 )}
               </div>
               {sr.status === 'PENDING' && (
@@ -208,16 +215,16 @@ export function SignatureStatus({
                     type="button"
                     onClick={() => remindMut.mutate(sr.id)}
                     disabled={remindMut.isPending && remindMut.variables === sr.id}
-                    className="text-xs text-gray-600 hover:text-blue-700 inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-200 hover:border-blue-300 bg-white whitespace-nowrap"
+                    className="text-dense text-ink-700 hover:text-ink-950 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-paper-200 hover:border-paper-300 bg-card whitespace-nowrap"
                     data-testid="remind-sr-btn"
                     title="Email a reminder to all still-pending signers"
                   >
-                    <Mail className="h-3.5 w-3.5" />
+                    <Mail className="size-3.5" />
                     {remindState[sr.id]?.ok ? 'Reminder sent' : 'Send reminder'}
                   </button>
                   {remindState[sr.id]?.error && (
                     <span
-                      className="text-xs text-red-600 break-words"
+                      className="text-dense text-risk-700 break-words"
                       data-testid="remind-sr-error"
                     >
                       {remindState[sr.id]?.error}
@@ -231,11 +238,11 @@ export function SignatureStatus({
                       }
                     }}
                     disabled={voidMut.isPending}
-                    className="text-xs text-gray-600 hover:text-red-700 inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-200 hover:border-red-300 bg-white whitespace-nowrap"
+                    className="text-dense text-ink-700 hover:text-risk-700 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-paper-200 hover:border-risk-200 bg-card whitespace-nowrap"
                     data-testid="void-sr-btn"
                     title="Void this signature request"
                   >
-                    <Ban className="h-3.5 w-3.5" />
+                    <Ban className="size-3.5" />
                     Void
                   </button>
                 </div>
@@ -252,8 +259,8 @@ export function SignatureStatus({
                 width so nothing gets clipped. */}
             <div className="space-y-2 mb-3">
               {sr.signers.map((signer) => {
-                const sp = SIGNER_PILL[signer.status]
-                const SignIcon = sp.icon
+                const sm = MEANING_CLASS[statusMeaning(signer.status)]
+                const SignIcon = SIGNER_ICON[signer.status] ?? Clock
                 const statusLabel =
                   signer.status === 'SIGNED' && signer.signedAt
                     ? `Signed ${relTime(signer.signedAt)}`
@@ -263,34 +270,34 @@ export function SignatureStatus({
                 return (
                   <div
                     key={signer.id}
-                    className="rounded-lg bg-white border border-gray-100 p-2.5"
+                    className="rounded-md bg-paper-50 border border-paper-200 p-2.5"
                     data-testid={`signer-${signer.id}`}
                   >
                     {/* Row 1: avatar + name (+ role) + status pill */}
                     <div className="flex items-center gap-2">
-                      <div className={`h-7 w-7 rounded-full ${sp.bg} flex items-center justify-center flex-shrink-0`}>
-                        <SignIcon className={`h-3.5 w-3.5 ${sp.fg}`} />
+                      <div className={`size-7 rounded-full ${sm.wash} flex items-center justify-center flex-shrink-0`}>
+                        <SignIcon className={`size-3.5 ${sm.fg}`} />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium text-gray-900 truncate">
+                        <div className="text-body font-medium text-ink-950 truncate">
                           {signer.name}
                           {signer.role && (
-                            <span className="text-gray-400 font-normal ml-1.5">· {signer.role}</span>
+                            <span className="text-ink-400 font-normal ml-1.5">· {signer.role}</span>
                           )}
                         </div>
                       </div>
                       <div
-                        className={`text-[10.5px] font-medium ${sp.fg} px-1.5 py-0.5 rounded ${sp.bg} flex-shrink-0 whitespace-nowrap`}
+                        className={`text-[10.5px] font-medium ${sm.fg} px-1.5 py-0.5 rounded-chip ${sm.wash} flex-shrink-0 whitespace-nowrap`}
                       >
                         {statusLabel}
                       </div>
                     </div>
 
                     {/* Row 2: email (always full width below the row 1 cluster) */}
-                    <div className="text-[11.5px] text-gray-500 truncate mt-1 ml-9">
+                    <div className="text-[11.5px] text-ink-500 truncate mt-1 ml-9">
                       {signer.email}
                       {sr.signOrder === 'SEQUENTIAL' && (
-                        <span className="text-gray-400 ml-1.5">· Order #{signer.signOrder}</span>
+                        <span className="text-ink-400 ml-1.5 tabular-nums">· Order #{signer.signOrder}</span>
                       )}
                     </div>
 
@@ -300,13 +307,13 @@ export function SignatureStatus({
                         <button
                           type="button"
                           onClick={() => copyLink(signer.token)}
-                          className="text-xs text-gray-600 hover:text-blue-700 inline-flex items-center gap-1 px-2 py-1 rounded border border-gray-200 hover:border-blue-300 whitespace-nowrap"
+                          className="text-dense text-ink-700 hover:text-ink-950 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-paper-200 hover:border-paper-300 bg-card whitespace-nowrap"
                           title="Copy signing link"
                         >
                           {copiedToken === signer.token ? (
-                            <><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />Copied</>
+                            <><CheckCircle2 className="size-3.5 text-ink-400" />Copied</>
                           ) : (
-                            <><Copy className="h-3.5 w-3.5" />Copy link</>
+                            <><Copy className="size-3.5" />Copy link</>
                           )}
                         </button>
                       </div>
@@ -318,8 +325,8 @@ export function SignatureStatus({
 
             {/* Audit timeline (collapsed to 6 most recent) */}
             {sr.events.length > 0 && (
-              <details className="text-xs">
-                <summary className="cursor-pointer text-gray-500 hover:text-gray-700 inline-flex items-center gap-1 select-none">
+              <details className="text-dense">
+                <summary className="cursor-pointer text-ink-500 hover:text-ink-700 inline-flex items-center gap-1 select-none">
                   <span>Activity ({sr.events.length})</span>
                 </summary>
                 <ul className="mt-2 space-y-1.5 pl-1">
@@ -329,12 +336,12 @@ export function SignatureStatus({
                     const Icon = meta.icon
                     const sgn = e.signerId ? sr.signers.find(s => s.id === e.signerId) : null
                     return (
-                      <li key={e.id} className="flex items-start gap-2 text-gray-600">
-                        <Icon className={`h-3.5 w-3.5 mt-0.5 flex-shrink-0 ${meta.color}`} />
+                      <li key={e.id} className="flex items-start gap-2 text-ink-700">
+                        <Icon className={`size-3.5 mt-0.5 flex-shrink-0 ${meta.color}`} />
                         <div className="flex-1">
                           {meta.label}
-                          {sgn && <span className="text-gray-500"> · {sgn.name}</span>}
-                          <span className="text-gray-400 ml-1.5">{relTime(e.createdAt)}</span>
+                          {sgn && <span className="text-ink-500"> · {sgn.name}</span>}
+                          <span className="text-ink-400 ml-1.5">{relTime(e.createdAt)}</span>
                         </div>
                       </li>
                     )
@@ -345,8 +352,8 @@ export function SignatureStatus({
 
             {/* Sender's optional message */}
             {sr.message && (
-              <div className="mt-3 p-2 rounded bg-white/50 text-xs text-gray-600 border border-gray-100">
-                <span className="font-medium text-gray-700">Cover note:</span> {sr.message}
+              <div className="mt-3 p-2 rounded-md bg-paper-50 text-dense text-ink-700 border border-paper-200">
+                <span className="font-medium text-ink-950">Cover note:</span> {sr.message}
               </div>
             )}
           </div>
@@ -354,8 +361,8 @@ export function SignatureStatus({
       })}
 
       {voidMut.isError && (
-        <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+        <div className="flex items-start gap-2 p-3 rounded-md bg-risk-50 border border-risk-200 text-body text-risk-700">
+          <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
           <span>Failed to void signature request. {(voidMut.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? ''}</span>
         </div>
       )}

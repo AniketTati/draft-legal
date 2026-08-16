@@ -50,24 +50,30 @@ interface RedlinePanelProps {
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
-  low:      'bg-gray-100 text-gray-600',
-  medium:   'bg-amber-50 text-amber-700',
-  high:     'bg-orange-100 text-orange-700',
-  critical: 'bg-red-100 text-red-700',
+  low:      'bg-paper-100 text-ink-700',
+  medium:   'bg-attention-50 text-attention-700',
+  high:     'bg-risk-50 text-risk-700',
+  critical: 'bg-risk-100 text-risk-900',
 }
 
+// Where a change sits against the playbook. `outside_playbook` was purple,
+// which now belongs to the machine — and this is a playbook verdict, not
+// something the model authored. It reads as attention instead: nobody has a
+// position on this clause, so a human has to take one. `acceptable` loses its
+// green: brand means binding, and "acceptable" asserts nothing — it is the
+// same neutral rung it takes on the playbook page and the review drawer.
 const ALIGNMENT_COLORS: Record<string, string> = {
-  preferred:       'bg-emerald-50 text-emerald-700',
-  acceptable:      'bg-green-50 text-green-700',
-  fallback:        'bg-amber-50 text-amber-700',
-  walkaway:        'bg-red-100 text-red-700',
-  outside_playbook: 'bg-purple-100 text-purple-700',
+  preferred:       'bg-brand-100 text-brand-700',
+  acceptable:      'bg-paper-100 text-ink-700',
+  fallback:        'bg-attention-50 text-attention-700',
+  walkaway:        'bg-risk-100 text-risk-900',
+  outside_playbook: 'bg-attention-100 text-attention-700',
 }
 
 const RECOMMENDATION_CONFIG = {
-  accept:  { icon: CheckCircle2, color: 'text-emerald-600',  label: 'Accept',  bg: 'bg-emerald-50' },
-  reject:  { icon: XCircle,      color: 'text-red-600',      label: 'Reject',  bg: 'bg-red-50'     },
-  counter: { icon: RefreshCw,    color: 'text-amber-600',    label: 'Counter', bg: 'bg-amber-50'   },
+  accept:  { icon: CheckCircle2, color: 'text-brand-700',     label: 'Accept',  bg: 'bg-brand-50'     },
+  reject:  { icon: XCircle,      color: 'text-risk-600',      label: 'Reject',  bg: 'bg-risk-50'      },
+  counter: { icon: RefreshCw,    color: 'text-attention-700', label: 'Counter', bg: 'bg-attention-50' },
 }
 
 function ChangeCard({ change }: { change: RedlineChange }) {
@@ -82,52 +88,52 @@ function ChangeCard({ change }: { change: RedlineChange }) {
   }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+    <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
       <div className="px-4 py-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-2.5 flex-1 min-w-0">
             {rec && (
-              <div className={`flex-shrink-0 mt-0.5 p-1.5 rounded-lg ${rec.bg}`}>
-                <rec.icon className={`h-3.5 w-3.5 ${rec.color}`} />
+              <div className={`flex-shrink-0 mt-0.5 p-1.5 rounded-md ${rec.bg}`}>
+                <rec.icon className={`size-3.5 ${rec.color}`} />
               </div>
             )}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 {rec && (
-                  <span className={`text-xs font-semibold ${rec.color}`}>{rec.label}</span>
+                  <span className={`text-dense font-semibold ${rec.color}`}>{rec.label}</span>
                 )}
-                <span className="text-xs text-gray-600 font-medium capitalize">
+                <span className="text-dense text-ink-700 font-medium capitalize">
                   {change.clauseType.replace(/_/g, ' ')}
                 </span>
                 {change.sectionRef && (
-                  <span className="text-xs text-gray-400 font-mono">{change.sectionRef}</span>
+                  <span className="text-dense text-ink-400 font-mono">{change.sectionRef}</span>
                 )}
                 {change.severity && (
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium capitalize ${SEVERITY_COLORS[change.severity] ?? ''}`}>
+                  <span className={`text-dense px-1.5 py-0.5 rounded-chip font-medium capitalize ${SEVERITY_COLORS[change.severity] ?? ''}`}>
                     {change.severity}
                   </span>
                 )}
                 {change.playbookAlignment && (
-                  <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${ALIGNMENT_COLORS[change.playbookAlignment] ?? ''}`}>
+                  <span className={`text-dense px-1.5 py-0.5 rounded-chip font-medium ${ALIGNMENT_COLORS[change.playbookAlignment] ?? ''}`}>
                     {change.playbookAlignment.replace(/_/g, ' ')}
                   </span>
                 )}
                 {change.requiresHumanReview && (
-                  <span className="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium flex items-center gap-1">
-                    <Shield className="h-3 w-3" /> Human review
+                  <span className="text-dense bg-risk-100 text-risk-900 px-1.5 py-0.5 rounded-chip font-medium flex items-center gap-1">
+                    <Shield className="size-3" /> Human review
                   </span>
                 )}
               </div>
               {change.reasoning && (
-                <p className="text-xs text-gray-500 mt-1 leading-relaxed">{change.reasoning}</p>
+                <p className="text-dense text-ink-500 mt-1 leading-relaxed">{change.reasoning}</p>
               )}
             </div>
           </div>
           <button
             onClick={() => setExpanded(e => !e)}
-            className="p-1 text-gray-400 hover:text-gray-600 rounded flex-shrink-0"
+            className="p-1 text-ink-400 hover:text-ink-700 rounded-md flex-shrink-0"
           >
-            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
           </button>
         </div>
 
@@ -135,33 +141,35 @@ function ChangeCard({ change }: { change: RedlineChange }) {
           <div className="mt-3 space-y-3">
             {change.ourText && (
               <div>
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Original</p>
-                <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2">
-                  <p className="text-xs text-red-900 leading-relaxed font-mono">{change.ourText}</p>
+                <p className="text-eyebrow text-ink-400 uppercase mb-1">Original</p>
+                {/* Our text is what the counterparty wants gone, so it sits on
+                    the risk wash; their proposal is the incoming language. */}
+                <div className="bg-risk-50 border border-risk-100 rounded-md px-3 py-2">
+                  <p className="text-dense text-ink-950 leading-relaxed font-mono">{change.ourText}</p>
                 </div>
               </div>
             )}
             {change.theirText && (
               <div>
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Counterparty proposes</p>
-                <div className="bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
-                  <p className="text-xs text-emerald-900 leading-relaxed font-mono">{change.theirText}</p>
+                <p className="text-eyebrow text-ink-400 uppercase mb-1">Counterparty proposes</p>
+                <div className="bg-paper-100 border border-paper-200 rounded-md px-3 py-2">
+                  <p className="text-dense text-ink-950 leading-relaxed font-mono">{change.theirText}</p>
                 </div>
               </div>
             )}
             {change.counterText && (
               <div>
-                <p className="text-xs font-semibold text-amber-600 uppercase tracking-wide mb-1">Our counter-proposal</p>
-                <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  <p className="text-xs text-amber-900 leading-relaxed font-mono">{change.counterText}</p>
+                <p className="text-eyebrow text-attention-700 uppercase mb-1">Our counter-proposal</p>
+                <div className="bg-attention-50 border border-attention-200 rounded-md px-3 py-2">
+                  <p className="text-dense text-ink-950 leading-relaxed font-mono">{change.counterText}</p>
                   {change.counterNote && (
-                    <p className="text-xs text-amber-700 mt-1.5 italic">{change.counterNote}</p>
+                    <p className="text-dense text-attention-700 mt-1.5 italic">{change.counterNote}</p>
                   )}
                   <button
                     onClick={() => handleCopy(change.counterText!)}
-                    className="mt-2 flex items-center gap-1 text-xs text-amber-700 hover:text-amber-900 font-medium"
+                    className="mt-2 flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
                   >
-                    {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                    {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
                     {copied ? 'Copied!' : 'Copy counter text'}
                   </button>
                 </div>
@@ -182,10 +190,10 @@ export function RedlinePanel({
 
   if (versions.length < 2) {
     return (
-      <div className="text-center py-12 text-gray-400">
-        <AlertTriangle className="h-8 w-8 mx-auto mb-2 opacity-30" />
-        <p className="text-sm font-medium text-gray-500">Upload a counterparty version to analyze redlines</p>
-        <p className="text-xs mt-1">Upload a new version on the Versions tab, then come back here.</p>
+      <div className="text-center py-12 text-ink-400">
+        <AlertTriangle className="size-6 mx-auto mb-2 opacity-30" />
+        <p className="text-body font-medium text-ink-500">Upload a counterparty version to analyze redlines</p>
+        <p className="text-dense mt-1">Upload a new version on the Versions tab, then come back here.</p>
       </div>
     )
   }
@@ -197,15 +205,15 @@ export function RedlinePanel({
   return (
     <div className="space-y-4">
       {/* Version selectors + trigger */}
-      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-        <p className="text-sm font-semibold text-gray-700">Select versions to compare</p>
+      <div className="bg-card border border-paper-200 rounded-card p-4 space-y-3">
+        <p className="text-section text-ink-950">Select versions to compare</p>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="text-xs text-gray-500 font-medium block mb-1">Baseline (our version)</label>
+            <label className="text-dense text-ink-500 font-medium block mb-1">Baseline (our version)</label>
             <select
               value={v1Id}
               onChange={e => setV1Id(e.target.value)}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             >
               {versions.map(v => (
                 <option key={v.id} value={v.id}>v{v.versionNumber}</option>
@@ -213,11 +221,11 @@ export function RedlinePanel({
             </select>
           </div>
           <div>
-            <label className="text-xs text-gray-500 font-medium block mb-1">Counterparty redlines</label>
+            <label className="text-dense text-ink-500 font-medium block mb-1">Counterparty redlines</label>
             <select
               value={v2Id}
               onChange={e => setV2Id(e.target.value)}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-8 text-[13px] border border-input bg-card rounded-md px-2.5 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
             >
               {versions.map(v => (
                 <option key={v.id} value={v.id}>v{v.versionNumber}</option>
@@ -231,19 +239,19 @@ export function RedlinePanel({
           onClick={() => onRequestAnalysis(v1Id, v2Id)}
         >
           {isAnalyzing
-            ? <><Loader2 className="h-4 w-4 animate-spin" /> Analyzing redlines…</>
-            : <><Sparkles className="h-4 w-4" /> Analyze Redlines</>
+            ? <><Loader2 className="size-3.5 animate-spin" /> Analyzing redlines…</>
+            : <><Sparkles className="size-3.5" /> Analyze Redlines</>
           }
         </Button>
       </div>
 
       {/* Human gate banner */}
       {analysis?.requiresHumanGate && (
-        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3">
-          <AlertTriangle className="h-5 w-5 text-amber-500 flex-shrink-0 mt-0.5" />
+        <div className="bg-attention-50 border border-attention-200 rounded-card p-4 flex items-start gap-3">
+          <AlertTriangle className="size-4 text-attention-600 flex-shrink-0 mt-0.5" />
           <div>
-            <p className="text-sm font-semibold text-amber-800">Legal review required</p>
-            <p className="text-xs text-amber-700 mt-0.5">
+            <p className="text-body font-semibold text-attention-700">Legal review required</p>
+            <p className="text-dense text-attention-700 mt-0.5">
               One or more changes involve walkaway positions or terms outside the playbook. Please escalate to legal counsel before proceeding.
             </p>
           </div>
@@ -252,29 +260,29 @@ export function RedlinePanel({
 
       {/* Summary */}
       {analysis && (
-        <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <div className="bg-card border border-paper-200 rounded-card p-4 space-y-3">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-gray-800">Analysis summary</p>
-              <p className="text-xs text-gray-500 mt-0.5">{analysis.summary}</p>
+              <p className="text-section text-ink-950">Analysis summary</p>
+              <p className="text-dense text-ink-500 mt-0.5">{analysis.summary}</p>
             </div>
             <div className="text-right flex-shrink-0">
-              <span className={`text-xs font-semibold px-2 py-1 rounded-lg ${
-                analysis.recommendedAction === 'accept_all' ? 'bg-emerald-50 text-emerald-700' :
-                analysis.recommendedAction === 'reject'    ? 'bg-red-50 text-red-700' :
-                'bg-amber-50 text-amber-700'
+              <span className={`text-dense font-semibold px-2 py-1 rounded-md ${
+                analysis.recommendedAction === 'accept_all' ? 'bg-brand-50 text-brand-700' :
+                analysis.recommendedAction === 'reject'    ? 'bg-risk-50 text-risk-700' :
+                'bg-attention-50 text-attention-700'
               }`}>
                 {analysis.recommendedAction === 'accept_all' ? 'Accept all'
                   : analysis.recommendedAction === 'reject'   ? 'Reject'
                   : 'Counter required'}
               </span>
-              <p className="text-xs text-gray-400 mt-1">{Math.round(analysis.confidence * 100)}% confidence</p>
+              <p className="text-dense text-ink-400 mt-1 tabular-nums">{Math.round(analysis.confidence * 100)}% confidence</p>
             </div>
           </div>
-          <div className="flex items-center gap-4 text-xs">
-            <span className="text-emerald-700 font-medium">{acceptN} accept</span>
-            <span className="text-amber-700 font-medium">{counterN} counter</span>
-            <span className="text-red-700 font-medium">{rejectN} reject</span>
+          <div className="flex items-center gap-4 text-dense tabular-nums">
+            <span className="text-brand-700 font-medium">{acceptN} accept</span>
+            <span className="text-attention-700 font-medium">{counterN} counter</span>
+            <span className="text-risk-700 font-medium">{rejectN} reject</span>
           </div>
         </div>
       )}
@@ -282,7 +290,7 @@ export function RedlinePanel({
       {/* Change list */}
       {analysis && analysis.changes.length > 0 && (
         <div className="space-y-2.5">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide px-1">
+          <p className="text-eyebrow text-ink-700 uppercase px-1">
             {analysis.changes.length} change{analysis.changes.length !== 1 ? 's' : ''} detected
           </p>
           {analysis.changes.map(change => (

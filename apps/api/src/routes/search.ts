@@ -18,8 +18,11 @@ const AdvancedSearchSchema = z.object({
   type: z.string().optional(),
   status: z.string().optional(),
   jurisdiction: z.string().optional(),
-  riskScoreMin: z.number().min(0).max(1).optional(),
-  riskScoreMax: z.number().min(0).max(1).optional(),
+  // 0-100, the declared riskScore scale (RiskScoreSchema in @clm/types). These
+  // were bounded to max(1), so any real risk filter the UI sent was rejected
+  // outright and the ones that got through matched almost nothing.
+  riskScoreMin: z.number().min(0).max(100).optional(),
+  riskScoreMax: z.number().min(0).max(100).optional(),
   clauseFlags: z.record(z.boolean()).optional(),
   effectiveDateFrom: z.string().optional(),
   effectiveDateTo: z.string().optional(),

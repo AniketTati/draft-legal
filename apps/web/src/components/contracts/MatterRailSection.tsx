@@ -26,6 +26,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { RailSection } from '@/components/contracts/RailSection'
+import { StatusPill } from '@/components/ui/status-pill'
 import { Briefcase, Building2, User as UserIcon, ArrowRight } from 'lucide-react'
 
 // Shape returned by GET /api/v1/matters/:id — nested arrays + owner
@@ -41,12 +42,6 @@ interface MatterDetail {
   contracts?: Array<{ id: string }>
   requests?: Array<{ id: string }>
   threads?: Array<{ id: string }>
-}
-
-const STATUS_STYLE: Record<string, string> = {
-  OPEN:     'bg-emerald-50 text-emerald-700 border-emerald-200',
-  CLOSED:   'bg-gray-100  text-gray-700    border-gray-300',
-  ARCHIVED: 'bg-amber-50  text-amber-800   border-amber-200',
 }
 
 export function MatterRailSection({ matterId }: { matterId: string | null | undefined }) {
@@ -69,7 +64,6 @@ export function MatterRailSection({ matterId }: { matterId: string | null | unde
     )
   }
 
-  const statusCls = STATUS_STYLE[matter.status] ?? STATUS_STYLE.OPEN
   const contractCount = matter.contracts?.length ?? 0
   const requestCount  = matter.requests?.length ?? 0
   const threadCount   = matter.threads?.length ?? 0
@@ -83,16 +77,17 @@ export function MatterRailSection({ matterId }: { matterId: string | null | unde
           <Link
             to={`/matters/${matter.id}`}
             data-testid="matter-rail-link"
-            className="flex items-start gap-1.5 text-[12.5px] font-medium text-gray-900 hover:text-blue-700 leading-tight min-w-0"
+            className="flex items-start gap-1.5 text-[12.5px] font-medium text-ink-950 hover:text-brand-700 leading-tight min-w-0"
           >
-            <Briefcase className="h-3.5 w-3.5 text-blue-600 mt-0.5 shrink-0" />
+            <Briefcase className="size-3.5 text-ink-400 mt-0.5 shrink-0" />
             <span className="truncate">{matter.name}</span>
           </Link>
-          <span
-            className={`shrink-0 text-[9.5px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded border ${statusCls}`}
+          <StatusPill
+            status={matter.status}
+            className="shrink-0 text-[9.5px] font-semibold uppercase tracking-wider"
           >
             {matter.status}
-          </span>
+          </StatusPill>
         </div>
 
         {/* Description */}
@@ -103,15 +98,15 @@ export function MatterRailSection({ matterId }: { matterId: string | null | unde
         )}
 
         {/* Sibling counts */}
-        <div className="text-[11px] text-gray-700 flex items-center gap-1.5 flex-wrap">
+        <div className="text-[11px] text-ink-700 flex items-center gap-1.5 flex-wrap">
           {siblingContracts > 0 ? (
             <Link
               to={`/matters/${matter.id}`}
-              className="text-blue-700 hover:underline inline-flex items-center gap-0.5"
+              className="text-ink-950 font-medium hover:underline inline-flex items-center gap-0.5"
               data-testid="matter-siblings-link"
             >
               {siblingContracts} other {siblingContracts === 1 ? 'contract' : 'contracts'} in this matter
-              <ArrowRight className="h-3 w-3" />
+              <ArrowRight className="size-3" />
             </Link>
           ) : (
             <span className="text-muted-foreground">Only contract in this matter</span>
@@ -127,14 +122,14 @@ export function MatterRailSection({ matterId }: { matterId: string | null | unde
         {/* Counterparty + Owner */}
         <div className="space-y-0.5">
           {matter.counterpartyName && (
-            <div className="text-[11px] text-gray-700 flex items-center gap-1">
-              <Building2 className="h-3 w-3 text-gray-400" />
+            <div className="text-[11px] text-ink-700 flex items-center gap-1">
+              <Building2 className="size-3 text-ink-400" />
               <span className="truncate">{matter.counterpartyName}</span>
             </div>
           )}
           {matter.owner?.name && (
-            <div className="text-[11px] text-gray-700 flex items-center gap-1">
-              <UserIcon className="h-3 w-3 text-gray-400" />
+            <div className="text-[11px] text-ink-700 flex items-center gap-1">
+              <UserIcon className="size-3 text-ink-400" />
               <span className="truncate">{matter.owner.name}</span>
             </div>
           )}
@@ -146,7 +141,7 @@ export function MatterRailSection({ matterId }: { matterId: string | null | unde
             {matter.tags!.slice(0, 6).map(t => (
               <span
                 key={t}
-                className="inline-flex items-center text-[9.5px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200"
+                className="inline-flex items-center text-[9.5px] uppercase tracking-wider font-mono px-1.5 py-0.5 rounded-chip bg-paper-100 text-ink-700 border border-paper-200"
               >
                 #{t}
               </span>

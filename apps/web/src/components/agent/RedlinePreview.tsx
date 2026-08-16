@@ -21,8 +21,9 @@
  *      redline_apply PendingAction, reusing the ActionPreview surface
  */
 import { useState } from 'react'
-import { Sparkles, ChevronRight, Check, AlertTriangle } from 'lucide-react'
+import { ChevronRight, Check, AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { AssistMark } from '@/components/ui/assist'
 import type { PendingAction } from './ActionPreview'
 
 export interface RedlineChange {
@@ -47,10 +48,14 @@ export interface RedlineProposal {
   error?:   string
 }
 
-const TONE: Record<RedlineVariant['aggression'], { label: string; hint: string; color: string }> = {
-  least:      { label: 'Least',      hint: 'Minimal edits; preserves counterparty language', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
-  moderate:   { label: 'Moderate',   hint: 'Balanced rewrite toward playbook acceptable',    color: 'bg-amber-50 border-amber-200 text-amber-800' },
-  aggressive: { label: 'Aggressive', hint: 'Full rewrite to playbook preferred position',    color: 'bg-red-50 border-red-200 text-red-800' },
+// Aggression is a picker, not a status: "Least" is not binding and
+// "Aggressive" is not legal exposure, so the old emerald/amber/red ramp
+// spent meaning colours on a preference. The selected tab is a selection,
+// which the system renders in ink; the label carries the aggression.
+const TONE: Record<RedlineVariant['aggression'], { label: string; hint: string }> = {
+  least:      { label: 'Least',      hint: 'Minimal edits; preserves counterparty language' },
+  moderate:   { label: 'Moderate',   hint: 'Balanced rewrite toward playbook acceptable'    },
+  aggressive: { label: 'Aggressive', hint: 'Full rewrite to playbook preferred position'    },
 }
 
 export function RedlinePreview({
@@ -71,9 +76,9 @@ export function RedlinePreview({
     return (
       <div
         data-testid="redline-preview-error"
-        className="rounded-lg border border-red-200 bg-red-50 text-red-900 text-[11px] px-2.5 py-1.5 flex items-center gap-1.5"
+        className="rounded-md border border-risk-200 bg-risk-50 text-risk-900 text-[11px] px-2.5 py-1.5 flex items-center gap-1.5"
       >
-        <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+        <AlertTriangle className="size-3 flex-shrink-0" />
         <span>Redline generation failed{proposal.error ? `: ${proposal.error}` : ''}</span>
       </div>
     )
@@ -106,18 +111,21 @@ export function RedlinePreview({
     <div
       data-testid="redline-preview"
       data-clause-id={proposal.clause.id}
-      className="rounded-xl border border-purple-200 bg-purple-50/60 text-[12px] overflow-hidden"
+      // The whole card is machine-authored, so it takes the assist wash — this
+      // is the surface the indigo exists for.
+      className="rounded-card border border-assist-200 bg-assist-50 text-dense overflow-hidden"
     >
       {/* Header */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-purple-200/80">
-        <Sparkles className="h-3.5 w-3.5 text-purple-600 flex-shrink-0" />
-        <span className="font-semibold text-purple-900">Redline proposal</span>
-        <span className="font-mono text-[10.5px] text-purple-700 truncate">
+      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-assist-200">
+        <AssistMark className="flex-shrink-0" />
+        <span className="font-semibold text-assist-700">Redline proposal</span>
+        <span className="font-mono text-[10.5px] text-assist-700 truncate">
           {proposal.clause.clauseType}
           {proposal.clause.sectionRef && ` · ${proposal.clause.sectionRef}`}
         </span>
         {!proposal.hasPlaybook && (
-          <span className="ml-auto text-[9.5px] uppercase tracking-wider font-medium text-amber-800 bg-amber-100 border border-amber-200 rounded px-1.5 py-0.5">
+          // A missing playbook is a caveat about the input, not the user's turn.
+          <span className="ml-auto text-[9.5px] uppercase tracking-wider font-medium text-ink-500 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5">
             No playbook
           </span>
         )}
@@ -136,7 +144,9 @@ export function RedlinePreview({
               onClick={() => setActiveIdx(i)}
               data-testid={`redline-preview-tab-${v.aggression}`}
               className={`text-[11px] rounded-md border px-2 py-1 font-medium transition-colors ${
-                active ? tone.color + ' ring-2 ring-purple-400/20' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                active
+                  ? 'border-ink-950 bg-ink-950 text-white'
+                  : 'bg-card border-paper-200 text-ink-700 hover:bg-paper-100 hover:text-ink-950'
               }`}
               title={tone.hint}
             >
@@ -148,8 +158,8 @@ export function RedlinePreview({
 
       <div className="px-3 pb-3 space-y-2">
         {/* Rationale */}
-        <div className="text-[11px] text-gray-800 leading-relaxed">
-          <span className="text-[9.5px] font-medium uppercase tracking-wider text-gray-400 block mb-0.5">
+        <div className="text-[11px] text-assist-900 leading-relaxed">
+          <span className="text-[9.5px] font-medium uppercase tracking-wider text-assist-700 block mb-0.5">
             Rationale
           </span>
           {active?.rationale}
@@ -157,8 +167,8 @@ export function RedlinePreview({
 
         {/* Changes */}
         {active?.changes && active.changes.length > 0 && (
-          <div className="rounded-md border border-purple-100 bg-white/80 divide-y divide-purple-100">
-            <div className="px-2 py-1 text-[9.5px] font-medium uppercase tracking-wider text-gray-500">
+          <div className="rounded-md border border-assist-200 bg-card divide-y divide-assist-200">
+            <div className="px-2 py-1 text-[9.5px] font-medium uppercase tracking-wider text-ink-500">
               Changes ({active.changes.length})
             </div>
             {active.changes.map((ch, i) => (
@@ -168,18 +178,18 @@ export function RedlinePreview({
                 data-testid={`redline-change-${i}`}
               >
                 <div className="text-[10.5px] font-mono flex items-start gap-1.5">
-                  <span className="line-through text-red-700 bg-red-50 px-1 rounded flex-1 break-words">
+                  <span className="line-through text-risk-700 bg-risk-50 px-1 rounded-chip flex-1 break-words">
                     {ch.before || '∅'}
                   </span>
                 </div>
                 <div className="text-[10.5px] font-mono flex items-start gap-1.5">
-                  <span className="text-emerald-700 bg-emerald-50 px-1 rounded flex-1 break-words">
+                  <span className="text-brand-700 bg-brand-50 px-1 rounded-chip flex-1 break-words">
                     {ch.after || '∅'}
                   </span>
                 </div>
                 {ch.reason && (
-                  <div className="text-[10px] text-gray-500 italic">
-                    <ChevronRight className="inline h-2.5 w-2.5" /> {ch.reason}
+                  <div className="text-[10px] text-ink-500 italic">
+                    <ChevronRight className="inline size-2.5" /> {ch.reason}
                   </div>
                 )}
               </div>
@@ -190,18 +200,42 @@ export function RedlinePreview({
         {/* Proposed full text — collapsed by default */}
         <ProposedText text={active?.proposedText ?? ''} />
 
+        {/* GROUNDING — say plainly when there is no playbook behind this.
+            `hasPlaybook: false` means the rewrite is the model's own view of
+            market terms, not the organisation's recorded position, and that
+            is the single most important thing a reviewer can know before
+            putting the text into a contract. It was a grey "No playbook"
+            chip in the header, easy to read as a filing detail. */}
+        {!proposal.hasPlaybook && (
+          <div
+            data-testid="redline-preview-ungrounded"
+            className="flex items-start gap-1.5 rounded-md border border-dashed border-assist-200 bg-card px-2 py-1.5 text-[10.5px] text-ink-700"
+          >
+            <AlertTriangle className="size-3 mt-px flex-shrink-0 text-ink-500" />
+            <span>
+              No playbook position exists for{' '}
+              <span className="font-medium text-ink-950">{proposal.clause.clauseType}</span>, so this
+              wording is the model&rsquo;s own — not your organisation&rsquo;s agreed fallback.
+              Read it before applying.
+            </span>
+          </div>
+        )}
+
         {/* Apply button */}
         <div className="flex items-center justify-between gap-2 pt-1">
-          <div className="text-[10.5px] text-gray-500">
+          <div className="text-[10.5px] text-ink-500">
             Applying creates ContractVersion (n+1). Reversible via Undo.
           </div>
+          {/* Asking the machine to write its own proposal into the document —
+              the one place the assist fill belongs on a button. */}
           <Button
+            variant="assist"
             size="sm"
             onClick={() => active && fireApply(active)}
             data-testid={`redline-preview-apply-${active?.aggression}`}
-            className="h-7 gap-1 bg-purple-600 hover:bg-purple-700 text-white text-[11px]"
+            className="h-7 gap-1 text-[11px]"
           >
-            <Check className="h-3 w-3" />
+            <Check className="size-3" />
             Apply {TONE[active?.aggression ?? 'moderate'].label}
           </Button>
         </div>
@@ -214,20 +248,20 @@ function ProposedText({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   if (!text) return null
   return (
-    <div className="rounded-md border border-gray-200 bg-white">
+    <div className="rounded-md border border-paper-200 bg-card">
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
         data-testid="redline-preview-proposed-toggle"
-        className="w-full px-2 py-1 text-left text-[10.5px] font-medium text-gray-600 hover:bg-gray-50 flex items-center gap-1"
+        className="w-full px-2 py-1 text-left text-[10.5px] font-medium text-ink-700 hover:bg-paper-100 flex items-center gap-1"
       >
-        <ChevronRight className={`h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`size-3 transition-transform ${open ? 'rotate-90' : ''}`} />
         Full proposed text ({text.length} chars)
       </button>
       {open && (
         <pre
           data-testid="redline-preview-proposed-text"
-          className="px-2 py-1.5 text-[10.5px] font-mono whitespace-pre-wrap break-words border-t border-gray-100 max-h-60 overflow-y-auto text-gray-800"
+          className="px-2 py-1.5 text-[10.5px] font-mono whitespace-pre-wrap break-words border-t border-paper-200 max-h-60 overflow-y-auto text-ink-700"
         >
           {text}
         </pre>

@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { ShieldCheck, ChevronRight, Lock, EyeOff, Eye } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, EmptyState } from '@/components/ui/primitives'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,42 +51,41 @@ export function AdminRolesPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <ShieldCheck className="h-5 w-5" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <ShieldCheck className="size-5" />
             Roles &amp; Permissions
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-dense text-ink-500 mt-1">
             View system roles and their associated permissions. Custom role editing is coming soon.
           </p>
         </div>
         {unconfiguredCount > 0 && (
-          <button
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => setShowUnconfigured((v) => !v)}
             data-testid="toggle-unconfigured"
-            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:bg-accent shrink-0"
+            className="shrink-0"
             title={showUnconfigured
               ? 'Hide roles with no permissions yet'
               : 'Show roles with no permissions yet'}
           >
             {showUnconfigured
-              ? <><EyeOff className="h-3.5 w-3.5" /> Hide {unconfiguredCount} unconfigured</>
-              : <><Eye className="h-3.5 w-3.5" /> Show {unconfiguredCount} unconfigured</>}
-          </button>
+              ? <><EyeOff className="size-3.5" /> Hide {unconfiguredCount} unconfigured</>
+              : <><Eye className="size-3.5" /> Show {unconfiguredCount} unconfigured</>}
+          </Button>
         )}
       </div>
 
       {/* Roles list */}
       {isLoading ? (
         <div className="flex justify-center py-12">
-          <div className="w-5 h-5 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin" />
+          <div className="size-5 border-2 border-paper-300 border-t-ink-950 rounded-full animate-spin" />
         </div>
       ) : !roles || roles.length === 0 ? (
-        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
-          <ShieldCheck className="h-8 w-8 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-600 font-medium">No roles configured</p>
-        </div>
+        <EmptyState icon={<ShieldCheck />} title="No roles configured" />
       ) : (
-        <div className="bg-white rounded-xl border shadow-sm divide-y">
+        <Card className="divide-y divide-paper-200">
           {visibleRoles.map(role => {
             const isExpanded = expandedRoleId === role.id
             const unconfigured = role.permissions.length === 0
@@ -92,33 +93,35 @@ export function AdminRolesPage() {
               <div key={role.id} className={unconfigured ? 'bg-muted/20' : undefined}>
                 <button
                   onClick={() => toggleRole(role.id)}
-                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-gray-50 transition-colors text-left"
+                  className="w-full flex items-center gap-4 px-5 py-4 hover:bg-paper-50 transition-colors text-left"
                 >
                   <ChevronRight
-                    className={`h-4 w-4 text-gray-400 transition-transform ${
+                    className={`size-4 text-ink-400 transition-transform ${
                       isExpanded ? 'rotate-90' : ''
                     }`}
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <p className={`text-sm font-medium ${unconfigured ? 'text-gray-500' : 'text-gray-900'}`}>{role.name}</p>
+                      <p className={`text-body font-medium ${unconfigured ? 'text-ink-500' : 'text-ink-950'}`}>{role.name}</p>
                       {role.isSystem && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500 border border-gray-200">
-                          <Lock className="h-2.5 w-2.5" />
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-chip text-[10px] font-medium bg-paper-100 text-ink-500 border border-paper-200">
+                          <Lock className="size-2.5" />
                           System
                         </span>
                       )}
                       {unconfigured && (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-50 text-amber-700 border border-amber-200">
+                        // "Your turn": the seat exists but an admin still has to grant it
+                        // permissions, so this is attention, not decoration.
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-chip text-[10px] font-semibold uppercase tracking-wide bg-attention-50 text-attention-700 border border-attention-200">
                           Not yet configured
                         </span>
                       )}
                     </div>
                     {role.description && (
-                      <p className="text-xs text-gray-500 mt-0.5">{role.description}</p>
+                      <p className="text-dense text-ink-500 mt-0.5">{role.description}</p>
                     )}
                   </div>
-                  <span className="text-xs text-gray-400 flex-shrink-0">
+                  <span className="text-dense tabular-nums text-ink-400 flex-shrink-0">
                     {role.permissions.length} permission{role.permissions.length !== 1 ? 's' : ''}
                   </span>
                 </button>
@@ -127,7 +130,7 @@ export function AdminRolesPage() {
                 {isExpanded && (
                   <div className="px-5 pb-4 pl-14">
                     {role.permissions.length === 0 ? (
-                      <div className="rounded-md border border-dashed border-amber-300 bg-amber-50/50 px-3 py-2.5 text-xs text-amber-900 leading-relaxed">
+                      <div className="rounded-md border border-dashed border-attention-200 bg-attention-50/50 px-3 py-2.5 text-dense text-attention-700 leading-relaxed">
                         <strong className="font-semibold">No permissions yet.</strong>{' '}
                         This role exists so you can plan for the seat, but it
                         hasn't been granted any permissions. Assigning it
@@ -136,30 +139,33 @@ export function AdminRolesPage() {
                         lands with v1.1.
                       </div>
                     ) : (
-                      <div className="bg-gray-50 rounded-lg border p-3">
+                      <div className="bg-paper-50 rounded-card border border-paper-200 p-3">
                         <table className="w-full">
                           <thead>
-                            <tr className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                            <tr className="text-[11px] font-semibold text-ink-400 uppercase tracking-[0.08em]">
                               <th className="text-left pb-2 pr-4">Action</th>
                               <th className="text-left pb-2 pr-4">Resource</th>
                               <th className="text-left pb-2">Scope</th>
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-gray-200">
+                          <tbody className="divide-y divide-paper-200">
                             {role.permissions.map((perm, i) => (
                               <tr key={i}>
+                                {/* action/resource were blue and purple, but neither carries a
+                                    meaning — they are machine-readable identifiers, so they read
+                                    as mono neutrals: filled for the verb, outlined for the noun. */}
                                 <td className="py-1.5 pr-4">
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-chip font-mono text-[11px] bg-paper-100 text-ink-950 border border-paper-200">
                                     {perm.action}
                                   </span>
                                 </td>
                                 <td className="py-1.5 pr-4">
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-purple-50 text-purple-700 border border-purple-200">
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-chip font-mono text-[11px] bg-card text-ink-700 border border-paper-200">
                                     {perm.resource}
                                   </span>
                                 </td>
                                 <td className="py-1.5">
-                                  <span className="text-xs text-gray-600">{perm.scope}</span>
+                                  <span className="text-dense text-ink-500">{perm.scope}</span>
                                 </td>
                               </tr>
                             ))}
@@ -172,7 +178,7 @@ export function AdminRolesPage() {
               </div>
             )
           })}
-        </div>
+        </Card>
       )}
     </div>
   )

@@ -20,15 +20,21 @@ interface Notification {
   createdAt:    string
 }
 
+/**
+ * Icon colour is the notification's meaning, not its category: a request or a
+ * due date is the user's turn, a decision is binding, a hand-off is in flight.
+ * COUNTERPARTY_VERSION loses its indigo — a human on the other side sent that
+ * file, and indigo belongs to the machine.
+ */
 const TYPE_ICON: Record<string, React.ReactNode> = {
-  APPROVAL_REQUEST: <Clock className="h-3.5 w-3.5 text-blue-500" />,
-  APPROVAL_DECIDED: <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />,
-  ESCALATION:       <AlertTriangle className="h-3.5 w-3.5 text-orange-500" />,
-  DELEGATION:       <ArrowRight className="h-3.5 w-3.5 text-blue-500" />,
-  OBLIGATION_DUE:   <CalendarClock className="h-3.5 w-3.5 text-amber-500" />,
-  RENEWAL_DUE:      <Repeat className="h-3.5 w-3.5 text-amber-600" />,
+  APPROVAL_REQUEST: <Clock className="size-3.5 text-attention-600" />,
+  APPROVAL_DECIDED: <CheckCircle2 className="size-3.5 text-brand-700" />,
+  ESCALATION:       <AlertTriangle className="size-3.5 text-attention-600" />,
+  DELEGATION:       <ArrowRight className="size-3.5 text-info-600" />,
+  OBLIGATION_DUE:   <CalendarClock className="size-3.5 text-attention-600" />,
+  RENEWAL_DUE:      <Repeat className="size-3.5 text-attention-600" />,
   // Counterparty returned a revised version via the portal or inbound email.
-  COUNTERPARTY_VERSION: <FileUp className="h-3.5 w-3.5 text-indigo-500" />,
+  COUNTERPARTY_VERSION: <FileUp className="size-3.5 text-info-600" />,
 }
 
 function relativeTime(d: string) {
@@ -76,34 +82,36 @@ export function NotificationBell() {
     <div className="relative" ref={dropdownRef}>
       <button
         onClick={() => setOpen(v => !v)}
-        className="relative p-2 rounded-lg hover:bg-gray-100 transition-colors"
+        className="relative p-2 rounded-md hover:bg-paper-100 transition-colors"
         aria-label="Notifications"
         data-testid="notification-bell"
       >
-        <Bell className="h-5 w-5 text-gray-600" />
+        <Bell className="size-4 text-ink-700" />
+        {/* Unread notifications are things waiting on this user — the one count
+            in the shell that earns a meaning colour. */}
         {unreadCount > 0 && (
-          <span className="absolute top-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white text-[9px] font-bold leading-none">
+          <span className="absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-attention-600 text-white text-[9px] font-bold leading-none tabular-nums">
             {unreadCount > 9 ? '9+' : unreadCount}
           </span>
         )}
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-80 bg-white rounded-xl shadow-lg border z-50 overflow-hidden">
+        <div className="absolute right-0 mt-1 w-80 bg-card rounded-card shadow-e2 border border-paper-200 z-50 overflow-hidden">
           {/* Header */}
-          <div className="flex items-center justify-between px-3 py-2.5 border-b bg-gray-50">
-            <span className="text-sm font-semibold text-gray-800">Notifications</span>
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-paper-200 bg-paper-50">
+            <span className="text-dense font-semibold text-ink-950">Notifications</span>
             <div className="flex items-center gap-2">
               {unreadCount > 0 && (
                 <button
                   onClick={() => markRead.mutate(undefined)}
-                  className="text-xs text-blue-600 hover:underline"
+                  className="text-[11.5px] font-medium text-ink-950 hover:underline underline-offset-2"
                 >
                   Mark all read
                 </button>
               )}
-              <button onClick={() => setOpen(false)} className="p-0.5 rounded hover:bg-gray-200">
-                <X className="h-3.5 w-3.5 text-gray-500" />
+              <button onClick={() => setOpen(false)} className="p-0.5 rounded-chip hover:bg-paper-200">
+                <X className="size-3.5 text-ink-500" />
               </button>
             </div>
           </div>
@@ -111,16 +119,16 @@ export function NotificationBell() {
           {/* List */}
           {notifications.length === 0 ? (
             <div className="px-4 py-8 text-center">
-              <Bell className="h-8 w-8 text-gray-200 mx-auto mb-2" />
-              <p className="text-sm text-gray-400">No notifications</p>
+              <Bell className="size-6 text-ink-400 mx-auto mb-2" />
+              <p className="text-dense text-ink-500">No notifications</p>
             </div>
           ) : (
-            <div className="divide-y max-h-96 overflow-y-auto">
+            <div className="divide-y divide-paper-200 max-h-96 overflow-y-auto">
               {notifications.map(n => (
                 <div
                   key={n.id}
                   data-testid={`notification-${n.type}`}
-                  className={`flex gap-2.5 px-3 py-2.5 hover:bg-gray-50 transition-colors cursor-pointer ${!n.read ? 'bg-blue-50/40' : ''}`}
+                  className={`flex gap-2.5 px-3 py-2 hover:bg-paper-100 transition-colors cursor-pointer ${!n.read ? 'bg-paper-50' : ''}`}
                   onClick={() => {
                     if (!n.read) markRead.mutate([n.id])
                     setOpen(false)
@@ -140,17 +148,17 @@ export function NotificationBell() {
                   }}
                 >
                   <div className="shrink-0 mt-0.5">
-                    {TYPE_ICON[n.type] ?? <Bell className="h-3.5 w-3.5 text-gray-400" />}
+                    {TYPE_ICON[n.type] ?? <Bell className="size-3.5 text-ink-400" />}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className={`text-xs font-medium leading-snug ${n.read ? 'text-gray-700' : 'text-gray-900'}`}>
+                    <p className={`text-[11.5px] font-medium leading-snug ${n.read ? 'text-ink-700' : 'text-ink-950'}`}>
                       {n.title}
                     </p>
-                    <p className="text-xs text-gray-500 truncate mt-0.5">{n.body}</p>
-                    <p className="text-xs text-gray-400 mt-0.5">{relativeTime(n.createdAt)}</p>
+                    <p className="text-[11.5px] text-ink-500 truncate mt-0.5">{n.body}</p>
+                    <p className="text-[11px] text-ink-400 mt-0.5">{relativeTime(n.createdAt)}</p>
                   </div>
                   {!n.read && (
-                    <div className="shrink-0 mt-1.5 w-1.5 h-1.5 rounded-full bg-blue-500" />
+                    <div className="shrink-0 mt-1.5 size-1.5 rounded-full bg-attention-600" />
                   )}
                 </div>
               ))}

@@ -42,12 +42,15 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   other:       Bell,
 }
 
-function daysUntil(iso: string | null): number | null {
-  if (!iso) return null
-  const t = new Date(iso).getTime()
-  if (isNaN(t)) return null
-  return Math.floor((t - Date.now()) / (24 * 3600 * 1000))
-}
+/*
+ * Calendar days, not elapsed milliseconds. The old `Math.floor((due - now)/1d)`
+ * was wrong in both directions on the two labels that matter most: an
+ * obligation due tomorrow morning, read this afternoon, floored to 0 and said
+ * "due today"; one that fell due six hours ago floored to -1 and said "1d
+ * overdue" before anybody had missed a day. Shared with the contract header
+ * and the Renewal rail so a date reads the same everywhere.
+ */
+import { calendarDaysUntil as daysUntil } from './dates'
 
 // P7.4.1 (F-32, F-47) — Status-aware empty state. Obligations only
 // matter once a contract is signed; surfacing the "Extract" CTA on
@@ -137,7 +140,7 @@ export function ObligationsRailSection({
                 onClick={() => extract.mutate()}
                 disabled={extract.isPending}
                 data-testid="obligations-extract-btn"
-                className="text-[11px] text-blue-700 hover:underline disabled:opacity-50"
+                className="text-[11px] font-medium text-ink-950 hover:underline disabled:opacity-50"
               >
                 {extract.isPending ? 'Extracting…' : 'Extract anyway →'}
               </button>
@@ -156,13 +159,13 @@ export function ObligationsRailSection({
                 data-testid="obligations-extract-btn"
                 className="gap-1 text-[11px]"
               >
-                <Sparkles className="h-3 w-3" />
+                <Sparkles className="size-3" />
                 {extract.isPending ? 'Extracting…' : 'Extract obligations'}
               </Button>
             </>
           )}
           {extract.error && (
-            <div className="mt-2 text-[10.5px] text-red-700">
+            <div className="mt-2 text-[10.5px] text-risk-700">
               {(extract.error as Error).message ?? 'Extraction failed.'}
             </div>
           )}
@@ -173,9 +176,11 @@ export function ObligationsRailSection({
             {visible.map(o => {
               const Icon = TYPE_ICON[o.type] ?? Bell
               const days = daysUntil(o.dueDate)
+              // Overdue is real exposure; inside two weeks it is the user's
+              // turn to act. Anything further out is just a date.
               const dueColor = days == null ? 'text-muted-foreground'
-                : days < 0 ? 'text-red-700 font-medium'
-                : days <= 14 ? 'text-amber-700 font-medium'
+                : days < 0 ? 'text-risk-700 font-medium'
+                : days <= 14 ? 'text-attention-700 font-medium'
                 : 'text-muted-foreground'
               return (
                 <li
@@ -186,20 +191,20 @@ export function ObligationsRailSection({
                   data-status={o.status ?? 'OPEN'}
                   className={`group text-[11.5px] border rounded-md px-2 py-1.5 ${
                     o.status === 'COMPLETED'
-                      ? 'border-emerald-200 bg-emerald-50/40 opacity-90'
-                      : 'border-border bg-white/60'
+                      ? 'border-brand-200 bg-brand-50 opacity-90'
+                      : 'border-border bg-card'
                   }`}
                 >
                   <div className="flex items-start gap-1.5">
-                    <Icon className={`h-3 w-3 mt-0.5 flex-shrink-0 ${o.status === 'COMPLETED' ? 'text-emerald-600' : 'text-gray-500'}`} />
+                    <Icon className={`size-3 mt-0.5 flex-shrink-0 ${o.status === 'COMPLETED' ? 'text-brand-700' : 'text-ink-500'}`} />
                     <div className="flex-1 min-w-0">
-                      <div className={`font-medium text-[11.5px] leading-tight ${o.status === 'COMPLETED' ? 'text-gray-500 line-through' : 'text-gray-900'}`}>
+                      <div className={`font-medium text-[11.5px] leading-tight ${o.status === 'COMPLETED' ? 'text-ink-500 line-through' : 'text-ink-950'}`}>
                         {o.description}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
-                        <span className="font-mono uppercase tracking-wider text-gray-400">{o.type}</span>
+                        <span className="font-mono uppercase tracking-wider text-ink-400">{o.type}</span>
                         <span className="text-muted-foreground">· {o.owner}</span>
-                        {o.sectionRef && <span className="font-mono text-gray-500">§{o.sectionRef}</span>}
+                        {o.sectionRef && <span className="font-mono text-ink-500">§{o.sectionRef}</span>}
                         {o.dueDate && (
                           <span className={dueColor}>
                             {days == null ? new Date(o.dueDate).toLocaleDateString()
@@ -216,22 +221,27 @@ export function ObligationsRailSection({
                             type="button"
                             onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
                             data-testid={`obligation-complete-${o.id}`}
-                            className="ml-auto inline-flex items-center gap-0.5 text-emerald-700 hover:text-emerald-800 opacity-0 group-hover:opacity-100 transition-opacity"
+                            // `opacity-0 group-hover:opacity-100` alone meant a
+                            // keyboard user could Tab onto "complete" and never
+                            // see where they were.
+                            className="ml-auto inline-flex items-center gap-0.5 text-ink-700 hover:text-ink-950 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-chip"
                           >
-                            <CheckCircle2 className="h-3 w-3" />
+                            <CheckCircle2 className="size-3" />
                             <span className="font-medium">complete</span>
                           </button>
                         )}
+                        {/* The verb is an action (ink); the past tense is a
+                            settled state, which is what brand is for. */}
                         {o.status === 'COMPLETED' && (
-                          <span className="ml-auto inline-flex items-center gap-0.5 text-emerald-700">
-                            <CheckCircle2 className="h-3 w-3" />
+                          <span className="ml-auto inline-flex items-center gap-0.5 text-brand-700">
+                            <CheckCircle2 className="size-3" />
                             done
                           </span>
                         )}
                       </div>
                     </div>
                     {o.severity === 'high' && o.status !== 'COMPLETED' && (
-                      <span className="text-[9.5px] uppercase tracking-wider text-red-700 bg-red-50 border border-red-200 rounded px-1 flex-shrink-0">
+                      <span className="text-[9.5px] uppercase tracking-wider text-risk-700 bg-risk-50 border border-risk-200 rounded-chip px-1 flex-shrink-0">
                         high
                       </span>
                     )}
@@ -245,7 +255,7 @@ export function ObligationsRailSection({
               type="button"
               onClick={() => setShowAll(v => !v)}
               data-testid="obligations-toggle-all"
-              className="text-[10.5px] text-blue-700 hover:underline mt-1.5"
+              className="text-[10.5px] font-medium text-ink-950 hover:underline mt-1.5"
             >
               {showAll ? `Show fewer` : `Show all ${sorted.length}`}
             </button>
@@ -257,7 +267,7 @@ export function ObligationsRailSection({
               onClick={() => extract.mutate()}
               disabled={extract.isPending}
               data-testid="obligations-refresh-btn"
-              className="ml-2 underline hover:text-gray-900"
+              className="ml-2 underline hover:text-ink-950"
             >
               {extract.isPending ? 're-running…' : 're-run'}
             </button>

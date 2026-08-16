@@ -16,9 +16,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { EmptyState } from '@/components/ui/primitives'
+import { AssistMark } from '@/components/ui/assist'
 import {
   AlertTriangle, CheckCircle2, XCircle, ExternalLink, ShieldCheck,
-  Search,
+  Search, Pencil, Loader2,
 } from 'lucide-react'
 
 interface QueueItem {
@@ -54,14 +57,31 @@ export function ReviewQueuePage() {
     )).data,
   })
 
+  /*
+   * A single shared `isPending` gated every button on the page, so clicking
+   * Verify on one row greyed out all fourteen and told you nothing about which
+   * one was in flight. Track the row instead.
+   */
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  /** The row currently being corrected, keyed contractId::field. */
+  const [editKey, setEditKey] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+
   const verify = useMutation({
-    mutationFn: (p: { contractId: string; field: string }) =>
-      api.post(`/review-queue/${p.contractId}/verify`, { field: p.field }).then(r => r.data),
+    mutationFn: (p: { contractId: string; field: string; value?: string | null }) =>
+      api.post(`/review-queue/${p.contractId}/verify`, {
+        field: p.field,
+        ...(p.value !== undefined ? { value: p.value } : {}),
+      }).then(r => r.data),
+    onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
+    onSettled: () => { setBusyKey(null); setEditKey(null) },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
   })
   const reject = useMutation({
     mutationFn: (p: { contractId: string; field: string }) =>
       api.post(`/review-queue/${p.contractId}/reject`, { field: p.field }).then(r => r.data),
+    onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
+    onSettled: () => { setBusyKey(null) },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
   })
 
@@ -92,38 +112,38 @@ export function ReviewQueuePage() {
     <div className="px-6 py-5 max-w-6xl mx-auto" data-testid="review-queue-page">
       <div className="flex items-start justify-between mb-4">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-amber-600" />
+          <h1 className="text-title text-ink-950 flex items-center gap-2">
+            <ShieldCheck className="size-4 text-ink-400" />
             Extraction Queue
           </h1>
-          <p className="text-[12px] text-muted-foreground mt-1">
+          <p className="text-dense text-ink-500 mt-1">
             AI-extracted fields below the confidence threshold. Verify (keep the value),
             correct (set a new value), or reject (clear the value) — each contract stops
             carrying a silent low-confidence extraction.
           </p>
         </div>
-        <div className="text-[11px] text-muted-foreground tabular-nums">
+        <div className="text-[11px] text-ink-400 tabular-nums">
           {data ? `${data.total} items · threshold ${(data.threshold * 100).toFixed(0)}%` : ''}
         </div>
       </div>
 
       <div className="flex items-center gap-2 mb-4">
         <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-          <input
+          <Search className="absolute left-2.5 top-2 size-3.5 text-ink-400" />
+          <Input
             type="text"
             placeholder="Filter by contract, field, value or quote…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             data-testid="review-queue-search"
-            className="w-full pl-8 pr-2 py-1.5 text-sm rounded-md border border-border bg-background focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            className="pl-8"
           />
         </div>
         <select
           value={threshold}
           onChange={e => setThreshold(Number(e.target.value))}
           data-testid="review-queue-threshold"
-          className="text-sm rounded-md border border-border bg-background px-2 py-1.5"
+          className="h-8 text-[13px] text-ink-950 rounded-md border border-input bg-card px-2 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
         >
           {THRESHOLDS.map(t =>
             <option key={t.value} value={t.value}>{t.label}</option>
@@ -131,16 +151,21 @@ export function ReviewQueuePage() {
         </select>
       </div>
 
-      {isLoading && <div className="text-sm text-muted-foreground py-6">Loading…</div>}
+      {isLoading && <div className="text-body text-ink-500 py-6">Loading…</div>}
       {error && (
-        <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-md p-3">
-          <AlertTriangle className="h-4 w-4" /> Failed to load the queue.
+        <div className="flex items-center gap-2 text-body text-risk-700 bg-risk-50 border border-risk-200 rounded-md p-3">
+          <AlertTriangle className="size-4" /> Failed to load the queue.
         </div>
       )}
-      {filtered.length === 0 && !isLoading && (
-        <div className="px-4 py-10 text-center text-sm text-muted-foreground border border-dashed border-gray-300 rounded-lg">
-          Nothing to review at this threshold. Try widening it to surface more.
-        </div>
+      {/* A failed load is not an empty queue. Without the `!error` guard the
+          page reported both at once: an error banner, and underneath it a
+          reassuring "Nothing to review". */}
+      {filtered.length === 0 && !isLoading && !error && (
+        <EmptyState
+          icon={<ShieldCheck />}
+          title={search ? `Nothing matches "${search}" at this threshold.` : 'Nothing to review at this threshold.'}
+          description={search ? 'Clear the filter, or widen the threshold.' : 'Try widening it to surface more.'}
+        />
       )}
 
       <div className="space-y-3">
@@ -148,92 +173,155 @@ export function ReviewQueuePage() {
           <div
             key={contractId}
             data-testid={`review-queue-contract-${contractId}`}
-            className="border border-border rounded-lg bg-card overflow-hidden"
+            className="border border-paper-200 rounded-card bg-card overflow-hidden"
           >
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-muted/30">
+            <div className="flex items-center justify-between px-4 py-2 border-b border-paper-200 bg-paper-50">
               <div className="min-w-0 flex items-baseline gap-2">
                 <Link
                   to={`/contracts/${contractId}`}
-                  className="font-medium text-sm text-gray-900 hover:underline truncate"
+                  className="font-medium text-[13px] text-ink-950 hover:underline underline-offset-2 decoration-paper-300 truncate"
                 >
                   {group.title}
                 </Link>
-                <span className="text-[10.5px] uppercase tracking-wider text-muted-foreground font-mono">
+                <span className="text-[10.5px] uppercase tracking-[0.08em] text-ink-400 font-mono">
                   {group.items[0].contractType}
                 </span>
-                <span className="text-[10.5px] text-muted-foreground">
+                <span className="text-[10.5px] tabular-nums text-ink-500">
                   {group.items.length} flagged field{group.items.length === 1 ? '' : 's'}
                 </span>
               </div>
               <Link
                 to={`/contracts/${contractId}`}
-                className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-950 hover:underline underline-offset-2"
               >
-                <ExternalLink className="h-3 w-3" /> Open contract
+                <ExternalLink className="size-3" /> Open contract
               </Link>
             </div>
-            <div className="divide-y divide-border">
-              {group.items.map(it => (
+            <div className="divide-y divide-paper-200">
+              {group.items.map(it => {
+                const key = `${it.contractId}::${it.field}`
+                const busy = busyKey === key
+                const editing = editKey === key
+                const isEmpty = it.value == null || it.value === ''
+                return (
                 <div
-                  key={`${it.contractId}::${it.field}`}
+                  key={key}
                   data-testid={`review-queue-row-${it.contractId}-${it.field}`}
-                  className="px-4 py-2.5 flex items-start gap-3"
+                  className="px-4 py-2 flex items-start gap-3"
                 >
                   <div className="min-w-[140px] flex-shrink-0">
-                    <div className="text-[11px] font-medium text-gray-900">{it.fieldLabel}</div>
-                    <div className="text-[10.5px] text-muted-foreground font-mono">{it.field}</div>
+                    <div className="text-[11px] font-medium text-ink-950">{it.fieldLabel}</div>
+                    <div className="text-[10.5px] text-ink-400 font-mono">{it.field}</div>
                   </div>
                   <div className="flex-1 min-w-0 space-y-0.5">
-                    <div className="text-[12px] text-gray-900 truncate">
-                      {it.value != null && it.value !== ''
-                        ? String(it.value)
-                        : <em className="text-gray-400">(empty)</em>}
-                    </div>
-                    {it.quote && (
-                      <div className="text-[10.5px] text-muted-foreground italic truncate"
+                    {editing ? (
+                      /* The page header has always promised three actions —
+                         verify, CORRECT, reject — and only ever rendered two.
+                         The verify endpoint has taken an optional `value` all
+                         along, so correcting was one input away; without it the
+                         only way to fix a wrong extraction was to reject it,
+                         which clears the field and loses the answer. */
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          value={draft}
+                          autoFocus
+                          onChange={e => setDraft(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') verify.mutate({ contractId: it.contractId, field: it.field, value: draft.trim() || null })
+                            if (e.key === 'Escape') setEditKey(null)
+                          }}
+                          data-testid={`review-queue-correct-input-${it.field}`}
+                          aria-label={`Corrected value for ${it.fieldLabel}`}
+                          className="h-7 text-[12.5px]"
+                        />
+                        <Button
+                          size="xs"
+                          onClick={() => verify.mutate({ contractId: it.contractId, field: it.field, value: draft.trim() || null })}
+                          disabled={busy}
+                          data-testid={`review-queue-correct-save-${it.field}`}
+                        >
+                          Save
+                        </Button>
+                        <Button size="xs" variant="ghost" onClick={() => setEditKey(null)} disabled={busy}>
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="text-dense text-ink-950 truncate">
+                        {!isEmpty
+                          ? String(it.value)
+                          : <em className="text-ink-400">(nothing extracted)</em>}
+                      </div>
+                    )}
+                    {it.quote && !editing && (
+                      <div className="text-[10.5px] text-ink-500 italic truncate"
                            title={it.quote}>
                         “{it.quote}”
                       </div>
                     )}
                   </div>
+                  {!editing && (
                   <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {/* Every value on this page was written by the model, so the
+                        confidence reading is an assist mark, not a risk badge —
+                        the mark goes hollow as the model gets less sure. */}
                     <span
-                      className={
-                        'text-[10.5px] font-mono tabular-nums rounded px-1.5 py-0.5 ' +
-                        (it.confidence < 0.5
-                          ? 'bg-red-50 text-red-700 border border-red-200'
-                          : it.confidence < 0.7
-                            ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                            : 'bg-yellow-50 text-yellow-800 border border-yellow-200')
-                      }
+                      className="inline-flex items-center gap-1.5 text-[10.5px] font-mono tabular-nums rounded-chip px-1.5 py-0.5 bg-assist-50 text-assist-700 border border-assist-200"
                       title={`Extractor confidence: ${(it.confidence * 100).toFixed(0)}%`}
                     >
+                      <AssistMark confidence={it.confidence < 0.5 ? 'low' : it.confidence < 0.7 ? 'medium' : 'high'} />
                       {(it.confidence * 100).toFixed(0)}%
                     </span>
                     <Button
-                      size="sm"
+                      size="xs"
                       variant="outline"
-                      onClick={() => reject.mutate({ contractId: it.contractId, field: it.field })}
-                      disabled={reject.isPending}
-                      data-testid={`review-queue-reject-${it.field}`}
-                      className="h-7 gap-1 text-[11px] text-red-700 border-red-200 hover:bg-red-50"
+                      onClick={() => { setDraft(it.value != null ? String(it.value) : ''); setEditKey(key) }}
+                      disabled={busy}
+                      data-testid={`review-queue-correct-${it.field}`}
                     >
-                      <XCircle className="h-3 w-3" />
-                      Reject
+                      <Pencil />
+                      Correct
                     </Button>
+                    {/* Rejecting clears the value. On a field where nothing was
+                        extracted there is nothing to clear, so the action would
+                        be a no-op dressed up as a decision. */}
+                    {!isEmpty && (
+                      <Button
+                        size="xs"
+                        variant="danger"
+                        onClick={() => reject.mutate({ contractId: it.contractId, field: it.field })}
+                        disabled={busy}
+                        data-testid={`review-queue-reject-${it.field}`}
+                      >
+                        <XCircle />
+                        Reject
+                      </Button>
+                    )}
+                    {/* Verifying an extracted value makes it authoritative, so
+                        the action is tinted brand — but outlined, not filled.
+                        This is a bulk queue: a filled emerald button repeated
+                        down fourteen rows is the opposite of "the brand color,
+                        spent sparingly", and it would outweigh the Reject
+                        beside it. Both row actions stay outlined and equal;
+                        the fill is saved for single-decision surfaces. */}
                     <Button
-                      size="sm"
+                      size="xs"
+                      variant="outline"
+                      className="text-brand-700 border-brand-200 hover:bg-brand-50"
                       onClick={() => verify.mutate({ contractId: it.contractId, field: it.field })}
-                      disabled={verify.isPending}
+                      disabled={busy}
                       data-testid={`review-queue-verify-${it.field}`}
-                      className="h-7 gap-1 text-[11px] bg-emerald-600 hover:bg-emerald-700 text-white"
                     >
-                      <CheckCircle2 className="h-3 w-3" />
-                      Verify
+                      {busy ? <Loader2 className="animate-spin" /> : <CheckCircle2 />}
+                      {/* Confirming that a field is genuinely absent is a real
+                          answer, and a different one from confirming a value. */}
+                      {isEmpty ? 'Not present' : 'Verify'}
                     </Button>
                   </div>
+                  )}
                 </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         ))}

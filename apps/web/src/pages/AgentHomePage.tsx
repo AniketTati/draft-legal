@@ -33,6 +33,7 @@
  *     users can hop back to /dashboard or /contracts in one click.
  */
 import { useEffect, useRef, useState } from 'react'
+import { Kbd } from '@/components/ui/primitives'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -40,16 +41,26 @@ import { useAuthStore } from '@/store/auth'
 import { useAgentStore } from '@/store/agent'
 import { Button } from '@/components/ui/button'
 import {
-  Sparkles, Send, Plus, MessageSquare, ArrowLeft, Loader2, Bot,
-  ChevronRight, ChevronDown, FileText, Building2, CalendarClock, Search, Wrench, X,
-  Table as TableIcon, GitCompareArrows, ListChecks, FormInput, Trash2,
+  Sparkles, Send, Plus, MessageSquare, ArrowLeft,
+  ChevronRight, ChevronDown, FileText, Building2, CalendarClock, Search, X,
+  Table as TableIcon, GitCompareArrows, ListChecks, FormInput, Trash2, Square,
 } from 'lucide-react'
+// One glyph for the machine — the diamond replaces the bot/sparkle avatars.
+import { AssistMark } from '@/components/ui/assist'
 import { ArtifactPane, type Artifact } from '@/components/agent/ArtifactPane'
 import { artifactFromToolResult } from '@/components/agent/artifact-from-tool'
 import { ActionPreview, type PendingAction } from '@/components/agent/ActionPreview'
 import { parseActionChips } from '@/components/agent/action-chips'
 import { ChipRow } from '@/components/agent/ChipButton'
 import { MarkdownProse } from '@/components/agent/MarkdownProse'
+import { ThinkingIndicator } from '@/components/agent/ThinkingIndicator'
+// GROUNDING — the citation and redline renderers the side rail has always
+// had. /agent, the surface the product points people at for real work, was
+// rendering neither: a `contract_cite` result arrived as a mono pill with the
+// tool's name on it and the quotes it returned were dropped on the floor.
+import { CitationPills, type CitationBundle } from '@/components/agent/CitationPills'
+import { RedlinePreview, type RedlineProposal } from '@/components/agent/RedlinePreview'
+import { ToolCallChip, type RailToolCall } from '@/components/agent/SideAgentRail'
 import { cn } from '@/lib/utils'
 
 interface ThreadSummary {
@@ -84,23 +95,30 @@ interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
   content: string
-  toolCalls?: Array<{
-    name: string
-    status: 'running' | 'ok' | 'error'
-    // A2/U5 — entity title resolved from the tool result (contract title,
-    // counterparty name, etc.) so chips read "contract_get · Mayo MSA"
-    // instead of "contract_get". Populated client-side when the result
-    // includes a `title`/`name` field on a single primary entity.
-    entityTitle?: string
-    // A4 — slow-tool heartbeat (tool_progress event) so long-running
-    // calls show elapsed seconds instead of a frozen spinner.
-    elapsedSec?: number
-  }>
+  /**
+   * TOOL TRANSPARENCY — the same RailToolCall shape the side rail uses, so
+   * both surfaces share one renderer. This used to be a thinner local type
+   * carrying only `name` and `status`, which is why /agent's chips could not
+   * be expanded: the args and the result were never kept, so there was
+   * nothing to expand into.
+   */
+  toolCalls?: RailToolCall[]
   // P5 — write-tool plan-then-execute. Proposals awaiting the user's
   // Apply/Cancel, rendered as ActionPreview cards (mirrors SideAgentRail).
   pendingActions?: PendingAction[]
   streaming?: boolean
   error?: string
+  /** The user interrupted this turn; the prose below is partial. */
+  stopped?: boolean
+  /**
+   * TRUST — which model actually produced this turn, read off the SSE
+   * envelope. The page pins a provider in its request and the server does
+   * not necessarily honour it (a live run asking for gpt-4.1-mini came back
+   * from gemini-2.5-pro), so the only truthful source is the frames.
+   */
+  provenance?: { model?: string; tier?: string }
+  /** Wall-clock duration of the run, shown alongside the model. */
+  elapsedMs?: number
   /** The user text that produced this turn, so a failed turn can be retried. */
   retryPrompt?: string
 }
@@ -212,8 +230,77 @@ interface StarterPrompt {
 // original demo org). Instead we hydrate `topCps` from /api/v1/counterparties
 // at page mount and template the user's actual top counterparty into prompts.
 // Falls back to "your top counterparty" if the org has none yet.
-function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPrompt[] {
+interface PortfolioFacts {
+  pendingApprovals?: number
+  expiringSoon?: number
+  yourDay?: {
+    negotiationsInFlight?: number
+    negotiations?: Array<{ title?: string; counterpartyName?: string; riskScore?: number }>
+  }
+}
+
+/**
+ * Starters that lead with a fact about THIS portfolio.
+ *
+ * These go in front of the role-shaped list below, and only when the number
+ * behind them is real and non-zero — an invented "0 approvals are waiting"
+ * card would be worse than no card. Everything below still applies when the
+ * dashboard call has not resolved or the org is genuinely empty.
+ */
+function groundedStarters(facts: PortfolioFacts | undefined): StarterPrompt[] {
+  if (!facts) return []
+  const out: StarterPrompt[] = []
+  const approvals = facts.pendingApprovals ?? 0
+  const expiring = facts.expiringSoon ?? 0
+  const negotiating = facts.yourDay?.negotiationsInFlight ?? 0
+
+  if (approvals > 0) {
+    out.push({
+      icon: CalendarClock,
+      label: `${approvals} approval${approvals === 1 ? '' : 's'} waiting on you`,
+      prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, the specific off-playbook terms, and your approve / hold / reject recommendation with the reason.',
+    })
+  }
+  if (expiring > 0) {
+    out.push({
+      icon: FileText,
+      label: `${expiring} contract${expiring === 1 ? '' : 's'} expire within 90 days`,
+      prompt: 'Use renewal_advice for a portfolio view of everything expiring in the next 90 days. Group by renew / renegotiate / let-expire, and put the ones with auto-renew and a notice deadline already passed at the top.',
+    })
+  }
+  // Name the riskiest live negotiation outright — the single most useful
+  // thing on this screen is a pointer at the deal that is actually in trouble.
+  const riskiest = (facts.yourDay?.negotiations ?? [])
+    .filter(n => n.title && typeof n.riskScore === 'number')
+    .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0))[0]
+  if (riskiest?.title && (riskiest.riskScore ?? 0) >= 60) {
+    out.push({
+      icon: Search,
+      label: `Why is ${riskiest.title} scoring ${riskiest.riskScore}?`,
+      prompt: `Pull up "${riskiest.title}". Run a playbook check on it, cite the exact clauses driving its risk score, and tell me what to push back on first.`,
+    })
+  } else if (negotiating > 0) {
+    out.push({
+      icon: Search,
+      label: `${negotiating} negotiation${negotiating === 1 ? '' : 's'} in flight`,
+      prompt: 'List every contract currently UNDER_NEGOTIATION. For each: counterparty, value, days since last movement, the top off-playbook term, and what is blocking it.',
+    })
+  }
+  return out.slice(0, 3)
+}
+
+function starterPromptsFor(
+  roles: string[],
+  topCps: string[] = [],
+  facts?: PortfolioFacts,
+): StarterPrompt[] {
   const has = (r: string) => roles.includes(r)
+  const grounded = groundedStarters(facts)
+  // Grounded cards lead; the role list fills the rest of the grid.
+  const withGrounded = (list: StarterPrompt[]) => {
+    const seen = new Set(grounded.map(g => g.label))
+    return [...grounded, ...list.filter(l => !seen.has(l.label))].slice(0, 4)
+  }
   // First top counterparty for "Brief me on the X relationship" prompts.
   // If the org has none, we drop the counterparty-specific starter rather
   // than show a fake name.
@@ -233,7 +320,7 @@ function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPromp
     }
     out.push({ icon: CalendarClock, label: 'What\'s in my approval queue?',
       prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, key risks, and your recommendation.' })
-    return out
+    return withGrounded(out)
   }
   if (has('PROCUREMENT')) {
     const out: StarterPrompt[] = [
@@ -248,7 +335,7 @@ function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPromp
       prompt: 'Use contract_search with type=VENDOR_AGREEMENT. For each, show counterparty, annual commit, expiry, and current health.' })
     out.push({ icon: FileText, label: 'Compare two vendors\' terms',
       prompt: 'Find every Vendor or License agreement we have. Show me a side-by-side of their payment terms, liability caps, and termination rights so I can spot the outliers.' })
-    return out
+    return withGrounded(out)
   }
   if (has('SALES_REP')) {
     const out: StarterPrompt[] = [
@@ -264,7 +351,7 @@ function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPromp
       out.push({ icon: Sparkles, label: `Draft an SOW for the ${target} expansion`,
         prompt: `Draft an SOW for ${target} expansion based on our prior SOWs with them. Pull the template, populate with sensible defaults, and show me the draft.` })
     }
-    return out
+    return withGrounded(out)
   }
   if (has('FINANCE') || has('APPROVER')) {
     const out: StarterPrompt[] = [
@@ -277,10 +364,10 @@ function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPromp
       out.push({ icon: Search, label: `What\'s our exposure on ${cp1}?`,
         prompt: `Use counterparty_memory for ${cp1}. Show total committed value, payment terms, liability cap, and how much we\\'ve spent this year.` })
     }
-    return out
+    return withGrounded(out)
   }
   // Default — admin / generic
-  return [
+  return withGrounded([
     { icon: FileText, label: 'What needs my team\'s attention today?',
       prompt: 'Walk every contract that\'s currently UNDER_NEGOTIATION or PENDING_APPROVAL across the org. For each: counterparty, owner, days waiting, and what\'s blocking it.' },
     { icon: CalendarClock, label: 'Renewal pipeline next 90 days',
@@ -289,7 +376,7 @@ function starterPromptsFor(roles: string[], topCps: string[] = []): StarterPromp
       prompt: 'List our top 5 counterparties by total contract value. For each, show contract count, total value, and any open risks.' },
     { icon: Search, label: 'Search across all contracts',
       prompt: 'Use portfolio_search to find every clause that mentions "auto-renew" or "automatic renewal" — give me a count by type and flag any with no notice-period requirement.' },
-  ]
+  ])
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -312,6 +399,8 @@ export function AgentHomePage() {
   // U.5.1 — by-resource thread filter. null = unfiltered, 'pending' = chip
   // active but no resource picked yet (just visual cue), or a resource id.
   const [resourceFilter, setResourceFilter] = useState<string | null>(null)
+  // Free-text filter over conversation titles.
+  const [threadSearch, setThreadSearch] = useState('')
   // U.5.2 — open artifacts for this thread. Latest sits on the right;
   // strip below the chat lets users re-open closed ones. The chat
   // canvas shrinks to ~480px when an artifact is open.
@@ -320,25 +409,32 @@ export function AgentHomePage() {
   const abortRef = useRef<AbortController | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
-  // U.5.2 / decision 14d-14 — Esc closes the artifact pane.
+  // Esc does the most urgent thing available: stop a run first, and only
+  // close the artifact pane when nothing is running. Ordering matters —
+  // Escape during a six-tool sweep should not quietly close a panel and
+  // leave the sweep going.
   useEffect(() => {
-    if (!openArtifactId) return
+    if (!openArtifactId && !streaming) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setOpenArtifactId(null)
-      }
+      if (e.key !== 'Escape') return
+      if (streaming) { stopStreaming(); return }
+      setOpenArtifactId(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [openArtifactId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openArtifactId, streaming])
 
   // Threads list — fed by GET /agent/threads
+  // limit=30 against an account holding 65 conversations meant 35 of them
+  // were simply unreachable from this page, with no "load more" and no
+  // search. 100 is the server's own ceiling on this endpoint.
   const { data: threadsData } = useQuery<{ threads: ThreadSummary[] }>({
     queryKey: ['agent-threads-home'],
-    queryFn: () => api.get('/agent/threads?limit=30').then(r => r.data),
+    queryFn: () => api.get('/agent/threads?limit=100').then(r => r.data),
     staleTime: 10_000,
   })
-  const threads = threadsData?.threads ?? []
+  const allThreads = threadsData?.threads ?? []
 
   // P-feedback (2026-05-02). Load the skills catalogue so `send()` can
   // resolve `@slug` mentions to a real skillSlug and the composer can
@@ -395,10 +491,39 @@ export function AgentHomePage() {
     if (justStreamedThreadIdRef.current === threadId) {
       // We set this threadId from send() — the messages are already in state,
       // do not refetch. Just keep the URL in sync.
-      setSearchParams({ thread: threadId }, { replace: true })
-      justStreamedThreadIdRef.current = null
+      //
+      // Two things are load-bearing here.
+      //
+      // The ref is deliberately NOT cleared. `setSearchParams` changes
+      // identity whenever the location does and it is one of this effect's
+      // dependencies, so writing the URL re-runs the effect immediately.
+      // Clearing the ref first meant the second pass sailed past this guard
+      // and refetched the thread, overwriting the live turn with the
+      // server's flattened copy — the provenance line, the tool args and
+      // payloads, the pending write actions and the retry affordance all
+      // vanished a beat after they appeared. The guard compares against
+      // `threadId`, so a stale ref is harmless: clicking any OTHER thread
+      // fails the comparison and loads normally.
+      //
+      // And the write is conditional. An unconditional `replace` to the URL
+      // we are already on still produces a new location, which changes
+      // `setSearchParams` again, which re-runs this effect — a render loop
+      // that left the address bar back at a bare /agent with no thread id,
+      // so a reload lost the conversation entirely.
+      if (searchParams.get('thread') !== threadId) {
+        setSearchParams({ thread: threadId }, { replace: true })
+      }
       return
     }
+    // Reaching here means the user navigated to a DIFFERENT thread, so the
+    // just-streamed guard has done its job and is now spent. Leaving it set
+    // was a regression: click another conversation and then come back to the
+    // one you streamed, and the guard above fired again on a threadId whose
+    // messages are no longer in state — the page kept showing the OTHER
+    // thread's transcript under the returned-to thread's URL. Clearing it here
+    // (rather than on the first guarded pass) keeps the double-run protection
+    // the guard exists for, because that double-run is always same-threadId.
+    justStreamedThreadIdRef.current = null
     api.get(`/agent/threads/${threadId}`).then(r => {
       // Backend stores content as Json — concretely an array of
       // `{ type: 'text', text: '...' }` blocks (Anthropic-style) so it
@@ -408,12 +533,61 @@ export function AgentHomePage() {
       const data = r.data as {
         id: string
         title: string | null
-        messages: Array<{ id: string; role: string; content: unknown }>
+        messages: Array<{ id: string; role: string; content: unknown; model?: string | null }>
+        toolCalls?: Array<{
+          id: string; messageId: string | null; toolName: string
+          input?: unknown; status?: string; output?: { preview?: unknown } | null
+        }>
+      }
+      // TOOL TRANSPARENCY on reload. GET /agent/threads/:id has always
+      // returned the full toolCalls array keyed by messageId — the rail
+      // rebuilds from it — and this page threw all of it away. Reopening a
+      // conversation showed confident prose with no trace of where any of it
+      // came from, which is precisely the state in which a hallucination is
+      // indistinguishable from a grounded answer.
+      const toolsByMessage = new Map<string, RailToolCall[]>()
+      for (const tc of data.toolCalls ?? []) {
+        if (!tc.messageId) continue
+        const previewStr = typeof tc.output?.preview === 'string'
+          ? tc.output.preview
+          : tc.output?.preview != null ? JSON.stringify(tc.output.preview) : undefined
+        let citationBundle: unknown
+        let redlineProposal: unknown
+        let entityHint: RailToolCall['entityHint']
+        if (previewStr) {
+          try {
+            const json = JSON.parse(previewStr)
+            if (json && typeof json === 'object') {
+              const obj = json as Record<string, unknown>
+              if (tc.toolName === 'contract_cite' && Array.isArray(obj.citations)) citationBundle = json
+              if (tc.toolName === 'redline_propose' && Array.isArray(obj.variants)) redlineProposal = json
+              const title = (obj.title ?? obj.name ?? obj.legalName) as string | undefined
+              if (typeof title === 'string' && title) {
+                if (tc.toolName === 'contract_get' || tc.toolName === 'contract_summarize') entityHint = { kind: 'contract', title }
+                else if (tc.toolName === 'counterparty_get' || tc.toolName === 'counterparty_memory') entityHint = { kind: 'counterparty', title }
+              }
+            }
+          } catch { /* truncated or non-JSON preview — the raw chip still renders */ }
+        }
+        const list = toolsByMessage.get(tc.messageId) ?? []
+        list.push({
+          id: tc.id,
+          name: tc.toolName,
+          args: (tc.input && typeof tc.input === 'object') ? tc.input as Record<string, unknown> : {},
+          status: tc.status === 'error' ? 'error' : 'ok',
+          resultPreview: previewStr,
+          citationBundle,
+          redlineProposal,
+          entityHint,
+        })
+        toolsByMessage.set(tc.messageId, list)
       }
       setMessages(data.messages.map(m => ({
         id: m.id,
         role: m.role as 'user' | 'assistant' | 'system',
         content: normalizeMessageContent(m.content),
+        toolCalls: toolsByMessage.get(m.id),
+        provenance: m.model ? { model: m.model } : undefined,
       })))
       setActiveThread({ id: data.id, title: data.title ?? 'New conversation' })
       setSearchParams({ thread: data.id }, { replace: true })
@@ -503,9 +677,11 @@ export function AgentHomePage() {
       let buf = ''
       let assembled = ''
       let newSessionId: string | undefined
+      let provenance: { model?: string; tier?: string } | undefined
+      const startedAt = Date.now()
       // Track tool calls locally so we can persist them after stream end.
       // Reading from React state inside this fn would be a stale-closure trap.
-      const localToolCalls: Array<{ name: string; status: 'running' | 'ok' | 'error'; args?: unknown; result?: string }> = []
+      const localToolCalls: Array<{ id: string; name: string; status: 'running' | 'ok' | 'error'; args?: unknown; result?: string }> = []
 
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -520,27 +696,54 @@ export function AgentHomePage() {
           try {
             const evt = JSON.parse(data)
             if (evt.session_id) newSessionId = evt.session_id
+            // TRUST — record which model is actually answering. Every frame
+            // carries `model_id`; the terminal `done` frame adds `tier`. The
+            // request above asks for gpt-4.1-mini and does not always get it,
+            // so the footer under the answer must report the frames, not the
+            // request.
+            if (evt.model_id || evt.model || evt.tier) {
+              provenance = {
+                model: String(evt.model_id ?? evt.model ?? provenance?.model ?? ''),
+                tier: evt.tier ? String(evt.tier) : provenance?.tier,
+              }
+            }
             if (evt.type === 'token' && (evt.delta || evt.content)) {
               assembled += (evt.delta ?? evt.content)
               setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId ? { ...m, content: assembled } : m,
               ))
             } else if (evt.type === 'tool_call_start' && evt.name) {
-              localToolCalls.push({ name: evt.name, status: 'running', args: evt.args })
+              // Every frame the orchestrator emits carries a per-call `id`.
+              // This page keyed on `name` instead, so a turn that called the
+              // same tool twice — contract_cite across two contracts is the
+              // normal case, not an edge one — resolved the first running
+              // chip for both results: one chip showed the wrong payload and
+              // the other span forever. The rail already keys on id.
+              const tcId = String(evt.id ?? `tc_${Date.now()}_${localToolCalls.length}`)
+              localToolCalls.push({ id: tcId, name: evt.name, status: 'running', args: evt.args })
               setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId
-                  ? { ...m, toolCalls: [...(m.toolCalls ?? []), { name: evt.name, status: 'running' }] }
+                  ? {
+                      ...m,
+                      toolCalls: [...(m.toolCalls ?? []), {
+                        id: tcId,
+                        name: String(evt.name),
+                        args: (evt.args && typeof evt.args === 'object') ? evt.args : {},
+                        status: 'running' as const,
+                      }],
+                    }
                   : m,
               ))
-            } else if (evt.type === 'tool_progress' && evt.name) {
+            } else if (evt.type === 'tool_progress') {
               // A4 heartbeat — surface elapsed seconds on the running chip
               // so slow tools don't look frozen (parity with SideAgentRail).
+              const tcId = String(evt.id ?? '')
               setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId
                   ? {
                       ...m,
                       toolCalls: (m.toolCalls ?? []).map(tc =>
-                        tc.name === evt.name && tc.status === 'running'
+                        tc.id === tcId && tc.status === 'running'
                           ? { ...tc, elapsedSec: Number(evt.elapsedSec) || undefined }
                           : tc,
                       ),
@@ -574,59 +777,82 @@ export function AgentHomePage() {
                 reversible: Boolean(evt.reversible),
               }
               // The proposal also closes out the running chip for this tool.
+              // 'awaiting' rather than 'ok': no result frame ever arrives for
+              // a write proposal, and a green tick beside a card that is
+              // waiting on the user contradicts the card.
               setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId
                   ? {
                       ...m,
                       toolCalls: (m.toolCalls ?? []).map(tc =>
-                        tc.name === toolName && tc.status === 'running'
-                          ? { ...tc, status: evt.ok === false ? ('error' as const) : ('ok' as const) }
+                        tc.id === tcId
+                          ? { ...tc, status: evt.ok === false ? ('error' as const) : ('awaiting' as const) }
                           : tc,
                       ),
                       pendingActions: [...(m.pendingActions ?? []), action],
                     }
                   : m,
               ))
-              const local = [...localToolCalls].reverse().find(t => t.name === toolName && t.status === 'running')
+              const local = localToolCalls.find(t => t.id === tcId)
               if (local) { local.status = 'ok'; local.result = 'awaiting_user_confirmation' }
             } else if (evt.type === 'tool_call_result' && evt.name) {
-              const tc = [...localToolCalls].reverse().find(t => t.name === evt.name && t.status === 'running')
-              if (tc) {
-                tc.status = 'ok'
-                tc.result = typeof evt.result === 'string' ? evt.result : JSON.stringify(evt.result ?? null)
+              const tcId = String(evt.id ?? '')
+              const resultStr = typeof evt.result === 'string'
+                ? evt.result
+                : JSON.stringify(evt.result ?? null)
+              const local = localToolCalls.find(t => t.id === tcId)
+              if (local) {
+                local.status = evt.ok === false ? 'error' : 'ok'
+                local.result = resultStr
               }
-              // A2/U5 — extract entity title from the tool result so the chip
-              // shows "contract_get · Mayo Clinic — MSA" instead of "contract_get".
-              // Single-entity tools only (contract_get / counterparty_get /
-              // their summarize/memory siblings).
-              let entityTitle: string | undefined
-              const looksLikeSingleEntity =
-                evt.name === 'contract_get' ||
-                evt.name === 'contract_summarize' ||
-                evt.name === 'counterparty_get' ||
-                evt.name === 'counterparty_memory'
-              if (looksLikeSingleEntity && evt.result) {
+              // A2/U5 — entity title for single-entity tools, plus (new here)
+              // the parsed citation bundle and redline proposal. /agent kept
+              // neither, which is why a `contract_cite` call that returned
+              // real quotes rendered as a bare tool name and the quotes were
+              // never shown to anyone.
+              let entityHint: RailToolCall['entityHint']
+              let citationBundle: unknown
+              let redlineProposal: unknown
+              if (evt.ok !== false && evt.result) {
                 try {
                   const json = typeof evt.result === 'string' ? JSON.parse(evt.result) : evt.result
                   if (json && typeof json === 'object') {
                     const obj = json as Record<string, unknown>
                     const title = (obj.title ?? obj.name ?? obj.legalName) as string | undefined
                     if (typeof title === 'string' && title.length > 0) {
-                      entityTitle = title.length > 50 ? title.slice(0, 49) + '…' : title
+                      if (evt.name === 'contract_get' || evt.name === 'contract_summarize') {
+                        entityHint = { kind: 'contract', title }
+                      } else if (evt.name === 'counterparty_get' || evt.name === 'counterparty_memory') {
+                        entityHint = { kind: 'counterparty', title }
+                      }
+                    }
+                    if (evt.name === 'contract_cite' && Array.isArray(obj.citations)) {
+                      citationBundle = json
+                    }
+                    if (evt.name === 'redline_propose' && Array.isArray(obj.variants)) {
+                      redlineProposal = json
                     }
                   }
-                } catch { /* result not JSON — leave entityTitle undefined */ }
+                } catch { /* result not JSON — chips still render */ }
               }
               setMessages(prev => prev.map(m =>
                 m.id === assistantMsgId
                   ? {
                       ...m,
                       toolCalls: (m.toolCalls ?? []).map(tc =>
-                        tc.name === evt.name && tc.status === 'running'
+                        tc.id === tcId
                           // Read the envelope. This was hardcoded, so a tool
                           // that crashed or did not exist rendered the same
                           // green chip as one that worked.
-                          ? { ...tc, status: evt.ok === false ? 'error' : 'ok', ...(entityTitle ? { entityTitle } : {}) }
+                          ? {
+                              ...tc,
+                              status: evt.ok === false ? ('error' as const) : ('ok' as const),
+                              resultPreview: resultStr,
+                              truncated: Boolean(evt.truncated),
+                              entityHint,
+                              citationBundle,
+                              redlineProposal,
+                            }
                           : tc,
                       ),
                     }
@@ -704,8 +930,11 @@ export function AgentHomePage() {
             : m,
         ))
       } else {
+        const elapsedMs = Date.now() - startedAt
         setMessages(prev => prev.map(m =>
-          m.id === assistantMsgId ? { ...m, streaming: false } : m,
+          m.id === assistantMsgId
+            ? { ...m, streaming: false, provenance, elapsedMs }
+            : m,
         ))
       }
 
@@ -767,6 +996,27 @@ export function AgentHomePage() {
       // refresh thread list to surface the new conversation
       qc.invalidateQueries({ queryKey: ['agent-threads-home'] })
     } catch (e) {
+      if ((e as Error)?.name === 'AbortError') {
+        // The user pressed Stop / Esc. Keep every token already produced —
+        // an interrupted answer is often still the answer — but label the
+        // turn so nobody reads a truncated analysis as a finished one, and
+        // close out any tool that was still in flight.
+        setMessages(prev => prev.map(m =>
+          m.id === assistantMsgId
+            ? {
+                ...m,
+                streaming: false,
+                stopped: true,
+                toolCalls: (m.toolCalls ?? []).map(tc =>
+                  tc.status === 'running'
+                    ? { ...tc, status: 'error' as const, resultPreview: 'Stopped by user before this tool returned.' }
+                    : tc,
+                ),
+              }
+            : m,
+        ))
+        return
+      }
       const msg = (e as Error).message
       const friendly = friendlyAgentError(msg)
       setMessages(prev => prev.map(m =>
@@ -778,6 +1028,19 @@ export function AgentHomePage() {
       setStreaming(false)
       abortRef.current = null
     }
+  }
+
+  /**
+   * CONTROL — interrupt the run.
+   *
+   * /agent had an AbortController wired to the fetch and nothing that could
+   * fire it: `send()` returns early while `streaming` is true, so the only
+   * abort path was unreachable and the composer and Send button were both
+   * disabled for the whole run. A user who asked the wrong question of a
+   * six-tool portfolio sweep had to reload the page.
+   */
+  const stopStreaming = () => {
+    abortRef.current?.abort()
   }
 
   // ── P5 — write-tool Apply / Cancel / Undo (parity with SideAgentRail) ──
@@ -884,12 +1147,44 @@ export function AgentHomePage() {
     .map(c => c?.name ?? '')
     .filter(Boolean)
     .slice(0, 5)
-  const starters = starterPromptsFor(user?.roles ?? [], topCpNames)
+
+  // EMPTY STATE — the starters were role-shaped but portfolio-blind: an
+  // admin with 8 approvals waiting and 61 contracts inside 90 days was
+  // offered "What needs my team's attention today?", which is the same card
+  // they would be offered on an empty org. /api/v1/dashboard already
+  // computes those counts for the dashboard, so the numbers cost nothing —
+  // and a starter that says "8 approvals are waiting on you" is both an
+  // invitation and a piece of information.
+  const { data: portfolio } = useQuery<{
+    pendingApprovals?: number
+    expiringSoon?: number
+    yourDay?: {
+      negotiationsInFlight?: number
+      negotiations?: Array<{ title?: string; counterpartyName?: string; riskScore?: number }>
+    }
+  }>({
+    queryKey: ['agent-portfolio-facts'],
+    queryFn: () => api.get('/dashboard').then(r => r.data),
+    staleTime: 5 * 60 * 1000,
+  })
+  const starters = starterPromptsFor(user?.roles ?? [], topCpNames, portfolio)
+
+  // THREADS — a real list of 65 conversations, most of them opened with the
+  // same handful of questions, is only navigable if you can search it. The
+  // "by resource" chip below now filters on the thread's actual scope
+  // (the rail records scopeType/scopeId when a conversation starts from a
+  // contract page) instead of setting a string nothing ever read.
+  const threadQuery = threadSearch.trim().toLowerCase()
+  const threads = allThreads.filter(t => {
+    if (resourceFilter && !t.scopeType) return false
+    if (!threadQuery) return true
+    return (t.title ?? '').toLowerCase().includes(threadQuery)
+  })
   const groupedThreads = groupByTime(threads)
 
   return (
     <div
-      className="h-full flex bg-white"
+      className="h-full flex bg-card"
       data-testid="agent-home"
       data-streaming={streaming ? 'true' : 'false'}
       aria-busy={streaming || undefined}
@@ -907,56 +1202,84 @@ export function AgentHomePage() {
       )}
 
       {/* ─── Conversation list (left) ─────────────────────────── */}
-      <aside className="w-64 border-r border-gray-200 bg-gray-50/50 flex flex-col">
-        <div className="px-3 py-3 border-b border-gray-200">
+      <aside className="w-64 border-r border-paper-200 bg-paper-50 flex flex-col">
+        <div className="px-3 py-3 border-b border-paper-200">
+          {/* Outline, not ink: the composer's Send is this screen's one
+              ink-filled primary. */}
           <Button
+            variant="outline"
             onClick={startNewConversation}
             data-testid="agent-new-conversation"
-            className="w-full justify-start gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+            className="w-full justify-start gap-2"
             size="sm"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="size-4" />
             New conversation
           </Button>
         </div>
 
-        {/* U.5.1 — by-resource filter chip. Lets users quickly find
-            "every thread about Zynga MSA" — replaces the per-contract
-            "Ask" tab pattern. */}
-        <div className="px-3 pt-2 pb-1.5 border-b border-gray-100 flex items-center gap-1.5 text-[11px]">
-          <span className="text-gray-400">Filter:</span>
+        {/* Search. With 60+ conversations, most opened with a near-identical
+            question, scrolling is not a way to find anything. */}
+        <div className="px-3 pt-2.5 pb-1.5">
+          <div className="relative">
+            <Search className="size-3 text-ink-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              value={threadSearch}
+              onChange={e => setThreadSearch(e.target.value)}
+              placeholder="Search conversations"
+              aria-label="Search conversations"
+              data-testid="thread-search"
+              className="w-full rounded-md border border-input bg-card pl-7 pr-2 py-1.5 text-[11.5px] text-ink-950 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 transition-colors"
+            />
+          </div>
+        </div>
+
+        {/* U.5.1 — by-resource filter. Now filters on the thread's recorded
+            scope. It used to set the string 'pending', print "pick a
+            resource…", and filter nothing — a control that looked live and
+            was inert. */}
+        <div className="px-3 pb-2 border-b border-paper-200 flex items-center gap-1.5 text-[11px]">
+          <span className="text-ink-400">Filter:</span>
+          {/* Selected filter chips invert to ink, matching ui/primitives Chip. */}
           <button
-            onClick={() => setResourceFilter(resourceFilter ? null : 'pending')}
+            onClick={() => setResourceFilter(resourceFilter ? null : 'scoped')}
             data-testid="thread-filter-by-resource"
+            aria-pressed={!!resourceFilter}
+            title="Show only conversations started from a contract page"
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border transition-colors ${
               resourceFilter
-                ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
-                : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-700'
+                ? 'bg-ink-950 border-ink-950 text-white'
+                : 'bg-card border-paper-200 hover:bg-paper-100 text-ink-700'
             }`}
           >
             by resource
             {resourceFilter ? (
-              <X className="h-2.5 w-2.5" />
+              <X className="size-2.5" />
             ) : (
-              <ChevronDown className="h-2.5 w-2.5" />
+              <ChevronDown className="size-2.5" />
             )}
           </button>
-          {resourceFilter && (
-            <span className="text-[10.5px] text-indigo-600 truncate">
-              {resourceFilter === 'pending' ? 'pick a resource…' : resourceFilter}
-            </span>
-          )}
+          <span className="text-[10.5px] text-ink-500 tabular-nums ml-auto">
+            {threads.length === allThreads.length
+              ? `${allThreads.length}`
+              : `${threads.length}/${allThreads.length}`}
+          </span>
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
           {threads.length === 0 ? (
-            <div className="text-center text-xs text-gray-400 py-6 px-2">
-              No conversations yet. Ask the agent something to start.
+            <div className="text-center text-dense text-ink-400 py-6 px-2">
+              {allThreads.length === 0
+                ? 'No conversations yet. Ask the agent something to start.'
+                : resourceFilter
+                  ? 'No conversation is scoped to a record. Conversations started from a contract page are pinned to it.'
+                  : `No conversation matches “${threadSearch}”.`}
             </div>
           ) : (
             Object.entries(groupedThreads).map(([bucket, list]) => (
               <div key={bucket}>
-                <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold px-2 mb-1">{bucket}</div>
+                <div className="text-[10px] uppercase tracking-[0.08em] text-ink-500 font-semibold px-2 mb-1">{bucket}</div>
                 <ul className="space-y-0.5">
                   {list.map(t => {
                     const active = t.id === threadId
@@ -965,22 +1288,45 @@ export function AgentHomePage() {
                         <button
                           onClick={() => setThreadId(t.id)}
                           data-testid={`thread-row-${t.id}`}
+                          // The open conversation is a persistent selection, so
+                          // it takes the system's ink fill (same as active nav).
                           className={`w-full text-left px-2 py-1.5 pr-7 rounded-md transition-colors ${
-                            active ? 'bg-indigo-50 text-indigo-900 border border-indigo-200' : 'hover:bg-gray-100 text-gray-700'
+                            active ? 'bg-ink-950 text-white border border-ink-950' : 'hover:bg-paper-100 text-ink-700 border border-transparent'
                           }`}
                         >
                           <div className="flex items-center gap-1.5">
-                            <MessageSquare className="h-3 w-3 shrink-0 opacity-60" />
+                            <MessageSquare className="size-3 shrink-0 opacity-60" />
                             <span className="text-[12px] truncate">
                               {t.title || 'Untitled conversation'}
                             </span>
                           </div>
-                          {(t.messageCount ?? 0) > 0 && (
-                            <div className="text-[10px] text-gray-400 mt-0.5 ml-4.5">
-                              {t.messageCount} message{t.messageCount === 1 ? '' : 's'}
-                              {t.toolCallCount > 0 && ` · ${t.toolCallCount} tool call${t.toolCallCount === 1 ? '' : 's'}`}
-                            </div>
-                          )}
+                          {/* Time first. Fourteen conversations share the
+                              title "List every obligation we are tracking";
+                              the only thing that tells them apart is when
+                              they happened. */}
+                          <div className="text-[10px] text-ink-400 mt-0.5 ml-4.5 tabular-nums flex items-center gap-1">
+                            <span>{relTime(t.updatedAt)}</span>
+                            {(t.messageCount ?? 0) > 0 && (
+                              <>
+                                <span aria-hidden>·</span>
+                                <span>{t.messageCount} msg</span>
+                              </>
+                            )}
+                            {t.toolCallCount > 0 && (
+                              <>
+                                <span aria-hidden>·</span>
+                                <span>{t.toolCallCount} tool</span>
+                              </>
+                            )}
+                            {t.scopeType && (
+                              <span
+                                className="ml-0.5 px-1 rounded-chip border border-paper-200 text-ink-500 font-sans"
+                                title={`Scoped to a ${t.scopeType}`}
+                              >
+                                {t.scopeType}
+                              </span>
+                            )}
+                          </div>
                         </button>
                         {/* P-feedback (2026-05-02). Delete-chat button.
                             Hidden until row hover so the list stays clean.
@@ -998,9 +1344,9 @@ export function AgentHomePage() {
                           data-testid={`thread-delete-${t.id}`}
                           aria-label="Delete conversation"
                           title="Delete conversation"
-                          className="absolute right-1.5 top-1.5 p-1 rounded text-gray-300 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:bg-red-50 transition-all"
+                          className="absolute right-1.5 top-1.5 p-1 rounded-chip text-ink-400 opacity-0 group-hover:opacity-100 hover:text-risk-700 hover:bg-risk-50 transition-all"
                         >
-                          <Trash2 className="h-3 w-3" />
+                          <Trash2 className="size-3" />
                         </button>
                       </li>
                     )
@@ -1021,28 +1367,30 @@ export function AgentHomePage() {
           openArtifactId ? 'w-[480px] shrink-0' : 'flex-1',
         )}
       >
-        <header className="px-6 py-3 border-b border-gray-200 flex items-center justify-between bg-white">
+        <header className="px-6 py-3 border-b border-paper-200 flex items-center justify-between bg-card">
           <div className="flex items-center gap-2">
             <button
               onClick={() => navigate('/dashboard')}
-              className="p-1 rounded hover:bg-gray-100 text-gray-500"
+              className="p-1 rounded-md hover:bg-paper-100 text-ink-500"
               aria-label="Back to dashboard"
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft className="size-4" />
             </button>
             <div className="flex items-center gap-2">
               {/* U.2.1 / decision 14a — indigo accent for Assistant */}
-              <div className="h-7 w-7 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center">
-                <Bot className="h-3.5 w-3.5 text-indigo-600" />
+              <div className="size-7 rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center">
+                <AssistMark />
               </div>
               <div>
-                <h1 className="text-sm font-semibold text-gray-900">Assistant</h1>
-                <p className="text-[11px] text-gray-500">{activeThread?.title ?? 'New conversation'}</p>
+                {/* text-section, not text-title: on this screen the thread is
+                    the hero and the header is chrome. */}
+                <h1 className="text-section text-ink-950">Assistant</h1>
+                <p className="text-[11px] text-ink-500">{activeThread?.title ?? 'New conversation'}</p>
               </div>
             </div>
           </div>
-          <div className="text-[11px] text-gray-400">
-            {streaming ? <span className="inline-flex items-center gap-1"><Loader2 className="h-3 w-3 animate-spin" /> thinking…</span>
+          <div className="text-[11px] text-ink-400">
+            {streaming ? <span className="inline-flex items-center gap-1">Press <Kbd>Esc</Kbd> to stop</span>
                        : 'Press ⌘K from anywhere to open'}
           </div>
         </header>
@@ -1077,8 +1425,8 @@ export function AgentHomePage() {
         {/* U.5.2 — artifact strip. Lets users re-open closed artifacts
             for this thread. Only renders when there's at least one. */}
         {artifacts.length > 0 && (
-          <div className="border-t border-gray-100 px-4 py-2 flex items-center gap-2 text-[11.5px] flex-wrap">
-            <span className="text-gray-400">Artifacts:</span>
+          <div className="border-t border-paper-200 px-4 py-2 flex items-center gap-2 text-[11.5px] flex-wrap">
+            <span className="text-ink-400">Artifacts:</span>
             {artifacts.map(a => {
               const Icon =
                 a.kind === 'doc'   ? FileText :
@@ -1098,11 +1446,11 @@ export function AgentHomePage() {
                   className={cn(
                     'inline-flex items-center gap-1.5 px-2 py-1 rounded-md font-medium transition-colors',
                     active
-                      ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
-                      : 'bg-white text-gray-700 border border-gray-200 hover:border-indigo-300',
+                      ? 'bg-ink-950 text-white border border-ink-950'
+                      : 'bg-card text-ink-700 border border-paper-200 hover:border-paper-300',
                   )}
                 >
-                  <Icon className="h-3 w-3" />
+                  <Icon className="size-3" />
                   <span className="truncate max-w-[180px]">{a.title}</span>
                 </button>
               )
@@ -1111,7 +1459,7 @@ export function AgentHomePage() {
         )}
 
         {/* Composer */}
-        <div className="border-t border-gray-200 bg-white px-6 py-3">
+        <div className="border-t border-paper-200 bg-card px-6 py-3">
           <div className="max-w-3xl mx-auto">
             {/* P-feedback (2026-05-02). Skill autocomplete picker —
                 shows when the user types `@<query>` so they can
@@ -1128,7 +1476,7 @@ export function AgentHomePage() {
               if (matches.length === 0) return null
               return (
                 <div
-                  className="mb-2 max-h-60 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-md text-sm"
+                  className="mb-2 max-h-60 overflow-y-auto rounded-md border border-paper-200 bg-card shadow-e2 text-body"
                   data-testid="agent-skill-picker"
                 >
                   {matches.map(s => (
@@ -1140,16 +1488,16 @@ export function AgentHomePage() {
                         const next = composer.replace(/@[a-z0-9-]*$/i, s.slug + ' ')
                         setComposer(next)
                       }}
-                      className="w-full text-left px-3 py-2 hover:bg-indigo-50 border-b border-gray-100 last:border-b-0"
+                      className="w-full text-left px-3 py-2 hover:bg-paper-100 border-b border-paper-200 last:border-b-0"
                     >
                       <div className="flex items-center gap-2">
-                        <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
-                        <span className="font-medium text-gray-900">{s.slug}</span>
-                        <span className="text-gray-400">·</span>
-                        <span className="text-gray-700">{s.name}</span>
+                        <AssistMark />
+                        <span className="font-mono font-medium text-assist-700">{s.slug}</span>
+                        <span className="text-ink-400">·</span>
+                        <span className="text-ink-700">{s.name}</span>
                       </div>
                       {s.description && (
-                        <p className="text-xs text-gray-500 mt-0.5 ml-5 line-clamp-1">{s.description}</p>
+                        <p className="text-dense text-ink-500 mt-0.5 ml-5 line-clamp-1">{s.description}</p>
                       )}
                     </button>
                   ))}
@@ -1166,26 +1514,46 @@ export function AgentHomePage() {
                     send(composer)
                   }
                 }}
-                placeholder="Ask anything · @ for skills · Enter to send · Shift+Enter for newline"
+                placeholder={streaming
+                  ? 'Generating… press Esc to stop. You can draft your next question here.'
+                  : 'Ask anything · @ for skills · Enter to send · Shift+Enter for newline'}
                 rows={2}
-                disabled={streaming}
+                // Left enabled during a run so the wait is not dead time. Send
+                // is still gated inside send(); the button says Stop.
                 data-testid="agent-composer"
-                className="w-full resize-none rounded-lg border border-gray-200 px-3 py-2 pr-12 text-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                className="w-full resize-none rounded-md border border-input bg-card px-3 py-2 pr-12 text-[13px] text-ink-950 placeholder:text-ink-400 transition-colors focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
               />
-              <Button
-                onClick={() => send(composer)}
-                disabled={!composer.trim() || streaming}
-                size="sm"
-                className="absolute right-2 bottom-2 bg-indigo-600 hover:bg-indigo-700 text-white"
-                data-testid="agent-send"
-                aria-label="Send message"
-              >
-                <Send className="h-3.5 w-3.5" />
-              </Button>
+              {/* This screen's one ink-filled primary — and, mid-run, the
+                  only way to call the agent off. */}
+              {streaming ? (
+                <Button
+                  onClick={stopStreaming}
+                  variant="outline"
+                  size="sm"
+                  className="absolute right-2 bottom-2 gap-1.5"
+                  data-testid="agent-stop"
+                  aria-label="Stop generating"
+                  title="Stop generating (Esc)"
+                >
+                  <Square className="size-3 fill-current" />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => send(composer)}
+                  disabled={!composer.trim()}
+                  size="sm"
+                  className="absolute right-2 bottom-2"
+                  data-testid="agent-send"
+                  aria-label="Send message"
+                >
+                  <Send className="size-3.5" />
+                </Button>
+              )}
             </div>
-            <p className="text-[10px] text-gray-400 text-center mt-1.5">
-              The agent uses your contracts, playbook, and counterparty memory.
-              Replies are grounded in tool calls — never made up.
+            <p className="text-[10px] text-ink-400 text-center mt-1.5">
+              Answers are built from tool calls against your own records. Expand any
+              tool chip to see what was searched and what came back.
             </p>
           </div>
         </div>
@@ -1241,6 +1609,18 @@ export function AgentHomePage() {
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
+/** Compact relative-time label, matching the rail's thread rows. */
+function relTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const mins = Math.round(ms / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  const days = Math.round(hrs / 24)
+  return `${days}d ago`
+}
+
 function groupByTime(threads: ThreadSummary[]): Record<string, ThreadSummary[]> {
   const today = new Date(); today.setHours(0, 0, 0, 0)
   const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000)
@@ -1277,7 +1657,7 @@ function MessageBubble({
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[70%] rounded-2xl rounded-br-sm bg-blue-600 text-white px-4 py-2 text-sm whitespace-pre-wrap">
+        <div className="max-w-[82%] rounded-[12px_12px_3px_12px] bg-ink-950 text-white px-4 py-2 text-[12.5px] leading-[1.55] whitespace-pre-wrap">
           {message.content}
         </div>
       </div>
@@ -1289,51 +1669,61 @@ function MessageBubble({
     : { cleanProse: message.content ?? '', chips: [] as ReturnType<typeof parseActionChips>['chips'] }
   return (
     <div className="flex gap-3">
-      <div className="h-7 w-7 shrink-0 rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center">
-        <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+      <div className="size-7 shrink-0 rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center">
+        <AssistMark />
       </div>
       <div className="min-w-0 flex-1">
+        {/* TOOL TRANSPARENCY + GROUNDING.
+            Three renderers over one list, in the order the work happened:
+              contract_cite  → clickable citations into the source clause
+              redline_propose → the variants, with Apply / Edit / Dismiss
+              everything else → an expandable trace showing args and payload
+            Until now this whole block was a row of flat, unclickable mono
+            pills — the tool's name and nothing else. The citations a
+            `contract_cite` call returned were parsed nowhere and shown
+            nowhere, on the surface the product treats as its main AI page. */}
         {(message.toolCalls?.length ?? 0) > 0 && (
-          <div className="flex flex-wrap gap-1 mb-2" data-testid="agent-tool-chips">
-            {message.toolCalls!.map((tc, i) => (
-              <span
-                key={i}
-                data-testid={`tool-chip-${tc.name}`}
-                data-entity-title={tc.entityTitle}
-                className={`inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded border ${
-                  tc.status === 'running'
-                    ? 'bg-blue-50 border-blue-200 text-blue-700'
-                    : tc.status === 'ok'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                      : 'bg-red-50 border-red-200 text-red-700'
-                }`}
-              >
-                <Wrench className="h-2.5 w-2.5" />
-                <span>{tc.name}</span>
-                {tc.entityTitle && (
-                  <>
-                    <span className="opacity-50">·</span>
-                    <span className="font-sans normal-case opacity-90 max-w-[160px] truncate">{tc.entityTitle}</span>
-                  </>
-                )}
-                {tc.status === 'running' && <Loader2 className="h-2.5 w-2.5 animate-spin" />}
-                {tc.status === 'running' && tc.elapsedSec != null && (
-                  <span className="opacity-70">{tc.elapsedSec.toFixed(0)}s</span>
-                )}
-              </span>
-            ))}
+          <div className="flex flex-col gap-1 mb-2" data-testid="agent-tool-chips">
+            {message.toolCalls!.map(tc => {
+              if (tc.name === 'contract_cite' && tc.citationBundle) {
+                return <CitationPills key={tc.id} bundle={tc.citationBundle as CitationBundle} />
+              }
+              if (tc.name === 'redline_propose' && tc.redlineProposal) {
+                return (
+                  <RedlinePreview
+                    key={tc.id}
+                    proposal={tc.redlineProposal as RedlineProposal}
+                    onApplyVariant={(_variant, action) => {
+                      window.dispatchEvent(new CustomEvent('rail-inject-action', { detail: action }))
+                    }}
+                  />
+                )
+              }
+              return <ToolCallChip key={tc.id} call={tc} />
+            })}
           </div>
         )}
-        <div className="text-sm text-gray-900 leading-relaxed">
+        <div className="text-body text-ink-950 leading-[1.65]">
           {/* Markdown rendering (bold, lists, code, links) — Gemini and
               Claude both return Markdown in assistant prose. Prior to
               this the response was rendered with whitespace-pre-wrap
               so users saw literal `**`, `*`, etc. */}
           {cleanProse && <MarkdownProse text={cleanProse} />}
           {message.streaming && !message.content && (
-            <span className="inline-flex items-center gap-1 text-gray-400">
-              <Loader2 className="h-3 w-3 animate-spin" /> thinking…
-            </span>
+            // Phase is READ OFF the frames received so far, never guessed: no
+            // tool yet means the model is still choosing one; a running tool
+            // means it is fetching; a resolved tool with no prose means it is
+            // writing. See ThinkingIndicator for why this is worth the effort
+            // (two silent windows of ~9s and ~7s on a portfolio question).
+            <ThinkingIndicator
+              phase={
+                (message.toolCalls ?? []).some(tc => tc.status === 'running')
+                  ? 'working'
+                  : (message.toolCalls?.length ?? 0) > 0
+                    ? 'composing'
+                    : 'deciding'
+              }
+            />
           )}
         </div>
         {/* P5 — write-tool proposals. ActionPreview cards with Apply /
@@ -1352,10 +1742,23 @@ function MessageBubble({
             ))}
           </div>
         )}
+        {/* CONTROL — an interrupted turn is labelled as one. */}
+        {message.stopped && (
+          <div
+            data-testid="agent-stopped"
+            className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-ink-700 bg-paper-100 border border-paper-200 rounded-chip px-2 py-1"
+          >
+            <Square className="size-2.5 fill-current text-ink-400" />
+            Stopped — this answer is incomplete
+          </div>
+        )}
         {/* P1 fix — render parsed chips below assistant prose.
-            U10 — show skeleton placeholders while streaming so the row
-            reserves space and the user knows chips are coming. */}
-        {onChipSelect && (chips.length > 0 || message.streaming) && (
+            U10 — skeleton placeholders while streaming, but only once prose
+            has actually started. Rendered from the first frame, three grey
+            pills sat under a "thinking…" spinner for the whole of a
+            multi-tool run, promising follow-ups that were nowhere near. */}
+        {onChipSelect && !message.stopped
+          && (chips.length > 0 || (message.streaming && message.content.length > 0)) && (
           <ChipRow
             chips={chips}
             onSelect={(chip) => onChipSelect(chip.label)}
@@ -1363,15 +1766,52 @@ function MessageBubble({
             streaming={!!message.streaming}
           />
         )}
+        {/* TRUST — machine authorship, stated. Which model answered, how long
+            it took, how many tools it went through. The page asks the API for
+            one model and does not always get it, so this reads the frames. */}
+        {!message.streaming && !message.error && (message.provenance?.model || message.elapsedMs) && (
+          <div
+            data-testid="agent-provenance"
+            data-model={message.provenance?.model ?? ''}
+            className="mt-2 flex items-center gap-1.5 text-[10px] text-ink-400"
+          >
+            <AssistMark className="size-[5px]" />
+            <span>Machine-authored</span>
+            {message.provenance?.model && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="font-mono">{message.provenance.model}</span>
+              </>
+            )}
+            {(message.toolCalls?.length ?? 0) > 0 && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="tabular-nums">
+                  {message.toolCalls!.length} tool call{message.toolCalls!.length === 1 ? '' : 's'}
+                </span>
+              </>
+            )}
+            {message.elapsedMs != null && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="tabular-nums">
+                  {message.elapsedMs < 1000
+                    ? `${message.elapsedMs}ms`
+                    : `${(message.elapsedMs / 1000).toFixed(1)}s`}
+                </span>
+              </>
+            )}
+          </div>
+        )}
         {message.error && (
           <div className="mt-1.5 space-y-1" data-testid="agent-error">
-            <div className="text-[11px] text-red-600">{message.error.slice(0, 200)}</div>
+            <div className="text-[11px] text-risk-700">{message.error.slice(0, 200)}</div>
             {/* A diagnosis with no way forward leaves the user stuck on a dead
                 thread. Retry re-sends the message that failed. */}
             {onRetry && (
               <button
                 onClick={() => onRetry(message.retryPrompt ?? '')}
-                className="text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                className="text-[11px] font-medium text-ink-950 hover:text-brand-700 hover:underline"
                 data-testid="agent-error-retry"
               >
                 Try again
@@ -1394,13 +1834,13 @@ function EmptyChat({
   return (
     <div className="max-w-3xl mx-auto px-6 py-12">
       <div className="text-center mb-8">
-        <div className="h-12 w-12 mx-auto rounded-full bg-blue-50 border border-blue-100 flex items-center justify-center mb-4">
-          <Sparkles className="h-6 w-6 text-blue-600" />
+        <div className="size-12 mx-auto rounded-full bg-assist-50 border border-assist-200 flex items-center justify-center mb-4">
+          <AssistMark className="size-[13px]" />
         </div>
-        <h2 className="text-2xl font-semibold text-gray-900">
+        <h2 className="text-title text-ink-950">
           Hello{userName ? `, ${userName.split(' ')[0]}` : ''} — what can I help with?
         </h2>
-        <p className="text-sm text-gray-500 mt-2">
+        <p className="text-body text-ink-500 mt-2">
           I can search contracts, draft new ones, summarise risks, run playbook checks,
           and act on your portfolio. Pick a starter or just ask.
         </p>
@@ -1411,16 +1851,18 @@ function EmptyChat({
             key={i}
             onClick={() => onPick(s.prompt)}
             data-testid={`starter-prompt-${i}`}
-            className="group text-left p-3 rounded-lg border border-gray-200 bg-white hover:border-indigo-300 hover:bg-indigo-50/40 transition-colors flex items-start gap-2.5"
+            // Starters hand work to the machine, so they warm to the assist
+            // wash on hover rather than to a neutral or a status colour.
+            className="group text-left p-3 rounded-md border border-paper-200 bg-card hover:border-assist-200 hover:bg-assist-50 transition-colors flex items-start gap-2.5"
           >
-            <div className="h-7 w-7 shrink-0 rounded-md bg-indigo-50 border border-indigo-100 flex items-center justify-center group-hover:bg-indigo-100">
-              <s.icon className="h-3.5 w-3.5 text-indigo-600" />
+            <div className="size-7 shrink-0 rounded-md bg-assist-50 border border-assist-200 flex items-center justify-center group-hover:bg-assist-200">
+              <s.icon className="size-3.5 text-assist-600" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-sm font-medium text-gray-900">{s.label}</div>
-              <div className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{s.prompt}</div>
+              <div className="text-body font-semibold text-ink-950">{s.label}</div>
+              <div className="text-[11px] text-ink-500 mt-0.5 line-clamp-2">{s.prompt}</div>
             </div>
-            <ChevronRight className="h-3.5 w-3.5 text-gray-300 group-hover:text-indigo-400 shrink-0 mt-1" />
+            <ChevronRight className="size-3.5 text-ink-400 group-hover:text-assist-600 shrink-0 mt-1" />
           </button>
         ))}
       </div>

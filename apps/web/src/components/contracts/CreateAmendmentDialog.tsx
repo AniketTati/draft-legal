@@ -73,26 +73,28 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
       data-testid="create-amendment-dialog"
     >
       <div
-        className="bg-white rounded-xl max-w-lg w-full shadow-2xl my-8"
+        className="bg-card rounded-card max-w-lg w-full shadow-e3 my-8"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 flex items-start justify-between">
+        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-              <GitBranch className="h-5 w-5 text-indigo-600" />
+            <h2 className="text-section text-ink-950 flex items-center gap-2">
+              {/* Drafting an amendment is the user's act, not the assistant's,
+                  so nothing here keeps the indigo it used to have. */}
+              <GitBranch className="size-4 text-ink-500" />
               Create amendment
             </h2>
-            <p className="text-xs text-gray-500 mt-1 truncate max-w-md">
+            <p className="text-dense text-ink-500 mt-1 truncate max-w-md">
               Linked to <span className="font-medium">{parentTitle}</span>
             </p>
           </div>
           <button
             onClick={onClose}
             aria-label="Close"
-            className="p-1 rounded hover:bg-gray-100 text-gray-400"
+            className="p-1 rounded-chip hover:bg-paper-100 text-ink-400"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
@@ -100,7 +102,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
         <div className="px-6 py-5 space-y-4">
           {/* Type */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+            <label className="block text-body font-medium text-ink-700 mb-1.5">
               Relationship type
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -110,40 +112,39 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
                   type="button"
                   onClick={() => setRelationshipType(rt.key)}
                   data-testid={`amendment-rel-${rt.key}`}
-                  className={`text-left p-2.5 rounded-md border text-sm transition-colors ${
+                  className={`text-left p-2.5 rounded-md border text-body transition-colors ${
                     relationshipType === rt.key
-                      ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300'
-                      : 'border-gray-200 hover:border-gray-300 bg-white'
+                      ? 'border-ink-950 bg-paper-100 ring-1 ring-ink-950'
+                      : 'border-paper-200 hover:border-paper-300 bg-card'
                   }`}
                 >
-                  <div className="font-medium text-gray-900">{rt.label}</div>
+                  <div className="font-medium text-ink-950">{rt.label}</div>
                 </button>
               ))}
             </div>
             {selectedRel && (
-              <p className="text-xs text-gray-500 mt-2">{selectedRel.desc}</p>
+              <p className="text-dense text-ink-500 mt-2">{selectedRel.desc}</p>
             )}
           </div>
 
           {/* Title */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Title <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-body font-medium text-ink-700 mb-1">
+              Title <span className="text-ink-400 font-normal">(optional)</span>
             </label>
             <Input
               value={title}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
               placeholder={`${parentTitle} — ${selectedRel?.label}`}
               data-testid="amendment-title"
-              className="text-sm"
             />
-            <p className="text-xs text-gray-400 mt-1">Leave blank to auto-generate from the parent + type.</p>
+            <p className="text-dense text-ink-400 mt-1">Leave blank to auto-generate from the parent + type.</p>
           </div>
 
           {/* Description */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Description <span className="text-gray-400 font-normal">(optional)</span>
+            <label className="block text-body font-medium text-ink-700 mb-1">
+              Description <span className="text-ink-400 font-normal">(optional)</span>
             </label>
             <textarea
               value={description}
@@ -151,19 +152,19 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
               placeholder="What's changing? Effective date, scope, value impact, etc."
               rows={3}
               data-testid="amendment-description"
-              className="w-full text-sm border border-gray-200 rounded-md px-3 py-2 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 resize-y"
+              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 resize-y"
             />
           </div>
 
           {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+            <div className="text-body text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-2 bg-gray-50 rounded-b-xl">
+        <div className="px-6 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose} disabled={create.isPending}>
             Cancel
           </Button>
@@ -171,12 +172,11 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
             onClick={() => create.mutate()}
             disabled={create.isPending}
             data-testid="amendment-create-confirm"
-            className="bg-indigo-600 hover:bg-indigo-700"
           >
             {create.isPending ? (
-              <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Creating…</>
+              <><Loader2 className="size-4 animate-spin mr-1" /> Creating…</>
             ) : (
-              <><GitBranch className="h-4 w-4 mr-1" /> Create draft</>
+              <><GitBranch className="size-4 mr-1" /> Create draft</>
             )}
           </Button>
         </div>

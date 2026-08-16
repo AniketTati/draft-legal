@@ -166,40 +166,44 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
+    <div className="fixed inset-0 bg-ink-950/50 flex items-center justify-center z-50">
+      <div className="bg-card rounded-card border border-paper-200 shadow-e3 w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b shrink-0">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <FileSpreadsheet className="h-5 w-5" />
+        <div className="flex items-center justify-between px-5 py-4 border-b border-paper-200 shrink-0">
+          <h2 className="text-section text-ink-950 flex items-center gap-2">
+            <FileSpreadsheet className="size-5" />
             Bulk Import Users
           </h2>
           <button
             onClick={onClose}
-            className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+            className="p-1 rounded-md text-ink-400 hover:text-ink-700 hover:bg-paper-100"
           >
-            <X className="h-4 w-4" />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Body */}
-        <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
+        <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1">
           {/* Results view */}
           {result ? (
             <div className="space-y-4">
-              <div className="flex items-center gap-2 p-4 bg-green-50 border border-green-200 rounded-lg">
-                <CheckCircle2 className="h-5 w-5 text-green-600 flex-shrink-0" />
+              {/*
+                Brand here, unlike a settings-save toast: this is a completed job
+                reporting an outcome, and "completed" is one of the binding states.
+              */}
+              <div className="flex items-center gap-2 p-4 bg-brand-50 border border-brand-200 rounded-md">
+                <CheckCircle2 className="size-5 text-brand-700 flex-shrink-0" />
                 <div>
-                  <p className="text-sm font-medium text-green-800">Import Complete</p>
-                  <p className="text-sm text-green-700 mt-0.5">
+                  <p className="text-body font-semibold text-brand-700">Import Complete</p>
+                  <p className="text-dense text-ink-700 mt-0.5 tabular-nums">
                     {result.created.length} created, {result.skipped.length} skipped
                   </p>
                 </div>
               </div>
               {result.errors.length > 0 && (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-sm font-medium text-red-800 mb-2">Errors:</p>
-                  <ul className="list-disc list-inside text-sm text-red-700 space-y-0.5">
+                <div className="p-4 bg-risk-50 border border-risk-200 rounded-md">
+                  <p className="text-body font-semibold text-risk-700 mb-2">Errors:</p>
+                  <ul className="list-disc list-inside text-dense text-risk-700 space-y-0.5">
                     {result.errors.map((err, i) => (
                       <li key={i}>{err.email}: {err.reason}</li>
                     ))}
@@ -211,19 +215,19 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
             <>
               {/* Upload area */}
               <div>
-                <p className="text-sm text-gray-600 mb-3">
-                  Upload a CSV file with columns: <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">name, email, roles</code>.
-                  Separate multiple roles with semicolons (e.g. <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">ADMIN;LEGAL_COUNSEL</code>).
+                <p className="text-body text-ink-700 mb-3">
+                  Upload a CSV file with columns: <code className="font-mono text-[11px] bg-paper-100 text-ink-950 px-1 py-0.5 rounded-chip">name, email, roles</code>.
+                  Separate multiple roles with semicolons (e.g. <code className="font-mono text-[11px] bg-paper-100 text-ink-950 px-1 py-0.5 rounded-chip">ADMIN;LEGAL_COUNSEL</code>).
                 </p>
                 <div
-                  className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-blue-400 transition-colors cursor-pointer"
+                  className="border-2 border-dashed border-paper-300 rounded-md p-6 text-center hover:border-ink-400 transition-colors cursor-pointer"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-                  <p className="text-sm text-gray-600">
+                  <Upload className="size-6 text-ink-400 mx-auto mb-2" />
+                  <p className="text-body text-ink-700">
                     {fileName ? fileName : 'Click to upload CSV file'}
                   </p>
-                  <p className="text-xs text-gray-400 mt-1">Supports .csv files only</p>
+                  <p className="text-dense text-ink-400 mt-1">Supports .csv files only</p>
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -236,9 +240,9 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
 
               {/* Error */}
               {parseError && (
-                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
-                  <p className="text-sm text-red-700">{parseError}</p>
+                <div className="flex items-center gap-2 p-3 bg-risk-50 border border-risk-200 rounded-md">
+                  <AlertCircle className="size-4 text-risk-600 flex-shrink-0" />
+                  <p className="text-dense text-risk-700">{parseError}</p>
                 </div>
               )}
 
@@ -246,52 +250,54 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
               {rows.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-sm font-medium text-gray-700">
+                    <p className="text-body font-medium text-ink-700 tabular-nums">
                       Preview ({validRows.length} valid, {errorRows.length} errors)
                     </p>
                     <button
                       onClick={handleReset}
-                      className="text-xs text-gray-500 hover:text-gray-700 underline"
+                      className="text-dense text-ink-500 hover:text-ink-950 underline"
                     >
                       Clear
                     </button>
                   </div>
-                  <div className="bg-white rounded-lg border overflow-hidden">
+                  <div className="bg-card rounded-md border border-paper-200 overflow-hidden">
                     <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                      <table className="w-full text-sm">
+                      <table className="w-full text-[13px]">
                         <thead>
-                          <tr className="border-b bg-gray-50">
-                            <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-4 py-2">
+                          <tr className="border-b border-paper-200 bg-paper-50">
+                            <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-4 py-2">
                               Name
                             </th>
-                            <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-4 py-2">
+                            <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-4 py-2">
                               Email
                             </th>
-                            <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-4 py-2">
+                            <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-4 py-2">
                               Roles
                             </th>
-                            <th className="text-left text-xs font-semibold text-gray-500 uppercase tracking-wider px-4 py-2">
+                            <th className="text-left text-[11px] font-semibold text-ink-500 uppercase tracking-[0.08em] px-4 py-2">
                               Status
                             </th>
                           </tr>
                         </thead>
-                        <tbody className="divide-y">
+                        <tbody className="divide-y divide-paper-200">
                           {rows.map((row, i) => (
                             <tr
                               key={i}
-                              className={row.status === 'error' ? 'bg-red-50/50' : ''}
+                              className={row.status === 'error' ? 'bg-risk-50/50' : ''}
                             >
-                              <td className="px-4 py-2 text-gray-900">{row.name || '-'}</td>
-                              <td className="px-4 py-2 text-gray-600">{row.email || '-'}</td>
+                              <td className="px-4 py-2 text-ink-950">{row.name || '-'}</td>
+                              <td className="px-4 py-2 text-ink-700">{row.email || '-'}</td>
                               <td className="px-4 py-2">
                                 <div className="flex flex-wrap gap-1">
                                   {row.roles.map(role => (
+                                    // A recognised role is just metadata (neutral); an
+                                    // unrecognised one is what will fail the import (risk).
                                     <span
                                       key={role}
-                                      className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                      className={`inline-flex items-center px-1.5 py-0.5 rounded-chip text-[10px] font-medium ${
                                         VALID_ROLES.has(role as SystemRole)
-                                          ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                          : 'bg-red-50 text-red-700 border border-red-200'
+                                          ? 'bg-paper-100 text-ink-700 border border-paper-200'
+                                          : 'bg-risk-50 text-risk-700 border border-risk-200'
                                       }`}
                                     >
                                       {role}
@@ -300,17 +306,22 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
                                 </div>
                               </td>
                               <td className="px-4 py-2">
+                                {/*
+                                  Valid stays neutral so the error rows are the only
+                                  colored thing in the column — a whole column of green
+                                  checks would drown the rows that actually need reading.
+                                */}
                                 {row.status === 'valid' ? (
-                                  <span className="inline-flex items-center gap-1 text-xs text-green-700">
-                                    <CheckCircle2 className="h-3 w-3" />
+                                  <span className="inline-flex items-center gap-1 text-dense text-ink-500">
+                                    <CheckCircle2 className="size-3" />
                                     Valid
                                   </span>
                                 ) : (
                                   <span
-                                    className="inline-flex items-center gap-1 text-xs text-red-700"
+                                    className="inline-flex items-center gap-1 text-dense text-risk-700"
                                     title={row.error}
                                   >
-                                    <AlertCircle className="h-3 w-3" />
+                                    <AlertCircle className="size-3" />
                                     Error
                                   </span>
                                 )}
@@ -328,7 +339,7 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex justify-end gap-2 px-6 py-4 border-t shrink-0">
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-paper-200 shrink-0">
           <Button variant="outline" onClick={result ? handleReset : onClose}>
             {result ? 'Import More' : 'Cancel'}
           </Button>
@@ -338,7 +349,7 @@ export function BulkImportModal({ open, onClose }: BulkImportModalProps) {
               disabled={validRows.length === 0 || importMutation.isPending}
               className="gap-2"
             >
-              <Upload className="h-4 w-4" />
+              <Upload className="size-4" />
               {importMutation.isPending
                 ? 'Importing...'
                 : `Import ${validRows.length} User${validRows.length !== 1 ? 's' : ''}`}

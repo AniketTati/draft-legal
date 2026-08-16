@@ -20,6 +20,9 @@ import {
   Key, Webhook as WebhookIcon, ChevronRight, ChevronDown,
   Activity, RefreshCw, MessageSquare,
 } from 'lucide-react'
+import { StatusPill } from '@/components/ui/status-pill'
+import { MEANING_CLASS, type Meaning } from '@/lib/status'
+import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 
 interface ApiKey {
   id:         string
@@ -72,14 +75,14 @@ export function AdminIntegrationsPage() {
     return (
       <div className="px-6 py-6 max-w-2xl mx-auto" data-testid="admin-integrations-page">
         <div className="flex items-center gap-3 mb-2">
-          <Plug className="h-5 w-5 text-indigo-600" />
-          <h1 className="text-2xl font-semibold text-gray-900">Integrations</h1>
+          <Plug className="size-5 text-ink-700" />
+          <h1 className="text-title text-ink-950">Integrations</h1>
         </div>
-        <div className="mt-6 flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
-          <Lock className="h-4 w-4 text-gray-400 mt-0.5 flex-shrink-0" />
+        <div className="mt-6 flex items-start gap-3 rounded-card border border-paper-200 bg-paper-50 p-4 text-body text-ink-700">
+          <Lock className="size-4 text-ink-400 mt-0.5 flex-shrink-0" />
           <div>
-            <p className="font-medium text-gray-900">Admin access required</p>
-            <p className="text-gray-500 mt-1">
+            <p className="font-semibold text-ink-950">Admin access required</p>
+            <p className="text-ink-500 mt-1">
               Integrations (API keys, webhooks) are managed by your organization
               admin. Contact your admin to enable an API key or webhook for your team.
             </p>
@@ -92,25 +95,26 @@ export function AdminIntegrationsPage() {
   return (
     <div className="px-6 py-6 max-w-6xl mx-auto" data-testid="admin-integrations-page">
       <div className="flex items-center gap-3 mb-1">
-        <Plug className="h-5 w-5 text-indigo-600" />
-        <h1 className="text-2xl font-semibold text-gray-900">Integrations</h1>
+        {/* Indigo belongs to the machine; an integrations page is plain chrome. */}
+        <Plug className="size-5 text-ink-700" />
+        <h1 className="text-title text-ink-950">Integrations</h1>
       </div>
-      <p className="text-sm text-gray-500 mb-5">
+      <p className="text-dense text-ink-500 mb-5">
         API keys for external systems to call CLM, and webhooks for CLM to push events to you.
       </p>
 
-      <div className="flex items-center gap-1 mb-5 border-b border-gray-200">
+      <div className="flex items-center gap-1 mb-5 border-b border-paper-200">
         <TabButton active={tab === 'keys'} onClick={() => setTab('keys')} testId="tab-api-keys">
-          <Key className="h-4 w-4" /> API Keys
+          <Key className="size-4" /> API Keys
         </TabButton>
         <TabButton active={tab === 'webhooks'} onClick={() => setTab('webhooks')} testId="tab-webhooks">
-          <WebhookIcon className="h-4 w-4" /> Webhooks
+          <WebhookIcon className="size-4" /> Webhooks
         </TabButton>
         <TabButton active={tab === 'slack'} onClick={() => setTab('slack')} testId="tab-slack">
-          <MessageSquare className="h-4 w-4" /> Slack
+          <MessageSquare className="size-4" /> Slack
         </TabButton>
         <TabButton active={tab === 'health'} onClick={() => setTab('health')} testId="tab-health">
-          <Activity className="h-4 w-4" /> Health
+          <Activity className="size-4" /> Health
         </TabButton>
       </div>
 
@@ -133,10 +137,11 @@ function TabButton({ active, onClick, children, testId }: {
       type="button"
       onClick={onClick}
       data-testid={testId}
-      className={`px-4 py-2 text-sm border-b-2 transition-colors flex items-center gap-2 -mb-px ${
+      // A selected tab is an action, not a state — ink, never info.
+      className={`px-4 py-2 text-dense border-b-2 transition-colors flex items-center gap-2 -mb-px ${
         active
-          ? 'border-indigo-600 text-indigo-700 font-medium'
-          : 'border-transparent text-gray-500 hover:text-gray-800'
+          ? 'border-ink-950 text-ink-950 font-semibold'
+          : 'border-transparent text-ink-500 hover:text-ink-950'
       }`}
     >
       {children}
@@ -150,6 +155,7 @@ function ApiKeysSection() {
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [revealKey, setRevealKey] = useState<{ id: string; key: string } | null>(null)
+  const [pendingRevoke, setPendingRevoke] = useState<ApiKey | null>(null)
 
   const { data, isLoading } = useQuery<{ data: ApiKey[] }>({
     queryKey: ['api-keys'],
@@ -158,70 +164,78 @@ function ApiKeysSection() {
 
   const revoke = useMutation({
     mutationFn: async (id: string) => api.delete(`/admin/integrations/api-keys/${id}`),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ['api-keys'] }),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] })
+      setPendingRevoke(null)
+    },
   })
 
-  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-gray-300" /></div>
+  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
 
   const keys = data?.data ?? []
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-medium text-gray-700">{keys.length} {keys.length === 1 ? 'key' : 'keys'}</h2>
-        <Button onClick={() => setCreateOpen(true)} data-testid="create-key-btn" className="gap-1.5 bg-indigo-600 hover:bg-indigo-700">
-          <Plus className="h-4 w-4" />
+        <h2 className="text-body font-medium text-ink-700 tabular-nums">{keys.length} {keys.length === 1 ? 'key' : 'keys'}</h2>
+        <Button onClick={() => setCreateOpen(true)} data-testid="create-key-btn" className="gap-1.5">
+          <Plus className="size-4" />
           New API key
         </Button>
       </div>
 
       {keys.length === 0 ? (
-        <div className="text-center py-12 px-6 border border-dashed border-gray-200 rounded-xl">
-          <Key className="h-7 w-7 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">No API keys yet.</p>
-          <p className="text-xs text-gray-400">
-            Create one to let an external system call <code className="text-[10.5px] bg-gray-100 px-1 rounded">/api/v1/*</code> with Bearer auth.
+        <div className="text-center py-12 px-6 border border-dashed border-paper-200 rounded-card">
+          <Key className="size-6 text-ink-400 mx-auto mb-2" />
+          <p className="text-body text-ink-500 mb-1">No API keys yet.</p>
+          <p className="text-dense text-ink-400">
+            Create one to let an external system call <code className="font-mono text-[10.5px] bg-paper-100 text-ink-950 px-1 rounded-chip">/api/v1/*</code> with Bearer auth.
           </p>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-sm" data-testid="api-keys-table">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <table className="w-full text-[13px]" data-testid="api-keys-table">
+            <thead className="bg-paper-50 text-[11px] uppercase tracking-[0.08em] text-ink-500">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Name</th>
-                <th className="text-left px-4 py-3 font-medium">Prefix</th>
-                <th className="text-left px-4 py-3 font-medium">Last used</th>
-                <th className="text-left px-4 py-3 font-medium">Status</th>
-                <th className="text-right px-4 py-3 font-medium"></th>
+                <th className="text-left px-4 py-2 font-semibold">Name</th>
+                <th className="text-left px-4 py-2 font-semibold">Prefix</th>
+                <th className="text-left px-4 py-2 font-semibold">Last used</th>
+                <th className="text-left px-4 py-2 font-semibold">Status</th>
+                <th className="text-right px-4 py-2 font-semibold"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-paper-200">
               {keys.map(k => (
                 <tr key={k.id} data-testid={`api-key-row-${k.id}`}>
-                  <td className="px-4 py-3 font-medium text-gray-900">{k.name}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-600">{k.prefix}…</td>
-                  <td className="px-4 py-3 text-xs text-gray-500">
+                  <td className="px-4 py-2 font-medium text-ink-950">{k.name}</td>
+                  <td className="px-4 py-2 font-mono text-[11px] text-ink-700">{k.prefix}…</td>
+                  <td className="px-4 py-2 text-[11px] tabular-nums text-ink-500">
                     {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : 'never'}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-2">
+                    {/*
+                      Revocation is a deliberate, finished act — neutral, like an
+                      archived record. Expiry is the one that bites: a key lapsed
+                      on its own and something out there is failing silently, so
+                      that's the state that earns risk.
+                    */}
                     {k.revokedAt ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border bg-red-50 border-red-200 text-red-700">Revoked</span>
+                      <StatusPill meaning="neutral">Revoked</StatusPill>
                     ) : k.expiresAt && new Date(k.expiresAt) < new Date() ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border bg-gray-100 border-gray-200 text-gray-600">Expired</span>
+                      <StatusPill meaning="risk">Expired</StatusPill>
                     ) : (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium border bg-emerald-50 border-emerald-200 text-emerald-700">Active</span>
+                      <StatusPill meaning="binding">Active</StatusPill>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-2 text-right">
                     {!k.revokedAt && (
                       <button
-                        onClick={() => {
-                          if (confirm('Revoke this API key? Any system using it will stop working immediately.')) revoke.mutate(k.id)
-                        }}
+                        onClick={() => setPendingRevoke(k)}
                         data-testid={`revoke-${k.id}`}
-                        className="text-xs text-red-600 hover:text-red-700 inline-flex items-center gap-1"
+                        aria-label={`Revoke API key ${k.name}`}
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <Trash2 className="h-3.5 w-3.5" /> Revoke
+                        <Trash2 className="size-3.5" /> Revoke
                       </button>
                     )}
                   </td>
@@ -242,6 +256,39 @@ function ApiKeysSection() {
         />
       )}
       {revealKey && <RevealKeyModal id={revealKey.id} keyValue={revealKey.key} onClose={() => setRevealKey(null)} />}
+
+      {/*
+        Revocation was guarded by window.confirm, which cannot name the key.
+        With several keys in a table and a right-aligned Revoke on every row,
+        "Revoke this API key?" is the one question the admin cannot answer.
+      */}
+      <ConfirmDialog
+        open={pendingRevoke != null}
+        testId="revoke-key-confirm"
+        title="Revoke this API key?"
+        confirmLabel={revoke.isPending ? 'Revoking…' : 'Revoke key'}
+        isPending={revoke.isPending}
+        error={revoke.isError ? 'Could not revoke this key. Try again.' : null}
+        body={
+          <>
+            <span className="font-medium text-ink-950">{pendingRevoke?.name}</span>{' '}
+            <span className="font-mono text-[11.5px] text-ink-500">{pendingRevoke?.prefix}…</span>{' '}
+            stops working immediately, and every system authenticating with it
+            starts getting 401s. Revocation is permanent — issue a new key to
+            restore access.
+            {pendingRevoke?.lastUsedAt && (
+              <>
+                {' '}This key was last used{' '}
+                <span className="tabular-nums">
+                  {new Date(pendingRevoke.lastUsedAt).toLocaleString()}
+                </span>.
+              </>
+            )}
+          </>
+        }
+        onConfirm={() => pendingRevoke && revoke.mutate(pendingRevoke.id)}
+        onCancel={() => { revoke.reset(); setPendingRevoke(null) }}
+      />
     </div>
   )
 }
@@ -255,15 +302,15 @@ function CreateApiKeyDialog({ onClose, onCreated }: { onClose: () => void; onCre
     onError: (err: { response?: { data?: { detail?: string } } }) => setError(err.response?.data?.detail ?? 'Failed to create.'),
   })
   return (
-    <div role="dialog" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl max-w-md w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b flex items-start justify-between">
-          <h2 className="text-lg font-semibold flex items-center gap-2"><Key className="h-5 w-5 text-indigo-600" /> New API key</h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-400"><X className="h-4 w-4" /></button>
+    <div role="dialog" className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-card rounded-card border border-paper-200 max-w-md w-full shadow-e3" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-paper-200 flex items-start justify-between">
+          <h2 className="text-section text-ink-950 flex items-center gap-2"><Key className="size-5 text-ink-700" /> New API key</h2>
+          <button onClick={onClose} className="p-1 rounded-md hover:bg-paper-100 text-ink-400"><X className="size-4" /></button>
         </div>
-        <div className="px-6 py-5 space-y-3">
+        <div className="px-5 py-5 space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Name</label>
             <Input
               value={name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
@@ -272,17 +319,16 @@ function CreateApiKeyDialog({ onClose, onCreated }: { onClose: () => void; onCre
               autoFocus
             />
           </div>
-          {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
+          {error && <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>}
         </div>
-        <div className="px-6 py-4 border-t flex justify-end gap-2 bg-gray-50 rounded-b-xl">
+        <div className="px-5 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => create.mutate()}
             disabled={!name.trim() || create.isPending}
             data-testid="create-key-confirm"
-            className="bg-indigo-600 hover:bg-indigo-700"
           >
-            {create.isPending ? <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Creating…</> : 'Create key'}
+            {create.isPending ? <><Loader2 className="size-4 animate-spin mr-1" /> Creating…</> : 'Create key'}
           </Button>
         </div>
       </div>
@@ -293,20 +339,22 @@ function CreateApiKeyDialog({ onClose, onCreated }: { onClose: () => void; onCre
 function RevealKeyModal({ id: _id, keyValue, onClose }: { id: string; keyValue: string; onClose: () => void }) {
   const [copied, setCopied] = useState(false)
   return (
-    <div role="dialog" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" data-testid="reveal-key-modal">
-      <div className="bg-white rounded-xl max-w-lg w-full shadow-2xl">
-        <div className="px-6 py-4 border-b">
-          <h2 className="text-lg font-semibold flex items-center gap-2 text-emerald-700">
-            <Check className="h-5 w-5" /> API key created
+    <div role="dialog" className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4" data-testid="reveal-key-modal">
+      <div className="bg-card rounded-card border border-paper-200 max-w-lg w-full shadow-e3">
+        <div className="px-5 py-4 border-b border-paper-200">
+          {/* The heading is a neutral fact; the warning below is the part that's
+              genuinely blocked on this user, so attention lands there. */}
+          <h2 className="text-section text-ink-950 flex items-center gap-2">
+            <Check className="size-5" /> API key created
           </h2>
-          <p className="text-xs text-amber-700 mt-1">
-            <AlertCircle className="h-3 w-3 inline mr-1" />
+          <p className="text-dense text-attention-700 mt-1">
+            <AlertCircle className="size-3 inline mr-1" />
             This is the only time you'll see the full key. Copy it now — we don't store it.
           </p>
         </div>
-        <div className="px-6 py-5">
+        <div className="px-5 py-5">
           <div className="flex gap-2">
-            <code className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded-md px-3 py-2.5 font-mono break-all" data-testid="key-value">
+            <code className="flex-1 text-[11px] bg-paper-50 border border-paper-200 rounded-md px-3 py-2.5 font-mono text-ink-950 break-all" data-testid="key-value">
               {keyValue}
             </code>
             <Button
@@ -316,15 +364,15 @@ function RevealKeyModal({ id: _id, keyValue, onClose }: { id: string; keyValue: 
               className="gap-1.5 flex-shrink-0"
               data-testid="copy-key"
             >
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
               {copied ? 'Copied' : 'Copy'}
             </Button>
           </div>
-          <p className="text-[11px] text-gray-500 mt-3">
-            Use it as <code className="text-[10.5px] bg-gray-100 px-1 rounded">Authorization: Bearer {keyValue.slice(0, 20)}…</code>
+          <p className="text-[11px] text-ink-500 mt-3">
+            Use it as <code className="font-mono text-[10.5px] bg-paper-100 text-ink-950 px-1 rounded-chip">Authorization: Bearer {keyValue.slice(0, 20)}…</code>
           </p>
         </div>
-        <div className="px-6 py-4 border-t flex justify-end bg-gray-50 rounded-b-xl">
+        <div className="px-5 py-4 border-t border-paper-200 flex justify-end bg-paper-50 rounded-b-card">
           <Button onClick={onClose}>Done</Button>
         </div>
       </div>
@@ -338,6 +386,7 @@ function WebhooksSection() {
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<Webhook | null>(null)
 
   const { data, isLoading } = useQuery<{ data: Webhook[] }>({
     queryKey: ['webhooks'],
@@ -355,7 +404,10 @@ function WebhooksSection() {
   })
   const remove = useMutation({
     mutationFn: async (id: string) => api.delete(`/admin/integrations/webhooks/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['webhooks'] })
+      setPendingDelete(null)
+    },
   })
   const toggle = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
@@ -363,50 +415,50 @@ function WebhooksSection() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['webhooks'] }),
   })
 
-  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-gray-300" /></div>
+  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
 
   const webhooks = data?.data ?? []
 
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-medium text-gray-700">{webhooks.length} {webhooks.length === 1 ? 'webhook' : 'webhooks'}</h2>
-        <Button onClick={() => setCreateOpen(true)} data-testid="create-webhook-btn" className="gap-1.5 bg-indigo-600 hover:bg-indigo-700">
-          <Plus className="h-4 w-4" />
+        <h2 className="text-body font-medium text-ink-700 tabular-nums">{webhooks.length} {webhooks.length === 1 ? 'webhook' : 'webhooks'}</h2>
+        <Button onClick={() => setCreateOpen(true)} data-testid="create-webhook-btn" className="gap-1.5">
+          <Plus className="size-4" />
           New webhook
         </Button>
       </div>
 
       {webhooks.length === 0 ? (
-        <div className="text-center py-12 px-6 border border-dashed border-gray-200 rounded-xl">
-          <WebhookIcon className="h-7 w-7 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">No webhooks configured.</p>
-          <p className="text-xs text-gray-400">
+        <div className="text-center py-12 px-6 border border-dashed border-paper-200 rounded-card">
+          <WebhookIcon className="size-6 text-ink-400 mx-auto mb-2" />
+          <p className="text-body text-ink-500 mb-1">No webhooks configured.</p>
+          <p className="text-dense text-ink-400">
             Add a webhook to receive HMAC-signed POSTs when events fire (contract executed, signature completed, etc.).
           </p>
         </div>
       ) : (
         <div className="space-y-3">
           {webhooks.map(w => (
-            <div key={w.id} className="bg-white border border-gray-200 rounded-xl" data-testid={`webhook-row-${w.id}`}>
+            <div key={w.id} className="bg-card border border-paper-200 rounded-card" data-testid={`webhook-row-${w.id}`}>
               <div className="flex items-center justify-between px-4 py-3">
                 <button
                   onClick={() => setExpandedId(expandedId === w.id ? null : w.id)}
                   className="flex-1 flex items-center gap-2 text-left min-w-0"
                 >
-                  {expandedId === w.id ? <ChevronDown className="h-4 w-4 text-gray-400" /> : <ChevronRight className="h-4 w-4 text-gray-400" />}
+                  {expandedId === w.id ? <ChevronDown className="size-4 text-ink-400" /> : <ChevronRight className="size-4 text-ink-400" />}
                   <div className="flex-1 min-w-0">
-                    <div className="font-medium text-gray-900 truncate flex items-center gap-2">
+                    <div className="font-medium text-ink-950 truncate flex items-center gap-2">
                       {w.name}
-                      {!w.enabled && <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded">Disabled</span>}
+                      {!w.enabled && <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-paper-100 text-ink-500 rounded-chip">Disabled</span>}
                       {w.lastDeliveryStatus === 'failed' && (
-                        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-red-100 text-red-700 rounded">
+                        <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 bg-risk-100 text-risk-700 rounded-chip tabular-nums">
                           {w.failureCount} failure{w.failureCount === 1 ? '' : 's'}
                         </span>
                       )}
                     </div>
-                    <div className="text-xs text-gray-500 truncate font-mono">{w.url}</div>
-                    <div className="text-[10.5px] text-gray-400 mt-0.5">
+                    <div className="text-[11px] text-ink-500 truncate font-mono">{w.url}</div>
+                    <div className="text-[10.5px] text-ink-400 mt-0.5">
                       {w.events.length} event{w.events.length === 1 ? '' : 's'} ·
                       {w.lastDeliveryAt ? ` last fired ${new Date(w.lastDeliveryAt).toLocaleString()}` : ' never fired'}
                     </div>
@@ -416,23 +468,26 @@ function WebhooksSection() {
                   <button
                     onClick={() => test.mutate(w.id)}
                     disabled={test.isPending}
-                    className="text-xs text-gray-600 hover:text-gray-900 inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-100"
+                    className="text-dense text-ink-700 hover:text-ink-950 inline-flex items-center gap-1 px-2 py-1 rounded-md hover:bg-paper-100"
                     title="Send a test event"
                     data-testid={`test-${w.id}`}
                   >
-                    <Send className="h-3.5 w-3.5" /> Test
+                    <Send className="size-3.5" /> Test
                   </button>
                   <button
                     onClick={() => toggle.mutate({ id: w.id, enabled: !w.enabled })}
-                    className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
+                    className="text-dense text-ink-700 hover:text-ink-950 px-2 py-1 rounded-md hover:bg-paper-100"
                   >
                     {w.enabled ? 'Disable' : 'Enable'}
                   </button>
                   <button
-                    onClick={() => { if (confirm(`Delete ${w.name}?`)) remove.mutate(w.id) }}
-                    className="text-xs text-red-600 hover:text-red-700 inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-red-50"
+                    onClick={() => setPendingDelete(w)}
+                    aria-label={`Delete webhook ${w.name}`}
+                    title={`Delete webhook "${w.name}"`}
+                    data-testid={`delete-webhook-${w.id}`}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="size-3.5" />
                   </button>
                 </div>
               </div>
@@ -449,6 +504,36 @@ function WebhooksSection() {
           onCreated={() => qc.invalidateQueries({ queryKey: ['webhooks'] })}
         />
       )}
+
+      {/* A webhook is how another system learns a contract was executed. Losing
+          one silently stops that feed, so the confirm names the endpoint. */}
+      <ConfirmDialog
+        open={pendingDelete != null}
+        testId="delete-webhook-confirm"
+        title="Delete this webhook?"
+        confirmLabel={remove.isPending ? 'Deleting…' : 'Delete webhook'}
+        isPending={remove.isPending}
+        error={remove.isError ? 'Could not delete this webhook. Try again.' : null}
+        body={
+          <>
+            <span className="font-medium text-ink-950">{pendingDelete?.name}</span> stops
+            receiving events at{' '}
+            <span className="break-all font-mono text-[11.5px] text-ink-500">{pendingDelete?.url}</span>.
+            Anything downstream that relies on{' '}
+            {pendingDelete?.events?.length ? (
+              <span className="font-mono text-[11.5px] text-ink-500">
+                {pendingDelete.events.slice(0, 3).join(', ')}
+                {pendingDelete.events.length > 3 ? ` +${pendingDelete.events.length - 3} more` : ''}
+              </span>
+            ) : (
+              'these events'
+            )}{' '}
+            goes quiet with no error on their side. To pause instead, use Disable.
+          </>
+        }
+        onConfirm={() => pendingDelete && remove.mutate(pendingDelete.id)}
+        onCancel={() => { remove.reset(); setPendingDelete(null) }}
+      />
     </div>
   )
 }
@@ -461,34 +546,34 @@ function WebhookDetail({ webhook }: { webhook: Webhook }) {
   })
   const items = data?.data ?? []
   return (
-    <div className="border-t border-gray-100 px-4 py-3 bg-gray-50/50">
-      <div className="text-xs font-medium text-gray-700 mb-2">Subscribed events</div>
+    <div className="border-t border-paper-200 px-4 py-3 bg-paper-50/50">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-700 mb-2">Subscribed events</div>
       <div className="flex flex-wrap gap-1 mb-3">
         {webhook.events.map(e => (
-          <span key={e} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10.5px] font-mono bg-white border border-gray-200 text-gray-700">
+          <span key={e} className="inline-flex items-center px-1.5 py-0.5 rounded-chip text-[10.5px] font-mono bg-card border border-paper-200 text-ink-700">
             {e}
           </span>
         ))}
       </div>
-      <div className="text-xs font-medium text-gray-700 mb-2">Recent deliveries ({items.length})</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-700 mb-2">Recent deliveries ({items.length})</div>
       {items.length === 0 ? (
-        <div className="text-[11px] text-gray-400 italic">No deliveries yet — fire a test event to verify connectivity.</div>
+        <div className="text-[11px] text-ink-400 italic">No deliveries yet — fire a test event to verify connectivity.</div>
       ) : (
         <div className="space-y-1">
           {items.map(d => (
-            <div key={d.id} className="flex items-center gap-2 text-[11px] py-1 border-b border-gray-100 last:border-b-0">
-              <span className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${d.succeeded ? 'bg-emerald-500' : 'bg-red-500'}`} />
-              <span className="font-mono text-gray-700 w-44 truncate">{d.event}</span>
-              <span className="text-gray-500 w-32">{new Date(d.createdAt).toLocaleString()}</span>
-              <span className={d.succeeded ? 'text-emerald-700' : 'text-red-700'}>
+            <div key={d.id} className="flex items-center gap-2 text-[11px] py-1 border-b border-paper-200 last:border-b-0">
+              <span className={`inline-block size-1.5 rounded-full flex-shrink-0 ${d.succeeded ? MEANING_CLASS.binding.dot : MEANING_CLASS.risk.dot}`} />
+              <span className="font-mono text-ink-700 w-44 truncate">{d.event}</span>
+              <span className="text-ink-500 w-32 tabular-nums">{new Date(d.createdAt).toLocaleString()}</span>
+              <span className={`tabular-nums ${d.succeeded ? MEANING_CLASS.binding.fg : MEANING_CLASS.risk.fg}`}>
                 {d.responseStatus ?? '—'} · {d.attempts} attempt{d.attempts === 1 ? '' : 's'}
               </span>
-              {d.errorMessage && <span className="text-red-600 truncate text-[10.5px]">{d.errorMessage}</span>}
+              {d.errorMessage && <span className="text-risk-700 truncate text-[10.5px]">{d.errorMessage}</span>}
             </div>
           ))}
         </div>
       )}
-      <div className="text-[10px] text-gray-400 mt-2 font-mono">
+      <div className="text-[10px] text-ink-400 mt-2 font-mono">
         Signing secret: {webhook.secret.slice(0, 16)}… (use to verify <code>X-CLM-Signature</code>)
       </div>
     </div>
@@ -521,15 +606,15 @@ function CreateWebhookDialog({ events, onClose, onCreated }: {
   const valid = name.trim() && /^https?:\/\//.test(url.trim()) && selectedEvents.length > 0
 
   return (
-    <div role="dialog" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 overflow-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl max-w-lg w-full shadow-2xl my-8" onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b flex items-start justify-between">
-          <h2 className="text-lg font-semibold flex items-center gap-2"><WebhookIcon className="h-5 w-5 text-indigo-600" /> New webhook</h2>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 text-gray-400"><X className="h-4 w-4" /></button>
+    <div role="dialog" className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4 overflow-auto" onClick={onClose}>
+      <div className="bg-card rounded-card border border-paper-200 max-w-lg w-full shadow-e3 my-8" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-paper-200 flex items-start justify-between">
+          <h2 className="text-section text-ink-950 flex items-center gap-2"><WebhookIcon className="size-5 text-ink-700" /> New webhook</h2>
+          <button onClick={onClose} className="p-1 rounded-md hover:bg-paper-100 text-ink-400"><X className="size-4" /></button>
         </div>
-        <div className="px-6 py-5 space-y-4">
+        <div className="px-5 py-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Name</label>
             <Input
               value={name}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
@@ -538,70 +623,73 @@ function CreateWebhookDialog({ events, onClose, onCreated }: {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">URL</label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">URL</label>
             <Input
               value={url}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUrl(e.target.value)}
               placeholder="https://your.app/clm-webhook  or  https://hooks.slack.com/services/…"
               data-testid="webhook-url"
             />
+            {/* "We recognised your URL" is a neutral fact about what you typed,
+                not a binding outcome — so no emerald here. */}
             {detectedSlack && (
-              <p className="text-[11px] text-emerald-700 mt-1 inline-flex items-center gap-1">
-                <Check className="h-3 w-3" /> Slack URL detected — events will be formatted as Slack messages.
+              <p className="text-[11px] text-ink-500 mt-1 inline-flex items-center gap-1">
+                <Check className="size-3" /> Slack URL detected — events will be formatted as Slack messages.
               </p>
             )}
             {detectedTeams && (
-              <p className="text-[11px] text-emerald-700 mt-1 inline-flex items-center gap-1">
-                <Check className="h-3 w-3" /> Teams workflow URL detected — events will be formatted as Adaptive Cards.
+              <p className="text-[11px] text-ink-500 mt-1 inline-flex items-center gap-1">
+                <Check className="size-3" /> Teams workflow URL detected — events will be formatted as Adaptive Cards.
               </p>
             )}
           </div>
 
           {!detectedSlack && !detectedTeams && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Format</label>
+              <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Format</label>
               <div className="flex gap-2">
                 <button
                   type="button"
                   onClick={() => setType('generic')}
-                  className={`flex-1 text-left p-2.5 rounded-md border text-sm transition-colors ${
-                    type === 'generic' ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300' : 'border-gray-200 hover:border-gray-300'
+                  // Selection is an action state — ink outline, not a colored wash.
+                  className={`flex-1 text-left p-2.5 rounded-md border text-dense transition-colors ${
+                    type === 'generic' ? 'border-ink-950 bg-paper-100' : 'border-paper-200 hover:border-paper-300'
                   }`}
                   data-testid="type-generic"
                 >
-                  <div className="font-medium text-gray-900">Generic JSON</div>
-                  <div className="text-[11px] text-gray-500">Standard envelope: {'{ event, timestamp, data }'}</div>
+                  <div className="font-medium text-ink-950">Generic JSON</div>
+                  <div className="text-[11px] text-ink-500">Standard envelope: {'{ event, timestamp, data }'}</div>
                 </button>
                 <button
                   type="button"
                   onClick={() => setType('slack')}
-                  className={`flex-1 text-left p-2.5 rounded-md border text-sm transition-colors ${
-                    type === 'slack' ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300' : 'border-gray-200 hover:border-gray-300'
+                  className={`flex-1 text-left p-2.5 rounded-md border text-dense transition-colors ${
+                    type === 'slack' ? 'border-ink-950 bg-paper-100' : 'border-paper-200 hover:border-paper-300'
                   }`}
                   data-testid="type-slack"
                 >
-                  <div className="font-medium text-gray-900">Slack blocks</div>
-                  <div className="text-[11px] text-gray-500">Pretty rendering for Slack-compatible receivers</div>
+                  <div className="font-medium text-ink-950">Slack blocks</div>
+                  <div className="text-[11px] text-ink-500">Pretty rendering for Slack-compatible receivers</div>
                 </button>
                 <button
                   type="button"
                   onClick={() => setType('teams')}
-                  className={`flex-1 text-left p-2.5 rounded-md border text-sm transition-colors ${
-                    type === 'teams' ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-300' : 'border-gray-200 hover:border-gray-300'
+                  className={`flex-1 text-left p-2.5 rounded-md border text-dense transition-colors ${
+                    type === 'teams' ? 'border-ink-950 bg-paper-100' : 'border-paper-200 hover:border-paper-300'
                   }`}
                   data-testid="type-teams"
                 >
-                  <div className="font-medium text-gray-900">Teams card</div>
-                  <div className="text-[11px] text-gray-500">Adaptive Cards for Teams Workflows webhooks</div>
+                  <div className="font-medium text-ink-950">Teams card</div>
+                  <div className="text-[11px] text-ink-500">Adaptive Cards for Teams Workflows webhooks</div>
                 </button>
               </div>
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Events</label>
-            <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto p-2 border border-gray-200 rounded-md">
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Events</label>
+            <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto p-2 border border-paper-200 rounded-md">
               {events.map(e => (
-                <label key={e} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-gray-50 px-1.5 py-1 rounded">
+                <label key={e} className="flex items-center gap-1.5 text-dense text-ink-700 cursor-pointer hover:bg-paper-50 px-1.5 py-1 rounded-chip">
                   <input
                     type="checkbox"
                     checked={selectedEvents.includes(e)}
@@ -610,24 +698,23 @@ function CreateWebhookDialog({ events, onClose, onCreated }: {
                       : selectedEvents.filter(x => x !== e))
                     }
                     data-testid={`event-${e}`}
-                    className="h-3.5 w-3.5"
+                    className="size-3.5 rounded-chip border-paper-300 accent-ink-950"
                   />
                   <span className="font-mono">{e}</span>
                 </label>
               ))}
             </div>
           </div>
-          {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
+          {error && <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>}
         </div>
-        <div className="px-6 py-4 border-t flex justify-end gap-2 bg-gray-50 rounded-b-xl">
+        <div className="px-5 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => create.mutate()}
             disabled={!valid || create.isPending}
             data-testid="create-webhook-confirm"
-            className="bg-indigo-600 hover:bg-indigo-700"
           >
-            {create.isPending ? <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Creating…</> : 'Create webhook'}
+            {create.isPending ? <><Loader2 className="size-4 animate-spin mr-1" /> Creating…</> : 'Create webhook'}
           </Button>
         </div>
       </div>
@@ -672,11 +759,16 @@ interface HealthResponse {
   apiKeys: { active: number; expiringSoon: number; lastUsedAt: string | null }
 }
 
-const HEALTH_BADGE: Record<WebhookHealth['health'], { label: string; dot: string; cls: string }> = {
-  healthy:  { label: 'Healthy',  dot: 'bg-emerald-500', cls: 'bg-emerald-50 border-emerald-200 text-emerald-700' },
-  degraded: { label: 'Degraded', dot: 'bg-amber-500',   cls: 'bg-amber-50 border-amber-200 text-amber-700' },
-  failing:  { label: 'Failing',  dot: 'bg-red-500',     cls: 'bg-red-50 border-red-200 text-red-700' },
-  disabled: { label: 'Disabled', dot: 'bg-gray-300',    cls: 'bg-gray-100 border-gray-200 text-gray-500' },
+/*
+ * Connection health is a one-for-one fit with the meaning system: healthy is
+ * the binding "it works", degraded is your turn to look at it before it breaks,
+ * failing is real risk, and a disabled hook is simply off.
+ */
+const HEALTH_BADGE: Record<WebhookHealth['health'], { label: string; meaning: Meaning }> = {
+  healthy:  { label: 'Healthy',  meaning: 'binding' },
+  degraded: { label: 'Degraded', meaning: 'turn' },
+  failing:  { label: 'Failing',  meaning: 'risk' },
+  disabled: { label: 'Disabled', meaning: 'neutral' },
 }
 
 function relativeTime(iso: string | null): string {
@@ -707,7 +799,7 @@ function HealthSection() {
     },
   })
 
-  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-gray-300" /></div>
+  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
   if (!data) return null
 
   const { webhooks, summary, apiKeys } = data
@@ -754,80 +846,82 @@ function HealthSection() {
 
       {/* Per-webhook health table */}
       {webhooks.length === 0 ? (
-        <div className="text-center py-12 px-6 border border-dashed border-gray-200 rounded-xl">
-          <Activity className="h-7 w-7 text-gray-300 mx-auto mb-2" />
-          <p className="text-sm text-gray-500 mb-1">No webhooks configured.</p>
-          <p className="text-xs text-gray-400">Add one on the Webhooks tab — health appears here once deliveries start flowing.</p>
+        <div className="text-center py-12 px-6 border border-dashed border-paper-200 rounded-card">
+          <Activity className="size-6 text-ink-400 mx-auto mb-2" />
+          <p className="text-body text-ink-500 mb-1">No webhooks configured.</p>
+          <p className="text-dense text-ink-400">Add one on the Webhooks tab — health appears here once deliveries start flowing.</p>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-          <table className="w-full text-sm" data-testid="health-table">
-            <thead className="bg-gray-50 text-xs uppercase tracking-wider text-gray-500">
+        <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
+          <table className="w-full text-[13px]" data-testid="health-table">
+            <thead className="bg-paper-50 text-[11px] uppercase tracking-[0.08em] text-ink-500">
               <tr>
-                <th className="text-left px-4 py-3 font-medium">Status</th>
-                <th className="text-left px-4 py-3 font-medium">Webhook</th>
-                <th className="text-left px-4 py-3 font-medium">Last delivery</th>
-                <th className="text-left px-4 py-3 font-medium">24h</th>
-                <th className="text-left px-4 py-3 font-medium">7d</th>
-                <th className="text-left px-4 py-3 font-medium">Last error</th>
-                <th className="text-right px-4 py-3 font-medium"></th>
+                <th className="text-left px-4 py-2 font-semibold">Status</th>
+                <th className="text-left px-4 py-2 font-semibold">Webhook</th>
+                <th className="text-left px-4 py-2 font-semibold">Last delivery</th>
+                <th className="text-left px-4 py-2 font-semibold">24h</th>
+                <th className="text-left px-4 py-2 font-semibold">7d</th>
+                <th className="text-left px-4 py-2 font-semibold">Last error</th>
+                <th className="text-right px-4 py-2 font-semibold"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody className="divide-y divide-paper-200">
               {webhooks.map(w => {
                 const badge = HEALTH_BADGE[w.health]
                 return (
                   <tr key={w.id} data-testid={`health-row-${w.id}`} data-health={w.health}>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium border ${badge.cls}`}>
-                        <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
-                        {badge.label}
-                      </span>
+                    <td className="px-4 py-2">
+                      <StatusPill meaning={badge.meaning}>{badge.label}</StatusPill>
                       {w.consecutiveFailures > 0 && (
-                        <div className="text-[10.5px] text-red-600 mt-1">{w.consecutiveFailures} consecutive failure{w.consecutiveFailures > 1 ? 's' : ''}</div>
+                        <div className="text-[10.5px] text-risk-700 mt-1 tabular-nums">{w.consecutiveFailures} consecutive failure{w.consecutiveFailures > 1 ? 's' : ''}</div>
                       )}
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-gray-900">{w.name}</div>
-                      <div className="text-xs text-gray-400 truncate max-w-[220px]" title={w.url}>{w.url}</div>
+                    <td className="px-4 py-2">
+                      <div className="font-medium text-ink-950">{w.name}</div>
+                      <div className="text-[11px] font-mono text-ink-400 truncate max-w-[220px]" title={w.url}>{w.url}</div>
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-600">
-                      <div>{relativeTime(w.lastDeliveryAt)}</div>
+                    <td className="px-4 py-2 text-[11px] text-ink-700">
+                      <div className="tabular-nums">{relativeTime(w.lastDeliveryAt)}</div>
                       {w.lastDeliveryStatus && (
-                        <div className={w.lastDeliveryStatus === 'success' ? 'text-emerald-600' : 'text-red-600'}>
+                        <div className={w.lastDeliveryStatus === 'success' ? MEANING_CLASS.binding.fg : MEANING_CLASS.risk.fg}>
                           {w.lastDeliveryStatus}
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-xs">
-                      <span className="text-emerald-700">{w.deliveries.ok24h} ok</span>
-                      {w.deliveries.fail24h > 0 && <span className="text-red-600"> · {w.deliveries.fail24h} failed</span>}
+                    {/*
+                      Aggregate counts read the other way round from the per-row dot:
+                      a column of emerald "ok" totals is the generic-success decoration
+                      the system bans, so only the failures carry color.
+                    */}
+                    <td className="px-4 py-2 text-[11px] tabular-nums">
+                      <span className="text-ink-700">{w.deliveries.ok24h} ok</span>
+                      {w.deliveries.fail24h > 0 && <span className="text-risk-700"> · {w.deliveries.fail24h} failed</span>}
                     </td>
-                    <td className="px-4 py-3 text-xs">
-                      <span className="text-emerald-700">{w.deliveries.ok7d} ok</span>
-                      {w.deliveries.fail7d > 0 && <span className="text-red-600"> · {w.deliveries.fail7d} failed</span>}
+                    <td className="px-4 py-2 text-[11px] tabular-nums">
+                      <span className="text-ink-700">{w.deliveries.ok7d} ok</span>
+                      {w.deliveries.fail7d > 0 && <span className="text-risk-700"> · {w.deliveries.fail7d} failed</span>}
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-600 max-w-[240px]">
+                    <td className="px-4 py-2 text-[11px] text-ink-700 max-w-[240px]">
                       {w.lastFailure ? (
                         <div>
                           <div className="truncate" title={w.lastFailure.errorMessage ?? undefined}>
                             {w.lastFailure.errorMessage ?? `HTTP ${w.lastFailure.responseStatus ?? '?'}`}
                           </div>
-                          <div className="text-gray-400">{w.lastFailure.event} · {relativeTime(w.lastFailure.at)}</div>
+                          <div className="text-ink-400">{w.lastFailure.event} · {relativeTime(w.lastFailure.at)}</div>
                         </div>
                       ) : (
-                        <span className="text-gray-300">—</span>
+                        <span className="text-ink-400">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="px-4 py-2 text-right">
                       {w.lastFailure && w.enabled && (
                         <button
                           onClick={() => retry.mutate({ webhookId: w.id, deliveryId: w.lastFailure!.deliveryId })}
                           disabled={retry.isPending}
                           data-testid={`health-retry-${w.id}`}
-                          className="text-xs text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1 disabled:opacity-50"
+                          className="text-dense text-ink-950 hover:text-ink-700 inline-flex items-center gap-1 disabled:opacity-50"
                         >
-                          <RefreshCw className={`h-3.5 w-3.5 ${retry.isPending ? 'animate-spin' : ''}`} /> Retry
+                          <RefreshCw className={`size-3.5 ${retry.isPending ? 'animate-spin' : ''}`} /> Retry
                         </button>
                       )}
                     </td>
@@ -838,7 +932,7 @@ function HealthSection() {
           </table>
         </div>
       )}
-      <p className="text-[11px] text-gray-400 mt-3">
+      <p className="text-[11px] text-ink-400 mt-3">
         Auto-refreshes every 30s. “Failing” = 3+ consecutive failures; “Degraded” = failures within the last 7 days.
       </p>
     </div>
@@ -852,17 +946,19 @@ function SummaryCard({ label, value, sub, tone, testId }: {
   tone: 'green' | 'amber' | 'red' | 'gray'
   testId: string
 }) {
+  // The prop names stay green/amber/red/gray so callers don't move; what they
+  // resolve to is now the meaning ramp.
   const toneCls = {
-    green: 'text-emerald-700',
-    amber: 'text-amber-700',
-    red:   'text-red-700',
-    gray:  'text-gray-900',
+    green: 'text-brand-700',
+    amber: 'text-attention-700',
+    red:   'text-risk-700',
+    gray:  'text-ink-950',
   }[tone]
   return (
-    <div className="bg-white border border-gray-200 rounded-xl px-4 py-3" data-testid={testId}>
-      <div className="text-[11px] uppercase tracking-wider text-gray-400 font-medium">{label}</div>
-      <div className={`text-xl font-semibold mt-0.5 ${toneCls}`}>{value}</div>
-      <div className="text-xs text-gray-500 mt-0.5">{sub}</div>
+    <div className="bg-card border border-paper-200 rounded-card px-4 py-3" data-testid={testId}>
+      <div className="text-[11px] uppercase tracking-[0.08em] text-ink-400 font-semibold">{label}</div>
+      <div className={`text-title tabular-nums mt-0.5 ${toneCls}`}>{value}</div>
+      <div className="text-dense text-ink-500 mt-0.5 tabular-nums">{sub}</div>
     </div>
   )
 }
@@ -925,117 +1021,140 @@ function SlackSection() {
       setError(err.response?.data?.detail ?? 'Failed to save.'),
   })
 
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
   const disconnect = useMutation({
     mutationFn: async () => api.delete('/admin/integrations/slack'),
     onSuccess:  () => qc.invalidateQueries({ queryKey: ['slack-config'] }),
   })
 
-  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-gray-300" /></div>
+  if (isLoading) return <div className="py-12 flex items-center justify-center"><Loader2 className="size-5 animate-spin text-ink-400" /></div>
 
   if (data?.connected) {
     return (
       <div className="max-w-2xl" data-testid="slack-connected">
-        <div className="bg-white border border-gray-200 rounded-xl p-5">
+        <div className="bg-card border border-paper-200 rounded-card p-5">
           <div className="flex items-center gap-2 mb-3">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <h2 className="text-sm font-semibold text-gray-900">Slack workspace connected</h2>
+            {/* Connected = binding, the same dot a healthy webhook gets. */}
+            <span className={`size-1.5 rounded-full ${MEANING_CLASS.binding.dot}`} />
+            <h2 className="text-section text-ink-950">Slack workspace connected</h2>
           </div>
-          <dl className="text-sm space-y-2">
-            <div className="flex justify-between"><dt className="text-gray-500">Workspace (team ID)</dt><dd className="font-mono text-xs text-gray-900">{data.teamId}</dd></div>
-            <div className="flex justify-between"><dt className="text-gray-500">Signing secret</dt><dd className="text-emerald-700 text-xs">configured</dd></div>
+          <dl className="text-body space-y-2">
+            <div className="flex justify-between"><dt className="text-ink-500">Workspace (team ID)</dt><dd className="font-mono text-[11px] text-ink-950">{data.teamId}</dd></div>
+            <div className="flex justify-between"><dt className="text-ink-500">Signing secret</dt><dd className="text-brand-700 text-[11px]">configured</dd></div>
             <div className="flex justify-between">
-              <dt className="text-gray-500">Bot token (button-click identity)</dt>
-              <dd className={data.hasBotToken ? 'text-emerald-700 text-xs' : 'text-amber-700 text-xs'}>
+              <dt className="text-ink-500">Bot token (button-click identity)</dt>
+              {/* Missing bot token is a setup step still waiting on this admin. */}
+              <dd className={data.hasBotToken ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
                 {data.hasBotToken ? 'configured' : 'not set — buttons fall back to web links'}
               </dd>
             </div>
             {data.configuredAt && (
-              <div className="flex justify-between"><dt className="text-gray-500">Connected</dt><dd className="text-xs text-gray-600">{new Date(data.configuredAt).toLocaleString()}</dd></div>
+              <div className="flex justify-between"><dt className="text-ink-500">Connected</dt><dd className="text-[11px] tabular-nums text-ink-700">{new Date(data.configuredAt).toLocaleString()}</dd></div>
             )}
           </dl>
-          <div className="mt-4 pt-4 border-t border-gray-100 text-xs text-gray-500 space-y-1">
-            <p>• <code className="bg-gray-100 px-1 rounded">/contract search &lt;query&gt;</code> works in any channel the app is in.</p>
-            <p>• Approval requests post Approve / Reject buttons via your <button className="text-indigo-600 hover:underline" onClick={() => { /* tab switch hint */ }}>Slack webhook</button> — add one on the Webhooks tab (paste a hooks.slack.com URL) subscribed to <code className="bg-gray-100 px-1 rounded">approval.submitted</code>.</p>
+          <div className="mt-4 pt-4 border-t border-paper-200 text-dense text-ink-500 space-y-1">
+            <p>• <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">/contract search &lt;query&gt;</code> works in any channel the app is in.</p>
+            <p>• Approval requests post Approve / Reject buttons via your <button className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700" onClick={() => { /* tab switch hint */ }}>Slack webhook</button> — add one on the Webhooks tab (paste a hooks.slack.com URL) subscribed to <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">approval.submitted</code>.</p>
           </div>
           <div className="mt-4 flex justify-end">
             <button
-              onClick={() => { if (confirm('Disconnect Slack? Slash commands and approval buttons will stop working.')) disconnect.mutate() }}
+              onClick={() => setConfirmDisconnect(true)}
               data-testid="slack-disconnect"
-              className="text-xs text-red-600 hover:text-red-700 inline-flex items-center gap-1"
+              className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-dense text-risk-700 hover:bg-risk-50 hover:text-risk-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <Trash2 className="h-3.5 w-3.5" /> Disconnect
+              <Trash2 className="size-3.5" /> Disconnect
             </button>
           </div>
         </div>
+
+        <ConfirmDialog
+          open={confirmDisconnect}
+          testId="slack-disconnect-confirm"
+          title="Disconnect Slack?"
+          confirmLabel={disconnect.isPending ? 'Disconnecting…' : 'Disconnect Slack'}
+          isPending={disconnect.isPending}
+          error={disconnect.isError ? 'Could not disconnect. Try again.' : null}
+          body={
+            <>
+              <code className="font-mono text-[11.5px] text-ink-700">/contract</code> stops
+              responding in every channel, and Approve / Reject buttons in already-posted
+              approval messages stop working — approvers will have to come back into
+              draftLegal. Your signing secret and bot token are deleted; reconnecting means
+              pasting them again from the Slack app config.
+            </>
+          }
+          onConfirm={() => disconnect.mutate(undefined, { onSuccess: () => setConfirmDisconnect(false) })}
+          onCancel={() => { disconnect.reset(); setConfirmDisconnect(false) }}
+        />
       </div>
     )
   }
 
   return (
     <div className="max-w-2xl space-y-4" data-testid="slack-setup">
-      <div className="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-gray-900 mb-1">1 · Create the Slack app</h2>
-        <p className="text-xs text-gray-500 mb-3">
-          Go to <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline">api.slack.com/apps</a> →
+      <div className="bg-card border border-paper-200 rounded-card p-5">
+        <h2 className="text-section text-ink-950 mb-1">1 · Create the Slack app</h2>
+        <p className="text-dense text-ink-500 mb-3">
+          Go to <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">api.slack.com/apps</a> →
           “Create New App” → “From a manifest”, pick your workspace, and paste this manifest. It pre-wires the
-          <code className="bg-gray-100 px-1 rounded mx-1">/contract</code> command and the Approve/Reject interactivity URL.
+          <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip mx-1">/contract</code> command and the Approve/Reject interactivity URL.
         </p>
         <div className="relative">
-          <pre className="text-[10.5px] bg-gray-900 text-gray-100 rounded-lg p-3 overflow-x-auto max-h-48" data-testid="slack-manifest">{SLACK_MANIFEST}</pre>
+          <pre className="font-mono text-[10.5px] bg-ink-950 text-paper-200 rounded-md p-3 overflow-x-auto max-h-48" data-testid="slack-manifest">{SLACK_MANIFEST}</pre>
           <button
             onClick={() => { navigator.clipboard.writeText(SLACK_MANIFEST); setCopiedManifest(true); setTimeout(() => setCopiedManifest(false), 1500) }}
-            className="absolute top-2 right-2 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-200"
+            className="absolute top-2 right-2 p-1.5 rounded-chip bg-ink-700 hover:bg-ink-500 text-paper-100"
             data-testid="slack-copy-manifest"
             aria-label="Copy manifest"
           >
-            {copiedManifest ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copiedManifest ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
           </button>
         </div>
-        <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-1.5 mt-3">
+        {/* Your turn: nothing works until the admin exposes a reachable URL. */}
+        <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2.5 py-1.5 mt-3">
           Slack must be able to reach these URLs — in local dev use a tunnel (ngrok / cloudflared) and adjust the manifest.
         </p>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-gray-900 mb-1">2 · Connect it here</h2>
-        <p className="text-xs text-gray-500 mb-3">
+      <div className="bg-card border border-paper-200 rounded-card p-5">
+        <h2 className="text-section text-ink-950 mb-1">2 · Connect it here</h2>
+        <p className="text-dense text-ink-500 mb-3">
           From the app's <span className="font-medium">Basic Information</span> page copy the <span className="font-medium">Signing Secret</span>;
           the <span className="font-medium">Team ID</span> (starts with T) is in your Slack workspace URL or app install page. The bot token
           (<span className="font-mono">xoxb-…</span>, after installing the app) is optional but lets Approve/Reject clicks act as the matching draftLegal user.
         </p>
         <div className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Team ID</label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Team ID</label>
             <Input value={teamId} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTeamId(e.target.value)} placeholder="T0123ABCD" data-testid="slack-team-id" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Signing secret</label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Signing secret</label>
             <Input value={signingSecret} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSigningSecret(e.target.value)} placeholder="8f742231b10e8888abcd99yyyzzz85a5" type="password" data-testid="slack-signing-secret" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Bot token <span className="text-gray-400 font-normal">(optional)</span></label>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Bot token <span className="text-ink-400 font-normal">(optional)</span></label>
             <Input value={botToken} onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBotToken(e.target.value)} placeholder="xoxb-…" type="password" data-testid="slack-bot-token" />
           </div>
-          {error && <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>}
+          {error && <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>}
           <div className="flex justify-end">
             <Button
               onClick={() => save.mutate()}
               disabled={!teamId.trim() || !signingSecret.trim() || save.isPending}
               data-testid="slack-save"
-              className="bg-indigo-600 hover:bg-indigo-700"
             >
-              {save.isPending ? <><Loader2 className="h-4 w-4 animate-spin mr-1" /> Connecting…</> : 'Connect Slack'}
+              {save.isPending ? <><Loader2 className="size-4 animate-spin mr-1" /> Connecting…</> : 'Connect Slack'}
             </Button>
           </div>
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-gray-900 mb-1">3 · Notifications channel</h2>
-        <p className="text-xs text-gray-500">
+      <div className="bg-card border border-paper-200 rounded-card p-5">
+        <h2 className="text-section text-ink-950 mb-1">3 · Notifications channel</h2>
+        <p className="text-dense text-ink-500">
           On the <span className="font-medium">Webhooks</span> tab, add your Slack incoming-webhook URL
           (<span className="font-mono">hooks.slack.com/…</span>) subscribed to the events you care about —
-          include <code className="bg-gray-100 px-1 rounded">approval.submitted</code> to get actionable
+          include <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">approval.submitted</code> to get actionable
           Approve/Reject cards in the channel.
         </p>
       </div>

@@ -45,25 +45,25 @@ export interface RenewalAdvice {
   error?:            string
 }
 
+// The recommendation is advice, not a status, but it still resolves to a
+// meaning: renewing keeps the contract binding, renegotiating puts the ball
+// back in our court, and letting it lapse is the exposure case.
 const REC_META: Record<string, { label: string; cls: string; Icon: React.ComponentType<{ className?: string }> }> = {
-  renew:       { label: 'Renew',       cls: 'bg-emerald-100 text-emerald-800 border-emerald-300', Icon: CheckCircle2 },
-  renegotiate: { label: 'Renegotiate', cls: 'bg-amber-100 text-amber-800 border-amber-300',      Icon: Repeat },
-  let_expire:  { label: 'Let expire',  cls: 'bg-red-100 text-red-800 border-red-300',            Icon: LogOut },
-  pause:       { label: 'Pause',       cls: 'bg-gray-100 text-gray-700 border-gray-300',         Icon: Pause },
+  renew:       { label: 'Renew',       cls: 'bg-brand-100 text-brand-700 border-brand-200',             Icon: CheckCircle2 },
+  renegotiate: { label: 'Renegotiate', cls: 'bg-attention-100 text-attention-700 border-attention-200', Icon: Repeat },
+  let_expire:  { label: 'Let expire',  cls: 'bg-risk-100 text-risk-700 border-risk-200',                Icon: LogOut },
+  pause:       { label: 'Pause',       cls: 'bg-paper-100 text-ink-700 border-paper-300',               Icon: Pause },
 }
 
 const SEV_CLS: Record<string, string> = {
-  high:   'text-red-700 border-red-200 bg-red-50',
-  medium: 'text-amber-700 border-amber-200 bg-amber-50',
-  low:    'text-gray-600 border-gray-200 bg-gray-50',
+  high:   'text-risk-700 border-risk-200 bg-risk-50',
+  medium: 'text-attention-700 border-attention-200 bg-attention-50',
+  low:    'text-ink-500 border-paper-200 bg-paper-50',
 }
 
-function daysUntil(iso: string | null): number | null {
-  if (!iso) return null
-  const mid = new Date(iso); mid.setHours(0, 0, 0, 0)
-  const todayMid = new Date(); todayMid.setHours(0, 0, 0, 0)
-  return Math.round((mid.getTime() - todayMid.getTime()) / (24 * 3600 * 1000))
-}
+/* This rail already normalised to midnight; the rest of the app now shares it
+   rather than re-deriving it (the contract header disagreed by a day). */
+import { calendarDaysUntil as daysUntil } from './dates'
 
 export function RenewalAdviceRailSection({
   contractId,
@@ -115,7 +115,7 @@ export function RenewalAdviceRailSection({
     >
       <div className="space-y-2" data-testid="renewal-advice-section">
         <div className="flex items-center gap-1.5 text-[11px]">
-          <span className={`font-medium ${days !== null && days <= 30 ? 'text-red-700' : days !== null && days <= 90 ? 'text-amber-700' : 'text-gray-700'}`}>
+          <span className={`font-medium ${days !== null && days <= 30 ? 'text-risk-700' : days !== null && days <= 90 ? 'text-attention-700' : 'text-ink-700'}`}>
             {daysLabel}
           </span>
           <span className="text-muted-foreground">· {new Date(expiryDate).toLocaleDateString()}</span>
@@ -134,7 +134,7 @@ export function RenewalAdviceRailSection({
               data-testid="renewal-advice-run-btn"
               className="gap-1 text-[11px]"
             >
-              <Sparkles className="h-3 w-3" />
+              <Sparkles className="size-3" />
               Get renewal advice
             </Button>
           </div>
@@ -154,36 +154,36 @@ export function RenewalAdviceRailSection({
                 data-testid="renewal-recommendation"
                 data-recommendation={advice.recommendation}
               >
-                <Icon className="h-3 w-3" />
+                <Icon className="size-3" />
                 <span className="uppercase tracking-wider">{rec.label}</span>
                 <span className="text-[9.5px] font-normal opacity-70">· {advice.confidence} conf</span>
               </div>
 
               {advice.rationale && (
-                <p className="text-[11.5px] text-gray-800 leading-snug" data-testid="renewal-rationale">
+                <p className="text-[11.5px] text-ink-950 leading-snug" data-testid="renewal-rationale">
                   {advice.rationale}
                 </p>
               )}
 
               {advice.negotiationPoints && advice.negotiationPoints.length > 0 && (
                 <div className="mt-1">
-                  <div className="text-[9.5px] font-semibold uppercase tracking-wider text-gray-500 mb-0.5">
+                  <div className="text-[9.5px] font-semibold uppercase tracking-[0.07em] text-ink-500 mb-0.5">
                     Negotiation points
                   </div>
                   <ul className="space-y-1" data-testid="renewal-negotiation-points">
                     {advice.negotiationPoints.map((p, i) => (
                       <li
                         key={i}
-                        className="text-[11px] border border-border rounded-md px-2 py-1.5 bg-white/60"
+                        className="text-[11px] border border-border rounded-md px-2 py-1.5 bg-card"
                         data-testid={`renewal-point-${i}`}
                       >
                         <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-gray-900">{p.topic}</span>
-                          <span className={`text-[9px] uppercase tracking-wider rounded px-1 border ${SEV_CLS[p.severity] ?? SEV_CLS.medium}`}>
+                          <span className="font-medium text-ink-950">{p.topic}</span>
+                          <span className={`text-[9px] uppercase tracking-wider rounded-chip px-1 border ${SEV_CLS[p.severity] ?? SEV_CLS.medium}`}>
                             {p.severity}
                           </span>
                         </div>
-                        <div className="text-[11px] text-gray-700 mt-0.5 leading-snug">{p.ourPosition}</div>
+                        <div className="text-[11px] text-ink-700 mt-0.5 leading-snug">{p.ourPosition}</div>
                         <div className="text-[10.5px] text-muted-foreground mt-0.5 italic">{p.reasoning}</div>
                       </li>
                     ))}
@@ -193,13 +193,13 @@ export function RenewalAdviceRailSection({
 
               {advice.riskFlags && advice.riskFlags.length > 0 && (
                 <div className="mt-1">
-                  <div className="text-[9.5px] font-semibold uppercase tracking-wider text-gray-500 mb-0.5">
+                  <div className="text-[9.5px] font-semibold uppercase tracking-[0.07em] text-ink-500 mb-0.5">
                     Risk flags
                   </div>
                   <ul className="space-y-0.5" data-testid="renewal-risk-flags">
                     {advice.riskFlags.map((r, i) => (
-                      <li key={i} className="flex items-start gap-1 text-[11px] text-red-900 leading-snug">
-                        <AlertTriangle className="h-2.5 w-2.5 mt-1 text-red-500 flex-shrink-0" />
+                      <li key={i} className="flex items-start gap-1 text-[11px] text-risk-900 leading-snug">
+                        <AlertTriangle className="size-2.5 mt-1 text-risk-600 flex-shrink-0" />
                         <span>{r}</span>
                       </li>
                     ))}
@@ -219,7 +219,7 @@ export function RenewalAdviceRailSection({
         {/* Decision buttons — always present so the owner can log a
             decision even without running the advisor. */}
         <div className="pt-2 border-t border-border mt-2">
-          <div className="text-[9.5px] font-semibold uppercase tracking-wider text-gray-500 mb-1">
+          <div className="text-[9.5px] font-semibold uppercase tracking-[0.07em] text-ink-500 mb-1">
             Log decision
           </div>
           <div className="flex gap-1.5 flex-wrap">
@@ -232,10 +232,10 @@ export function RenewalAdviceRailSection({
                   onClick={() => decide.mutate(d)}
                   disabled={decide.isPending}
                   data-testid={`renewal-decision-${d}`}
-                  className={`text-[10.5px] px-2 py-0.5 rounded border transition-colors ${
+                  className={`text-[10.5px] px-2 py-0.5 rounded-md border transition-colors ${
                     active
                       ? meta.cls
-                      : 'border-border text-gray-600 hover:bg-gray-50'
+                      : 'border-border text-ink-700 hover:bg-paper-100'
                   }`}
                 >
                   {meta.label}
@@ -258,9 +258,9 @@ export function RenewalAdviceRailSection({
               onClick={() => run.mutate()}
               disabled={run.isPending}
               data-testid="renewal-advice-rerun-btn"
-              className="ml-2 underline hover:text-gray-900"
+              className="ml-2 underline hover:text-ink-950"
             >
-              <RefreshCw className="h-2.5 w-2.5 inline mr-0.5" />
+              <RefreshCw className="size-2.5 inline mr-0.5" />
               {run.isPending ? 're-running…' : 're-run'}
             </button>
           </div>

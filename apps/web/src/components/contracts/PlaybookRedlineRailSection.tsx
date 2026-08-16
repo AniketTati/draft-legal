@@ -19,7 +19,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
-import { Wand2, Check, X, AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
+import { AssistMark } from '@/components/ui/assist'
+import { Check, X, AlertTriangle, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 
 export interface StagedProposal {
   clauseId:      string
@@ -49,12 +50,15 @@ export interface StagedRedline {
 
 type Status = 'IDLE' | 'QUEUED' | 'RUNNING' | 'DONE' | 'APPLIED' | 'FAILED'
 
+// Five severities, three meanings: anything at or above `high` is exposure we
+// would litigate over (risk), `medium` is a call the reviewer has to make
+// (attention), and `low` is just a note (neutral).
 const SEVERITY_STYLE: Record<string, string> = {
-  walkaway: 'bg-red-100 text-red-800 border-red-200',
-  critical: 'bg-red-100 text-red-800 border-red-200',
-  high:     'bg-orange-100 text-orange-800 border-orange-200',
-  medium:   'bg-amber-100 text-amber-800 border-amber-200',
-  low:      'bg-slate-100 text-slate-700 border-slate-200',
+  walkaway: 'bg-risk-100 text-risk-900 border-risk-200',
+  critical: 'bg-risk-100 text-risk-900 border-risk-200',
+  high:     'bg-risk-50 text-risk-700 border-risk-200',
+  medium:   'bg-attention-100 text-attention-700 border-attention-200',
+  low:      'bg-paper-100 text-ink-700 border-paper-200',
 }
 
 export function PlaybookRedlineRailSection({
@@ -118,40 +122,49 @@ export function PlaybookRedlineRailSection({
     <RailSection title="Playbook redline" defaultOpen>
       {status === 'IDLE' && (
         <div className="space-y-2">
-          <p className="text-xs text-gray-500">
+          <p className="text-dense text-ink-500">
             Check every clause against your playbook and draft a first-pass markup.
             Nothing changes in the document until you accept it.
           </p>
+          {/* This is the heaviest model action in the product — it reads the
+              whole agreement and writes a full markup. In ink it was
+              indistinguishable from "Draft new", i.e. from something a person
+              does. Assist + the diamond say, before the click, that a machine
+              is about to author text. The white diamond is the mark on a filled
+              indigo button; assist-600 on assist-600 would be invisible. */}
           <Button
-            size="sm" className="w-full gap-1.5"
+            size="sm" variant="assist" className="w-full gap-1.5"
             onClick={() => start.mutate()}
             disabled={start.isPending}
             data-testid="start-playbook-redline"
           >
-            <Wand2 className="h-3.5 w-3.5" />
+            <AssistMark className="bg-white" />
             {start.isPending ? 'Starting…' : 'Redline against playbook'}
           </Button>
         </div>
       )}
 
       {running && (
-        <div className="flex items-center gap-2 text-xs text-gray-600" data-testid="redline-running">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <div className="flex items-center gap-2 text-dense text-ink-700" data-testid="redline-running">
+          <Loader2 className="size-3.5 animate-spin" />
           Reviewing every clause against your playbook — this takes a minute or two.
         </div>
       )}
 
       {status === 'FAILED' && (
         <div className="space-y-2">
-          <div className="flex items-start gap-2 rounded border border-red-200 bg-red-50 px-2 py-1.5">
-            <AlertTriangle className="h-3.5 w-3.5 text-red-600 mt-0.5 shrink-0" />
-            <p className="text-[11px] text-red-800">
+          <div className="flex items-start gap-2 rounded-md border border-risk-200 bg-risk-50 px-2 py-1.5">
+            <AlertTriangle className="size-3.5 text-risk-600 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-risk-700">
               {/* Say what went wrong. A run that fails quietly looks the same as
                   one still working, and these take minutes. */}
               {error || 'The redline could not be completed.'}
             </p>
           </div>
-          <Button size="sm" variant="outline" className="w-full" onClick={() => start.mutate()}>
+          {/* Same model run, so the same mark — quieter, because a retry after a
+              failure should not shout louder than the first attempt did. */}
+          <Button size="sm" variant="assistOutline" className="w-full gap-1.5" onClick={() => start.mutate()}>
+            <AssistMark />
             Try again
           </Button>
         </div>
@@ -160,12 +173,12 @@ export function PlaybookRedlineRailSection({
       {(status === 'DONE' || status === 'APPLIED') && staged && (
         <div className="space-y-2.5">
           <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-            <span className="text-gray-600">
+            <span className="text-ink-700">
               {staged.deviationCount} clause{staged.deviationCount === 1 ? '' : 's'} deviate
               {staged.deviationCount === 1 ? 's' : ''} from your playbook
             </span>
             {staged.worstSeverity && (
-              <span className={`px-1.5 py-0.5 rounded border font-medium ${SEVERITY_STYLE[staged.worstSeverity] ?? SEVERITY_STYLE.low}`}>
+              <span className={`px-1.5 py-0.5 rounded-chip border font-medium ${SEVERITY_STYLE[staged.worstSeverity] ?? SEVERITY_STYLE.low}`}>
                 worst: {staged.worstSeverity}
               </span>
             )}
@@ -173,26 +186,26 @@ export function PlaybookRedlineRailSection({
 
           {/* Coverage honesty — what was NOT judged is as important as what was. */}
           {(staged.uncoveredClauses ?? 0) > 0 && (
-            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
               {staged.uncoveredClauses} clause{staged.uncoveredClauses === 1 ? '' : 's'} could not be
               checked — no playbook position covers {staged.uncoveredClauses === 1 ? 'it' : 'them'}.
               They were not reviewed, not approved.
             </p>
           )}
           {staged.truncated && (
-            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
               This contract was too long to check in full — some clauses were not examined.
             </p>
           )}
           {failed.length > 0 && (
-            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+            <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
               {failed.length} clause{failed.length === 1 ? '' : 's'} could not be rewritten
               ({failed.map(f => f.clauseType ?? 'clause').join(', ')}). Review {failed.length === 1 ? 'it' : 'them'} by hand.
             </p>
           )}
 
           {usable.length === 0 ? (
-            <p className="text-xs text-gray-500">
+            <p className="text-dense text-ink-500">
               {staged.note ?? 'No changes to propose.'}
             </p>
           ) : (
@@ -202,58 +215,67 @@ export function PlaybookRedlineRailSection({
                   const isOpen = expanded === p.clauseId
                   const isAccepted = accepted.has(p.clauseId)
                   return (
-                    <li key={p.clauseId} className="rounded border border-gray-200">
+                    <li key={p.clauseId} className="rounded-md border border-paper-200">
                       <div className="flex items-start gap-1.5 p-2">
                         <button
                           onClick={() => setExpanded(isOpen ? null : p.clauseId)}
-                          className="mt-0.5 text-gray-400 hover:text-gray-600"
+                          className="mt-0.5 text-ink-400 hover:text-ink-700"
                           aria-label={isOpen ? 'Collapse' : 'Expand'}
                         >
-                          {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                          {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                         </button>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="text-[11px] font-medium text-gray-800 truncate">
+                            <span className="text-[11px] font-medium text-ink-950 truncate">
                               {(p.clauseType ?? 'clause').replace(/_/g, ' ')}
                             </span>
-                            {p.sectionRef && <span className="text-[10px] text-gray-400">§{p.sectionRef}</span>}
+                            {p.sectionRef && <span className="text-[10px] text-ink-400">§{p.sectionRef}</span>}
                             {p.severity && (
-                              <span className={`text-[10px] px-1 py-0.5 rounded border ${SEVERITY_STYLE[p.severity] ?? SEVERITY_STYLE.low}`}>
+                              <span className={`text-[10px] px-1 py-0.5 rounded-chip border ${SEVERITY_STYLE[p.severity] ?? SEVERITY_STYLE.low}`}>
                                 {p.severity}
                               </span>
                             )}
                           </div>
                           {p.rationale && !isOpen && (
-                            <p className="text-[11px] text-gray-500 mt-0.5 line-clamp-2">{p.rationale}</p>
+                            <p className="text-[11px] text-ink-500 mt-0.5 line-clamp-2">{p.rationale}</p>
                           )}
                         </div>
                         <button
                           onClick={() => toggle(p.clauseId)}
                           data-testid={`accept-${p.clauseId}`}
                           aria-pressed={isAccepted}
-                          className={`shrink-0 h-6 w-6 rounded border flex items-center justify-center transition-colors ${
+                          className={`shrink-0 size-6 rounded-md border flex items-center justify-center transition-colors ${
                             isAccepted
-                              ? 'bg-emerald-600 border-emerald-600 text-white'
-                              : 'border-gray-300 text-gray-400 hover:border-emerald-400 hover:text-emerald-600'
+                              ? 'bg-brand-700 border-brand-700 text-white'
+                              : 'border-paper-300 text-ink-400 hover:border-brand-700 hover:text-brand-700'
                           }`}
                           title={isAccepted ? 'Accepted — click to undo' : 'Accept this change'}
                         >
-                          {isAccepted ? <Check className="h-3.5 w-3.5" /> : <X className="h-3 w-3" />}
+                          {isAccepted ? <Check className="size-3.5" /> : <X className="size-3" />}
                         </button>
                       </div>
 
                       {isOpen && (
-                        <div className="border-t border-gray-100 px-2 py-2 space-y-1.5">
-                          {p.rationale && <p className="text-[11px] text-gray-600">{p.rationale}</p>}
+                        <div className="border-t border-paper-100 px-2 py-2 space-y-1.5">
+                          {p.rationale && <p className="text-[11px] text-ink-700">{p.rationale}</p>}
+                          {/* Neither block is a status. The current wording is
+                              what the signed document says today — a fact, so
+                              neutral, not risk. The replacement has been drafted
+                              by a model and accepted by nobody, so it takes the
+                              assist wash and the diamond rather than brand,
+                              which would read as language already agreed. */}
                           <div>
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-0.5">Current</p>
-                            <p className="text-[11px] text-gray-700 bg-red-50 rounded px-1.5 py-1 whitespace-pre-line">
+                            <p className="text-[10px] uppercase tracking-[0.07em] text-ink-400 mb-0.5">Current</p>
+                            <p className="text-[11px] text-ink-700 bg-paper-100 rounded-chip px-1.5 py-1 whitespace-pre-line">
                               {p.originalText}
                             </p>
                           </div>
                           <div>
-                            <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-0.5">Proposed</p>
-                            <p className="text-[11px] text-gray-800 bg-emerald-50 rounded px-1.5 py-1 whitespace-pre-line">
+                            <p className="flex items-center gap-1 text-[10px] uppercase tracking-[0.07em] text-assist-700 mb-0.5">
+                              <AssistMark className="size-[5px]" />
+                              Proposed
+                            </p>
+                            <p className="text-[11px] text-assist-900 bg-assist-50 rounded-chip px-1.5 py-1 whitespace-pre-line">
                               {p.proposedText}
                             </p>
                           </div>
@@ -285,13 +307,13 @@ export function PlaybookRedlineRailSection({
               </div>
 
               {applyAccepted.isError && (
-                <p className="text-[11px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+                <p className="text-[11px] text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-2 py-1">
                   {(applyAccepted.error as { response?: { data?: { detail?: string } } })
                     ?.response?.data?.detail ?? 'Those changes could not be applied.'}
                 </p>
               )}
               {applyAccepted.isSuccess && (
-                <p className="text-[11px] text-emerald-700">
+                <p className="text-[11px] text-brand-700">
                   Applied as a new version. Everything you did not accept was left alone.
                 </p>
               )}

@@ -23,9 +23,12 @@ import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import { api } from '@/lib/api'
 import { CommentsPanel } from '@/components/contracts/CommentsPanel'
+import { Button } from '@/components/ui/button'
+import { Chip } from '@/components/ui/primitives'
+import { Wordmark } from '@/components/brand/Wordmark'
 import {
   AlertCircle, Loader2, MessageSquare, FileText, Clock, Upload, Download,
-  ChevronRight, Building2, ShieldCheck, CheckCircle2,
+  ChevronRight, Building2, ShieldCheck, CheckCircle2, FileWarning, Printer,
 } from 'lucide-react'
 
 interface PortalContract {
@@ -104,37 +107,67 @@ export function ExternalPortalPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-paper-50 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-500 mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">Loading contract…</p>
+          <Loader2 className="size-6 animate-spin text-ink-400 mx-auto mb-3" />
+          <p className="text-ink-500 text-body">Loading contract…</p>
         </div>
       </div>
     )
   }
 
   if (isError || !data) {
+    /*
+     * The most-visited state of this page, and until now the least designed
+     * one: three lines of grey text on an otherwise blank browser window, with
+     * nothing identifying the product and no next step. A counterparty who
+     * reaches it should be able to act without emailing to ask what happened.
+     */
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="text-center max-w-sm">
-          <AlertCircle className="h-12 w-12 text-red-300 mx-auto mb-4" />
-          <h1 className="text-lg font-semibold text-gray-800 mb-2">Link unavailable</h1>
-          <p className="text-sm text-gray-500">
-            This share link is invalid, has expired, or has been revoked. Please contact the sender for a new link.
+      <div className="min-h-screen bg-paper-50 flex flex-col items-center justify-center gap-6 p-4">
+        <div className="w-full max-w-md rounded-card border border-paper-200 bg-card p-8 text-center shadow-e1">
+          {/* A dead share link is expiry/revocation — genuine risk, not decor. */}
+          <span className="mb-4 inline-flex size-11 items-center justify-center rounded-full bg-risk-50">
+            <AlertCircle className="size-5 text-risk-600" />
+          </span>
+          <h1 className="text-title text-ink-950">Link unavailable</h1>
+          <p className="mt-2 text-body text-ink-500">
+            This share link is invalid, has expired, or has been revoked.
           </p>
+          <div className="mt-5 rounded-md border border-paper-200 bg-paper-50 px-4 py-3 text-left text-dense text-ink-700">
+            <p className="font-medium text-ink-950">What to do next</p>
+            <ul className="mt-1.5 space-y-1 text-ink-500">
+              <li>· Reply to the email that carried this link and ask the sender for a new one.</li>
+              <li>· Share links expire on a schedule the sender sets — this is routine, not a fault.</li>
+              <li>· Anything you uploaded or commented before it expired was already delivered.</li>
+            </ul>
+          </div>
         </div>
+        <ExternalFooter />
       </div>
     )
   }
 
   const { contract, permissions, shareLink } = data
-  const brandColor = contract.org?.brandColor ?? '#2563eb'
+  // The sharing org's own brand still owns this strip when they've set one.
+  // With no brand configured we fall back to ink rather than a blue that would
+  // read as "in flight" in a system where blue means exactly that.
+  const brandColor = contract.org?.brandColor ?? null
   const expiresDate = formatDate(shareLink.expiresAt)
   const canComment = permissions.includes('comment')
   // B.5.14 — upload is gated on an explicit 'edit' or 'upload' permission
   // so read-only shares stay truly read-only. Download is allowed for any
   // active link (a read-only link can still be taken home to print).
   const canUpload = permissions.includes('edit') || permissions.includes('upload')
+  /*
+   * 269 of the 420 contracts in this org have no version row at all, so a share
+   * link minted against one delivers `htmlContent: ''`. The portal rendered
+   * that as a full-height blank sheet of paper — the counterparty's read is
+   * "their product is broken", and the Download .docx button next to it answers
+   * with a 400. Detect the case, say what happened, and stop offering an export
+   * that cannot succeed.
+   */
+  const hasDocument = Boolean(data.htmlContent?.trim())
   const isExpiringSoon = shareLink.expiresAt
     ? Date.now() > new Date(shareLink.expiresAt).getTime() - 48 * 3600 * 1000
     : false
@@ -143,32 +176,32 @@ export function ExternalPortalPage() {
     : null
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-paper-50 flex flex-col">
       {/* Branded header */}
       <header
-        className="px-6 py-4 flex items-center justify-between shadow-sm"
-        style={{ backgroundColor: brandColor }}
+        className={`px-6 py-4 flex items-center justify-between ${brandColor ? '' : 'bg-ink-950'}`}
+        style={brandColor ? { backgroundColor: brandColor } : undefined}
       >
         <div className="flex items-center gap-3">
           {contract.org.logoUrl ? (
             <img
               src={contract.org.logoUrl}
               alt={contract.org.name}
-              className="h-8 w-auto rounded object-contain bg-white/10 p-1"
+              className="h-8 w-auto rounded-chip object-contain bg-white/10 p-1"
             />
           ) : (
-            <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/20">
-              <Building2 className="h-4 w-4 text-white" />
+            <div className="flex items-center justify-center size-8 rounded-md bg-white/20">
+              <Building2 className="size-4 text-white" />
             </div>
           )}
-          <span className="text-white font-semibold text-sm">{contract.org.name}</span>
+          <span className="text-white font-semibold text-body">{contract.org.name}</span>
         </div>
         <div className="flex items-center gap-3">
           {shareLink.label && (
-            <span className="text-white/70 text-xs">{shareLink.label}</span>
+            <span className="text-white/70 text-dense">{shareLink.label}</span>
           )}
-          <div className="flex items-center gap-1 text-white/70 text-xs">
-            <Clock className="h-3.5 w-3.5" />
+          <div className="flex items-center gap-1 text-white/70 text-dense">
+            <Clock className="size-3.5" />
             {expiresDate ? `Expires ${expiresDate}` : 'Link active'}
           </div>
         </div>
@@ -179,42 +212,60 @@ export function ExternalPortalPage() {
         primary actions. Appears between the branded header and the
         contract title so the counterparty sees them before deciding
         whether to engage.
+
+        The band itself is paper now. The one colored thing in it is the
+        "Shared by" attestation — verified provenance is one of the few
+        non-legal senses the brand green keeps.
       */}
       <div
         role="region"
         aria-label="Portal trust and actions"
-        className="bg-emerald-50/70 border-b border-emerald-100 px-6 py-2.5"
+        className="bg-paper-100 border-b border-paper-200 px-6 py-2.5"
       >
-        <div className="max-w-5xl mx-auto flex items-center gap-4 flex-wrap text-xs">
-          <div className="flex items-center gap-1.5 text-emerald-800">
-            <ShieldCheck className="h-4 w-4" />
+        <div className="max-w-5xl mx-auto flex items-center gap-4 flex-wrap text-dense">
+          <div className="flex items-center gap-1.5 text-brand-700">
+            <ShieldCheck className="size-4" />
             <span className="font-medium">Shared by {contract.org.name}</span>
           </div>
 
-          <div className="flex items-center gap-1 text-gray-600">
-            <Clock className="h-3.5 w-3.5 text-gray-400" />
+          <div className="flex items-center gap-1 text-ink-500">
+            <Clock className="size-3.5 text-ink-400" />
             <span>
               {daysToExpiry != null && daysToExpiry > 0
-                ? <>Expires in <span className="font-medium">{daysToExpiry}d</span></>
+                ? <>Expires in <span className="font-medium tabular-nums">{daysToExpiry}d</span></>
                 : expiresDate ? <>Expires {expiresDate}</> : 'Link active'}
             </span>
           </div>
 
           {shareLink.label && (
-            <span className="text-gray-500 truncate">· {shareLink.label}</span>
+            <span className="text-ink-500 truncate">· {shareLink.label}</span>
           )}
 
           {/* Primary CTAs pushed right. Download is always available on an
               active link; upload requires an 'edit' / 'upload' permission. */}
           <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <a
-              href={`/api/v1/portal/${portalToken}/download/docx`}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors"
-              title="Download this version as a Word document you can redline"
-            >
-              <Download className="h-3.5 w-3.5" />
-              Download .docx
-            </a>
+            {hasDocument && (
+              <>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => window.print()}
+                  title="Print, or save as PDF"
+                >
+                  <Printer />
+                  Print
+                </Button>
+                <Button asChild variant="outline" size="xs">
+                  <a
+                    href={`/api/v1/portal/${portalToken}/download/docx`}
+                    title="Download this version as a Word document you can redline"
+                  >
+                    <Download />
+                    Download .docx
+                  </a>
+                </Button>
+              </>
+            )}
             {canUpload && (
               <>
                 <input
@@ -228,17 +279,19 @@ export function ExternalPortalPage() {
                   }}
                   className="hidden"
                 />
-                <button
+                {/* Returning a redline is the job this page exists for, so it
+                    takes the single ink primary. */}
+                <Button
+                  size="xs"
                   onClick={() => uploadInputRef.current?.click()}
                   disabled={uploadRevision.isPending}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 hover:border-blue-300 transition-colors disabled:opacity-50"
                   title="Upload your revised version — lands in our history attributed to this link"
                 >
                   {uploadRevision.isPending
-                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    : <Upload className="h-3.5 w-3.5" />}
+                    ? <Loader2 className="animate-spin" />
+                    : <Upload />}
                   Upload revised
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -246,86 +299,88 @@ export function ExternalPortalPage() {
 
         {/* Secondary status lines sit just below the trust band. */}
         {uploadSuccess && (
-          <div className="max-w-5xl mx-auto mt-1.5 flex items-center gap-1.5 text-xs text-emerald-700">
-            <CheckCircle2 className="h-3.5 w-3.5" />
+          <div className="max-w-5xl mx-auto mt-1.5 flex items-center gap-1.5 text-dense text-ink-700">
+            <CheckCircle2 className="size-3.5" />
             Uploaded {uploadSuccess}. The owner has been notified.
           </div>
         )}
         {uploadRevision.isError && (
-          <div className="max-w-5xl mx-auto mt-1.5 flex items-center gap-1.5 text-xs text-red-700">
-            <AlertCircle className="h-3.5 w-3.5" />
+          <div className="max-w-5xl mx-auto mt-1.5 flex items-center gap-1.5 text-dense text-risk-700">
+            <AlertCircle className="size-3.5" />
             {(uploadRevision.error as { response?: { data?: { error?: string } } })?.response?.data?.error
               ?? 'Upload failed — try again.'}
           </div>
         )}
       </div>
 
-      {/* Expiry warning */}
+      {/* Expiry warning — the counterparty is the one who has to act on it,
+          which is precisely what attention means. */}
       {isExpiringSoon && (
-        <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center gap-2 text-sm text-amber-700">
-          <AlertCircle className="h-4 w-4 flex-shrink-0" />
+        <div className="bg-attention-50 border-b border-attention-200 px-6 py-2.5 flex items-center gap-2 text-body text-attention-700">
+          <AlertCircle className="size-4 flex-shrink-0" />
           This link expires soon. Contact the sender to get a new link before it expires.
         </div>
       )}
 
       {/* Contract header */}
-      <div className="bg-white border-b px-6 py-5">
+      <div className="bg-card border-b border-paper-200 px-6 py-5">
         <div className="max-w-5xl mx-auto">
           <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900">{contract.title}</h1>
+            <div className="min-w-0">
+              {/* Contract titles run long and arrive from customer data — a
+                  180-character title used to push the access label off-screen. */}
+              <h1 className="text-title text-ink-950 break-words">{contract.title}</h1>
               <div className="flex items-center gap-3 mt-2 flex-wrap">
-                <span className="text-xs bg-gray-100 text-gray-600 px-2.5 py-0.5 rounded-full font-medium">
-                  {contract.type.replace(/_/g, ' ')}
-                </span>
+                <Chip>{contract.type.replace(/_/g, ' ')}</Chip>
                 {contract.counterpartyName && (
-                  <span className="text-xs text-gray-500 flex items-center gap-1">
-                    <ChevronRight className="h-3 w-3" />
+                  <span className="text-dense text-ink-500 flex items-center gap-1">
+                    <ChevronRight className="size-3" />
                     {contract.counterpartyName}
                   </span>
                 )}
                 {contract.effectiveDate && (
-                  <span className="text-xs text-gray-400">
+                  <span className="text-dense text-ink-400">
                     Effective {formatDate(contract.effectiveDate)}
                   </span>
                 )}
                 {contract.expiryDate && (
-                  <span className="text-xs text-gray-400">
+                  <span className="text-dense text-ink-400">
                     Expires {formatDate(contract.expiryDate)}
                   </span>
                 )}
               </div>
             </div>
             <div className="flex-shrink-0">
-              <span className="text-xs text-gray-400 italic">
+              <span className="text-dense text-ink-400 italic">
                 {canUpload ? 'View + comment + redline' : 'Read-only view'}
               </span>
             </div>
           </div>
 
-          {/* Tabs */}
+          {/* Tabs. A selected tab is an action state, so it is ink — the blue
+              it used to use now belongs to "in flight" statuses only. */}
           <div className="flex gap-1 mt-4">
             <button
               onClick={() => setActiveTab('document')}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-2 text-body font-medium border-b-2 transition-colors ${
                 activeTab === 'document'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700'
+                  ? 'border-ink-950 text-ink-950'
+                  : 'border-transparent text-ink-500 hover:text-ink-950'
               }`}
             >
-              <FileText className="h-3.5 w-3.5" />
+              <FileText className="size-3.5" />
               Document
             </button>
             {canComment && (
               <button
                 onClick={() => setActiveTab('comments')}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-2 text-body font-medium border-b-2 transition-colors ${
                   activeTab === 'comments'
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                    ? 'border-ink-950 text-ink-950'
+                    : 'border-transparent text-ink-500 hover:text-ink-950'
                 }`}
               >
-                <MessageSquare className="h-3.5 w-3.5" />
+                <MessageSquare className="size-3.5" />
                 Comments
               </button>
             )}
@@ -337,16 +392,34 @@ export function ExternalPortalPage() {
       <main className="flex-1 py-8 px-4">
         <div className="max-w-5xl mx-auto">
           {activeTab === 'document' && (
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+            // The document is the hero: paper radius, page shadow, no card
+            // chrome competing with it.
+            <div className="bg-card rounded-paper shadow-page overflow-hidden">
               <div className="p-8 md:p-12">
-                {editor ? (
+                {!hasDocument ? (
+                  <div className="py-12 text-center" data-testid="portal-no-document">
+                    <span className="mb-3 inline-flex size-10 items-center justify-center rounded-card border border-paper-200 bg-paper-100 text-ink-400">
+                      <FileWarning className="size-5" />
+                    </span>
+                    <p className="text-[13.5px] font-semibold text-ink-950">
+                      No document has been attached to this link yet
+                    </p>
+                    <p className="mx-auto mt-1 max-w-md text-dense text-ink-500">
+                      The link is valid and the record exists, but {contract.org.name} has
+                      not uploaded a version for you to read.
+                      {canComment
+                        ? ' You can still leave a comment below, or reply to the email that sent you here.'
+                        : ' Reply to the email that sent you here and ask them to attach it.'}
+                    </p>
+                  </div>
+                ) : editor ? (
                   <EditorContent
                     editor={editor}
                     className="prose prose-sm md:prose max-w-none focus:outline-none [&_.ProseMirror]:outline-none [&_.ProseMirror]:min-h-[400px]"
                   />
                 ) : (
                   <div className="flex items-center justify-center py-12">
-                    <Loader2 className="h-5 w-5 animate-spin text-gray-300" />
+                    <Loader2 className="size-5 animate-spin text-ink-400" />
                   </div>
                 )}
               </div>
@@ -365,12 +438,55 @@ export function ExternalPortalPage() {
         </div>
       </main>
 
-      {/* Footer */}
-      <footer className="py-4 px-6 border-t bg-white text-center">
-        <p className="text-xs text-gray-400">
-          Shared securely via {contract.org.name} · View only · Do not distribute
+      {/*
+        Footer. It used to assert "View only · Do not distribute" on every
+        link, including the ones granting comment and upload — the page was
+        contradicting its own toolbar. Now it states the access this particular
+        link actually carries, and carries the product identity, which a
+        counterparty had no other way to learn.
+      */}
+      <footer className="border-t border-paper-200 bg-card px-6 py-4 text-center print:hidden">
+        <p className="text-dense text-ink-400">
+          Shared securely by {contract.org.name} ·{' '}
+          {canUpload
+            ? 'You may comment and return a revised version'
+            : canComment
+              ? 'You may read and comment'
+              : 'Read-only'}{' '}
+          · Do not redistribute this link
         </p>
+        <ExternalFooter className="mt-2" />
       </footer>
+    </div>
+  )
+}
+
+/**
+ * The trimmed external shell's footer — the counterparty has no app nav and no
+ * account, so this is the only place that names the product and the only route
+ * to the terms under which they are transacting.
+ */
+function ExternalFooter({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-dense text-ink-400 ${className}`}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        Secured by <Wordmark size="sm" />
+      </span>
+      <span aria-hidden="true">·</span>
+      <a
+        href="/terms"
+        className="underline decoration-paper-300 underline-offset-2 hover:text-ink-700 hover:decoration-brand-700"
+      >
+        Terms
+      </a>
+      <a
+        href="/privacy"
+        className="underline decoration-paper-300 underline-offset-2 hover:text-ink-700 hover:decoration-brand-700"
+      >
+        Privacy
+      </a>
     </div>
   )
 }
