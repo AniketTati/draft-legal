@@ -287,7 +287,21 @@ if (has('--check-baseline')) {
     process.exit(2)
   }
   const prev = JSON.parse(fs.readFileSync(BASELINE, 'utf8'))
+  // The manifest, not the baseline, is the authority on which tier a check
+  // belongs to. An id the manifest no longer knows about resolves to undefined
+  // and stays a regression below, which is what keeps E5 intact.
+  const tierOf = id => [...CHECKS, ...SUITES].find(c => c.id === id)?.tier
   for (const [id, was] of Object.entries(prev.checks ?? {})) {
+    // A baseline entry for a tier this run did not select says nothing about
+    // this run. Without this the comparison was tier-blind: `prev.tiers` was
+    // written at :283 and never read back, so the moment anyone recorded a
+    // t1,t2 baseline — which is exactly what enabling the t2 gate requires,
+    // and what docs/37's "when tier 2 joins CI" plans — CI's own
+    // `--tier t1 --check-baseline` (ci.yml:179) reported every t2 check as
+    // "PRESENT → GONE (deleted or renamed)" and exited 3. Reproduced: 7
+    // spurious regressions on a fully green tree.
+    const tier = tierOf(id)
+    if (tier && !tiers.includes(tier)) continue
     const now = snapshot.checks[id]
     // E5 — a check that vanished is a regression. Deleting an inconvenient
     // check must not be a way to go green.
