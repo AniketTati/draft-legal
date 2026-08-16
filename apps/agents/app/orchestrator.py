@@ -628,6 +628,28 @@ PER_TOOL_BUDGET: dict[str, int] = {
 }
 TOTAL_TOOLS_PER_TURN = 25
 
+# Both caps were ENFORCED and never STATED: the prompt did not mention either
+# number, so the model planned without knowing its budget and only discovered
+# it by being cut off mid-turn. l7-prompt-truth claimed to assert this and
+# could not fail — it substring-searched a 21k-char prompt for "6" and "25",
+# which matched a date and "BM25" respectively.
+#
+# Appended rather than inlined above only because the caps are defined after
+# the prompt. The numbers are written out literally rather than interpolated:
+# l7-prompt-truth is STATIC analysis of this file, so an f-string placeholder
+# would leave "{MAX_TOOL_ITERATIONS}" in the source and the check could not see
+# the value. That check now compares these literals against the constants
+# above, so drift fails the build rather than silently misinforming the model.
+AGENT_SYSTEM_PROMPT += """
+- A14 — YOUR TOOL BUDGET. You get at most 6 tool iterations per turn, and 25
+  tool calls in total across the turn. contract_get and counterparty_get are
+  limited to 3 calls each — if you need more than that, you are enumerating one
+  at a time when you should be broadening with portfolio_search or
+  contract_search. Plan the turn to fit. If you are close to the limit, stop
+  calling tools and answer with what you have, saying plainly what you could
+  not check.
+"""
+
 # How much of a tool result is PERSISTED for replay next turn, as opposed to
 # streamed to the rail once. Replayed bytes are re-sent on every subsequent
 # message, so this is the number that drives thread cost.

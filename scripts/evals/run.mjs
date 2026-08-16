@@ -89,10 +89,19 @@ function replayReady() {
  *  users, so without `pnpm seed:personas` they fail with "Invalid email or
  *  password" -- an environment gap that reads exactly like a product defect. */
 function personasSeeded() {
+  // This probed maya@vertex.test, an address seed-personas.ts has never
+  // created — it seeds maya.chen@vertex.cloud, which is also what
+  // persona-tests/conversations.mjs logs in as. So the probe answered "not
+  // seeded" no matter what, and both persona suites skipped PERMANENTLY,
+  // including on a correctly seeded stack. A precondition that can only ever
+  // be false hides the suite it guards instead of guarding it.
+  //
+  // Kept identical to the credential the suites use: if that changes, this
+  // must fail rather than quietly disable 84 cases.
   const r = spawnSync('curl', ['-s', '-m', '5', '-o', '/dev/null', '-w', '%{http_code}',
     '-X', 'POST', `${process.env.API_BASE ?? 'http://localhost:3001'}/api/v1/auth/login`,
     '-H', 'content-type: application/json',
-    '-d', JSON.stringify({ email: 'maya@vertex.test', password: 'password123' })], { encoding: 'utf8' })
+    '-d', JSON.stringify({ email: 'maya.chen@vertex.cloud', password: 'password123' })], { encoding: 'utf8' })
   return r.stdout === '200'
 }
 

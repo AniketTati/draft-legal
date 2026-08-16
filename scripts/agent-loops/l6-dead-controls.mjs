@@ -68,9 +68,21 @@ section('2. The notification bell handles approval notifications')
   check('approval_step is handled',
     /approval_step/.test(bell),
     'workflow-engine and notification.worker both emit approval_step for APPROVAL_REQUEST; it matched neither branch, so the row greyed out')
+  // Matched only the TEMPLATE-LITERAL spelling of the bug, so the assertion
+  // was one syntax away from vacuous: reintroducing it as
+  // `navigate('/approvals/' + n.id)` left the check green. Verified.
+  //
+  // The proposition does not care how the string is built, so neither should
+  // the test: read every navigate() argument and ask whether any of them
+  // addresses a CHILD of /approvals. `navigate('/approvals')` has no trailing
+  // slash and is unaffected.
+  const navTargets = [...bell.matchAll(/navigate\(([^)]+)\)/g)].map(m => m[1])
+  const deepApproval = navTargets.some(t => t.includes('/approvals/'))
   check('approval navigation targets a route that exists',
-    !/\/approvals\/\$\{[^}]*\}/.test(bell) || /path=["']approvals\/:/.test(app),
-    'it navigated to /approvals/<id>, which App.tsx does not register')
+    !deepApproval || /path=["']approvals\/:/.test(app),
+    deepApproval
+      ? `it navigates under /approvals/<id>, which App.tsx does not register: ${navTargets.filter(t => t.includes('/approvals/')).join(' | ')}`
+      : `${navTargets.length} navigate() target(s), none addressing a child of /approvals`)
 }
 
 // ─── 3. The counterparty create CTA ─────────────────────────────────────────
@@ -91,9 +103,18 @@ section('4. Guarded downloads use the axios client, not window.open')
     opensGuarded
       ? 'only the axios client attaches the Bearer token, so this opens a tab of 401 JSON'
       : 'routed through the authenticated client')
+  // The old form was `blob || !/Export CSV/i`, which is an escape hatch keyed
+  // on a BUTTON LABEL: break the download and rename the button, and it goes
+  // green. Anchor on the export call itself, which is the thing that has to be
+  // right, and require it to exist — a silently deleted export should be
+  // visible here rather than passing as "nothing to check".
+  const exportLines = diligence.split('\n').filter(l => /\/export\?format=csv/.test(l))
+  const allBlob = exportLines.every(l => /api\.get\(/.test(l) && /responseType:\s*'blob'/.test(l))
   check('it requests a blob through api.get',
-    /responseType:\s*'blob'/.test(diligence) || !/Export CSV/i.test(diligence),
-    'the working pattern is two files over in ObligationsPage.tsx')
+    exportLines.length > 0 && allBlob,
+    exportLines.length === 0
+      ? 'no CSV export call found at all — it was removed, or the route changed and this check is now blind'
+      : `${exportLines.length} export call(s); every one must use api.get with responseType blob — the working pattern is two files over in ObligationsPage.tsx`)
 }
 
 // ─── 5. Nothing serves PDF bytes as a Word document ─────────────────────────

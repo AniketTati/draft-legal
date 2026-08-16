@@ -70,9 +70,27 @@ section('2. The legacy chat path is off the event loop')
   const runChatIdx = orch.indexOf('async def run_chat')
   const body = runChatIdx >= 0 ? orch.slice(runChatIdx, runChatIdx + 2200) : ''
   check('run_chat was located', runChatIdx >= 0)
+  // The `(?<!await\s)` lookbehind excluded the exact form of the ORIGINAL bug.
+  // `await graph.invoke(...)` matched neither disjunct — the lookbehind
+  // suppressed the first, and no offloading helper appears for the second — so
+  // `!false || false` passed. This file's own docstring describes that bug as
+  // "awaited with no threadpool". Verified by mutation.
+  //
+  // Assert the invariant positively instead: every graph.invoke must be the
+  // argument of an offloading call, which is true regardless of how it is
+  // awaited.
+  // Comment lines are stripped first: the very comment that documents this
+  // hazard says "`graph.invoke` is SYNCHRONOUS", and counting that mention as
+  // a call made the assertion fail on correct code. Caught by running the
+  // control before trusting the mutations.
+  const code = body.split('\n').filter(l => !/^\s*#/.test(l)).join('\n')
+  const unoffloaded = [...code.matchAll(/graph\.invoke\b/g)].filter(m =>
+    !/(asyncio\.to_thread|run_in_threadpool)\(\s*$/.test(code.slice(Math.max(0, m.index - 40), m.index)))
   check('run_chat does not call graph.invoke synchronously on the loop',
-    !/(?<!await\s)(?<!threadpool\()\bgraph\.invoke\(/.test(body) || /run_in_threadpool|to_thread|ainvoke/.test(body),
-    'one such request stalls every concurrent chat, tool callback and health check behind it for 5-30 seconds')
+    unoffloaded.length === 0,
+    unoffloaded.length
+      ? `${unoffloaded.length} graph.invoke call(s) not wrapped in asyncio.to_thread/run_in_threadpool — one such request stalls every concurrent chat, tool callback and health check behind it for 5-30 seconds`
+      : 'every graph.invoke is offloaded off the event loop')
 
   // This assertion used to be `/agent_mode/.test(chat)`, which was INVERTED:
   // it was green BECAUSE the hazard was present, and deleting the flag — the
