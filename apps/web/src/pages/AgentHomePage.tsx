@@ -33,6 +33,7 @@
  *     users can hop back to /dashboard or /contracts in one click.
  */
 import { useEffect, useRef, useState } from 'react'
+import { Kbd } from '@/components/ui/primitives'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -40,7 +41,7 @@ import { useAuthStore } from '@/store/auth'
 import { useAgentStore } from '@/store/agent'
 import { Button } from '@/components/ui/button'
 import {
-  Sparkles, Send, Plus, MessageSquare, ArrowLeft, Loader2,
+  Sparkles, Send, Plus, MessageSquare, ArrowLeft,
   ChevronRight, ChevronDown, FileText, Building2, CalendarClock, Search, X,
   Table as TableIcon, GitCompareArrows, ListChecks, FormInput, Trash2, Square,
 } from 'lucide-react'
@@ -52,6 +53,7 @@ import { ActionPreview, type PendingAction } from '@/components/agent/ActionPrev
 import { parseActionChips } from '@/components/agent/action-chips'
 import { ChipRow } from '@/components/agent/ChipButton'
 import { MarkdownProse } from '@/components/agent/MarkdownProse'
+import { ThinkingIndicator } from '@/components/agent/ThinkingIndicator'
 // GROUNDING — the citation and redline renderers the side rail has always
 // had. /agent, the surface the product points people at for real work, was
 // rendering neither: a `contract_cite` result arrived as a mono pill with the
@@ -1388,7 +1390,7 @@ export function AgentHomePage() {
             </div>
           </div>
           <div className="text-[11px] text-ink-400">
-            {streaming ? <span className="inline-flex items-center gap-1"><Loader2 className="size-3 animate-spin" /> thinking…</span>
+            {streaming ? <span className="inline-flex items-center gap-1">Press <Kbd>Esc</Kbd> to stop</span>
                        : 'Press ⌘K from anywhere to open'}
           </div>
         </header>
@@ -1708,9 +1710,20 @@ function MessageBubble({
               so users saw literal `**`, `*`, etc. */}
           {cleanProse && <MarkdownProse text={cleanProse} />}
           {message.streaming && !message.content && (
-            <span className="inline-flex items-center gap-1 text-ink-400">
-              <Loader2 className="size-3 animate-spin" /> thinking…
-            </span>
+            // Phase is READ OFF the frames received so far, never guessed: no
+            // tool yet means the model is still choosing one; a running tool
+            // means it is fetching; a resolved tool with no prose means it is
+            // writing. See ThinkingIndicator for why this is worth the effort
+            // (two silent windows of ~9s and ~7s on a portfolio question).
+            <ThinkingIndicator
+              phase={
+                (message.toolCalls ?? []).some(tc => tc.status === 'running')
+                  ? 'working'
+                  : (message.toolCalls?.length ?? 0) > 0
+                    ? 'composing'
+                    : 'deciding'
+              }
+            />
           )}
         </div>
         {/* P5 — write-tool proposals. ActionPreview cards with Apply /

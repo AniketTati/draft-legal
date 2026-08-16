@@ -43,6 +43,7 @@ import { RedlinePreview, type RedlineProposal } from './RedlinePreview'
 import { CitationPills, type CitationBundle } from './CitationPills'
 import { parseActionChips } from './action-chips'
 import { ChipRow } from './ChipButton'
+import { ThinkingIndicator } from './ThinkingIndicator'
 import { MarkdownProse } from './MarkdownProse'
 
 const STORAGE_KEY = 'side-agent-rail:open'
@@ -2074,7 +2075,18 @@ function MessageBubble({
           ? (isUser || msg.error
               ? cleanProse
               : <MarkdownProse text={cleanProse} compact />)
-          : (msg.streaming ? <AssistMark className="animate-pulse" /> : null)}
+          : (msg.streaming
+              // Was a bare pulsing diamond with no words at all — the rail said
+              // even less than the studio did. Phase comes off the frames.
+              ? <ThinkingIndicator
+                  compact
+                  phase={
+                    (msg.toolCalls ?? []).some(tc => tc.status === 'running')
+                      ? 'working'
+                      : (msg.toolCalls?.length ?? 0) > 0 ? 'composing' : 'deciding'
+                  }
+                />
+              : null)}
         {msg.streaming && (msg.content?.length ?? 0) > 0 && (
           <span className="inline-block w-1.5 h-3 bg-ink-400 ml-0.5 animate-pulse align-middle" aria-hidden />
         )}
