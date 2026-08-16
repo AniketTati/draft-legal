@@ -210,8 +210,21 @@ export const ChatMessageSchema = z.object({
   message: z.string().min(1),
   sessionId: z.string().optional(),
   contractId: z.string().optional(),
-  provider: z.enum(LLM_PROVIDERS).default('anthropic'),
-  modelId: z.string().default('claude-sonnet-4-6'),
+  // Optional, NOT defaulted. These used to default to anthropic /
+  // claude-sonnet-4-6, which meant there was no such thing as an unpinned
+  // request: every chat turn reached the agents service carrying an explicit
+  // Anthropic pin the caller never asked for.
+  //
+  // That pin is what made Admin → AI Config do nothing. On a deployment
+  // without an Anthropic key the provider resolves elsewhere, chat.py sees a
+  // pin that no longer matches and rewrites it to that provider's "smart"
+  // model, and the rewritten pin is passed down as model_override — which
+  // outranks the org's configured model. An org that selected a cheap model
+  // still ran every turn on the expensive one.
+  //
+  // Absent here means absent all the way down, so org settings decide.
+  provider: z.enum(LLM_PROVIDERS).optional(),
+  modelId: z.string().optional(),
   // D.1.4a — agent mode enables tool-binding + typed event stream. Legacy
   // ChatPanel callers omit this and keep receiving the flat {delta} stream.
   agentMode: z.boolean().optional(),
