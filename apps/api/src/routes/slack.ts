@@ -24,7 +24,7 @@ import {
   searchResultBlocks, helpBlocks,
 } from '../lib/slack.js'
 
-const APP_BASE = process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+const APP_BASE = process.env.FRONTEND_URL ?? 'http://localhost:5173'
 
 /** Raw urlencoded body, preserved for signature verification. */
 type SlackRequest = FastifyRequest & { rawBody?: string }

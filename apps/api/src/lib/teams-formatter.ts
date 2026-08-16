@@ -30,7 +30,7 @@ interface TeamsMessage {
   }>
 }
 
-const APP_BASE = process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+const APP_BASE = process.env.FRONTEND_URL ?? 'http://localhost:5173'
 
 function fmtMoney(amount: unknown, currency: unknown = 'USD'): string {
   const n = typeof amount === 'number' ? amount : Number(amount)
