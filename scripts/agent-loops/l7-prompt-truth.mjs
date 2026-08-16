@@ -185,16 +185,27 @@ section('6. semantic-fallback reports a lower bound, not a database count')
     orgId, query: 'zzqx unlikely phrase steel tariffs quantum', limit: 3,
   }, orgId)
 
+  // Hoisted out of the conditional below: this is pure static analysis of the
+  // prompt and never needed the probe to have triggered. Gating it on a
+  // runtime condition meant the assertion silently did not run on any corpus
+  // that failed to produce a fallback — which is most of them.
+  check('the prompt tells the model what searchMode=semantic-fallback means',
+    /semantic-fallback/.test(PROMPT),
+    'internal-ai.ts says the flag exists so the agent can say it broadened the search; no prompt rule mentions it')
+
   if (res.status === 200 && res.body?.searchMode === 'semantic-fallback') {
     check('totalMatching is not presented as a DB count under semantic fallback',
       res.body.totalMatching === null || res.body.totalMatching === undefined,
       `totalMatching=${JSON.stringify(res.body.totalMatching)}, results=${res.body.results?.length} — A11 tells the model this is "the DB count of rows satisfying the filter", so it answers "you have N" with total confidence`)
-    check('the prompt tells the model what searchMode=semantic-fallback means',
-      /semantic-fallback/.test(PROMPT),
-      'internal-ai.ts says the flag exists so the agent can say it broadened the search; no prompt rule mentions it')
   } else {
-    check('semantic fallback probe ran', true,
-      `searchMode=${res.body?.searchMode ?? 'n/a'} (status ${res.status}) — soft-pass: this corpus did not trigger the fallback`)
+    // Was `check('semantic fallback probe ran', true, ...)` — a hardcoded pass
+    // standing in for an assertion that could not run. It inflated the count by
+    // one and could never go red. Assert the part that IS falsifiable: the
+    // probe reached the endpoint. That distinguishes "the corpus did not
+    // trigger the fallback" from "the endpoint is broken", which the hardcoded
+    // version reported identically.
+    check('the semantic-fallback probe reached the endpoint', res.status === 200,
+      `status ${res.status}, searchMode=${res.body?.searchMode ?? 'n/a'} — this corpus did not trigger the fallback, so the totalMatching assertion above could not run`)
   }
   await prisma.$disconnect()
 }

@@ -76,7 +76,15 @@ export const CHECKS = [
   // the classification trap here; the tier gate is what surfaced it.
   { id: 'l2-redline-propose',  tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'redline_propose returns three usable variants' },
-  { id: 'l1-thread-poisoning', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+  // `venv` added 2026-08-16. readSession() at l1-thread-poisoning.mjs:80 calls
+  // execFileSync on apps/agents/.venv/bin/python with NO try/catch, so on a
+  // checkout without a built venv it throws ENOENT and the check dies with no
+  // summary line — reported as an error rather than a skip. Same defect that
+  // got l5-redline-reach reclassified (see its note above) and that
+  // l3-error-surface had with playwright. The other venv-shelling checks
+  // (l2, l10, l12) guard theirs, so they keep their non-venv coverage and are
+  // deliberately left alone.
+  { id: 'l1-thread-poisoning', tier: 't3', needs: ['db', 'api', 'agents', 'model', 'venv'],
     what: 'a write proposal does not kill the thread that made it' },
   { id: 'l4-draft-gate',       tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'a VIEWER cannot create contracts by asking' },
