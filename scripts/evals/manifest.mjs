@@ -37,6 +37,8 @@ export const CHECKS = [
     what: 'every action chip the prompt suggests maps to a real tool' },
   { id: 'l13-dead-names',     tier: 't1', needs: [],
     what: 'no layer references a tool that does not exist' },
+  { id: 'l14-agents-url',     tier: 't1', needs: [],
+    what: 'the API dials the port the agents service binds, and no call site reads an env var nothing sets' },
 
   // ── t2 — needs the stack, but no model call ─────────────────────────────
   { id: 'l4-draft-tenancy',   tier: 't2', needs: ['db', 'api'],
@@ -55,7 +57,10 @@ export const CHECKS = [
     what: 'a tier-3 run cannot spend a customer\'s BYOK budget or be halted by the cap' },
   { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],
     what: 'a recorded turn replays deterministically with no model and no key' },
-  { id: 'l3-error-surface',   tier: 't2', needs: ['db', 'api', 'web'],
+  // `playwright` added 2026-08-16: it drives a real browser at :84, but only
+  // declared db/api/web. On a machine with the npm package and no chromium
+  // binary it CRASHED — exit 1, no summary line — instead of skipping loudly.
+  { id: 'l3-error-surface',   tier: 't2', needs: ['db', 'api', 'web', 'playwright'],
     what: 'a failed turn reaches the user instead of a blank bubble (SSE stubbed)' },
 
   // ── t3 — real model calls, nightly only ─────────────────────────────────

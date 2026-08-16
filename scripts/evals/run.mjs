@@ -33,6 +33,7 @@
  * Exit codes: 0 ok · 1 check failures · 2 usage/precondition · 3 regression.
  */
 import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -95,17 +96,68 @@ function personasSeeded() {
   return r.stdout === '200'
 }
 
-function probe() {
+/** Is something actually listening there? */
+function tcpOpen(host, port, timeoutMs = 2000) {
+  return new Promise(resolve => {
+    const sock = net.connect({ host, port })
+    const done = ok => { sock.destroy(); resolve(ok) }
+    sock.setTimeout(timeoutMs)
+    sock.once('connect', () => done(true))
+    sock.once('timeout', () => done(false))
+    sock.once('error', () => done(false))
+  })
+}
+
+/** DATABASE_URL being SET is not the same fact as a database being REACHABLE,
+ *  and this probe used to assert the former while the manifest read it as the
+ *  latter. Verified the hard way: with Docker stopped it reported db=yes, so
+ *  every t2 check ran and failed as though the product were broken. Connect. */
+async function dbReachable(envFile) {
+  const url = process.env.DATABASE_URL || envFile.match(/^DATABASE_URL=(.+)$/m)?.[1]
+  if (!url) return false
+  try {
+    const u = new URL(url)
+    return await tcpOpen(u.hostname, Number(u.port || 5432))
+  } catch { return false }
+}
+
+/** `node_modules/playwright` exists after any pnpm install; the chromium binary
+ *  only after `npx playwright install`. Probing the package said yes on a
+ *  machine with no browser, so l3-error-surface CRASHED — exit 1, no summary
+ *  line — instead of skipping. A crash and a skip must not be reachable from
+ *  the same missing precondition. */
+function playwrightReady() {
+  const r = spawnSync(process.execPath, ['-e',
+    "import('playwright').then(p => process.exit(require('node:fs').existsSync(p.chromium.executablePath()) ? 0 : 1)).catch(() => process.exit(1))",
+  ], { cwd: REPO, encoding: 'utf8' })
+  return r.status === 0
+}
+
+/** A key is PRESENT is not the same fact as a key is USABLE. This probe used to
+ *  accept any non-empty string, and a .env holding 10-char and 7-char
+ *  placeholders for ANTHROPIC_API_KEY and GOOGLE_API_KEY reported model=yes —
+ *  so tier 3 would run and every case would fail as a 401 that reads exactly
+ *  like a model regression.
+ *
+ *  It matters more than it looks, because of router.py's _platform_resolve: it
+ *  picks the FIRST provider in the tier list that has a key, anthropic →
+ *  openai → google. A junk ANTHROPIC_API_KEY therefore does not fall through to
+ *  a real OpenAI key — it CAPTURES the resolution and 401s. Length cannot prove
+ *  a key works, but it can rule out the placeholders that cause this, and
+ *  "could not check" must not share an exit code with "checked and fine". */
+const usableKey = v => typeof v === 'string' && v.trim().length >= 20
+
+async function probe() {
   const env = fs.existsSync(path.join(REPO, '.env'))
     ? fs.readFileSync(path.join(REPO, '.env'), 'utf8') : ''
   const modelKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_API_KEY']
   return {
-    db:  /^DATABASE_URL=.+/m.test(env) || !!process.env.DATABASE_URL,
+    db:  await dbReachable(env),
     api: reachable(`${process.env.API_BASE ?? 'http://localhost:3001'}/health`),
     agents: reachable(`${process.env.AGENTS_BASE ?? 'http://localhost:8002'}/health`),
     web: reachable(process.env.WEB ?? 'http://localhost:5173'),
-    model: modelKeys.some(k => process.env[k] || new RegExp(`^${k}=.+`, 'm').test(env)),
-    playwright: fs.existsSync(path.join(REPO, 'node_modules/playwright')),
+    model: modelKeys.some(k => usableKey(process.env[k] ?? env.match(new RegExp(`^${k}=(.*)$`, 'm'))?.[1])),
+    playwright: playwrightReady(),
     replay: replayReady(),
     // A build artifact, not a service — but just as absent on a clean checkout.
     venv: fs.existsSync(path.join(REPO, 'apps/agents/.venv/bin/python')),
@@ -172,7 +224,7 @@ function runCheck(check) {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-const env = probe()
+const env = await probe()
 const SUITES = manifestPath ? [] : MANIFEST_SUITES
 const selected = [...CHECKS, ...SUITES].filter(c => tiers.includes(c.tier))
 
