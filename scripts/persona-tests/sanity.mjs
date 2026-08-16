@@ -260,6 +260,14 @@ for (const anchor of ANCHORS) {
 const total = pass + fail
 console.log(`\n${'═'.repeat(70)}`)
 console.log(`✓ Sanity checks: ${pass}/${total} passed${fail ? `  (${fail} failed — see above)` : ''}`)
+// Canonical summary line for scripts/evals/run.mjs (/^(.+): (\d+)\/(\d+) passed\s*$/).
+// The line above matches that regex ONLY when nothing fails — the trailing
+// "(N failed — see above)" breaks it — so this suite was countable exclusively
+// while green, and a run WITH failures reported as "no summary line" i.e. a
+// crash. Verified: this run exited 1 with real failures and the runner logged
+// ERRO 0/0. A suite that becomes unreadable precisely when it has something to
+// report is worse than one that never ran.
+console.log(`Persona sanity: ${pass}/${total} passed`)
 console.log(`${'═'.repeat(70)}`)
 
 const grouped = new Map()  // by scenario name

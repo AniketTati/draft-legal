@@ -237,3 +237,13 @@ for (const p of scorecard) {
 console.log(`\nDetailed transcripts: ${OUT}/<persona>/`)
 console.log(`Scorecard:            ${OUT}/scorecard.json`)
 console.log(`Summary:              ${OUT}/summary.md`)
+
+// Canonical summary line for scripts/evals/run.mjs, which parses
+// /^(.+): (\d+)\/(\d+) passed\s*$/ (run.mjs:184). manifest.mjs claims "the
+// runner treats a suite exactly like a check because both report the same
+// summary line" — that was never true of this suite. `✓ Done — 66/66 passed
+// (100.0%) in 123s` does not match, so every tier-3 run reported this as
+// ERRO / 0-of-0 "no summary line" and the largest corpus in the repo has
+// never been counted. Emitted last, and deliberately separate from the human
+// line above so reformatting that cannot silently un-count the suite again.
+console.log(`Persona conversations: ${overallPassed}/${overallTotal} passed`)
