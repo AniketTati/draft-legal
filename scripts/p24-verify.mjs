@@ -97,7 +97,7 @@ async function waitFor(predicate, { timeout = 90_000, interval = 1500 } = {}) {
   // (1/2/3/4) Direct /extract
   const f1 = new FormData()
   f1.append('file', new Blob([buf], { type: 'application/pdf' }), 'msa.pdf')
-  const extRes = await fetch('http://localhost:8000/extract', {
+  const extRes = await fetch('http://localhost:8002/extract', {
     method: 'POST', body: f1,
     headers: { 'x-internal-secret': secret },
   })

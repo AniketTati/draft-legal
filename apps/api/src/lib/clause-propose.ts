@@ -11,7 +11,7 @@
 import { prisma } from './prisma.js'
 import { findCategoryForClauseType } from './clause-category.js'
 
-const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
 export interface ProposalVariant {
   aggression:   string

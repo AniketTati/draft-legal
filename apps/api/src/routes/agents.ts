@@ -13,7 +13,7 @@ import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 
-const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
 
 const AssistSchema = z.object({

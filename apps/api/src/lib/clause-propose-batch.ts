@@ -22,7 +22,7 @@
 import { prisma } from './prisma.js'
 import { matchCategory } from './clause-category.js'
 
-const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
 /** How hard to push. Chosen once for the whole document, not per clause. */
 export type Aggression = 'least' | 'moderate' | 'aggressive'

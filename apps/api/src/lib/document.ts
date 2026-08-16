@@ -81,7 +81,7 @@ export async function extractDocument(
 
 async function extractPdf(buffer: Buffer): Promise<ExtractResult> {
   // Primary: pdfplumber via Python agents service (layout-aware, structure-preserving)
-  const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8000'
+  const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
   try {
     const form = new FormData()
     form.append('file', new Blob([new Uint8Array(buffer)], { type: 'application/pdf' }), 'contract.pdf')
