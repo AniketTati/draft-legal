@@ -181,6 +181,24 @@ const config: Config = {
         card: '8px',
       },
 
+      keyframes: {
+        /*
+         * The agent's "working" dots. Travel is deliberately small (3px) and
+         * the curve is symmetric, so it reads as breathing rather than
+         * bouncing — this sits next to contract text a lawyer is reading, and
+         * a jaunty loader would be the loudest thing on a serious page.
+         * Opacity moves with position so the wave is still legible against a
+         * paper background where 3px of travel alone would barely register.
+         */
+        'agent-wave': {
+          '0%, 60%, 100%': { transform: 'translateY(0)', opacity: '0.35' },
+          '30%': { transform: 'translateY(-3px)', opacity: '1' },
+        },
+      },
+      animation: {
+        'agent-wave': 'agent-wave 1.25s ease-in-out infinite',
+      },
+
       boxShadow: {
         // Borders before shadows. e3 is for overlays only — nothing on a page
         // surface lifts more than e1.

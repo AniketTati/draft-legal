@@ -1,6 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { AssistMark } from '@/components/ui/assist'
+
+/**
+ * Three dots rising and falling in sequence — the agent is alive and working.
+ *
+ * This replaces a pulsing diamond, which was the right SYMBOL but the wrong
+ * kind of motion: a single mark fading in place reads as a static icon that
+ * happens to flicker, not as something in progress. Sequenced dots are the
+ * one loading idiom every user already knows from chat, so it needs no
+ * learning.
+ *
+ * They stay assist indigo. In this system indigo means "a machine is doing
+ * this", and the loader is the most machine-authored moment there is — the
+ * diamond is still the mark on finished content, where provenance matters.
+ * Motion carries the "working" signal; colour carries "who".
+ */
+function WaveDots({ className }: { className?: string }) {
+  return (
+    <span className={cn('inline-flex items-end gap-[3px]', className)} aria-hidden>
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={cn(
+            'block size-[5px] rounded-full bg-assist-600',
+            'animate-agent-wave motion-reduce:animate-none motion-reduce:opacity-60'
+          )}
+          // Staggered a third of the cycle apart so the crest travels left to
+          // right instead of all three breathing together.
+          style={{ animationDelay: `${i * 160}ms` }}
+        />
+      ))}
+    </span>
+  )
+}
 
 /**
  * What the user looks at while the agent is working.
@@ -90,11 +122,8 @@ export function ThinkingIndicator({
       aria-live="polite"
       data-testid="agent-thinking"
     >
-      <div className="flex items-center gap-2 text-dense text-ink-500">
-        {/* The mark pulses rather than spins: this is the machine at work, and
-            the diamond is already the system's sign for that. A second
-            spinner would just be more chrome. */}
-        <AssistMark className="animate-pulse motion-reduce:animate-none" />
+      <div className="flex items-center gap-2.5 text-dense text-ink-500">
+        <WaveDots />
         <span>{slow ? copy.slow : copy.label}</span>
         {elapsed > 0 && (
           <span className="tabular-nums text-ink-400">{elapsed}s</span>
