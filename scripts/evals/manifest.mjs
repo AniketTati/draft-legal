@@ -57,6 +57,17 @@ export const CHECKS = [
     what: 'a tier-3 run cannot spend a customer\'s BYOK budget or be halted by the cap' },
   { id: 'e12-replay',         tier: 't2', needs: ['db', 'api', 'replay'],
     what: 'a recorded turn replays deterministically with no model and no key' },
+  // Promoted from t3 2026-08-16. docs/37's Wave E table lists this as a
+  // promotion needing a recorded replay fixture; it needs none. Every
+  // assertion is static analysis of router.py's except chain and
+  // agent.worker.ts's callAgents() wrapper, plus one POST to the NODE
+  // /resolve endpoint — no agent turn anywhere. Proven by running it with the
+  // agents service stopped and no valid model key: 9/9.
+  //
+  // Worth promoting rather than leaving nightly: it guards the cap failing
+  // closed and BYOK not being bypassed, both of which docs/36 L11 found live.
+  { id: 'l11-cost-cap',       tier: 't2', needs: ['db', 'api'],
+    what: 'the daily cost cap fails closed and BYOK is not bypassed' },
   // `playwright` added 2026-08-16: it drives a real browser at :84, but only
   // declared db/api/web. On a machine with the npm package and no chromium
   // binary it CRASHED — exit 1, no summary line — instead of skipping loudly.
@@ -81,8 +92,9 @@ export const CHECKS = [
     what: 'user_search / template_list / approval_decide, and no approval forgery' },
   { id: 'l10-streaming',       tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'tokens arrive as generated, and the proxy does not corrupt them' },
-  { id: 'l11-cost-cap',        tier: 't3', needs: ['db', 'api', 'agents', 'model'],
-    what: 'the daily cost cap fails closed and BYOK is not bypassed' },
+  // (l11-cost-cap moved to t2 2026-08-16 — see the t2 block above. It never
+  // needed a model: every assertion is static analysis of router.py and
+  // agent.worker.ts plus one call to the Node /resolve endpoint.)
   { id: 'l12-memory-budget',   tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'session memory is bounded and listings survive into the next turn' },
   { id: 'l6b-ui-verify',       tier: 't3', needs: ['db', 'api', 'web', 'agents', 'model', 'playwright'],
