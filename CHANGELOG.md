@@ -11,6 +11,49 @@ the entry for their target version before upgrading (see
 `docs/operations/SELF-HOSTING.md`); upgrades apply forward Prisma migrations
 automatically and never reset data.
 
+## [Unreleased] — Agent eval suite (Wave E), and four bugs it found
+
+The eval suite (`docs/37`) could not run and several of its assertions could not
+fail. Fixing both surfaced four defects in the product itself, three of which
+only manifest in a real deployment — which is precisely why nothing had caught
+them.
+
+### Fixed
+- **Agent chat failed on a fresh checkout.** The agents service binds port 8002,
+  but `.env.example` and every caller in `apps/api` dialled 8000. Both services
+  reported healthy and every agent turn returned 500 (ECONNREFUSED). If you
+  copied `.env.example` before this release, set
+  `AGENTS_URL=http://localhost:8002`.
+- **Playbook clause comparison silently returned no AI result in production.**
+  It read `AGENT_SERVICE_URL`, a variable set by no env file or deploy manifest,
+  so it fell back to localhost; its own error handler then turned that into a
+  success response with `comparison: null`.
+- **Slack and Teams notification links pointed at `localhost:5173`.** They were
+  built from `PUBLIC_APP_URL`, which is defined nowhere. Now `FRONTEND_URL`,
+  which deployments already set.
+- **Agent write-tool execution and every undo link were broken in production.**
+  They resolved through `API_URL ?? AGENTS_API_URL ?? localhost:3001`; neither
+  name is set on the API container, which listens on `PORT=8080`. Now derived
+  from the service's own port, so no deploy config is required.
+- **Organisation AI model settings were ignored for chat.** Every request
+  carried a default `provider`/`modelId` pin the caller never sent, which
+  outranked Admin → AI Config — so an org that selected a cheaper model still
+  ran every turn on the expensive one. Unpinned requests now honour org
+  settings; an explicit pin is still respected.
+- **Some agent replies came back completely blank.** A model response that is
+  empty but otherwise normal produced a successful stream with no answer, no
+  tool activity and no error, so the assistant bubble rendered empty with
+  nothing to explain it. These now surface a clear error the UI can show. Two
+  related cases are fixed with it: a turn that ran a tool and then returned no
+  text, and one where internal reasoning content was written into the
+  conversation as if the assistant had said it.
+
+### Changed
+- The seeded demo organisation now includes signature requests across all four
+  statuses, so the signatures page filters have data to filter.
+- The persona corpus can be re-anchored to the current date with
+  `SEED_TODAY=YYYY-MM-DD`; it stays deterministic at its pinned default.
+
 ## [Unreleased] — Counterparty loop, template upload, playbook review
 
 Closes the external negotiation round-trip (it was roughly 70% built but severed

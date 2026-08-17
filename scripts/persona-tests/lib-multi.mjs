@@ -84,6 +84,19 @@ export async function runConversation({ token, persona, conversation }) {
       if (!hit) fails.push(`tool: expected one of [${turn.expect.expectedTools.join('|')}], got [${[...pool].join(',') || 'none'}]`)
     }
 
+    // forbiddenTools — NONE of these may be called. See lib.mjs for why this
+    // exists (docs/37 E6: no negation grader means no hallucination test).
+    //
+    // Always scoped to THIS TURN, never cumulative: a tool legitimately called
+    // on turn 1 must not retroactively fail turn 3, and "did this turn reach
+    // for the wrong tool" is the only question worth asking here.
+    if (turn.expect?.forbiddenTools) {
+      const violated = turn.expect.forbiddenTools.filter(t => turnTools.has(t))
+      if (violated.length > 0) {
+        fails.push(`tool: forbidden [${violated.join('|')}] called this turn (turn tools: [${[...turnTools].join(',') || 'none'}])`)
+      }
+    }
+
     // Detect graceful "no result / couldn't find / encountered error" first
     // so we can short-circuit downstream checks. When the reply is a graceful
     // failure, ALL strict checks (contextWords, minReplyChars, mustMentionAny)

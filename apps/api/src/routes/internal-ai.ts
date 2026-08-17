@@ -36,7 +36,7 @@ const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'visio
 
 // P1.3 — used to call Python /playbook_judge from the Node playbook_check
 // handler. Matches agent-threads.ts's AGENTS_INTERNAL_URL pattern.
-const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
 
 // D.5.1 — normalise clauseType ("limitation_of_liability") +

@@ -200,8 +200,19 @@ section('2. Telemetry is not posting into the void')
   const telemetryExists = tel.length > 0
 
   if (!telemetryExists) {
-    check('lib/telemetry.ts was deleted along with its call sites', true,
-      'leaving instrumentation everyone believes is live is the worse option')
+    // Was `check(..., true, ...)` — a hardcoded pass, and the title names an
+    // invariant that is actually testable. Deleting telemetry.ts while leaving
+    // its importers behind is a build break, and the hardcoded form reported
+    // that as success. Currently dead code (the file exists), which is exactly
+    // when a trap like this gets written and never noticed.
+    const residual = fs.readdirSync(`${REPO}/apps/web/src`, { recursive: true })
+      .filter(f => /\.tsx?$/.test(String(f)))
+      .filter(f => /from ['"].*lib\/telemetry|trackEvent\(/
+        .test(fs.readFileSync(`${REPO}/apps/web/src/${f}`, 'utf8')))
+    check('lib/telemetry.ts was deleted along with its call sites', residual.length === 0,
+      residual.length
+        ? `telemetry.ts is gone but ${residual.length} file(s) still reference it: ${residual.slice(0, 5).join(', ')}`
+        : 'leaving instrumentation everyone believes is live is the worse option')
   } else {
     const res = await fetch(`${API}/api/v1/telemetry/events`, {
       method: 'POST',

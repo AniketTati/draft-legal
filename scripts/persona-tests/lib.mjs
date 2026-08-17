@@ -171,6 +171,24 @@ export function scoreTurn(turn, response) {
     }
   }
 
+  // forbiddenTools — NONE of these may be called. The rubric had no negative
+  // tool assertion at all, which docs/37 E6 calls out as the gap that matters
+  // most for an agent: "with no negation grader you cannot write a single
+  // hallucination test". expectedTools cannot express it, because its OR
+  // semantics are satisfied by any one hit and say nothing about what else ran.
+  //
+  // This is what lets a case assert the SHAPE of a turn rather than just that
+  // something happened — e.g. a read-only question must not reach a write
+  // tool, and a counterparty question must not answer from counterparty_list
+  // when it needed counterparty_get.
+  if (turn.forbiddenTools && turn.forbiddenTools.length > 0) {
+    const calledNames = response.tools.map(t => t.name)
+    const violated = turn.forbiddenTools.filter(n => calledNames.includes(n))
+    if (violated.length > 0) {
+      reasons.push(`tool: forbidden [${violated.join(', ')}] was called (all calls: [${calledNames.join(', ')}])`)
+    }
+  }
+
   const lowerText = response.assistantText.toLowerCase()
   // mustMention — AND semantics (every phrase must appear). Useful for
   // multi-entity comparisons ("Mayo" AND "Cleveland").

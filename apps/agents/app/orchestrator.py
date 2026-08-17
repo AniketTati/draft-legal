@@ -628,6 +628,28 @@ PER_TOOL_BUDGET: dict[str, int] = {
 }
 TOTAL_TOOLS_PER_TURN = 25
 
+# Both caps were ENFORCED and never STATED: the prompt did not mention either
+# number, so the model planned without knowing its budget and only discovered
+# it by being cut off mid-turn. l7-prompt-truth claimed to assert this and
+# could not fail — it substring-searched a 21k-char prompt for "6" and "25",
+# which matched a date and "BM25" respectively.
+#
+# Appended rather than inlined above only because the caps are defined after
+# the prompt. The numbers are written out literally rather than interpolated:
+# l7-prompt-truth is STATIC analysis of this file, so an f-string placeholder
+# would leave "{MAX_TOOL_ITERATIONS}" in the source and the check could not see
+# the value. That check now compares these literals against the constants
+# above, so drift fails the build rather than silently misinforming the model.
+AGENT_SYSTEM_PROMPT += """
+- A14 — YOUR TOOL BUDGET. You get at most 6 tool iterations per turn, and 25
+  tool calls in total across the turn. contract_get and counterparty_get are
+  limited to 3 calls each — if you need more than that, you are enumerating one
+  at a time when you should be broadening with portfolio_search or
+  contract_search. Plan the turn to fit. If you are close to the limit, stop
+  calling tools and answer with what you have, saying plainly what you could
+  not check.
+"""
+
 # How much of a tool result is PERSISTED for replay next turn, as opposed to
 # streamed to the rail once. Replayed bytes are re-sent on every subsequent
 # message, so this is the number that drives thread cost.
@@ -855,6 +877,17 @@ async def run_agent_chat_stream(
     # across iterations. This is also what gets persisted, so what the user
     # saw and what the next turn replays cannot drift apart.
     streamed_parts: list[str] = []
+    # Set when an ActionPreview card is staged. That path yields the card and
+    # then `continue`s rather than returning, so a write turn where the model
+    # stages a card and writes no prose reaches the end-of-turn guard below —
+    # where an error frame would replace a card the user can actually see.
+    saw_confirmation_card = False
+    # Last provider metadata seen. Carries finish_reason, which is the only
+    # signal distinguishing an honest empty STOP from MALFORMED_FUNCTION_CALL /
+    # SAFETY / RECITATION / MAX_TOKENS. Logged, never branched on: a raw enum
+    # in the user's bubble helps nobody, and interpolating it into the message
+    # would make that message untestable without a live model.
+    last_meta: dict | None = None
     try:
         for iteration in range(MAX_TOOL_ITERATIONS):
             # L10 — real token streaming. This used to be `await llm.ainvoke`,
@@ -872,13 +905,21 @@ async def run_agent_chat_stream(
             ai = None
             async for chunk in llm.astream(messages, config={"callbacks": chat_callbacks}):
                 ai = chunk if ai is None else ai + chunk
+                last_meta = getattr(chunk, "response_metadata", None) or last_meta
                 piece = _chunk_text(chunk)
                 if piece:
                     streamed_parts.append(piece)
                     yield {"type": "token", "delta": piece}
             if ai is None:
-                # The provider yielded nothing at all. Treat as an empty turn
-                # and let the synthesis safety net below handle it.
+                # The provider yielded nothing at all.
+                #
+                # This comment used to say "let the synthesis safety net below
+                # handle it". It does not, and cannot: that net is the `else:`
+                # of this `for`, and in Python a `for/else` runs its else ONLY
+                # when the loop finishes WITHOUT break. Every break here — this
+                # one and the no-tool-calls one below — jumps straight past it.
+                # The net has only ever caught iteration-cap exhaustion.
+                # The post-loop guard after this try/except is what covers it.
                 break
 
             tool_calls = getattr(ai, "tool_calls", None) or []
@@ -889,7 +930,24 @@ async def run_agent_chat_stream(
                 final_text = "".join(streamed_parts)
                 if not final_text:
                     # Some providers deliver content only on the aggregate.
-                    final_text = ai.content if isinstance(ai.content, str) else str(ai.content)
+                    #
+                    # Routed through _chunk_text, NOT str(). str() on a block
+                    # list produces a Python repr — a Gemini thinking-only
+                    # response became the literal text
+                    # "[{'type': 'thinking', 'thinking': '…'}]", which is
+                    # non-empty, so it skipped the end-of-turn guard, got
+                    # persisted at the bottom of this function, and was
+                    # replayed into the next prompt as if the assistant had
+                    # said it. _chunk_text knows every block shape here and
+                    # returns "" when there is genuinely no text.
+                    final_text = ai.content if isinstance(ai.content, str) else _chunk_text(ai)
+                    if final_text:
+                        # Never streamed, so the user has not seen it. Emit it
+                        # now, so streamed_parts stays a truthful record of
+                        # what the bubble contains — which is what the guard
+                        # below reads.
+                        streamed_parts.append(final_text)
+                        yield {"type": "token", "delta": final_text}
                 break
 
             # Tool-call branch: emit start + execute + emit result for each
@@ -998,6 +1056,9 @@ async def run_agent_chat_stream(
                 # ends here so the user can click Apply / Cancel before the
                 # next turn fires.
                 if isinstance(result_payload, dict) and result_payload.get("awaitingConfirmation"):
+                    # The user has something to act on even if no prose follows,
+                    # so the end-of-turn empty guard must not fire on this turn.
+                    saw_confirmation_card = True
                     yield {
                         "type": "tool_call_awaiting_confirmation",
                         "id":   tc_id,
@@ -1184,6 +1245,46 @@ async def run_agent_chat_stream(
     except Exception as e:
         logger.exception("agent chat stream failed")
         yield {"type": "error", "error": f"{type(e).__name__}: {e}"}
+        return
+
+    # Every path out of the loop must leave the user with SOMETHING. Reached
+    # when the turn produced no prose AND called no tools — the blank bubble
+    # docs/36 L3 and scripts/agent-loops/l3-error-surface.mjs exist to prevent,
+    # arriving on a turn that reports success rather than one that failed.
+    #
+    # Observed live on gemini-2.5-flash, reproducibly, for "Which of my
+    # contracts expire in the next 90 days?": the model returns
+    # finish_reason='STOP' with content='' and no tool calls — a normal
+    # completion that happens to be empty. Not a safety block (safety_ratings
+    # was []), not a malformed function call. The stream then carried only a
+    # done frame, so the rail rendered an empty assistant bubble with nothing
+    # to explain it, and the persona suites scored it as "text missing: X"
+    # rather than as the defect it is.
+    #
+    # Surfaced rather than silently retried on purpose: a retry would hide a
+    # real model-quality problem AND stop the eval suite measuring it, which is
+    # how this went unnoticed in the first place.
+    # Gated on streamed_parts, NOT final_text. final_text is a PERSISTENCE
+    # variable and is never yielded to the client — grep it: the done frame
+    # does not carry it. The only thing the user ever sees is token frames,
+    # i.e. streamed_parts, so that is the only honest measure of "did this turn
+    # show anything".
+    #
+    # The earlier `and not turn_tool_calls` was also wrong: it short-circuited
+    # the whole guard for any turn that called a tool, so a turn that searched
+    # and then returned empty prose still ended on a bare done frame — tool
+    # chips above a blank bubble. That is the shape this bug takes whenever the
+    # model does reach for contract_search first, which is most of the time.
+    if not "".join(streamed_parts).strip() and not saw_confirmation_card:
+        logger.warning(
+            "empty turn: no token frames streamed (provider=%s model=%s tools=%d finish_reason=%s)",
+            resolved.provider, resolved.model, len(turn_tool_calls),
+            (last_meta or {}).get("finish_reason"),
+        )
+        yield {"type": "error", "error": (
+            "The model returned an empty response — no answer was produced. "
+            "This is usually transient; try asking again or rephrasing."
+        )}
         return
 
     # P64 audit (2026-05-02). Persist tool I/O alongside the assistant

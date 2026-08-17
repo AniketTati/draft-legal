@@ -89,7 +89,7 @@ async function waitFor(predicate, { timeout = 60_000, interval = 1500 } = {}) {
   const buf = readFileSync(FIXTURE)
   const form1 = new FormData()
   form1.append('file', new Blob([buf], { type: 'application/pdf' }), 'scanned-msa.pdf')
-  const extRes = await fetch('http://localhost:8000/extract', {
+  const extRes = await fetch('http://localhost:8002/extract', {
     method: 'POST',
     body: form1,
     headers: { 'x-internal-secret': secret },

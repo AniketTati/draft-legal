@@ -70,8 +70,14 @@ section('1. tool_call_result carries an explicit outcome')
 
 section('2. Neither client guesses the outcome')
 {
+  // Was `!/includes\('"error"'\)/`, which pinned one exact SOURCE SPELLING —
+  // single-quoted outer, double-quoted inner. Reintroducing the sniff as
+  // .includes("error") or with backticks slipped straight through. Match any
+  // quoting instead; verified against the rail's real .includes() calls, which
+  // are all search filters over names/titles and none mention error.
+  const errorSniff = /\.includes\(\s*(['"`])(?:(?!\1).)*error(?:(?!\1).)*\1\s*\)/i
   check('the rail no longer substring-sniffs for "error"',
-    !/includes\('"error"'\)/.test(rail),
+    !errorSniff.test(rail),
     'a raw substring test over 20 KB of tool JSON renders a search with "errors": [] as a failed tool')
 
   check('the rail derives status from the ok field', /parsed\.ok\s*===\s*false/.test(rail),

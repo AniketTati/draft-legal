@@ -31,8 +31,13 @@ const REPO = fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, '')
 const AGENTS = `${REPO}/apps/agents`
 
 const src = fs.readFileSync(`${AGENTS}/app/orchestrator.py`, 'utf8')
-const promptMatch = /AGENT_SYSTEM_PROMPT\s*=\s*(?:f)?"""([\s\S]*?)"""/.exec(src)
-const PROMPT = promptMatch?.[1] ?? ''
+// Every assignment AND append, concatenated. Matching only the first `=`
+// literal meant anything added via `AGENT_SYSTEM_PROMPT += """..."""` was
+// invisible to this entire file — so a rule could be added to the real prompt
+// and every assertion here would still be judging the prompt without it. The
+// effective prompt is what the model sees, so that is what must be checked.
+const promptParts = [...src.matchAll(/AGENT_SYSTEM_PROMPT\s*\+?=\s*(?:f)?"""([\s\S]*?)"""/g)].map(m => m[1])
+const PROMPT = promptParts.join('\n')
 
 const TOOLS = fs.readdirSync(`${AGENTS}/app/tools`)
   .filter(f => f.endsWith('.py') && f !== '__init__.py')
@@ -135,8 +140,18 @@ section('5. The runtime caps are stated, not just enforced')
   }
   for (const [name, value] of Object.entries(caps)) {
     if (!value) continue
+    // `PROMPT.includes(value)` was a BARE SUBSTRING search for a one- or
+    // two-digit number across 21k characters, so neither assertion could fail:
+    // "6" matched the 2026 in a dated audit note, and "25" matched "BM25".
+    // Both reported the caps as stated while the prompt never mentioned them.
+    //
+    // Require the number as a standalone token sitting next to budget-ish
+    // wording, which is what "stated" has to mean for the model to use it.
+    const stated = new RegExp(
+      `\\b${value}\\b[^.\\n]{0,80}\\b(tool|call|step|iteration|budget|limit|max)`
+      + `|\\b(tool|call|step|iteration|budget|limit|max)[^.\\n]{0,80}\\b${value}\\b`, 'i')
     check(`the ${name} cap (${value}) is stated in the prompt`,
-      PROMPT.includes(value) || PROMPT.toLowerCase().includes(name.toLowerCase().replace(/_/g, ' ')),
+      stated.test(PROMPT),
       `the model cannot plan around a budget it was never told about`)
   }
 }
@@ -170,16 +185,27 @@ section('6. semantic-fallback reports a lower bound, not a database count')
     orgId, query: 'zzqx unlikely phrase steel tariffs quantum', limit: 3,
   }, orgId)
 
+  // Hoisted out of the conditional below: this is pure static analysis of the
+  // prompt and never needed the probe to have triggered. Gating it on a
+  // runtime condition meant the assertion silently did not run on any corpus
+  // that failed to produce a fallback — which is most of them.
+  check('the prompt tells the model what searchMode=semantic-fallback means',
+    /semantic-fallback/.test(PROMPT),
+    'internal-ai.ts says the flag exists so the agent can say it broadened the search; no prompt rule mentions it')
+
   if (res.status === 200 && res.body?.searchMode === 'semantic-fallback') {
     check('totalMatching is not presented as a DB count under semantic fallback',
       res.body.totalMatching === null || res.body.totalMatching === undefined,
       `totalMatching=${JSON.stringify(res.body.totalMatching)}, results=${res.body.results?.length} — A11 tells the model this is "the DB count of rows satisfying the filter", so it answers "you have N" with total confidence`)
-    check('the prompt tells the model what searchMode=semantic-fallback means',
-      /semantic-fallback/.test(PROMPT),
-      'internal-ai.ts says the flag exists so the agent can say it broadened the search; no prompt rule mentions it')
   } else {
-    check('semantic fallback probe ran', true,
-      `searchMode=${res.body?.searchMode ?? 'n/a'} (status ${res.status}) — soft-pass: this corpus did not trigger the fallback`)
+    // Was `check('semantic fallback probe ran', true, ...)` — a hardcoded pass
+    // standing in for an assertion that could not run. It inflated the count by
+    // one and could never go red. Assert the part that IS falsifiable: the
+    // probe reached the endpoint. That distinguishes "the corpus did not
+    // trigger the fallback" from "the endpoint is broken", which the hardcoded
+    // version reported identically.
+    check('the semantic-fallback probe reached the endpoint', res.status === 200,
+      `status ${res.status}, searchMode=${res.body?.searchMode ?? 'n/a'} — this corpus did not trigger the fallback, so the totalMatching assertion above could not run`)
   }
   await prisma.$disconnect()
 }

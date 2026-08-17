@@ -120,6 +120,10 @@ const totalTurnPass = allResults.reduce((s, p) => s + p.turnPass, 0)
 
 console.log(`\n${'═'.repeat(72)}`)
 console.log(`✓ Done — ${totalConvPass}/${totalConv} conversations · ${totalTurnPass}/${totalTurn} turns · ${(totalDuration / 1000).toFixed(1)}s`)
+// Canonical summary line for scripts/evals/run.mjs (/^(.+): (\d+)\/(\d+) passed\s*$/).
+// Turns rather than conversations: the turn is what lib-multi actually grades,
+// so it is the number that drops when coverage is lost.
+console.log(`Persona journeys: ${totalTurnPass}/${totalTurn} passed`)
 console.log('═'.repeat(72))
 for (const p of allResults) {
   console.log(`  ${p.persona.padEnd(24)} ${p.convPass}/${p.convTotal} conv · ${p.turnPass}/${p.turnTotal} turns`)

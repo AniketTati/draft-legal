@@ -304,8 +304,26 @@ const dateOffset = (today: Date, days: number): Date => {
   return d
 }
 
-// Today is fixed for determinism: 2026-04-27.
-const TODAY = new Date('2026-04-27T00:00:00Z')
+// Today is fixed for determinism: 2026-04-27. Override with SEED_TODAY=YYYY-MM-DD.
+//
+// The fixed anchor is what makes this corpus reproducible — same script, same
+// database, every time — and it should stay the default. But it anchors the
+// DATA while the agent answers relative to the real clock, so time-relative
+// cases decay as the anchor recedes: the persona corpus asks "expiring in the
+// next 90 days" four times and "renewal this year" twice, and those windows
+// stop selecting the contracts they were written against.
+//
+// So: deterministic by default, refreshable on demand. The PRNG seed is
+// unaffected, so the contract mix is identical either way — only the dates
+// slide.
+//
+//   pnpm tsx --env-file=../../.env scripts/seed-personas.ts            # 2026-04-27
+//   SEED_TODAY=$(date -u +%F) pnpm tsx ... scripts/seed-personas.ts    # today
+const SEED_TODAY = process.env.SEED_TODAY
+if (SEED_TODAY && Number.isNaN(Date.parse(`${SEED_TODAY}T00:00:00Z`))) {
+  throw new Error(`SEED_TODAY must be YYYY-MM-DD, got ${JSON.stringify(SEED_TODAY)}`)
+}
+const TODAY = new Date(`${SEED_TODAY ?? '2026-04-27'}T00:00:00Z`)
 
 // ─── Persona definitions ───────────────────────────────────────────────────
 

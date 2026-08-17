@@ -233,7 +233,7 @@ export async function searchRoutes(app: FastifyInstance) {
 
     // Forward to agents for LLM answer generation
     const agentRes = await fetch(
-      `${process.env.AGENTS_URL ?? 'http://localhost:8000'}/agent/ask`,
+      `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
@@ -256,7 +256,7 @@ export async function searchRoutes(app: FastifyInstance) {
     const { orgId, sub: userId } = req.user
 
     const agentRes = await fetch(
-      `${process.env.AGENTS_URL ?? 'http://localhost:8000'}/agent/portfolio-query`,
+      `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/portfolio-query`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },

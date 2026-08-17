@@ -24,7 +24,15 @@ class ChatRequest(BaseModel):
     user_id: str = "anonymous"
     org_id: str = "default"
     provider: str = DEFAULT_PROVIDER
-    model_id: str = DEFAULT_MODEL
+    # None means "no pin — let org AI settings decide". It used to default to
+    # DEFAULT_MODEL (claude-sonnet-4-6), which made every unpinned request look
+    # like an explicit Anthropic pin. On a deployment without an Anthropic key
+    # that pin no longer matches the resolved provider, so the block below
+    # SYNTHESISED one (tier="smart" → gemini-2.5-pro) and passed it down as
+    # model_override — which outranks the org's configured model. Net effect:
+    # Admin → AI Config was silently ignored for ordinary chat, and every turn
+    # ran on the expensive model regardless of what the org had chosen.
+    model_id: str | None = None
     # D.1.4a — when true, run the tool-binding loop and emit typed events.
     # Legacy callers (old ChatPanel) omit this and get the fake-streamed path.
     agent_mode: bool = False
@@ -80,15 +88,20 @@ async def chat(req: ChatRequest):
         # were valid for the provider actually being used. The model id is
         # also what the orchestrator sniffs to choose a tier, so this
         # destroyed the caller's tier signal too, not just the model.
-        try:
-            get_model_option(resolved_provider, req.model_id)
-        except ValueError:
-            req.model_id = model_for(resolved_provider, tier="smart")
+        #
+        # Only ever rewrites an EXPLICIT pin. An unpinned request stays None so
+        # org AI settings choose the model; substituting here would invent a
+        # pin the caller never asked for and override that configuration.
+        if req.model_id is not None:
+            try:
+                get_model_option(resolved_provider, req.model_id)
+            except ValueError:
+                req.model_id = model_for(resolved_provider, tier="smart")
     req.provider = resolved_provider
 
     # Validate provider + model before starting the stream. Skipped under
     # replay: the recorded response is served without a provider at all.
-    if _replay_mode() != "replay":
+    if _replay_mode() != "replay" and req.model_id is not None:
         try:
             get_model_option(req.provider, req.model_id)
         except ValueError as e:

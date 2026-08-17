@@ -174,7 +174,11 @@ export async function playbookRoutes(app: FastifyInstance) {
 
     // Call the agent service for comparison
     try {
-      const agentUrl = process.env.AGENT_SERVICE_URL ?? 'http://localhost:8000'
+      // AGENTS_URL, not AGENT_SERVICE_URL: the latter is set by no env file,
+      // no deploy manifest and no example, so in Cloud Run this fell back to
+      // localhost — which is not the agents service there. The catch below
+      // turns that into a 200 with no AI comparison, so it degraded silently.
+      const agentUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
       const agentRes = await fetch(`${agentUrl}/compare`, {
         method: 'POST',
         headers: {

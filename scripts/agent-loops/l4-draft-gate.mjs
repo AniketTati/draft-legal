@@ -87,6 +87,21 @@ section('2. A VIEWER cannot create a contract by asking')
   const t = await chatAs(viewerAuth.accessToken, DRAFT_ASK)
   const after = await contractsCreatedSince()
 
+  // Both assertions below are NEGATIVE — they pass when nothing happens. So a
+  // turn that never reached the model satisfies both, and the section reports
+  // the gate is working having learned nothing about it. Verified 2026-08-16:
+  // with an invalid API key every model call 401ed and this check still
+  // reported 8/8 green, which is the same "passes against broken code" defect
+  // the suite exists to end, one level up.
+  //
+  // l1, l9 and l12 already guard this by failing with "the trap was never
+  // set". Same idea: an inconclusive run must not be a pass.
+  const errFrame = t.frames.find(f => f.type === 'error')
+  check('the VIEWER turn actually reached the model', !errFrame,
+    errFrame
+      ? `the turn errored (${JSON.stringify(errFrame.error ?? errFrame).slice(0, 120)}) — the two assertions below pass on an empty turn, so this run proves nothing about the gate`
+      : 'the turn ran, so the denial below is a real observation')
+
   check('no contract was created for the VIEWER', after.length === before,
     after.length > before
       ? `created: ${after.slice(0, 2).map(c => `"${c.title}"`).join(', ')} — the assistant did what the REST route forbids`

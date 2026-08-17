@@ -22,7 +22,7 @@ export interface SlackOrgConfig {
   configuredAt?: string
 }
 
-const APP_BASE = process.env.PUBLIC_APP_URL ?? 'http://localhost:5173'
+const APP_BASE = process.env.FRONTEND_URL ?? 'http://localhost:5173'
 
 /**
  * Verify Slack's v0 request signature. Returns false on stale

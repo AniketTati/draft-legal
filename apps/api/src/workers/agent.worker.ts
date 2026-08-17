@@ -16,7 +16,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 
-const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8000'
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
 /**
  * Every call from this worker into the agents service.

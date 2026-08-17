@@ -77,7 +77,7 @@ function callTool(name, body) {
       },
     },
   }
-  const judgeRes = await fetch('http://localhost:8000/playbook_judge', {
+  const judgeRes = await fetch('http://localhost:8002/playbook_judge', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-internal-secret': secret },
     body: JSON.stringify(judgePayload),

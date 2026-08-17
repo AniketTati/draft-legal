@@ -213,10 +213,75 @@ async function main() {
     })
   }
 
+  // ── Signature requests, one per status the filter tabs expose ─────────────
+  //
+  // Nothing seeded these, so signature_requests was empty on every fresh
+  // database and the signatures page had four tabs that all read zero. The UI
+  // check (scripts/agent-loops/l6b-ui-verify.mjs:125) picks a non-ALL tab with
+  // a non-zero count to prove switching tabs actually re-filters; with every
+  // bucket empty it had nothing to switch to and failed honestly, run after
+  // run, naming this gap.
+  //
+  // One request per status so the filter is exercised rather than merely
+  // rendered. Idempotent: keyed on the contract, skipped if any already exist.
+  const sigStatuses = [
+    { status: 'PENDING',   signer: 'PENDING' },
+    { status: 'COMPLETED', signer: 'SIGNED' },
+    { status: 'VOIDED',    signer: 'PENDING' },
+    { status: 'EXPIRED',   signer: 'PENDING' },
+  ] as const
+  const existingSigs = await prisma.signatureRequest.count({ where: { orgId: org.id } })
+  if (existingSigs === 0) {
+    const signable = await prisma.contract.findMany({
+      where: { orgId: org.id },
+      select: { id: true, title: true, versions: { select: { id: true }, take: 1 } },
+      orderBy: { createdAt: 'asc' },
+      take: sigStatuses.length,
+    })
+    for (const [i, c] of signable.entries()) {
+      const versionId = c.versions[0]?.id
+      if (!versionId) continue
+      const s = sigStatuses[i]
+      await prisma.signatureRequest.create({
+        data: {
+          orgId: org.id,
+          contractId: c.id,
+          versionId,
+          status: s.status,
+          createdById: admin.id,
+          message: `Please countersign "${c.title}".`,
+          completedAt: s.status === 'COMPLETED' ? new Date() : null,
+          voidedAt:    s.status === 'VOIDED'    ? new Date() : null,
+          voidedReason: s.status === 'VOIDED' ? 'Superseded by a renegotiated version' : null,
+          // Past expiry for EXPIRED so the row is consistent with its status
+          // rather than merely labelled — a filter test over incoherent rows
+          // proves nothing about the filter.
+          expiresAt: s.status === 'EXPIRED'
+            ? new Date(Date.now() - 7 * 86_400_000)
+            : new Date(Date.now() + 30 * 86_400_000),
+          signers: {
+            create: {
+              email: 'signer@counterparty.test',
+              name:  'Alex Signer',
+              role:  'Authorised Signatory',
+              signOrder: 1,
+              // Unique per row; not a credential — this database is seed data.
+              token: `seed-${org.id.slice(-6)}-${i}-${s.status.toLowerCase()}`,
+              status: s.signer,
+              signedAt: s.signer === 'SIGNED' ? new Date() : null,
+              signedName: s.signer === 'SIGNED' ? 'Alex Signer' : null,
+            },
+          },
+        },
+      })
+    }
+  }
+
   console.log(`✓ Org: ${org.name}`)
   console.log(`✓ Users: admin@demo.com / legal@demo.com  (password: password123)`)
   console.log(`✓ Counterparties: ${counterpartyNames.length}`)
   console.log(`✓ Demo contracts: ${DEMO_CONTRACTS.length}`)
+  console.log(`✓ Signature requests: ${await prisma.signatureRequest.count({ where: { orgId: org.id } })} (one per status)`)
 
   // ── Base data (templates, clauses, playbook) for ALL orgs ────────────────
   const allOrgs = await prisma.organization.findMany()

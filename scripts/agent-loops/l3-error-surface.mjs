@@ -77,6 +77,16 @@ section('1. The server types every error envelope it emits')
   }
   check('no SSE error envelope is emitted without a type field', untyped.length === 0,
     untyped.join(' | ') || 'all error emitters typed')
+
+  // The empty-turn invariant ("a turn that streams nothing says why") lived
+  // here briefly as a regex over the guard's source text. It was deleted the
+  // same day: it matched WORDING, not behaviour, so correcting the guard —
+  // which had to stop reading final_text and start reading streamed_parts —
+  // turned the assertion red on a strictly better implementation. A check that
+  // punishes the fix is the defect class this suite exists to end.
+  //
+  // It now lives in l15-empty-turn.mjs, which drives the real generator with a
+  // stubbed LLM and asserts frame shapes.
 }
 
 // ─── Browser ────────────────────────────────────────────────────────────────
