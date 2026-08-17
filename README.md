@@ -11,9 +11,9 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 [![Good first issues](https://img.shields.io/github/issues/AniketTati/draft-legal/good%20first%20issue?color=7057ff&label=good%20first%20issues)](https://github.com/AniketTati/draft-legal/labels/good%20first%20issue)
 
-[**🚀 Try the live app**](https://app.draft-legal.com) · [**▶ Watch the 60-second demo**](https://youtu.be/ZCeWJNUQHpI) · [Quickstart](#quickstart) · [Contributing](./CONTRIBUTING.md) · [Legal contributors](./CONTRIBUTING-LEGAL.md)
+[**🚀 Try the live app**](https://app.draft-legal.com) · [**▶ Watch the walkthrough**](https://youtu.be/0pecFUfUhFA) · [Quickstart](#quickstart) · [Contributing](./CONTRIBUTING.md) · [Legal contributors](./CONTRIBUTING-LEGAL.md)
 
-[![Watch the 60-second demo](https://img.youtube.com/vi/ZCeWJNUQHpI/maxresdefault.jpg)](https://youtu.be/ZCeWJNUQHpI)
+[![Watch the walkthrough](https://img.youtube.com/vi/0pecFUfUhFA/maxresdefault.jpg)](https://youtu.be/0pecFUfUhFA)
 
 </div>
 

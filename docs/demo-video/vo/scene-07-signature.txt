@@ -1,0 +1,1 @@
+Signature happens inside the platform. Send it, watch who has signed, and countersign without leaving the contract or paying for a separate tool.
