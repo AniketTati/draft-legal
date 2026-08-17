@@ -5,7 +5,7 @@
   "checks": {
     "e1-gate-bites": {
       "status": "pass",
-      "total": 18
+      "total": 29
     },
     "l6-dead-controls": {
       "status": "pass",
