@@ -712,8 +712,12 @@ was filed t2 because it never calls `/agent/chat` — but it reaches a model
 Indirect model dependencies are the classification trap here, and the tier
 gate is what found it.
 
-**Measured:** tier 1 — 5 checks, 54 assertions, sub-second, keyless.
+**Measured 2026-08-08:** tier 1 — 5 checks, 54 assertions, sub-second, keyless.
 tier 2 — 5 checks, 75 assertions, ~35 s, keyless.
+
+**Re-measured 2026-08-16:** tier 1 — 5 checks, 58 assertions. tier 2 — 13
+checks, 172 assertions, ~35 s (`l3-error-surface` is 83% of that wall clock).
+tier 3 — 11 checks, 235 assertions. See Wave E below.
 
 ---
 
@@ -767,7 +771,9 @@ no assertion gained.
 
 **Wave D — make real runs safe ✅ DONE.** E8 eval identity, E9 nightly split.
 
-**Wave E — coverage.** ← REMAINING
+**Wave E — coverage.** ✅ LARGELY DONE 2026-08-16 — see "Wave E — what actually
+happened" at the end of this document. The plan below is kept because the parts
+it got wrong are instructive, and four of its claims are corrected there.
 
 The highest-value work here is not writing new cases. It is **promoting the
 security checks that already exist from t3 to t2**, which replay now makes
@@ -829,3 +835,122 @@ the structural answer to that, and it deserves the same discipline applied to
 itself: **every eval case must be shown to fail before it is trusted**, and the
 suite must be able to fail the build, or it is one more control that looks wired
 and is not.
+
+---
+
+## Wave E — what actually happened (2026-08-16)
+
+Wave E was planned as "promote five checks to t2 via replay, then write the
+A1–A13 prompt rules as t3 cases." Almost none of that is what the work turned
+out to be, because **running the suite against a real stack was itself the
+finding**. Four corrections to the plan above, then what shipped.
+
+### C1 — "Today these run nightly, if at all" — nothing is nightly
+
+`.github/workflows/nightly-evals.yml:19-21` has the `schedule:` block commented
+out, leaving `workflow_dispatch` only. Its stated blocker (E8) has been marked
+DONE since 2026-08-08. The correct column value in the Wave E table is **"never
+runs"**, which only strengthens the promotion argument.
+
+The job would also fail on first dispatch: it has no `services:`, no install,
+and no service boot, so every check skips and `--strict` turns that into exit 1.
+
+### C2 — `l11-cost-cap` needed no replay fixture, and could not go to t2 anyway
+
+The table lists it as a t3→t2 promotion needing a recorded fixture. It needs
+none — every assertion is static analysis of `router.py` and `agent.worker.ts`
+plus one POST to the **Node** `/resolve`. Verified by running it with the agents
+service stopped: 9/9.
+
+It was promoted on that evidence and **reverted the same day**. The evidence was
+wrong twice. `l11:116` only reaches the cap when the API holds a platform key
+(`aiRouter.ts:191` calls `assertCostCapNotExceeded` inside `if (platKey)`);
+keyless it answers 503, not the asserted 429. It passed locally only because
+`PLACEHOLDER_VALUES` filters exact sentinels, so a junk 10-char key counted as
+real. And its cap-cache invalidation shells to `docker exec clm_redis` — a
+compose `container_name` that no GitHub Actions service has, so the DEL no-ops
+into its own `catch {}` and the check races a 30s TTL. t2 is defined by being
+keyless AND deterministic; it is neither. Both dead ends are recorded in
+`manifest.mjs` so the next person does not repeat them.
+
+### C3 — `l4-draft-gate` is single-path, and was vacuous rather than hard
+
+The plan says it has three model-touching paths and is therefore not the easy
+conversion. It has one: sections 3-6 drive `/agent/draft`, which
+`internal-ai.ts:3834` documents as implemented entirely in Node, and section 6
+is refused 403 before the upstream fetch.
+
+The real problem was different and worse: **it reported 8/8 green while every
+model call 401ed**. Both assertions in section 2 are negative — no contract was
+created, the tool did not succeed — so a turn that never reached the model
+satisfies both. Now guarded the way `l1`, `l9` and `l12` already do it: an
+inconclusive run is not a pass.
+
+### C4 — the suites the plan counted were never counted by the runner
+
+`manifest.mjs` claimed "the runner treats a suite exactly like a check because
+both report the same summary line." That was never true.
+`persona-tests/run.mjs` printed `✓ Done — 66/66 passed (100.0%)`, which
+`run.mjs:184` cannot parse, so every tier-3 run reported `ERRO 0/0` while the
+suite exited 0. `sanity.mjs` was worse because it looked fine: its line matches
+**only when nothing fails**, so it became unreadable exactly when it had
+something to report.
+
+And `run-personas.mjs` — 86 asks, the only consumer of `lib-multi.mjs` — was in
+the manifest nowhere. This plan counted those asks; the manifest never picked
+them up.
+
+### What Wave E actually delivered
+
+**Four production bugs, none of which the plan anticipated**, all found by
+booting the stack and running the suite:
+
+| bug | effect |
+|---|---|
+| `AGENTS_URL` port split (8000 vs 8002) | agent chat 500s on any fresh checkout |
+| three env names nothing defines | silent 200s, localhost links in prod, broken write-tools |
+| `ChatMessageSchema` defaulting the model pin | Admin → AI Config silently ignored; every turn on the expensive model |
+| empty agent turns | HTTP 200, zero tokens, no error — a blank bubble |
+
+The last one is the most instructive. `gemini-2.5-flash` returns
+`finish_reason='STOP'` with `content=''`; the A5 synthesis net could never catch
+it, because that net is the `else:` of a `for` and **every empty path `break`s
+past it**. The comment on one of those breaks claimed the net handled it, and
+had been wrong since it was written.
+
+**Preconditions that could not fail** — `db` tested that `DATABASE_URL` was
+*set*, not reachable; `playwright` tested for the npm package, not a browser;
+`model` accepted any non-empty string; `personas` probed an address the seeder
+has never created, so both persona suites skipped **permanently**. Each is the
+same shape as E4 one level up: "could not check" sharing an exit code with
+"checked and fine".
+
+**The baseline gate had a landmine on the exact path this plan describes.**
+Recording a t1+t2 baseline — what "when tier 2 joins CI" requires — made the
+blocking t1 job report every t2 check as `PRESENT → GONE` and exit 3.
+Reproduced: 7 spurious regressions on a green tree.
+
+**Five assertions that could not fail**, each now mutation-proven, including one
+that was **inverted** — green *because* the hazard existed, so deleting the flag
+was the single edit that turned it red.
+
+### The lesson, for the next wave
+
+The plan assumed the expensive work was writing cases. It was not. The expensive
+work was **making the existing suite able to run and able to fail** — and every
+hour spent there returned a defect, while the "~50 new cases" the audit asked
+for remain largely unwritten and are still not the bottleneck.
+
+`docs/36`'s rule held up under its own test: the assertions that had never been
+watched failing were the ones that were lying.
+
+### Still open
+
+- 26 conversations spread `...SEARCH_TOOLS` into `expectedTools`, so a case
+  whose point is `clause_search` passes on a generic `contract_search`. 52/66 is
+  a real number now, but not yet a quality baseline.
+- `forbiddenTools` exists in both graders and no case uses it yet.
+- Journey turns of 180s, 222s and **488s** ending in "operation was aborted" —
+  uninvestigated, and probably the most serious thing left.
+- The nightly workflow still needs services + boot before its schedule is
+  enabled (C1).
