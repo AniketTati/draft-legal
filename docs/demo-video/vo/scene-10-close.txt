@@ -1,0 +1,1 @@
+Draft Legal runs on your infrastructure, with your own model provider. Your contracts never leave your servers. It is open source. Clone it, run one command, and it comes up with demo data already inside.

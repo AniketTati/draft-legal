@@ -1,0 +1,19 @@
+Every legal team runs on the same two problems. The contracts are somewhere. And nobody can answer a question about them without opening twenty of them. Draft Legal fixes both. It is an open source contract platform that runs on your own servers.
+
+Start with the thing most contract tools cannot do. Ask your whole portfolio a question. A vendor has quoted two hundred thousand dollars for an eight week statement of work. Is that fair? The assistant searches every contract you have actually signed, and answers from your own history. It is reading your own paper, not a general model guessing at what the market charges. And it shows you how it got there. Open the tool call, and you can see exactly what was searched and what came back.
+
+Behind that answer is the repository. Every contract, parsed, classified, and scored for risk. Filter to what is high risk and still in negotiation, and the whole portfolio narrows to the few that genuinely need a lawyer today.
+
+Open any one of them. Draft Legal has already pulled out the parties, the value, the term, and the renewal mechanics. Down the side is the contract's whole state. What it commits you to, and when. Where it stands against GDPR, SOX and CCPA. And what has to be fixed before signature.
+
+Your playbook is the standard every contract gets measured against. For every clause type, the position you prefer. The one you will sign without escalating. The one you concede, reluctantly. And the point where you walk away. That is what turns a contract review from one lawyer's judgement into something the whole team applies the same way.
+
+When a contract is ready to move, it moves on rails. Approvals route by value, by type, and by counterparty. Each one arrives with a summary and a recommendation, so an approver who has not read the contract still understands the decision. Here, the liability cap sits far below our floor for a vendor holding production data. That is the whole reason this one needs finance to sign off.
+
+Signature happens inside the platform. Send it, watch who has signed, and countersign without leaving the contract or paying for a separate tool.
+
+Signing is the middle of the story, not the end. Every commitment you made is tracked and dated, so the ones running late surface before they turn into a problem. Renewals are grouped by when the decision is actually due. Around twenty six million dollars of contract value comes up in the next ninety days.
+
+And all of it rolls up. Four hundred contracts. A hundred and forty six million dollars of executed value. Cycle time, where deals get stuck, and how risk is spread across the book.
+
+Draft Legal runs on your infrastructure, with your own model provider. Your contracts never leave your servers. It is open source. Clone it, run one command, and it comes up with demo data already inside.

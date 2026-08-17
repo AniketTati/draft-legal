@@ -1,0 +1,1 @@
+Every legal team runs on the same two problems. The contracts are somewhere. And nobody can answer a question about them without opening twenty of them. Draft Legal fixes both. It is an open source contract platform that runs on your own servers.

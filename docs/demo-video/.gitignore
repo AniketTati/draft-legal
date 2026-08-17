@@ -1,0 +1,10 @@
+# Generated audio and rendered video stay out of the repository. Both are
+# reproducible — narration with `tts.mjs`, the films with `record.mjs` /
+# `intro.mjs` — and neither belongs in a git history as binary churn.
+#
+# Regenerating narration costs API credits, so keep local copies; they are
+# ignored, not disposable.
+vo/beats/
+vo/samples/
+vo/*.wav
+vo/*.mp3
