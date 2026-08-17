@@ -12,11 +12,15 @@ node scripts/evals/run.mjs --tier t1 --baseline          # accept the current st
 
 ## Tiers — cost and determinism, not subject
 
-| | Needs | Cost | Runs | Size (2026-08-16) |
-|---|---|---|---|---|
-| **t1** | nothing | $0 | blocking, every PR (incl. forks) | 5 checks · 58 assertions |
-| **t2** | Postgres, API, replay fixtures | $0 | blocking, every PR | 13 checks · 172 assertions |
-| **t3** | all of the above + a model key | real money | nightly on `main`, never a PR | 11 checks · 235 assertions |
+| | Needs | Cost | Runs | Checks | Assertions |
+|---|---|---|---|---|---|
+| **t1** | nothing | $0 | blocking, every PR (incl. forks) | 6 | 97 *(measured 2026-08-17)* |
+| **t2** | Postgres, Redis, API, web, Chromium, venv, replay | $0 | blocking, every PR | 14 | ~211 *(derived; not re-counted on a booted stack)* |
+| **t3** | all of the above + a model key | real money | nightly on `main`, never a PR | 17 + 3 suites | ~274 *(derived)* |
+
+Counts are cumulative — `--tier t1,t2` runs 14 checks. Only the t1 row has been
+re-measured since `e14-grader-truth` landed; the others are that number plus 39
+and are flagged as derived rather than presented as observed.
 
 t1 and t2 need **no API key**, which is what makes them safe to block fork PRs
 on — this repo is public, and forks cannot read secrets.
@@ -26,10 +30,74 @@ A t2 check may stub the model rather than replay it. `l15-empty-turn` drives
 database, no API, no key — which is how model-response HANDLING gets tested on
 every PR while the model itself stays out of the loop.
 
-**The nightly t3 workflow is not enabled**, and would fail on first dispatch:
-`.github/workflows/nightly-evals.yml` has no `services:`, no install and no
-service boot, so every check skips and `--strict` turns that into exit 1. Treat
-t3 as "run it by hand on a booted stack" until that job is built.
+**Tier 2 now has a CI job** — `agent-evals-t2` in `ci.yml`. It stands up
+Postgres, Redis, the API, the web dev server, Chromium, a Python venv and the
+agents service in replay mode, then runs `--tier t1,t2 --strict`. It does **not**
+pass `--check-baseline`: the baseline file holds t1 only, and t2 counts have to
+come from a real run rather than arithmetic. Once the job is green on `main`:
+
+```bash
+node scripts/evals/run.mjs --tier t1,t2 --baseline-path scripts/evals/baseline-t2.json --baseline
+```
+
+commit that file and add `--baseline-path … --check-baseline` to the job. Until
+then t2 gates on pass/fail and on skips; t1 keeps the coverage-loss gate.
+
+**The nightly t3 workflow is still not enabled**, and would fail on first
+dispatch: `.github/workflows/nightly-evals.yml` has no `services:`, no install
+and no service boot, so every check skips and `--strict` turns that into exit 1.
+The `agent-evals-t2` job is the pattern to copy when building it. Treat t3 as
+"run it by hand on a booted stack" until then.
+
+## Running t2 locally will leave data behind
+
+`l4-draft-tenancy` performs 11 Prisma writes and has **no cleanup block**. That
+is fine in CI, where the database is created and thrown away per job, and it is
+not fine against your dev database, where the rows persist and the next run
+starts from different state.
+
+Four t2 checks are read-only and safe to run against a dev stack any time:
+
+```bash
+node scripts/agent-loops/l5-redline-reach.mjs     # 13 assertions
+node scripts/agent-loops/l15-empty-turn.mjs       # 16
+node scripts/agent-loops/l7-prompt-truth.mjs      # 15
+node scripts/agent-loops/e8-eval-identity.mjs     #  9
+```
+
+`l6b-dead-controls` writes but restores in `finally`. `l4-draft-tenancy` does
+not — prefer CI, or expect to clean up after it.
+
+## What the suite still does not measure
+
+Three gaps worth knowing before quoting any number from it. Full analysis in
+`docs/38-EVAL-GAPS.md`.
+
+**Nothing checks whether an answer is true.** Grading is substring matching over
+the reply text (`scripts/persona-tests/lib.mjs`, `lib-multi.mjs`). There is no
+groundedness or citation-accuracy dimension anywhere, so a confident wrong
+number passes as long as the right words appear.
+
+**A refusal passes most rows.** `gracefulEmptyOk` defaults true and no case sets
+it false, so "I couldn't find that" suppresses `mustMentionAny`, `contextWords`
+and `minReplyChars`; 53 of 91 `mustMentionAny` lists also carry a phrase only a
+refusal matches. This is defensible — an honest empty answer often IS correct —
+but it used to be invisible. The runner now prints **shrug passes** beside the
+pass count:
+
+```
+Persona journeys: 52/66 passed
+  of which passed on a shrug: 14/52 (27%)
+```
+
+Read the two together. If shrugs climb while the pass rate holds, the agent is
+getting more evasive and the headline cannot see it. `e14-grader-truth` (t1)
+keeps that accounting honest and is mutation-proven.
+
+**Under-retrieval is invisible.** No expected record sets exist, so a query that
+should return 15 contracts and returns 3 passes every rubric. Production has the
+same blind spot; `scripts/production-health.mjs` says so out loud rather than
+implying coverage.
 
 ## What a green t2 does NOT mean
 

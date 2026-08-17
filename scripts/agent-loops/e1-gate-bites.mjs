@@ -27,6 +27,9 @@ import { check, report, section } from '../week-zero/lib/harness.mjs'
 
 const REPO = fileURLToPath(new URL('../..', import.meta.url))
 const FIX  = 'scripts/evals/fixtures'
+/** Missing file reads as empty, so a moved path fails the assertion that needs
+ *  it rather than crashing the check with no summary line. */
+const read = p => { try { return fs.readFileSync(`${REPO}/${p}`, 'utf8') } catch { return '' } }
 
 /** Run the real runner against the fixture tree. */
 function run(extra = []) {
@@ -129,6 +132,55 @@ section('5. CI runs it, and cannot swallow the result')
   check('no pytest step against a non-existent directory remains',
     !/run:\s*pytest tests\//.test(ci),
     'it reported success for a directory that was never created')
+
+  // The `|| true` assertion above slices from `agent-evals:` to EOF, so it
+  // polices every eval job appended after it. That is correct and it bites:
+  // adding the t2 job below with `tail … || true` in a diagnostic step turned
+  // this red immediately. Keep new eval jobs after that anchor.
+  const t2 = ci.slice(ci.indexOf('agent-evals-t2:'))
+  check('a CI job runs tier 2', ci.includes('agent-evals-t2:'),
+    'docs/37 planned this for a quarter; a tier nobody runs is the failure this suite exists to end')
+  check('it runs tiers 1 AND 2', /--tier t1,t2/.test(t2),
+    'running t2 alone would skip the coverage-gated t1 checks')
+  check('it is --strict, so a skip cannot pass', /--strict/.test(t2),
+    'eight checks that skip because nothing booted would exit 0 and read as green')
+  check('it boots the agents service in REPLAY mode', /AGENT_REPLAY_MODE:\s*replay/.test(t2),
+    'without it e12-replay skips; with --strict that fails, which is the honest outcome')
+  // Match the COMPARISON, not the mention. `/replayMode/ && /exit 1/` passed
+  // even with the branch stubbed to `if false`, because both strings survive
+  // elsewhere in the job — the exact shape of assertion this check exists to
+  // catch, found by mutating the job and watching this stay green.
+  check('it asserts the replay mode rather than just liveness',
+    /"\$mode"\s*!=\s*"replay"/.test(t2),
+    '"is it up" cannot answer whether a check is about to hit a live model')
+  check('it seeds the demo org the checks log in as', /db:seed/.test(t2),
+    'every db/api check fails on "Invalid email or password" without it — an env gap that reads as a product defect')
+}
+
+// ─── 6. The Python side can fail too ────────────────────────────────────────
+
+section('6. The agents service has tests, and they can fail the build')
+{
+  const ci = fs.readFileSync(`${REPO}/.github/workflows/ci.yml`, 'utf8')
+  const job = ci.slice(ci.indexOf('test-agents:'), ci.indexOf('agent-evals:'))
+  check('CI runs pytest against the agents service',
+    /python -m pytest tests\//.test(job),
+    'for months this job only proved the app imports')
+  check('…without swallowing the exit code', !/pytest[^\n]*\|\|\s*true/.test(job),
+    'the step this replaces was `pytest tests/ ... || true`')
+  check('a test directory exists for it to collect',
+    fs.existsSync(`${REPO}/apps/agents/tests`),
+    'pytest exits 5 on an empty collection, which fails the job — correct, but the tests should be there')
+  // `/pytest/` alone matched the comment `# pytest removed` left behind by a
+  // mutation that deleted the requirement. Anchor to a real requirement line:
+  // start of line, then a version specifier.
+  check('pytest is declared in requirements-dev, not the production set',
+    /^pytest\s*[>=<~]/m.test(read('apps/agents/requirements-dev.txt'))
+      && !/^pytest/m.test(read('apps/agents/requirements.txt')),
+    'the Dockerfile installs requirements.txt; a production image should not ship a test runner')
+  check('requirements-dev pulls in the production set rather than duplicating it',
+    /^-r requirements\.txt$/m.test(read('apps/agents/requirements-dev.txt')),
+    'two hand-maintained lists drift, and the drift shows up as a CI-only or prod-only failure')
 }
 
 // ─── 6. Every check on disk is actually run ─────────────────────────────────

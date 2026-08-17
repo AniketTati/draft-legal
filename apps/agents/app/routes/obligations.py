@@ -31,6 +31,65 @@ logger = logging.getLogger("obligations")
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
 
+# Caps applied to whatever the model returns. They are constants rather than
+# literals inline so the golden tests can assert the boundary rather than a
+# magic number, and so a change to either is a visible diff.
+MAX_OBLIGATIONS = 25
+MAX_QUOTE_CHARS = 240
+
+
+def parse_obligations_response(content: str) -> dict:
+    """Model text → the structured payload the Node side persists. PURE.
+
+    This is the whole deterministic half of extraction: fence stripping,
+    lenient JSON parsing, key coercion, and the caps. It is separated from the
+    route so it can be pinned with golden fixtures — the LLM half varies run to
+    run and cannot be regression-tested, but everything downstream of it must
+    not, and a silent change here corrupts every obligation in the product.
+
+    Raises whatever loads_lenient raises when nothing parses; the caller's
+    try/except owns that path, exactly as before this was extracted.
+    """
+    text = (content or "").strip()
+    # KNOWN DEFECT, kept only because it is what has been running in production.
+    #
+    # loads_lenient already strips fences, prose preambles and unterminated
+    # fences, so this block earns nothing — proven by disabling it and watching
+    # every golden test stay green. Worse, it is actively harmful on one input:
+    # a ``` inside a quoted string makes split("```", 2)[1] cut mid-value, and
+    # the whole extraction then returns zero obligations for a contract that
+    # has some. That failure is silent — the route's except turns it into
+    # {"obligations": []}, which reads as "this contract has none".
+    #
+    # Deleting these four lines is the fix. tests/test_obligations_parse.py
+    # carries an xfail(strict=True) that flips to pass the moment it happens.
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+
+    parsed = loads_lenient(text)
+    obligations = parsed.get("obligations") or []
+
+    cleaned: list[dict] = []
+    for o in obligations[:MAX_OBLIGATIONS]:
+        if not isinstance(o, dict):
+            continue
+        cleaned.append({
+            "id":          str(o.get("id") or f"o_{len(cleaned)}"),
+            "type":        str(o.get("type") or "other"),
+            "description": str(o.get("description") or "").strip(),
+            "owner":       str(o.get("owner") or "unknown"),
+            "dueDate":     (o.get("dueDate") or None),
+            "recurrence":  str(o.get("recurrence") or "unknown"),
+            "trigger":     (o.get("trigger") or None),
+            "quote":       str(o.get("quote") or "")[:MAX_QUOTE_CHARS],
+            "severity":    str(o.get("severity") or "medium"),
+            "sectionRef":  (o.get("sectionRef") or None),
+        })
+
+    return {"obligations": cleaned, "summary": parsed.get("summary") or ""}
+
 
 class ExtractObligationsRequest(BaseModel):
     plainText:      str
@@ -122,34 +181,10 @@ Extract the obligations now. JSON only."""
             config={"callbacks": callbacks} if callbacks else None,
         )
         content = response.content if isinstance(response.content, str) else str(response.content)
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("```", 2)[1]
-            if content.startswith("json"):
-                content = content[4:]
-        parsed = loads_lenient(content)
-        obligations = parsed.get("obligations") or []
-        # Lightweight normalisation — coerce each entry to the expected
-        # keys + types so downstream code never has to defensive-check.
-        cleaned = []
-        for o in obligations[:25]:
-            if not isinstance(o, dict):
-                continue
-            cleaned.append({
-                "id":          str(o.get("id") or f"o_{len(cleaned)}"),
-                "type":        str(o.get("type") or "other"),
-                "description": str(o.get("description") or "").strip(),
-                "owner":       str(o.get("owner") or "unknown"),
-                "dueDate":     (o.get("dueDate") or None),
-                "recurrence":  str(o.get("recurrence") or "unknown"),
-                "trigger":     (o.get("trigger") or None),
-                "quote":       str(o.get("quote") or "")[:240],
-                "severity":    str(o.get("severity") or "medium"),
-                "sectionRef":  (o.get("sectionRef") or None),
-            })
+        # Everything deterministic lives in parse_obligations_response, which is
+        # golden-tested. This route is now only the LLM call plus attribution.
         return {
-            "obligations":   cleaned,
-            "summary":       parsed.get("summary") or "",
+            **parse_obligations_response(content),
             "model":         model,
             "provider":      provider,
         }

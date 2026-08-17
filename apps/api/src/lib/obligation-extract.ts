@@ -43,6 +43,54 @@ const toDate = (v: unknown): Date | null => {
   return isNaN(t.getTime()) ? null : t
 }
 
+/** Caps applied when persisting. Named so the golden tests can assert the
+ *  boundary rather than a magic number, and so a change is a visible diff. */
+export const MAX_OBLIGATION_ROWS = 100
+export const MAX_TEXT_CHARS = 4000
+export const MAX_TRIGGER_CHARS = 1000
+
+export interface ObligationRow {
+  orgId: string
+  contractId: string
+  type: string
+  description: string
+  owner: string
+  dueDate: Date | null
+  recurrence: string
+  trigger: string | null
+  quote: string
+  severity: string
+  sectionRef: string | null
+}
+
+/**
+ * Agent-service payload → the rows we persist. PURE.
+ *
+ * Separated from extractObligationsForContract so it can be pinned with golden
+ * fixtures. This is the last transformation before contract obligations hit
+ * the database, and every failure in it is silent: a change to `toDate` nulls
+ * every due date and the reminder cron simply stops firing, with nothing
+ * erroring and no test noticing. See obligation-extract.golden.test.ts.
+ */
+export function toObligationRows(
+  incoming: Array<Record<string, unknown>>,
+  { orgId, contractId }: { orgId: string; contractId: string },
+): ObligationRow[] {
+  return incoming.slice(0, MAX_OBLIGATION_ROWS).map(o => ({
+    orgId,
+    contractId,
+    type:        norm(o.type, 'other').toLowerCase(),
+    description: norm(o.description, '').slice(0, MAX_TEXT_CHARS),
+    owner:       norm(o.owner, 'unknown').toLowerCase(),
+    dueDate:     toDate(o.dueDate),
+    recurrence:  norm(o.recurrence, 'one-time').toLowerCase(),
+    trigger:     o.trigger ? String(o.trigger).slice(0, MAX_TRIGGER_CHARS) : null,
+    quote:       norm(o.quote, '').slice(0, MAX_TEXT_CHARS),
+    severity:    norm(o.severity, 'medium').toLowerCase(),
+    sectionRef:  o.sectionRef ? String(o.sectionRef) : null,
+  }))
+}
+
 /**
  * Run extraction end-to-end. Replaces existing OPEN obligations on the
  * contract; COMPLETED rows are preserved across re-runs.
@@ -130,19 +178,7 @@ export async function extractObligationsForContract({
   })
   if (incoming.length > 0) {
     await prisma.obligation.createMany({
-      data: incoming.slice(0, 100).map(o => ({
-        orgId,
-        contractId,
-        type:        norm(o.type, 'other').toLowerCase(),
-        description: norm(o.description, '').slice(0, 4000),
-        owner:       norm(o.owner, 'unknown').toLowerCase(),
-        dueDate:     toDate(o.dueDate),
-        recurrence:  norm(o.recurrence, 'one-time').toLowerCase(),
-        trigger:     o.trigger ? String(o.trigger).slice(0, 1000) : null,
-        quote:       norm(o.quote, '').slice(0, 4000),
-        severity:    norm(o.severity, 'medium').toLowerCase(),
-        sectionRef:  o.sectionRef ? String(o.sectionRef) : null,
-      })),
+      data: toObligationRows(incoming, { orgId, contractId }),
     })
   }
 

@@ -130,12 +130,13 @@ jobs:
           cache: 'pip'
           cache-dependency-path: apps/agents/requirements.txt
 
-      # There are no Python tests yet, so this install is the only real gate in
-      # this job — and it earns its keep: an unsatisfiable requirements.txt
-      # broke it (and the agents image build) for a full day in Aug 2026.
+      # This install earns its keep on its own: an unsatisfiable
+      # requirements.txt broke it (and the agents image build) for a full day in
+      # Aug 2026. requirements-dev.txt pulls it in and adds pytest, which is
+      # deliberately not in the production set.
       - name: Install dependencies
         working-directory: apps/agents
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-dev.txt
 
       # Installing is not the same as installing something coherent. pip will
       # leave a requirement unsatisfied when packages arrive in separate steps,
@@ -152,10 +153,19 @@ jobs:
         working-directory: apps/agents
         run: python -c "import main; print(f'{len(main.app.routes)} routes loaded')"
 
-      # There are no Python tests yet. The pytest step that used to sit here ran
-      # `pytest tests/ -v --tb=short || true` against a directory that does not
-      # exist — three independent reasons it could never fail. It has been
-      # replaced by the `agent-evals` job below, which can. See docs/37 E1.
+      # Golden tests over the DETERMINISTIC half of extraction. The LLM half
+      # varies run to run and cannot be regression-tested; everything
+      # downstream of it must not, and a change there is silent — it corrupts
+      # every obligation without erroring.
+      #
+      # No `|| true`. The step this replaces was `pytest tests/ -v --tb=short
+      # || true` against a directory that did not exist: three independent
+      # reasons it could never fail (docs/37 E1). If pytest collects nothing,
+      # exit code 5 fails this job, which is the correct answer to "the tests
+      # vanished".
+      - name: Run Python tests
+        working-directory: apps/agents
+        run: python -m pytest tests/ -q
 
   # ── Agent eval suite — docs/37, ADR-01 ────────────────────────────────────
   # Its own job so it has a name in the checks list and a node runtime. Tier 1
@@ -178,9 +188,185 @@ jobs:
       - name: Run tier 1
         run: node scripts/evals/run.mjs --tier t1 --check-baseline
 
-      # Tier 2 needs Postgres + the API + replay fixtures, and still no model
-      # key. It is not wired here yet: standing those services up in this job
-      # is a follow-up (test-api already does it, at ci.yml:63-83, so the
-      # pattern exists). Listed rather than silently omitted -- an eval tier
-      # nobody runs is the exact failure this suite was built to end.
-      #   TODO(docs/37): add services + `--tier t1,t2 --strict`
+  # ── Agent eval suite, tier 2 — docs/37 "when tier 2 joins CI" ─────────────
+  # Deterministic and keyless, like tier 1, but it needs the stack up: Postgres,
+  # Redis, the API, the web dev server, a Chromium binary, a Python venv, and
+  # the agents service in REPLAY mode. That is a lot of setup for eight checks,
+  # and it is the price of gating a PR on behaviour rather than on grep.
+  #
+  # Still no model key, which is what keeps it safe for fork PRs (docs/37 E9)
+  # and what makes it free. `AGENT_REPLAY_MODE=replay` is load-bearing: without
+  # it e12-replay's precondition is unmet, and with --strict that fails the job
+  # rather than quietly skipping.
+  #
+  # `--strict` is the whole point. Eight checks that SKIP because nothing booted
+  # would exit 0 and read as green — the "could not check" / "checked and fine"
+  # collapse this suite exists to end.
+  #
+  # NOT --check-baseline yet, deliberately. The baseline file holds tier 1 only,
+  # and inventing t2 assertion counts without a run to source them from is the
+  # kind of number this suite exists to prevent. Once this job is green on main:
+  #   node scripts/evals/run.mjs --tier t1,t2 --baseline-path scripts/evals/baseline-t2.json --baseline
+  # commit that file, and add
+  #   --baseline-path scripts/evals/baseline-t2.json --check-baseline
+  # to the run below. Until then t2 gates on pass/fail and skips, and tier 1
+  # keeps the coverage-loss gate.
+  agent-evals-t2:
+    name: Agent evals (tier 2)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: clm
+          POSTGRES_PASSWORD: clm
+          POSTGRES_DB: clm_evals
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgresql://clm:clm@localhost:5432/clm_evals
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-evals-jwt-secret-32chars-minimum-ok
+      PORTAL_JWT_SECRET: ci-evals-portal-secret-32chars-minimum
+      # Shared by the API and the agents service. The harness reads this to
+      # sign internal calls, and the agents service FAILS CLOSED (503 on every
+      # route) when it is unset — which would look like a product defect.
+      INTERNAL_SERVICE_SECRET: ci-evals-internal-secret
+      AGENTS_URL: http://localhost:8002
+      NODE_ENV: test
+      # The collab WebSocket server is a second listener these checks never
+      # touch; off so a port clash cannot masquerade as a check failure.
+      COLLAB_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: apps/agents/requirements.txt
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        working-directory: apps/api
+        run: pnpm db:generate
+
+      - name: Run DB migrations
+        working-directory: apps/api
+        run: pnpm db:migrate:prod
+
+      # The checks log in as admin@demo.com (see week-zero/lib/harness.mjs
+      # ADMIN). Without the seed every one of them fails on "Invalid email or
+      # password" — an environment gap that reads exactly like a product defect.
+      - name: Seed the demo org
+        working-directory: apps/api
+        run: pnpm db:seed
+
+      # run.mjs probes for a real browser binary, not the npm package: a machine
+      # with the package and no binary made l3-error-surface CRASH instead of
+      # skip. `--with-deps` installs the shared libraries headless Chromium
+      # needs on a bare runner.
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      # The venv must live at apps/agents/.venv/bin/python — that exact path is
+      # what run.mjs probes and what l5-redline-reach and l15-empty-turn shell
+      # out to. A system-wide pip install does not satisfy it.
+      - name: Build the agents venv
+        working-directory: apps/agents
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Build the API
+        run: pnpm --filter api build
+
+      - name: Start the agents service in replay mode
+        working-directory: apps/agents
+        env:
+          AGENT_REPLAY_MODE: replay
+        run: |
+          .venv/bin/uvicorn main:app --host 127.0.0.1 --port 8002 > /tmp/agents.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8002/health > /dev/null; then break; fi
+            sleep 1
+          done
+          # Assert the MODE, not just that it is up. "is it up" cannot answer
+          # whether a check is about to run against a live model, and a t2 check
+          # that did would burn quota and vary run to run while reporting as a
+          # free deterministic gate.
+          mode=$(curl -sf http://localhost:8002/health | node -e \
+            "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s||'{}').replayMode)))")
+          echo "agents replayMode=$mode"
+          if [ "$mode" != "replay" ]; then
+            echo "::error::agents service is not in replay mode (got '$mode') — dumping log"
+            cat /tmp/agents.log
+            exit 1
+          fi
+
+      - name: Start the API
+        working-directory: apps/api
+        run: |
+          node dist/index.js > /tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3001/health > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::API did not come up — dumping log"
+          cat /tmp/api.log
+          exit 1
+
+      - name: Start the web dev server
+        working-directory: apps/web
+        run: |
+          pnpm dev > /tmp/web.log 2>&1 &
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:5173 > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::web dev server did not come up — dumping log"
+          cat /tmp/web.log
+          exit 1
+
+      - name: Run tiers 1 and 2
+        run: node scripts/evals/run.mjs --tier t1,t2 --strict
+
+      # Service logs on failure. Without these a red t2 job means opening a
+      # bisect rather than reading an error — three services and a browser can
+      # each fail in a way that surfaces as "the check failed".
+      #
+      # Guarded with `[ -f ]` rather than a truthy fallback on the tail. The
+      # e1-gate-bites check forbids exit-code swallowing anywhere in the eval
+      # jobs and it is right to: that operator is what made the step this suite
+      # replaced incapable of failing. A diagnostic step is not worth carving an
+      # exception for, and the check cannot tell a comment from a command — so
+      # the operator is not named here either.
+      - name: Service logs
+        if: failure()
+        run: |
+          for svc in agents api web; do
+            if [ -f "/tmp/$svc.log" ]; then
+              echo "── $svc ──"
+              tail -80 "/tmp/$svc.log"
+            else
+              echo "── $svc ── (no log; never started)"
+            fi
+          done

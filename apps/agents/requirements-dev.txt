@@ -1,0 +1,7 @@
+# Test-only dependencies. Kept OUT of requirements.txt so the production image
+# (Dockerfile installs requirements.txt) does not ship a test runner.
+#
+# Usage:  pip install -r requirements-dev.txt
+#         python -m pytest tests/ -q
+-r requirements.txt
+pytest>=8.0,<9.0
