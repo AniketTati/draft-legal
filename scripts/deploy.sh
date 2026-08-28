@@ -63,6 +63,10 @@ ANTHROPIC_API_KEY=anthropic-key:latest,\
 OPENAI_API_KEY=openai-key:latest,\
 GOOGLE_API_KEY=google-key:latest"
 
+secret_exists() {
+  gcloud secrets describe "$1" --project "${GCP_PROJECT}" >/dev/null 2>&1
+}
+
 # Wave 4 — apply pending Prisma migrations BEFORE any service that reads the
 # new schema goes live. Requires reachability to the database (Cloud SQL public
 # IP + authorized network, or run from inside the VPC / via the Cloud SQL Auth
@@ -136,6 +140,30 @@ deploy_workers() {
 deploy_agents() {
   echo "--- deploy agents-service ---"
   [[ -f "${ROOT}/env.agents.yaml" ]] || { echo "missing env.agents.yaml (copy from env.agents.example.yaml)" >&2; exit 1; }
+
+  # LLM observability (optional). On Cloud Run we trace to Langfuse Cloud (the
+  # free hobby tier) — LANGFUSE_HOST comes from env.agents.yaml, the two keys
+  # from Secret Manager. Locally it is the self-hosted OSS instance instead
+  # (docker-compose.langfuse.yml); the agents service cannot tell the
+  # difference. See docs/operations/LANGFUSE.md.
+  #
+  # Bound only when BOTH secrets exist: `--set-secrets` hard-fails on a missing
+  # secret, and tracing being unconfigured must never turn a good deploy into a
+  # failed one. To turn tracing on:
+  #   printf 'pk-lf-…' | gcloud secrets create langfuse-public-key --data-file=- --replication-policy=automatic
+  #   printf 'sk-lf-…' | gcloud secrets create langfuse-secret-key --data-file=- --replication-policy=automatic
+  #   for s in langfuse-public-key langfuse-secret-key; do
+  #     gcloud secrets add-iam-policy-binding "$s" \
+  #       --member "serviceAccount:${AGENTS_SA}" --role roles/secretmanager.secretAccessor
+  #   done
+  local agents_secrets="${AGENTS_SECRETS}"
+  if secret_exists langfuse-public-key && secret_exists langfuse-secret-key; then
+    agents_secrets="${agents_secrets},LANGFUSE_PUBLIC_KEY=langfuse-public-key:latest,LANGFUSE_SECRET_KEY=langfuse-secret-key:latest"
+    echo "    langfuse: keys found — tracing ON (host from env.agents.yaml)"
+  else
+    echo "    langfuse: langfuse-public-key / langfuse-secret-key not in Secret Manager — deploying UNTRACED (docs/operations/LANGFUSE.md)"
+  fi
+
   gcloud run deploy agents-service \
     --project "${GCP_PROJECT}" \
     --region "${GCP_REGION}" \
@@ -146,7 +174,7 @@ deploy_agents() {
     --timeout 300 \
     --port 8080 \
     --env-vars-file "${ROOT}/env.agents.yaml" \
-    --set-secrets "${AGENTS_SECRETS}" \
+    --set-secrets "${agents_secrets}" \
     --allow-unauthenticated
   # NOTE: --allow-unauthenticated is paired with an app-level
   # `x-internal-secret` middleware in apps/agents/main.py. The API does not

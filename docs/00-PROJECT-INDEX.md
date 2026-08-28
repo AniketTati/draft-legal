@@ -55,6 +55,7 @@ These docs complement the `CLM_Complete_Product_Specification.xlsx` which contai
 |---|------|----------------|
 | 18 | `operations/18-TESTING-STRATEGY.md` | Test approach per phase, E2E scenarios, agent testing, load testing |
 | 19 | `operations/19-DEPLOYMENT-STRATEGY.md` | CI/CD, environments, feature flags, rollout plan, monitoring |
+| — | `operations/LANGFUSE.md` | LLM observability — self-hosted Langfuse for local dev, Langfuse Cloud for Cloud Run, what a trace contains, why traces go missing |
 | 22 | `22-VIBE-CODING-GUIDE.md` | Practical guide to building this with AI-assisted coding — tool setup, session patterns, prompting patterns, pitfalls, day-by-day plan |
 
 ---

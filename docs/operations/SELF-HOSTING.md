@@ -113,6 +113,9 @@ does not need backup; rebuild it after a restore with
 - **Queues**: Bull Board is mounted in the API for a live view of queue depth
   and failures.
 - **Disk**: alert before the Postgres/MinIO volumes fill.
+- **LLM calls**: optional Langfuse tracing (`LANGFUSE_*` in `.env.selfhost`,
+  blank by default). Traces contain contract text, so run Langfuse on your own
+  infrastructure rather than a hosted SaaS — see `LANGFUSE.md`.
 
 ## 7. Security notes
 

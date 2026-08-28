@@ -14,7 +14,11 @@
     "test": "pnpm -r test",
     "db:migrate": "pnpm --filter api db:migrate",
     "db:studio": "pnpm --filter api db:studio",
-    "db:seed": "pnpm --filter api db:seed"
+    "db:seed": "pnpm --filter api db:seed",
+    "langfuse:up": "docker compose -f docker-compose.langfuse.yml up -d",
+    "langfuse:down": "docker compose -f docker-compose.langfuse.yml down",
+    "langfuse:reset": "docker compose -f docker-compose.langfuse.yml down -v",
+    "langfuse:logs": "docker compose -f docker-compose.langfuse.yml logs -f langfuse-web langfuse-worker"
   },
   "workspaces": [
     "apps/*",

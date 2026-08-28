@@ -203,6 +203,17 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # LLM observability (optional). Unset = agents run untraced. Point
+      # LANGFUSE_HOST at your own Langfuse — for a self-hosted deployment that
+      # is the whole point, so prefer running Langfuse's production compose or
+      # Helm chart on your own infrastructure rather than sending traces (which
+      # contain contract text) to a hosted SaaS. If Langfuse runs in another
+      # compose project on this host, use http://host.docker.internal:3100
+      # rather than localhost — localhost inside this container is the
+      # container itself. See docs/operations/LANGFUSE.md.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
 
   web:
     <<: *restart

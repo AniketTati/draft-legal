@@ -1,0 +1,237 @@
+# draftLegal — local Langfuse (open-source, self-hosted).
+#
+# LLM observability for local development. Production (Cloud Run) points at
+# Langfuse Cloud instead — see docs/operations/LANGFUSE.md. The agents service
+# does not care which one it talks to: it reads LANGFUSE_HOST /
+# LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY and traces to whatever is there.
+#
+# Quickstart:
+#   pnpm langfuse:up
+#   # then in .env:
+#   #   LANGFUSE_HOST=http://localhost:3100
+#   #   LANGFUSE_PUBLIC_KEY=pk-lf-draftlegal-local
+#   #   LANGFUSE_SECRET_KEY=sk-lf-draftlegal-local
+#   # restart the agents service, run an agent turn, open http://localhost:3100
+#
+# The org / project / user / API keys above are seeded on first boot by the
+# LANGFUSE_INIT_* vars on langfuse-web, so there is no click-through setup —
+# the keys in .env.example work the moment this stack is healthy.
+# Sign in at http://localhost:3100 with dev@draft-legal.local / langfuse-local-dev.
+#
+# This file is DEVELOPMENT ONLY and deliberately self-contained: its own
+# Postgres, ClickHouse, Redis and MinIO on a private network, so it can never
+# collide with the app's own data in docker-compose.yml. The credentials are
+# fixed and weak on purpose, exactly like docker-compose.yml — do not point a
+# real deployment at this file. For self-hosting Langfuse alongside a
+# self-hosted draftLegal, run Langfuse's own production compose/Helm chart and
+# set LANGFUSE_* in .env.selfhost.
+#
+# Cost of running it: ClickHouse + two Node processes ≈ 2 GB RAM. It is a
+# separate compose project (not merged into docker-compose.yml) so the everyday
+# dev stack stays light — bring it up only when you want traces.
+#
+# Only langfuse-web (3100) and the MinIO console (9191) are published; nothing
+# else is reachable from the host. Ports were picked to avoid the app stack's
+# 3001/3002/5433/6380/9100/9101/9200.
+
+name: draftlegal-langfuse
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  # ─── Langfuse UI + ingestion API ──────────────────────────────────────────
+  langfuse-web:
+    <<: *restart
+    image: langfuse/langfuse:3
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    ports:
+      - '3100:3000'
+    environment:
+      <<: &langfuse-common-env
+        DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
+        SALT: local-dev-salt-not-a-secret
+        # Encrypts stored provider keys / integration secrets.
+        # Regenerate for anything real: openssl rand -hex 32
+        # Langfuse requires EXACTLY 64 hex chars and crash-loops on anything
+        # else, so if you change it: keep it quoted (an all-digit value is
+        # parsed by YAML as a number and arrives as "0"), and count the
+        # characters. Keep it stable too — changing it orphans everything
+        # already encrypted under the old key.
+        ENCRYPTION_KEY: 'de7a11c0ffee5eed4b1dcafe0f5ea5edba5eba11f005ba110dd15c0dedbadc0d'
+        # Do not phone home from a developer laptop.
+        TELEMETRY_ENABLED: 'false'
+        LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: 'true'
+
+        CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+        CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+        CLICKHOUSE_USER: clickhouse
+        CLICKHOUSE_PASSWORD: clickhouse
+        CLICKHOUSE_CLUSTER_ENABLED: 'false'
+
+        REDIS_HOST: langfuse-redis
+        REDIS_PORT: '6379'
+        REDIS_AUTH: langfuse
+
+        # Raw ingestion events land in S3 first, then the worker folds them
+        # into ClickHouse. Both buckets live in the local MinIO below.
+        LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+        LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+        LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+        LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+        LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+        LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+        LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: 'true'
+
+        LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+        LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+        LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+        LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minioadmin
+        LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+        LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: 'true'
+        # Media is fetched by the BROWSER via presigned URL, so this one must be
+        # the host-reachable address, not the compose-internal hostname.
+        LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9190
+
+      NEXTAUTH_URL: http://localhost:3100
+      NEXTAUTH_SECRET: local-dev-nextauth-secret-not-a-secret
+      # Local sign-up is pointless when the user below is seeded, and leaving it
+      # open on a laptop-bound instance just invites confusion about which
+      # account owns the traces.
+      AUTH_DISABLE_SIGNUP: 'true'
+
+      # ── First-boot seed: org, project, API keys, and a login. ──────────────
+      # Idempotent — Langfuse skips any entity whose ID already exists, so
+      # restarting this stack never clobbers traces you have already collected.
+      # These keys are what .env.example tells you to paste into .env.
+      LANGFUSE_INIT_ORG_ID: draftlegal
+      LANGFUSE_INIT_ORG_NAME: draftLegal
+      LANGFUSE_INIT_PROJECT_ID: draftlegal-local
+      LANGFUSE_INIT_PROJECT_NAME: draftLegal (local)
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-draftlegal-local
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-draftlegal-local
+      LANGFUSE_INIT_USER_EMAIL: dev@draft-legal.local
+      LANGFUSE_INIT_USER_NAME: Local Dev
+      LANGFUSE_INIT_USER_PASSWORD: langfuse-local-dev
+    healthcheck:
+      # $HOSTNAME, not localhost or 127.0.0.1. This image's Next.js server binds
+      # to the container's own hostname address (it logs "Local: http://<id>:3000")
+      # rather than to 0.0.0.0 or loopback, so a loopback probe gets
+      # ECONNREFUSED forever and the container sits unhealthy while serving
+      # traffic perfectly well through the published port. CMD-SHELL so the
+      # variable actually expands.
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider "http://$${HOSTNAME}:3000/api/public/health" || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ─── Async ingestion: S3 events → ClickHouse ──────────────────────────────
+  # Without this, traces are accepted by langfuse-web but never become visible.
+  langfuse-worker:
+    <<: *restart
+    image: langfuse/langfuse-worker:3
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-common-env
+
+  # ─── Backing services (private to this compose project) ───────────────────
+  langfuse-postgres:
+    <<: *restart
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U langfuse -d langfuse']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  langfuse-clickhouse:
+    <<: *restart
+    image: clickhouse/clickhouse-server:24.3
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  langfuse-redis:
+    <<: *restart
+    image: redis:7-alpine
+    # noeviction is required: Langfuse queues ingestion jobs in Redis, and an
+    # LRU eviction under memory pressure silently drops traces.
+    command: redis-server --requirepass langfuse --maxmemory-policy noeviction
+    healthcheck:
+      test: ['CMD', 'redis-cli', '-a', 'langfuse', '--no-auth-warning', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  langfuse-minio:
+    <<: *restart
+    image: minio/minio:latest
+    # Create the bucket as a plain directory before the server starts — simpler
+    # than a separate `mc` init container for a single fixed bucket.
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && exec minio server /data --address ":9000" --console-address ":9001"'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # OrbStack auto-injects *_FILE variants which override the plain ones;
+      # null them out. Same trap as docker-compose.yml.
+      MINIO_ROOT_USER_FILE: ''
+      MINIO_ROOT_PASSWORD_FILE: ''
+      MINIO_ACCESS_KEY_FILE: ''
+      MINIO_SECRET_KEY_FILE: ''
+      MINIO_CONFIG_ENV_FILE: ''
+    ports:
+      # 9190 must stay host-reachable: the browser resolves presigned media
+      # URLs against it (LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT above).
+      - '9190:9000'
+      - '9191:9001'
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  langfuse_postgres_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
