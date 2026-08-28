@@ -32,6 +32,7 @@
  *     additional rail would be redundant. The sidebar nav stays so
  *     users can hop back to /dashboard or /contracts in one click.
  */
+import { DISCLOSURE } from '../components/agent/SideAgentRail'
 import { useEffect, useRef, useState } from 'react'
 import { Kbd } from '@/components/ui/primitives'
 import { useNavigate, useSearchParams } from 'react-router-dom'
@@ -703,7 +704,13 @@ export function AgentHomePage() {
             // request.
             if (evt.model_id || evt.model || evt.tier) {
               provenance = {
-                model: String(evt.model_id ?? evt.model ?? provenance?.model ?? ''),
+                // `model` is the RESOLVED model; `model_id` is the REQUESTED
+                // one, which routes/chat.py stamps onto every frame as a
+                // default. Reading model_id first meant this footer always
+                // showed the request and never the answer -- so the one place
+                // in the UI that claims to say which model wrote something was
+                // reporting a value that may never have run.
+                model: String(evt.model ?? evt.model_id ?? provenance?.model ?? ''),
                 tier: evt.tier ? String(evt.tier) : provenance?.tier,
               }
             }
@@ -1841,8 +1848,18 @@ function EmptyChat({
           Hello{userName ? `, ${userName.split(' ')[0]}` : ''} — what can I help with?
         </h2>
         <p className="text-body text-ink-500 mt-2">
-          I can search contracts, draft new ones, summarise risks, run playbook checks,
+          Search contracts, draft new ones, summarise risks, run playbook checks,
           and act on your portfolio. Pick a starter or just ask.
+        </p>
+        {/* EU AI Act Art 50(1), applicable since 2026-08-02 — see SideAgentRail
+            for the reasoning. Stated before the first reply, because the
+            per-message "Machine-authored" marker below only appears after one. */}
+        <p
+          data-testid="ai-disclosure"
+          className="text-dense text-assist-700 mt-2.5 inline-flex items-center gap-1.5"
+        >
+          <AssistMark className="size-[7px]" />
+          {DISCLOSURE}
         </p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

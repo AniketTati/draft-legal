@@ -138,6 +138,12 @@ export const CHECKS = [
   // the column, but never reaches a model. The normaliser is exercised through
   // GET /contracts/:id rather than by importing it, so this tests the read
   // boundary the product actually uses.
+  // t2: it imports the compiled readDoneProvenance and drives the turn-append
+  // endpoint, but never reaches a model — the done frames it parses are
+  // synthetic. Requires `pnpm --filter api build` first, like any check that
+  // imports from dist.
+  { id: 'l18-provenance-unforgeable', tier: 't2', needs: ['db', 'api'],
+    what: 'the browser cannot say which model gave legal advice, and both chat surfaces disclose one is answering' },
   { id: 'l17-confidence-provenance', tier: 't2', needs: ['db', 'api'],
     what: 'a human verdict never destroys the extractor confidence it was made against' },
   { id: 'l16-byok-fail-closed', tier: 't3', needs: ['db', 'api', 'agents', 'model'],

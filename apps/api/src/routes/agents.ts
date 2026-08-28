@@ -12,6 +12,7 @@ import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
+import { readDoneProvenance, rememberTurnProvenance } from '../lib/turn-provenance.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -197,6 +198,13 @@ export async function agentRoutes(app: FastifyInstance) {
     // same direction the framing already biases, and the estimate is
     // deliberately high-biased for exactly this kind of slack.
     let streamedChars = 0
+    // Keep a rolling tail so the `done` frame can be read WITHOUT decoding the
+    // stream. The loop below deliberately forwards raw bytes (see the comment
+    // there: decoding per-chunk mangles multi-byte sequences that straddle a
+    // chunk boundary). The done frame is the last frame and is small, so a few
+    // KB of tail is enough and costs nothing per chunk.
+    const TAIL_BYTES = 8192
+    let tail = Buffer.alloc(0)
     reply.raw.on('close', () => {
       clientGone = true
       try { reader.cancel() } catch { /* */ }
@@ -217,6 +225,7 @@ export async function agentRoutes(app: FastifyInstance) {
         // not decoding at all is both correct and cheaper than decoding
         // correctly.
         streamedChars += value.byteLength
+        tail = Buffer.concat([tail, Buffer.from(value)]).subarray(-TAIL_BYTES)
         if (!reply.raw.writableEnded) {
           try { reply.raw.write(Buffer.from(value)) } catch { break }
         }
@@ -231,14 +240,25 @@ export async function agentRoutes(app: FastifyInstance) {
       // table the admin usage panel aggregates. Estimate on input + output
       // size, mirroring the compliance/obligation/renewal paths.
       // Fire-and-forget — a failure must not affect the already-sent reply.
+      // What ACTUALLY answered, read off the done frame (docs/37 E2 added those
+      // four fields; this proxy forwarded them to the browser and never looked).
+      // Until now this recorded body.provider/body.modelId -- the REQUEST -- so
+      // every OrgUsageDaily row for agent_chat named a model that may never have
+      // run, and the comment here said the stream "doesn't echo the resolved
+      // pair back", which stopped being true when E2 landed.
+      const answered = readDoneProvenance(tail)
+      if (answered) {
+        // Hand it to the turn-append endpoint, which must NOT take provenance
+        // from the browser (see agent-threads.ts). Short TTL: it is consumed
+        // seconds later by the same client, and a leftover key must not attach
+        // itself to a later turn.
+        rememberTurnProvenance(orgId, body.sessionId, answered)
+          .catch(e => app.log.warn({ err: e }, '[agent-chat] could not stash provenance'))
+      }
       recordUsage(orgId, estimateCostUsd(body.message.length + streamedChars), {
-        // What the caller asked for. The router may resolve to a different
-        // model for the tier, and the SSE stream doesn't echo the resolved
-        // pair back, so treat this as the requested model rather than a
-        // billing record — same caveat as the cost estimate itself.
-        provider: body.provider ?? 'requested-default',
-        model:    body.modelId  ?? 'requested-default',
-        tier:     'default',
+        provider: answered?.provider ?? body.provider ?? 'requested-default',
+        model:    answered?.model    ?? body.modelId  ?? 'requested-default',
+        tier:     answered?.tier     ?? 'default',
         toolName: 'agent_chat',
         inputChars:  body.message.length,
         outputChars: streamedChars,
