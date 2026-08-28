@@ -108,17 +108,25 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
 
     const items: Array<Record<string, unknown>> = []
     for (const c of contracts) {
+      // Both shapes at once: the current one (`review`) and the legacy one
+      // (`verifiedAt`/`rejectedAt`), because un-backfilled rows carry the
+      // latter. normalizeFieldConfidence folds them for API responses; this
+      // read predates that boundary and reads the column directly.
       const fc = (c.fieldConfidence ?? {}) as Record<string, {
-        confidence?: number
+        confidence?: number | null
         quote?:      string | null
         section?:    string | null
+        review?:     { verdict: 'verified' | 'rejected' }
         verifiedAt?: string | null
         verifiedBy?: string | null
+        rejectedAt?: string | null
       } | undefined>
       for (const [field, entry] of Object.entries(fc)) {
         if (!entry) continue
         // Skip items a human has already signed off on.
-        if (entry.verifiedAt) continue
+        // `review` is the current marker; `verifiedAt` is the legacy one and is
+        // still present on every row written before this change.
+        if (entry.review || entry.verifiedAt) continue
         const conf = typeof entry.confidence === 'number' ? entry.confidence : 1
         if (conf >= q.threshold) continue
         const label = FIELD_LABELS[field] ?? field
@@ -174,11 +182,15 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
 
     const fc = { ...(contract.fieldConfidence as Record<string, Record<string, unknown>> ?? {}) }
     const existing = fc[body.field] ?? {}
+    // `confidence` is the EXTRACTOR's and is not touched. It used to be set to
+    // 1 here, which destroyed the only variable a human verdict could be
+    // regressed against -- and did so irrecoverably, the moment someone
+    // clicked. It also collided with a real extractor output: review_agent.py
+    // emits confidence 1.0 for "certain absence", so 1 never distinguished
+    // AI-certain from human-verified.
     fc[body.field] = {
       ...existing,
-      confidence: 1,
-      verifiedAt: new Date().toISOString(),
-      verifiedBy: userId,
+      review: { verdict: 'verified', at: new Date().toISOString(), by: userId },
     }
 
     const updateData: Record<string, unknown> = { fieldConfidence: fc }
@@ -216,16 +228,15 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
 
     const fc = { ...(contract.fieldConfidence as Record<string, Record<string, unknown>> ?? {}) }
     const existing = fc[body.field] ?? {}
+    // Same as verify: the extractor's confidence stays. The old code wrote 0
+    // AND stamped verifiedAt/verifiedBy so the queue would skip the row -- with
+    // the side effect that any "agreement rate" joining on verifiedBy counted
+    // every rejection as an agreement. The read path now skips on `review`
+    // being present, so a rejection no longer has to impersonate a verification.
     fc[body.field] = {
       ...existing,
-      confidence: 0,
-      rejectedAt: new Date().toISOString(),
-      rejectedBy: userId,
+      review: { verdict: 'rejected', at: new Date().toISOString(), by: userId },
     }
-    // Mark verifiedAt too so the queue skips this entry — "rejected"
-    // is a terminal review state.
-    fc[body.field].verifiedAt = fc[body.field].rejectedAt
-    fc[body.field].verifiedBy = userId
 
     await prisma.contract.update({
       where: { id: contract.id },

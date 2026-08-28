@@ -31,6 +31,7 @@ import {
   ContractFilterSchema,
   AuditAction,
   normalizeRiskScore,
+  normalizeFieldConfidence,
 } from '@clm/types'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
@@ -38,6 +39,28 @@ import {
 // Writes are normalised too, so this only rescales rows that pre-date that.
 function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
   return { ...row, riskScore: normalizeRiskScore(row.riskScore) }
+}
+
+/**
+ * Fold `fieldConfidence` to the current shape on the way out.
+ *
+ * Two shapes live in the column: the current one, where a human verdict is a
+ * nested `review`, and the legacy one, where verify/reject OVERWROTE the
+ * extractor's confidence with 1/0 and stamped verifiedAt/verifiedBy. Rows
+ * written before that changed are not migrated on read of the database, so this
+ * boundary is what makes every consumer see one shape.
+ *
+ * Legacy rows come back with `confidence: null` rather than the stored 1 or 0 —
+ * see normalizeFieldConfidenceEntry for why keeping the number would be worse
+ * than admitting it is gone.
+ */
+function withNormalizedFieldConfidence<T extends { fieldConfidence: unknown }>(row: T) {
+  return { ...row, fieldConfidence: normalizeFieldConfidence(row.fieldConfidence) }
+}
+
+/** Both read-boundary folds, in the order the callers below want them. */
+function normalizedContract<T extends { riskScore: number | null; fieldConfidence: unknown }>(row: T) {
+  return withNormalizedFieldConfidence(withNormalizedRisk(row))
 }
 
 export async function contractRoutes(app: FastifyInstance) {
@@ -571,7 +594,7 @@ export async function contractRoutes(app: FastifyInstance) {
       resourceId: id,
     })
 
-    return reply.send(withNormalizedRisk(contract))
+    return reply.send(normalizedContract(contract))
   })
 
   // ── Presigned download URL ───────────────────────────────────────────────
@@ -1083,7 +1106,38 @@ export async function contractRoutes(app: FastifyInstance) {
     // Use the contract's real orgId (internal calls come in with orgId='system')
     const effectiveOrgId = existing.orgId
 
-    const updated = await prisma.contract.update({ where: { id }, data: body as Prisma.ContractUncheckedUpdateInput })
+    // A human verdict is never erased by an extraction.
+    //
+    // review.py PATCHes the WHOLE fieldConfidence object, so a re-run used to
+    // wipe every `review` a reviewer had recorded. Merging here rather than in
+    // the callback is deliberate: this is an invariant of the column, not of one
+    // writer, and re-analyse (below) is a second writer that would otherwise
+    // need the same fix. It also avoids a new top-level PATCH field, which
+    // UpdateContractSchema would silently strip -- the Wave E.2 trap documented
+    // in packages/types/src/schemas.ts.
+    //
+    // `existing` is already loaded above, so this costs no extra query.
+    const patchData = { ...body } as Prisma.ContractUncheckedUpdateInput
+    if (body.fieldConfidence !== undefined) {
+      const incoming = (body.fieldConfidence ?? {}) as Record<string, Record<string, unknown>>
+      const previous = (existing.fieldConfidence ?? {}) as Record<string, Record<string, unknown>>
+      const merged: Record<string, Record<string, unknown>> = {}
+
+      for (const [field, entry] of Object.entries(incoming)) {
+        const priorReview = previous[field]?.review
+        merged[field] = priorReview ? { ...entry, review: priorReview } : entry
+      }
+      // Keep review-bearing fields the new extraction stopped emitting. Losing
+      // the record of a human decision because a later run no longer finds the
+      // field is the same bug from a different angle -- and these are invisible
+      // in the UI, which iterates keyTerms rather than fieldConfidence.
+      for (const [field, entry] of Object.entries(previous)) {
+        if (!(field in merged) && entry?.review) merged[field] = entry
+      }
+      patchData.fieldConfidence = merged as Prisma.InputJsonValue
+    }
+
+    const updated = await prisma.contract.update({ where: { id }, data: patchData })
 
     // Re-index if searchable fields changed. indexContract is a full-document
     // overwrite (elasticsearch.ts), so we must carry the existing full text and
@@ -1128,7 +1182,7 @@ export async function contractRoutes(app: FastifyInstance) {
         : { changes: Object.keys(body) },
     })
 
-    return reply.send(withNormalizedRisk(updated))
+    return reply.send(normalizedContract(updated))
   })
 
   // ── Re-trigger AI analysis ───────────────────────────────────────────────
@@ -1181,9 +1235,26 @@ export async function contractRoutes(app: FastifyInstance) {
       // Reset AI metadata so the UI shows fresh in-progress state.
       // Do NOT clear plainText/htmlContent — stale queued jobs read from the DB
       // and would fail with "No plainText" if we clear it before parse finishes.
+      // Keep human verdicts across a full re-analysis. Everything else is
+      // extractor output and is meant to be rebuilt; a `review` is a record of
+      // what a person decided and re-running the pipeline is not a reason to
+      // forget it. The confidence those verdicts were made against is preserved
+      // with them, so the pair stays interpretable even though the fresh run
+      // will overwrite the field's extractor output.
+      const priorFc = (await prisma.contract.findFirst({
+        where: { id }, select: { fieldConfidence: true },
+      }))?.fieldConfidence as Record<string, Record<string, unknown>> | null
+      const keptReviews: Record<string, Record<string, unknown>> = {}
+      for (const [field, entry] of Object.entries(priorFc ?? {})) {
+        if (entry?.review) keptReviews[field] = entry
+      }
+
       await prisma.contract.update({
         where: { id },
-        data: { analysisStatus: 'PENDING', keyTerms: {}, riskScore: null, summary: null, fieldConfidence: {} },
+        data: {
+          analysisStatus: 'PENDING', keyTerms: {}, riskScore: null, summary: null,
+          fieldConfidence: keptReviews as Prisma.InputJsonValue,
+        },
       })
 
       queueParseDocument({

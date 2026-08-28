@@ -134,6 +134,12 @@ export const CHECKS = [
   // passed. Sections 1-4 are static and would run at t1; splitting them is a
   // task rather than a manifest edit, and the behavioural money check — a
   // poisoned override answered on the platform key — is the one that matters.
+  // t2: it drives review-queue + contracts through the real API and asserts on
+  // the column, but never reaches a model. The normaliser is exercised through
+  // GET /contracts/:id rather than by importing it, so this tests the read
+  // boundary the product actually uses.
+  { id: 'l17-confidence-provenance', tier: 't2', needs: ['db', 'api'],
+    what: 'a human verdict never destroys the extractor confidence it was made against' },
   { id: 'l16-byok-fail-closed', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'a BYOK resolution failure refuses instead of billing the platform key' },
   { id: 'l12-memory-budget',   tier: 't3', needs: ['db', 'api', 'agents', 'model'],
