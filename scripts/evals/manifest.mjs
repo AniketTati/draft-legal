@@ -45,6 +45,13 @@ export const CHECKS = [
   { id: 'e14-grader-truth',   tier: 't1', needs: [],
     what: 'the multi-turn grader reports HOW a turn passed, not just that it did' },
 
+  // t1: pure static analysis of the seed script, the corpus and the runner. The
+  // DRIFT assertion deliberately lives in run-personas.mjs instead — a check
+  // that goes red on a calendar date with no code change is a flaky gate, and
+  // flaky gates get `continue-on-error`d.
+  { id: 'e15-corpus-clock',   tier: 't1', needs: [],
+    what: 'the persona runner refuses to score a corpus whose dates have drifted out from under its questions' },
+
   // ── t2 — needs the stack, but no model call ─────────────────────────────
   { id: 'l4-draft-tenancy',   tier: 't2', needs: ['db', 'api'],
     what: 'drafting cannot write into another org — the cross-tenant write' },

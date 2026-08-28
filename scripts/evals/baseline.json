@@ -26,6 +26,10 @@
     "e14-grader-truth": {
       "status": "pass",
       "total": 54
+    },
+    "e15-corpus-clock": {
+      "status": "pass",
+      "total": 10
     }
   }
 }

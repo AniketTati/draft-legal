@@ -35,6 +35,67 @@ if (personas.length === 0) {
   process.exit(1)
 }
 
+// ── Data-freshness precondition ─────────────────────────────────────────────
+//
+// seed-personas.ts pins the corpus to a fixed date so the 810 contracts are
+// reproducible. The agent, however, answers against the REAL clock. So an ask
+// like "expiring in the next 30 days" selects against a window that slides away
+// from the data every day and eventually selects nothing — while the rubric
+// still expects the contracts it was written against.
+//
+// Nothing fails when that happens. The row just stops measuring what it was
+// written to measure. This refuses to run instead, because a number produced
+// from a decayed corpus is worse than no number: it looks like a quality
+// signal and is not.
+//
+// The threshold is the TIGHTEST window the corpus asks for, not a round number
+// — that is the exact point at which the narrowest ask can no longer select
+// the set it was authored against.
+function assertCorpusIsFresh() {
+  const seedPath = path.join(__dirname, '../../apps/api/scripts/seed-personas.ts')
+  let anchorDate = null
+  try {
+    const seed = fs.readFileSync(seedPath, 'utf8')
+    anchorDate = /const TODAY = new Date\(`\$\{SEED_TODAY \?\? '(\d{4}-\d{2}-\d{2})'\}/.exec(seed)?.[1] ?? null
+  } catch { /* reported below */ }
+
+  if (!anchorDate) {
+    console.error('\n✗ Could not read the corpus anchor from seed-personas.ts.')
+    console.error('  Refusing to run rather than reporting a number whose freshness is unknown.')
+    process.exit(2)
+  }
+
+  const corpus = ALL_PERSONAS
+    .map(p => path.join(__dirname, 'personas', `${p}.mjs`))
+    .filter(f => fs.existsSync(f))
+    .map(f => fs.readFileSync(f, 'utf8'))
+    .join('\n')
+  const windows = [...corpus.matchAll(/next (\d+) (days|months)/gi)]
+    .map(m => (m[2].toLowerCase() === 'months' ? Number(m[1]) * 30 : Number(m[1])))
+  if (windows.length === 0) return   // nothing time-relative; drift cannot bite
+
+  const tightest = Math.min(...windows)
+  const drift = Math.floor((Date.now() - Date.parse(`${anchorDate}T00:00:00Z`)) / 86_400_000)
+  if (drift <= tightest) {
+    console.log(`corpus anchored ${anchorDate} (${drift}d ago), tightest window ${tightest}d — fresh`)
+    return
+  }
+
+  console.error(`\n✗ CORPUS IS STALE — refusing to run.`)
+  console.error(`  data anchored ${anchorDate}, ${drift} days ago`)
+  console.error(`  tightest time-relative window in the corpus: ${tightest} days`)
+  console.error(`  Every "expiring in the next N days" ask is now selecting against a`)
+  console.error(`  window that no longer overlaps the data it was written for.`)
+  console.error(`\n  Fix by sliding the dates forward (the PRNG seed is unaffected, so the`)
+  console.error(`  contract mix is identical — only the dates move):`)
+  console.error(`\n    SEED_TODAY=$(date -u +%F) pnpm tsx --env-file=../../.env scripts/seed-personas.ts`)
+  console.error(`\n  Or rewrite the affected asks to absolute dates. Do not raise the`)
+  console.error(`  threshold: it is the point at which the narrowest ask stops meaning anything.`)
+  process.exit(2)
+}
+
+assertCorpusIsFresh()
+
 const allResults = []
 const startTime = Date.now()
 
