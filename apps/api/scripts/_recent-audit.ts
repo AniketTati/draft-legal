@@ -1,6 +1,6 @@
 /**
  * Print the 10 most-recent AuditEvent rows for a given action (arg[0]) as
- * JSON on stdout. Used by scripts/d36-verify.mjs to assert AGENT_TOOL_*
+ * JSON on stdout. Used by scripts/archive/d36-verify.mjs to assert AGENT_TOOL_*
  * events were written.
  */
 import { PrismaClient } from '@prisma/client'

@@ -3,7 +3,7 @@
  *
  * Pure-function tests for hashAuditRow. The DB-backed
  * createAuditEvent + verifyAuditChain are exercised in
- * scripts/p75-4-verify.mjs (needs a live Postgres).
+ * scripts/archive/p75-4-verify.mjs (needs a live Postgres).
  */
 import { describe, it, expect } from 'vitest'
 import { hashAuditRow } from './audit.js'

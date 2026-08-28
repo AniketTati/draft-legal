@@ -169,7 +169,7 @@ These are the moments where the product is **best-in-class**. As we build P7.x, 
 
 ## 6. Stop criteria for building P7
 
-- Each P7.x has a verify script (`scripts/p7N-verify.mjs`) that asserts the JTBD it claims to fix.
+- Each P7.x has a verify script (`scripts/archive/p7N-verify.mjs`) that asserts the JTBD it claims to fix.
 - All 10 P0 findings have a corresponding shipped fix.
 - Manual re-walk of the 5 personas shows: every persona's primary JTBD is surfaced on dashboard within 2 seconds of login.
 - Agentic re-walk: 12 of 12 prompts produce useful tool-backed responses (currently 9 of 12).

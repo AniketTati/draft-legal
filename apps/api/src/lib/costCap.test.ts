@@ -3,7 +3,7 @@
  *
  * Focused on the pure-function pieces: estimateCostUsd. Redis-backed
  * pieces (recordCost / getDailyCost) are integration tests that need
- * a live Redis — covered in scripts/p75-2-verify.mjs.
+ * a live Redis — covered in scripts/archive/p75-2-verify.mjs.
  */
 import { describe, it, expect } from 'vitest'
 import { estimateCostUsd } from './costCap.js'

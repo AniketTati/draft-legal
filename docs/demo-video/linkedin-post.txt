@@ -1,0 +1,39 @@
+Most contract tools store your contracts. draftLegal reasons over them.
+
+Ask your whole portfolio a question — "a vendor quoted us $200k for an 8-week SOW, is that fair?" — and it answers from the contracts you have actually signed, grounded and cited so you can check the source.
+
+It's open source and self-hosted, so none of it leaves your servers. Six weeks of work just landed, and here's what's new.
+
+NEGOTIATION, END TO END
+→ Contracts arriving by email get a playbook review automatically
+→ Reviewers see real alternative clause language, and apply it in one click
+→ Share links go to the counterparty by email instead of copy-paste
+→ Templates can be created from an uploaded .docx
+
+WHOLE-DOCUMENT REDLINING
+→ Check every clause in a contract against your playbook in one pass
+→ Proposed rewrites carry the playbook's own figures, not generic language
+→ Apply the whole set as a single reviewable version
+→ Export it as a Word file with native tracked changes, so your counterparty opens it in Word and sees redlines — not a flattened PDF
+
+SIGNATURE AND AFTER
+→ Real PAdES / X.509 e-signature, tamper-evident
+→ Post-signature obligation tracking, with what's overdue surfaced before it bites
+→ Renewals grouped by when the decision is actually due
+
+UNDER THE HOOD
+→ Agents use your organisation's own API key, and redact PII before any document text reaches a model
+→ An eval suite in three tiers with a record/replay seam, so contributors can run it with no API key at all
+→ A design-system pass across the whole app, and a palette that meets WCAG AA
+
+We also rebuilt the product walkthrough, and it's generated from source now — Playwright drives the real app, so when a screen changes we re-run one command instead of re-recording by hand. Every line of narration is checked against a transcript of the audio, and every frame against the line playing over it.
+
+Five minutes, start to finish, in the video.
+
+AGPL. docker compose up. Bring your own model — Anthropic, OpenAI or Gemini.
+
+If you work in legal ops or contracts, I'd value your eyes on it.
+
+github.com/AniketTati/draft-legal
+
+#LegalTech #LegalOps #ContractManagement #OpenSource #AI

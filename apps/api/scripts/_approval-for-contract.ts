@@ -1,6 +1,6 @@
 /**
  * Dump the most-recent ApprovalInstance for a given contractId. Used by
- * scripts/d56-verify.mjs (top-level await limits in `tsx -e`).
+ * scripts/archive/d56-verify.mjs (top-level await limits in `tsx -e`).
  */
 import { PrismaClient } from '@prisma/client'
 

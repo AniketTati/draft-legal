@@ -284,8 +284,41 @@ const snapshot = {
 }
 
 if (has('--baseline')) {
-  fs.writeFileSync(BASELINE, `${JSON.stringify(snapshot, null, 2)}\n`)
-  console.log(`\nbaseline written: ${path.relative(REPO, BASELINE)}`)
+  // MERGE, never replace.
+  //
+  // This used to write the whole snapshot flat, so recording a t3 baseline
+  // erased the t1 entries CI gates on -- and the failure was SILENT, not loud.
+  // Walk it: after a t3-only baseline, CI's `--tier t1 --check-baseline` loops
+  // over prev.checks, finds every id belongs to t3, hits the tier filter below
+  // and `continue`s all of them. `regressed` stays empty and it prints "no
+  // regressions against baseline". The E5 coverage ratchet is disarmed and
+  // nothing anywhere says so.
+  //
+  // A tier this run did not select has not been observed, so its recorded
+  // numbers are the best evidence available and must survive. Only tiers
+  // actually run are rewritten.
+  let previous = { checks: {} }
+  if (fs.existsSync(BASELINE)) {
+    try { previous = JSON.parse(fs.readFileSync(BASELINE, 'utf8')) } catch { /* rewrite a corrupt file */ }
+  }
+  const tierOfId = id => [...CHECKS, ...SUITES].find(c => c.id === id)?.tier
+  const carried = Object.fromEntries(
+    Object.entries(previous.checks ?? {}).filter(([id]) => {
+      const t = tierOfId(id)
+      // An id the manifest no longer knows about is carried too, so E5's
+      // PRESENT -> GONE still fires for it on the tier that owns it.
+      return !t || !tiers.includes(t)
+    }),
+  )
+  const merged = {
+    tiers: [...new Set([...(previous.tiers ?? []), ...tiers])].sort(),
+    checks: { ...carried, ...snapshot.checks },
+  }
+  fs.writeFileSync(BASELINE, `${JSON.stringify(merged, null, 2)}\n`)
+  const carriedCount = Object.keys(carried).length
+  console.log(`\nbaseline written: ${path.relative(REPO, BASELINE)}`
+    + ` — ${Object.keys(snapshot.checks).length} recorded from this run`
+    + (carriedCount ? `, ${carriedCount} carried from other tiers` : ''))
   process.exit(failed.length ? 1 : 0)
 }
 

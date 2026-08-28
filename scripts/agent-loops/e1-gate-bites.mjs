@@ -116,6 +116,46 @@ section('4. Losing assertions is a regression even when everything passes')
     ok ? 'caught — 0 failures, still exit 3' : `not caught: ${out.slice(-260)}`)
 }
 
+// ─── 4b. Baselining one tier must not disarm another ────────────────────────
+//
+// The subtlest failure in this file, because it produces a GREEN build rather
+// than a red one. `--baseline` used to write the snapshot flat, so recording a
+// t3 baseline erased the t1 entries. CI then ran `--tier t1 --check-baseline`,
+// found every remaining id belonged to t3, skipped them all on the tier filter,
+// and printed "no regressions against baseline". The ratchet was off and
+// nothing said so.
+
+section('4b. A t3 baseline does not erase the t1 entries CI gates on')
+{
+  const BP = `${FIX}/.e1-merge.json`
+  const abs = `${REPO}/${BP}`
+  const at = (tier, extra = []) => spawnSync('node', [
+    'scripts/evals/run.mjs', '--tier', tier,
+    '--dir', `${FIX}/checks`, '--manifest', `${FIX}/manifest.mjs`,
+    '--baseline-path', BP, ...extra,
+  ], { cwd: REPO, encoding: 'utf8', timeout: 120_000 })
+
+  let survived = null, carriedMsg = ''
+  try {
+    at('t1', ['--baseline'])
+    const before = Object.keys(JSON.parse(fs.readFileSync(abs, 'utf8')).checks ?? {})
+    check('a t1 baseline records the fixture checks', before.length === 3, before.join(','))
+
+    // The fixture manifest has no t3 checks, so this run observes nothing —
+    // exactly the shape of a real nightly recording a tier CI does not run.
+    const r = at('t3', ['--baseline'])
+    carriedMsg = (r.stdout ?? '').split('\n').find(l => l.includes('baseline written')) ?? ''
+    survived = Object.keys(JSON.parse(fs.readFileSync(abs, 'utf8')).checks ?? {})
+  } finally {
+    if (fs.existsSync(abs)) fs.unlinkSync(abs)
+  }
+
+  check('the t1 entries survive a t3 baseline', survived?.length === 3,
+    survived?.length ? `kept ${survived.join(',')}` : 'WIPED — CI would then print "no regressions" while gating nothing')
+  check('the write says what it carried', /carried from other tiers/.test(carriedMsg),
+    'a silent merge is only marginally better than a silent overwrite')
+}
+
 // ─── 5. The wiring, so this cannot be quietly undone ────────────────────────
 
 section('5. CI runs it, and cannot swallow the result')
