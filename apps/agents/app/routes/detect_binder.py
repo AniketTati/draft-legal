@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..jsonish import loads_lenient
-from ..router import resolve_llm
+from ..router import RouterRefusal, resolve_llm
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -93,6 +93,10 @@ async def detect_binder(req: DetectBinderRequest) -> DetectBinderResponse:
         logger.info("[detect-binder] isBinder=%s confidence=%.2f docs=%d",
                     result.isBinder, result.confidence, len(result.documents))
         return result
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as exc:
         logger.error("[detect-binder] LLM call or parse failed: %s", exc)
         # Fallback: single doc, not a binder

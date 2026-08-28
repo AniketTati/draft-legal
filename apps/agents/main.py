@@ -1,5 +1,6 @@
 import logging
 import os
+from app.router import CostCapExceeded, RouterRefusal
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -62,6 +63,29 @@ async def require_internal_secret(request: Request, call_next):
     if request.headers.get("x-internal-secret") != expected:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     return await call_next(request)
+
+
+# ─── Router refusals become a status, not a 500 ──────────────────────────────
+#
+# A RouterRefusal means we could not learn which provider this org wants, so we
+# declined rather than substituting one (see app/router.py). Every route in this
+# service now lets that propagate instead of degrading into a confident wrong
+# answer, which without a handler would surface as an opaque 500.
+#
+# The status carries the decision: 429 for "over budget" (already the contract
+# Node uses at internal-ai.ts), 503 for everything else — retryable-looking to a
+# caller, and honest, because the condition really is "this service cannot serve
+# you right now". `error` is the same closed vocabulary the exception carries so
+# a caller can branch without parsing prose.
+@app.exception_handler(RouterRefusal)
+async def _router_refusal_handler(_request: Request, exc: RouterRefusal) -> JSONResponse:
+    if isinstance(exc, CostCapExceeded):
+        return JSONResponse({"error": "cost_cap_exceeded", "detail": str(exc)}, status_code=429)
+    reason = getattr(exc, "reason", "provider_resolution_failed")
+    return JSONResponse(
+        {"error": reason, "detail": str(exc)},
+        status_code=503,
+    )
 
 
 app.include_router(chat.router, prefix="/agent")

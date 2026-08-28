@@ -128,6 +128,14 @@ export const CHECKS = [
   // is a task rather than a manifest edit.
   { id: 'l11-cost-cap',        tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'the daily cost cap fails closed and BYOK is not bypassed' },
+  // t3 because of ONE assertion: the anti-fail-always control makes a real
+  // classify_clause call against a clean org, and without it "fails closed"
+  // could silently become "fails always" while every other assertion here still
+  // passed. Sections 1-4 are static and would run at t1; splitting them is a
+  // task rather than a manifest edit, and the behavioural money check — a
+  // poisoned override answered on the platform key — is the one that matters.
+  { id: 'l16-byok-fail-closed', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+    what: 'a BYOK resolution failure refuses instead of billing the platform key' },
   { id: 'l12-memory-budget',   tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'session memory is bounded and listings survive into the next turn' },
   { id: 'l6b-ui-verify',       tier: 't3', needs: ['db', 'api', 'web', 'agents', 'model', 'playwright'],

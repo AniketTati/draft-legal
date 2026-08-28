@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..router import resolve_llm
+from ..router import RouterRefusal, resolve_llm
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +160,10 @@ async def step_summarize(state: ApprovalState) -> dict:
         )
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
         return {'executive_summary': summary, 'error': None}
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:
         logger.error('step_summarize failed: %s', e)
         return {'executive_summary': f'Summary unavailable ({type(e).__name__})', 'error': str(e)}
@@ -197,6 +201,10 @@ async def step_flag_risks(state: ApprovalState) -> dict:
                 'non_standard_terms': parsed.get('nonStandardTerms', [])[:5],
             }
         return {'key_risks': [], 'non_standard_terms': []}
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:
         logger.error('step_flag_risks failed: %s', e)
         return {'key_risks': [], 'non_standard_terms': [], 'error': str(e)}
@@ -231,6 +239,10 @@ async def step_recommend(state: ApprovalState) -> dict:
                 rec = 'review_required'
             return {'approval_recommendation': rec, 'executive_summary': f"{state['executive_summary']}\n\n{rationale}".strip()}
         return {'approval_recommendation': 'review_required'}
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:
         logger.error('step_recommend failed: %s', e)
         return {'approval_recommendation': 'review_required', 'error': str(e)}

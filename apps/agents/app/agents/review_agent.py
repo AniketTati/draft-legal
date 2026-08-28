@@ -22,7 +22,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
-from ..router import resolve_llm
+from ..router import RouterRefusal, resolve_llm
 from ..untrusted import wrap_untrusted_document
 
 logger = logging.getLogger(__name__)
@@ -636,6 +636,10 @@ async def _extract(state: ReviewState) -> ReviewState:
                     open_ended.append(finding)
                     seen_keys.add(finding.get("key"))
 
+        except RouterRefusal:
+            # A refusal is not a model failure. Degrading here would write a
+            # confident wrong answer for a call that never reached a provider.
+            raise
         except Exception as e:
             logger.error("[extract] chunk %d/%d FAILED: %s", i + 1, len(chunks), e, exc_info=True)
             state["error"] = f"extract chunk {i+1}: {e}"
@@ -706,6 +710,10 @@ async def _extract(state: ReviewState) -> ReviewState:
                         merged_fields[k] = cand
                         logger.info("[extract] second-pass recovered field=%s", k)
             state["raw_fields"] = merged_fields
+        except RouterRefusal:
+            # A refusal is not a model failure. Degrading here would write a
+            # confident wrong answer for a call that never reached a provider.
+            raise
         except Exception as e:
             logger.warning("[extract] second-pass missing-field recovery failed: %s", e)
 
@@ -745,6 +753,10 @@ async def _validate(state: ReviewState) -> ReviewState:
         data = _parse_json(resp.content)
         state["validated_fields"] = data.get("validatedFields", {})
         logger.info("[validate] OK: %d validated_fields", len(state["validated_fields"]))
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:
         logger.error("[validate] FAILED: %s", e, exc_info=True)
         state["error"] = (state.get("error") or "") + f" | validate: {e}"
@@ -838,6 +850,10 @@ async def _score(state: ReviewState) -> ReviewState:
         logger.info("[score] OK: type=%s title=%r risk=%.2f confidence=%.2f",
                     state["contract_type_out"], state["suggested_title"],
                     state["risk_score"] or 0, state["overall_confidence"])
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:
         logger.error("[score] FAILED: %s", e, exc_info=True)
         state["error"]             = (state.get("error") or "") + f" | score: {e}"

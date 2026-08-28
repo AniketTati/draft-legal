@@ -51,12 +51,41 @@ async def _process_and_update(
     logger.info("[review] START contractId=%s versionId=%s text_chars=%d customFields=%d",
                 contract_id, version_id, len(plain_text), len(custom_fields))
 
-    result = await run_review(
-        plain_text,
-        contract_type=contract_type,
-        custom_fields=custom_fields,
-        org_id=org_id,
-    )
+    try:
+        result = await run_review(
+            plain_text,
+            contract_type=contract_type,
+            custom_fields=custom_fields,
+            org_id=org_id,
+        )
+    except RouterRefusal as e:
+        # This runs inside a FastAPI BackgroundTask, so a raise here is
+        # swallowed by the task runner and the caller already has its 202. The
+        # `analysisStatus = FAILED` write lives further down this function, past
+        # the raise — so before this guard existed, a resolution failure left the
+        # contract in ANALYZING forever with nothing anywhere saying why.
+        #
+        # Making the router fail closed turns that from a rare event into the
+        # normal response to a provider outage, which is why it is handled in
+        # the same change.
+        logger.error("[review] refusing contractId=%s — %s", contract_id, e)
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.patch(
+                    f"{settings.api_url.rstrip('/')}/api/v1/contracts/{contract_id}",
+                    json={"analysisStatus": "FAILED", "analysisError": str(e)[:500]},
+                    headers={
+                        "x-internal-service": "agents",
+                        "x-internal-secret": settings.internal_service_secret,
+                    },
+                    timeout=10,
+                )
+        except Exception:
+            # Best effort. If we cannot even report the failure the contract
+            # stays in ANALYZING, which is the old behaviour — but now it is the
+            # narrow case of "the API is also down", not every resolution error.
+            logger.exception("[review] could not record FAILED for contractId=%s", contract_id)
+        return
 
     if not result:
         logger.error("[review] run_review returned None for contractId=%s", contract_id)

@@ -13,7 +13,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..jsonish import loads_lenient
-from ..router import resolve_llm
+from ..router import RouterRefusal, resolve_llm
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -87,6 +87,10 @@ async def classify_document(req: ClassifyRequest) -> ClassifyResponse:
         )
         logger.info("[classify] contractType=%s confidence=%.2f", result.contractType, result.confidence)
         return result
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as exc:
         logger.error("[classify] LLM call or parse failed: %s", exc)
         return ClassifyResponse(contractType="OTHER", confidence=0.0, reason="classification failed")

@@ -506,6 +506,12 @@ export async function agentRoutes(app: FastifyInstance) {
         clauseText:   body.clauseText.slice(0, 2400),
         contractType: body.contractType ?? 'general commercial',
         sectionHint:  body.sectionHint ?? null,
+        // Without this the agents service resolves with org_id=None and takes
+        // the PLATFORM key unconditionally -- no exception, no log line. This
+        // route and /complete are the two highest-volume model calls in the
+        // product, so the BYOK bypass was widest exactly where traffic is
+        // heaviest. /assist-stream and /assist have always sent it.
+        orgId:        req.user.orgId,
       }),
     }).catch(() => null)
     if (!upstream?.ok) {
@@ -540,6 +546,8 @@ export async function agentRoutes(app: FastifyInstance) {
         contextAfter:  (body.contextAfter ?? '').slice(0, 400),
         contractType:  body.contractType ?? 'general commercial',
         maxChars:      Math.max(40, Math.min(body.maxChars ?? 160, 320)),
+        // See /classify-clause above -- same bypass, same fix.
+        orgId:         req.user.orgId,
       }),
     }).catch(() => null)
     if (!upstream?.ok) {
