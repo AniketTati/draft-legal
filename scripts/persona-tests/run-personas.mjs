@@ -102,13 +102,14 @@ for (const slug of personas) {
   const turnTotal = personaResults.reduce((s, r) => s + r.turns.length, 0)
   const turnPass  = personaResults.reduce((s, r) => s + r.turns.filter(t => t.ok).length, 0)
   const turnShrug = personaResults.reduce((s, r) => s + r.turns.filter(t => t.shrugPass).length, 0)
+  const turnSlow  = personaResults.reduce((s, r) => s + r.turns.filter(t => t.overBudget).length, 0)
   const convPass  = personaResults.filter(r => r.ok).length
   console.log(`\n  ${persona}: ${convPass}/${personaResults.length} conversations · ${turnPass}/${turnTotal} turns${turnShrug ? ` · ${turnShrug} passed on a shrug` : ''}`)
 
   allResults.push({
     persona,
     convPass, convTotal: personaResults.length,
-    turnPass, turnTotal, turnShrug,
+    turnPass, turnTotal, turnShrug, turnSlow,
     results: personaResults,
   })
 }
@@ -119,6 +120,7 @@ const totalConvPass = allResults.reduce((s, p) => s + p.convPass, 0)
 const totalTurn = allResults.reduce((s, p) => s + p.turnTotal, 0)
 const totalTurnPass = allResults.reduce((s, p) => s + p.turnPass, 0)
 const totalShrug = allResults.reduce((s, p) => s + p.turnShrug, 0)
+const totalSlow  = allResults.reduce((s, p) => s + (p.turnSlow ?? 0), 0)
 
 console.log(`\n${'═'.repeat(72)}`)
 console.log(`✓ Done — ${totalConvPass}/${totalConv} conversations · ${totalTurnPass}/${totalTurn} turns · ${(totalDuration / 1000).toFixed(1)}s`)
@@ -134,6 +136,11 @@ console.log(`Persona journeys: ${totalTurnPass}/${totalTurn} passed`)
 // the pass rate holds, the agent is getting more evasive and the headline
 // cannot see it.
 console.log(`  of which passed on a shrug: ${totalShrug}/${totalTurnPass} (${totalTurnPass ? ((totalShrug / totalTurnPass) * 100).toFixed(0) : 0}%)`)
+// Latency is reported BESIDE the pass rate, never inside it. It used to share
+// the same `fails` array as content failures, so a slow runner failed rows in
+// correlated bursts and a latency regression was indistinguishable from a
+// correctness one.
+console.log(`  over latency budget:        ${totalSlow}/${totalTurn} turns`)
 console.log('═'.repeat(72))
 for (const p of allResults) {
   console.log(`  ${p.persona.padEnd(24)} ${p.convPass}/${p.convTotal} conv · ${p.turnPass}/${p.turnTotal} turns · ${p.turnShrug} shrug`)
@@ -142,7 +149,7 @@ for (const p of allResults) {
 // Persist scorecard
 fs.writeFileSync(path.join(OUT, 'scorecard.json'), JSON.stringify({
   ranAt: new Date().toISOString(),
-  totalConv, totalConvPass, totalTurn, totalTurnPass, totalShrug,
+  totalConv, totalConvPass, totalTurn, totalTurnPass, totalShrug, totalSlow,
   totalDurationMs: totalDuration,
   personas: allResults.map(p => ({
     persona: p.persona,
