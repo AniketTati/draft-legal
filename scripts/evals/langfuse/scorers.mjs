@@ -113,6 +113,26 @@ const DETERMINISTIC = {
  * good answer?"), which produces a number that drifts with the model and
  * correlates with nothing. Each of these names what a 0 looks like.
  */
+/**
+ * ── What the rest of the field calls these ──────────────────────────────────
+ *
+ * Our names are chosen to be plain English, which is right for the people
+ * reading a dashboard. But a new engineer googling "retrieval sufficiency"
+ * finds nothing, and every vendor doc and paper uses different words. The
+ * mapping, so both audiences are served:
+ *
+ *   groundedness           = faithfulness (RAGAS) · groundedness (Azure, Vertex)
+ *   retrieval_sufficiency  = context recall / context relevance (RAGAS)
+ *   tool_selection         = tool-call accuracy · agent trajectory evaluation
+ *   correctness            = answer correctness / semantic similarity
+ *   citation               = attribution / source-grounding
+ *   session_coherence      = multi-turn coherence / conversational consistency
+ *
+ * The score NAMES are deliberately not renamed to match: they are already
+ * attached to recorded scores, and renaming would orphan that history and
+ * break every trend line. Documenting the mapping costs nothing and breaks
+ * nothing.
+ */
 export const RUBRICS = {
   groundedness:
     'Is every factual claim in the ANSWER supported by the SOURCE material or the conversation input? ' +

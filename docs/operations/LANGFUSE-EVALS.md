@@ -64,11 +64,16 @@ Sources: [Langfuse evaluation overview](https://langfuse.com/docs/evaluation/ove
 `scripts/evals/langfuse/` — usage in its own `README.md`.
 
 ```bash
-pnpm langfuse:up
-pnpm evals:push
-pnpm evals:selftest                      # free, no model, gates a PR
-pnpm evals:run -- --dataset extraction   # real
+pnpm langfuse:up          # local Langfuse, once
+pnpm evals:setup          # corpora + dashboards + always-on judges (idempotent)
+pnpm evals:check          # before you ship — gates on failure
+pnpm evals:review         # what production did
 ```
+
+Three commands is the whole day-to-day surface; `pnpm evals` lists the rest.
+That collapse was deliberate — sixteen entry points in `package.json` with no
+indication which three mattered read as a folder of scripts rather than a
+system, and the first question anyone asked was "which of these do I run?"
 
 ### Coverage — extraction through chat
 
@@ -138,9 +143,9 @@ Evals tell you about the cases you curated. The review tells you what is
 actually happening. Both halves are built.
 
 ```bash
-pnpm evals:analyze -- --hours 6            # the five metrics, sliced by surface
-pnpm evals:score-prod -- --hours 6 --sample 0.3
-pnpm evals:dashboards                      # standing dashboard in the UI
+pnpm evals:review                          # the five metrics, sliced by surface
+pnpm evals:review -- --score --hours 6     # judge recent traffic first
+pnpm evals dashboards                      # rebuild the dashboards
 ```
 
 **`analyze.mjs`** reads Langfuse's metrics API and prints the five things every
@@ -301,10 +306,10 @@ Everything in §3 runs when somebody runs it. These run by themselves, or close
 the loop back into the corpus.
 
 ```bash
-pnpm evals:evaluators -- --apply --sampling 0.2   # Langfuse judges new traces itself
-pnpm evals:sessions   -- --hours 6                # grade whole conversations
-pnpm evals:promote    -- --hours 24 --apply       # failures → golden corpus
-pnpm evals:compare    -- --dataset draftlegal-extraction
+pnpm evals:setup                                  # includes the always-on judges
+pnpm evals sessions  -- --hours 6                 # grade whole conversations
+pnpm evals promote   -- --hours 24 --apply        # failures → golden corpus
+pnpm evals compare   -- --dataset draftlegal-extraction
 ```
 
 **`evaluators.mjs`** registers our rubrics as Langfuse's own observation-level
@@ -336,13 +341,35 @@ delta, *and* the per-case verdict changes. The second half matters because two
 runs can post the same total with a different set of passing cases — a
 regression and a fix cancelling out, which the aggregate reports as "no change".
 
-## 6. Honest limits
+## 6. Saying it in three sentences
 
-- **The offline corpora still have not been run against a live stack.** The
-  production review (§4) exercised the same surfaces with live traffic, but
-  `pnpm evals:run -- --dataset extraction|chat` — the curated cases with their
-  `expectedOutput` assertions — has not been executed end to end. Those case
-  expectations remain unvalidated until their first green run.
+The whole system, for someone who has never seen it:
+
+> We record every AI call the product makes. We grade them two ways — against a
+> fixed set of test cases before we ship, and against real traffic continuously.
+> The grades come from three places: an AI judge for scale, humans for truth,
+> and users for what actually mattered.
+
+And the one piece of jargon worth teaching, because it does the most work:
+**if the lookup scored well and the answer scored badly, the data was fine and
+the model misread it.** That single split turns "the agent was wrong" into a
+specific bug with an owner.
+
+Our rubric names are plain English, which is right for a dashboard but does not
+match what the field calls them. The mapping lives at the top of
+`scripts/evals/langfuse/scorers.mjs` — `groundedness` is *faithfulness*,
+`retrieval_sufficiency` is *context recall*, `tool_selection` is *tool-call
+accuracy*. The names are not renamed to match because they are already attached
+to recorded scores, and renaming would orphan every trend line.
+
+## 7. Honest limits
+
+- **The `chat` corpus has still not been run.** `extraction` has: first green
+  run 2026-08-29, **9/9 assertions**, all six cases linked to the *product's*
+  own trace rather than a harness stand-in, negative case included (boilerplate
+  with no duties → no invented obligation). The `chat` corpus needs a seeded
+  persona login as well as the stack, and has not been exercised end to end, so
+  those five case expectations remain unvalidated.
 - **Promoted regression cases have no expected output.** `promote.mjs` records
   what went wrong, not what right looks like — inventing one would enshrine a
   guess. Until a human writes them, those cases are graded by rubric only.

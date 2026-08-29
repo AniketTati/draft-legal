@@ -7,39 +7,37 @@ Assistant and the conversational Chat Agent at the other.
 Strategy and where this came from: `docs/operations/LANGFUSE-EVALS.md`.
 
 ```bash
-pnpm langfuse:up                                   # local Langfuse (once)
-
-# ── offline: did my change break the cases I curated? ──
-pnpm evals:push                                    # corpus → Langfuse
-pnpm evals:selftest                                # prove the harness works — no model, no cost
-pnpm evals:run -- --dataset extraction             # real run (needs agents-service + a key)
-
-# ── production: what is really happening, and is it any good? ──
-pnpm evals:traffic -- --corpus corpus.json --journeys 12   # generate real traffic
-pnpm evals:analyze -- --hours 6                            # volume/cost/latency/errors/quality
-pnpm evals:score-prod -- --hours 6 --sample 0.3            # LLM-judge every step
-pnpm evals:annotate -- --seed --hours 24                   # queue traces for a human
-pnpm evals:annotate -- --calibrate                         # judge vs human agreement
-pnpm evals:sessions -- --hours 6                           # grade whole conversations
-pnpm evals:dashboards                                      # standing dashboard in the UI
-
-# ── always-on: Langfuse judges new traces by itself ──
-pnpm evals:evaluators -- --apply --sampling 0.2             # register continuous evaluators
-pnpm evals:evaluators -- --status
-
-# ── close the loop ──
-pnpm evals:promote -- --hours 24 --apply                    # failures → golden corpus
-pnpm evals:compare -- --dataset draftlegal-extraction       # did the change help?
+pnpm langfuse:up          # local Langfuse, once
+pnpm evals:setup          # corpora + dashboards + always-on judges (idempotent)
+pnpm evals:check          # before you ship — gates on failure
+pnpm evals:review         # what production did (add --score to judge it first)
 ```
 
-| Script | Answers |
-| --- | --- |
-| `run.mjs` | Did my change break the curated cases? (offline) |
-| `traffic.mjs` | *(dev only)* Give the dashboards something real to show |
-| `analyze.mjs` | Volume, cost, latency, errors, quality — sliced by surface |
-| `score-production.mjs` | Is what real users get any good — and **which step** went wrong? (online) |
-| `annotate.mjs` | What does a *human* think, and does the judge agree with them? |
-| `dashboards.mjs` | The same slices, always current, for people who won't run a CLI |
+That is the whole day-to-day surface. `pnpm evals` lists everything else —
+traffic generation, human annotation, promotion, run comparison — each still a
+single-purpose script you can run directly.
+
+| Command | When | What it does |
+| --- | --- | --- |
+| `evals:setup` | once, and after changing rubrics | Pushes the golden corpora, builds both dashboards, registers Langfuse's own continuous evaluators |
+| `evals:check` | before shipping · in CI | Self-tests the harness, then runs the curated corpora. Non-zero exit on real failure |
+| `evals:review` | daily / after a release | Volume, cost, latency, errors, quality by surface, plus findings |
+
+### Why there are two judges
+
+`evals:setup` registers evaluators **inside Langfuse**, which score new traffic
+by themselves. `pnpm evals score` does the same grading from a script. Both
+exist on purpose, and they are not redundant:
+
+- **The Langfuse evaluators are the default.** Always on, no one has to remember
+  anything, and they keep working when nobody is looking at the repo.
+- **The script is for CI and for backfills** — it needs no UI configuration,
+  version-controls with the code, and can re-score a window you have already
+  collected (after fixing a rubric, say). An in-platform evaluator only ever
+  sees new data.
+
+Both read the same rubric text from `scorers.mjs`, so a `groundedness` from
+either means the same thing. If they ever disagree, that is a bug, not a signal.
 
 ### Three sources of quality signal, and why you need all three
 
@@ -142,17 +140,17 @@ latency and a model bill for nothing.
 | `tool_used:<name>` | the chat turn called that tool |
 | `no_tool` | the turn answered without calling anything |
 | `latency_ms` | recorded as a metric; never fails a case |
-| `judge:groundedness` | every claim traceable to the source — catches fluent invention |
-| `judge:correctness` | same substance as expected |
+| `judge:groundedness` | every claim traceable to the source — catches fluent invention *(a.k.a. faithfulness)* |
+| `judge:correctness` | same substance as expected *(a.k.a. answer correctness)* |
 | `judge:helpfulness` | useful to a busy contracts lawyer |
-| `judge:citation` | points at the clause it relied on |
-| `judge:tool_selection` | **step-level** — was calling this tool the right move? |
-| `judge:retrieval_sufficiency` | **step-level** — did the tool return what was needed? |
+| `judge:citation` | points at the clause it relied on *(a.k.a. attribution)* |
+| `judge:tool_selection` | **step-level** — was calling this tool the right move? *(a.k.a. tool-call accuracy)* |
+| `judge:retrieval_sufficiency` | **step-level** — did the tool return what was needed? *(a.k.a. context recall)* |
 | `judge:instruction_following` | did it do what was actually asked, in the form asked? |
 | `judge:legal_caution` | analysis vs unhedged legal advice — a legal-product risk |
 | `judge:pii_restraint` | personal data it did not need to repeat |
 | `judge:professional_tone` | would a partner send this to a client unedited? |
-| `judge:session_coherence` | **session-level** — context carried across turns |
+| `judge:session_coherence` | **session-level** — context carried across turns *(a.k.a. multi-turn coherence)* |
 
 The last two grade an **observation inside a turn**, not the final answer, and
 they exist to split one failure into two. "The agent was wrong" has two causes

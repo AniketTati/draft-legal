@@ -182,10 +182,18 @@ report.users = { distinctUsers: byUser.length, sessions: bySession.length, topUs
 
 // ─── 6. Quality ──────────────────────────────────────────────────────────────
 console.log('\n6. QUALITY — scores')
+// Bookkeeping is not quality. `ran` is posted as 1 on every scored case just to
+// record that it executed, and `latency_ms` is a metric in milliseconds — both
+// were being averaged in alongside real verdicts, which put a four-figure
+// "score" in the table and quietly lifted every average. Excluded by EXACT name
+// so the dashboard and this script report the SAME number; two quality figures
+// that disagree is worse than either one alone.
+const BOOKKEEPING = ['ran', 'latency_ms']
 const scores = await metrics({
-  view: 'scores-numeric', dimensions: [{ field: 'name' }],
+  view: 'scores-boolean', dimensions: [{ field: 'name' }],
   metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
-}, 'numeric scores')
+  filters: [{ column: 'name', operator: 'none of', value: BOOKKEEPING, type: 'stringOptions' }],
+}, 'quality scores')
 if (scores.length) {
   console.log(`    ${pad('score', 30)}  ${padL('n', 6)}  ${padL('avg', 8)}`)
   table(scores.map((r) => ({ s: r.name, c: n(r.count_count), a: n(r.avg_value) })),
