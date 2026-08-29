@@ -15,12 +15,13 @@ node scripts/evals/run.mjs --tier t1 --baseline          # accept the current st
 | | Needs | Cost | Runs | Checks | Assertions |
 |---|---|---|---|---|---|
 | **t1** | nothing | $0 | blocking, every PR (incl. forks) | 6 | 97 *(measured 2026-08-17)* |
-| **t2** | Postgres, Redis, API, web, Chromium, venv, replay | $0 | blocking, every PR | 14 | ~211 *(derived; not re-counted on a booted stack)* |
+| **t2** | Postgres, Redis, API, web, Chromium, venv, replay | $0 | blocking, every PR | 14 | **218** *(measured in CI 2026-08-29)* |
 | **t3** | all of the above + a model key | real money | nightly on `main`, never a PR | 17 + 3 suites | ~274 *(derived)* |
 
-Counts are cumulative — `--tier t1,t2` runs 14 checks. Only the t1 row has been
-re-measured since `e14-grader-truth` landed; the others are that number plus 39
-and are flagged as derived rather than presented as observed.
+Counts are cumulative — `--tier t1,t2` runs 14 checks. t1 and t2 are now both
+MEASURED: t2's 218 came from the first green CI run of `agent-evals-t2`, which
+is also the first time the full stack has been stood up anywhere. t3 remains
+derived, because nothing has ever run it.
 
 t1 and t2 need **no API key**, which is what makes them safe to block fork PRs
 on — this repo is public, and forks cannot read secrets.

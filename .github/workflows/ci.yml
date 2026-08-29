@@ -279,6 +279,18 @@ jobs:
         working-directory: apps/api
         run: pnpm db:seed
 
+      # e8-eval-identity asserts this org exists, and it is not part of db:seed.
+      # docs/37 E8 is why it is separate: a tier-3 run under a real customer org
+      # would spend THAT CUSTOMER'S BYOK key — BYOK resolves before the cost cap
+      # is consulted, so the cap cannot stop it. The eval org is the identity
+      # that makes an eval run safe to bill.
+      #
+      # Added after the first CI run of this job failed on exactly this, with
+      # the check naming the script to run. That is the precondition design
+      # working: "could not check" was distinguishable from "checked and fine".
+      - name: Seed the eval identity org
+        run: node scripts/evals/seed-eval-org.mjs
+
       # run.mjs probes for a real browser binary, not the npm package: a machine
       # with the package and no binary made l3-error-surface CRASH instead of
       # skip. `--with-deps` installs the shared libraries headless Chromium
