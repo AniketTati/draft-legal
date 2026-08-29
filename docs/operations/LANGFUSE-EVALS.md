@@ -132,51 +132,144 @@ code is how assertions get loosened until they stop discriminating. Use
 
 ---
 
-## 3. Online evaluation — production traces
+## 3. Reviewing production
 
-Not yet enabled. It is configuration in Langfuse rather than code here, and
-these are the decisions to make when you turn it on.
+Evals tell you about the cases you curated. The review tells you what is
+actually happening. Both halves are built.
 
-**Use observation-level evaluators.** Trace-level evaluators are deprecated and
-stop producing results on Langfuse Cloud after **16 November 2026**.
-Observation-level also runs in seconds instead of minutes and lets you grade the
-step you actually care about.
+```bash
+pnpm evals:analyze -- --hours 6            # the five metrics, sliced by surface
+pnpm evals:score-prod -- --hours 6 --sample 0.3
+pnpm evals:dashboards                      # standing dashboard in the UI
+```
 
-**Grade the steps, not just the answer.** The pitfall that hits agent systems
-hardest is scoring only the final reply. Target the retrieval observation for
-whether it found the right clause, and the final LLM observation for
-groundedness — a confidently wrong answer built on a bad retrieval is two
-different bugs, and one score cannot tell you which you have.
+**`analyze.mjs`** reads Langfuse's metrics API and prints the five things every
+LLM-analytics guide converges on — volume, latency, cost, errors, quality —
+each **grouped by surface**. The grouping is the point: "average latency" is a
+number that hides the one surface at 35s. It ends with mechanical findings
+(p95 over 20s, cost per call over $0.02, any errors, spend concentration over
+40%) whose only job is to shorten the list a human has to open.
 
-**Sample.** At $0.01–0.10 per assessment, judging every observation on every
-production turn is a real line item. Start at 5–10% and filter to the
-observations that matter; raise it for a surface you are actively changing.
+**`score-production.mjs`** is online evaluation without UI configuration: it
+samples recent traces, judges them with the **same rubrics** the offline
+scorers use, and posts the scores back. Same rubric on both sides is what makes
+an offline `judge:groundedness` and an online one comparable — otherwise you
+have two numbers with one name.
 
-**Setup:** Langfuse project → *Evaluators*. Needs an LLM Connection configured
-first. Reuse the rubrics in `scripts/evals/langfuse/scorers.mjs` so an online
-score means the same thing as the offline one with the same name — otherwise
-you cannot compare them, which is most of the value. Evaluators can also be
-created through the public API, which is how you'd version-control them.
+Langfuse can also do this in-platform, and for a standing setup it should:
+**Evaluators → observation-level LLM-as-a-judge**, which needs an LLM
+Connection configured in the project and then runs continuously with nothing of
+ours in the loop. Two things to know before turning it on:
 
-**Feed failures back.** A production trace that scores badly is the best kind of
-dataset case, and Langfuse can turn one into an item directly
-(`sourceTraceId` on the dataset item preserves where it came from). That is the
-loop; without it the corpus is a snapshot that ages.
+- **Trace-level evaluators are deprecated** and stop producing results on
+  Langfuse Cloud after **16 November 2026**. Use observation-level.
+- **Grade the steps, not just the answer.** The pitfall that hits agent systems
+  hardest is scoring only the final reply. A confidently wrong answer built on a
+  bad retrieval is two different bugs, and one score cannot tell you which you
+  have.
+- **Sample.** At ~$0.01–0.10 per assessment, judging everything is a real line
+  item. Start at 5–10%.
 
----
+**`dashboards.mjs`** creates the standing dashboard — spend, calls by surface,
+cost by model, cost by surface, p95 latency by surface, errors by surface,
+tokens and cost over time — through the `unstable` dashboards API, so the
+widget set is reviewable in code rather than clicked together per environment.
+It is idempotent: a second run finds the dashboard by name and stops.
 
-## 4. Honest limits
+**`traffic.mjs`** exists for development only. An observability setup you have
+never looked at real traffic through is a guess, and a dashboard with nothing in
+it teaches nothing. It drives realistic user journeys — a contract through
+intake → classify → obligations → compliance, a multi-turn portfolio
+conversation, a clause through the AI Assistant — using text from the local
+corpus, plus a deliberate edge-case journey (empty document, boilerplate with no
+duties, a contract that does not exist, a bare "hi"). Traffic made only of happy
+paths produces a green dashboard that proves nothing.
 
-- **Chat and extraction corpora have not been executed against a live stack.**
-  The harness has been proven end to end against a running Langfuse — push, run,
-  trace linking, scoring, aggregation, read-back — using the `stub` target and
-  the self-test. Running the real corpora needs the API, the agents service, a
-  seeded fixture and a model key together; that has not happened yet, so treat
-  the extraction/chat case *expectations* as unvalidated until their first green
-  run.
-- **The judge is uncalibrated.** No one has yet checked its verdicts against
-  human judgement on a sample. Until someone does, judged scores are a
-  comparison signal between runs, not an absolute measure of quality.
+### Feed failures back
+
+A production trace that scores badly is the best dataset case there is, and
+Langfuse turns one into an item directly (`sourceTraceId` on the dataset item
+records where it came from). That loop — production failure becomes a permanent
+regression test — is what stops the corpus ageing into a snapshot of the
+problems you had in August.
+
+## 4. What the first review actually found
+
+Run on 2026-08-29: 13 journeys, 46 live calls across extraction / AI Assistant /
+Chat Agent, driven from the local corpus. 46/46 returned 200. $1.08, 516k
+tokens, 63 traces, 89 judge scores.
+
+**One reproducible correctness defect.** Asked "how many contracts are expiring
+in the next 90 days?", the agent answered **"There are 20"**. The
+`renewal_advice` tool did return 20 rows — but 12 of them had negative
+`daysUntilExpiry`, i.e. had already expired. Only 8 were genuinely future. The
+four contracts the agent then named individually were all correct; the defect is
+the headline count.
+
+Root cause is not the model. `apps/api/src/routes/internal-ai.ts:3312` filters
+`expiryDate` with `gte: now - 30 days` — a deliberate lookback so recently
+lapsed renewals still surface, which is reasonable — while the tool's
+description promises "every contract expiring in the next `lead_days` days". The
+agent believed the description and reported the row count. Fix the description
+or return split counts; do not fix the prompt.
+
+It reproduced in **4 of 11** judged chat traces, in independent sessions. That
+is the argument for online evals in one line: no curated corpus contained this
+case, because nobody thought of it.
+
+**Two smaller ones.** `obligations.extract` turned "due upon execution of this
+SOW" into a hard date of `2026-01-01` (the effective date) — an event trigger
+silently converted to a calendar date. `assist.simplify` dropped the defined
+term `("Effective Date")` while simplifying, breaking later cross-references.
+
+**Four deliberate edge cases all passed.** Empty document → `OTHER` at
+confidence 0.1, saying it was empty. Boilerplate with no duties → `[]`, no
+invented obligation. A contract id that does not exist → looked it up, then said
+it could not find it, and stated no governing law. A bare "hi" → answered
+directly with no tool call.
+
+**Zero real errors.** The single ERROR observation was a cancelled generation
+from a probe of ours that closed the connection mid-stream — which is the error
+tracking working, since that is exactly what a user closing the tab looks like.
+
+### The judge was wrong first, and how we knew
+
+The first scoring pass reported the "20 contracts" answers as inventing
+counterparties that were in fact present in the tool output. That verdict was
+false, and the cause was ours: `score-production.mjs` truncated tool evidence to
+5,000 characters, so the judge saw the first six rows of a twenty-row result and
+correctly observed that the cited contracts were not in what it had been shown.
+
+It was caught by reading the trace instead of believing the score. The fix is a
+24,000-character source budget and, when even that is exceeded, telling the
+judge in the prompt that the source was truncated — because "absent from the
+source" is the single inference groundedness turns on, and a judge that does not
+know it is looking at a fragment will call every unseen fact an invention.
+
+Then the judge was re-run and reported a *different*, sharper failure — the
+count, not the counterparties — which independent arithmetic on the tool output
+confirms. **Treat a judge verdict as a pointer to a trace, not as a finding.**
+
+## 5. Honest limits
+
+- **The offline corpora still have not been run against a live stack.** The
+  production review (§4) exercised the same surfaces with live traffic, but
+  `pnpm evals:run -- --dataset extraction|chat` — the curated cases with their
+  `expectedOutput` assertions — has not been executed end to end. Those case
+  expectations remain unvalidated until their first green run.
+- **The judge is only lightly calibrated.** It was checked on a two-case probe
+  (a correct refusal scored 1; an invented governing law scored 0 with an
+  accurate reason) and its production verdicts were spot-checked against the
+  traces. That is enough to trust it as a pointer, not as a measure — and §4
+  shows it producing a confidently wrong verdict when its evidence was clipped.
+  It also runs on `gemini-2.5-pro`, the same family as the system under test,
+  because that is the only real key on this machine: expect some
+  self-preference bias until a second provider key exists. Set
+  `EVAL_JUDGE_MODEL` to move it.
+- **Gemini judges need token headroom.** 2.5 is a thinking model, thinking
+  counts against `maxOutputTokens`, and it cannot be disabled. At 512 it spent
+  509 tokens thinking and returned nothing — 40 of 43 judgements failed as
+  "no JSON". The budget is now 3072.
 - **Fixture-dependent cases.** `chat-portfolio-count` and
   `chat-search-by-counterparty` assert on the seeded corpus. If the fixture
   changes, they need revisiting — which is exactly why they are scored on

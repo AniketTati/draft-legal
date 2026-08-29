@@ -208,7 +208,9 @@ export async function createTrace({ id, name, input, output, sessionId, userId, 
 }
 
 export async function listTraces({ sessionId, name, limit = 20 } = {}) {
-  const q = new URLSearchParams({ limit: String(limit) })
+  // The API rejects limit > 100 with a 400. Clamp rather than surface that as
+  // a Langfuse error — the caller asked for "as many as you can".
+  const q = new URLSearchParams({ limit: String(Math.min(100, Math.max(1, limit))) })
   if (sessionId) q.set('sessionId', sessionId)
   if (name) q.set('name', name)
   return lf('GET', `/api/public/traces?${q}`)

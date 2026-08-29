@@ -140,12 +140,25 @@ export const RUBRICS = {
  * quietly inflates every number in the suite. Pin it explicitly with
  * EVAL_JUDGE_MODEL when the system under test is on the same family.
  */
+/**
+ * A key must be long enough to be real. Truthiness is not enough: Secret
+ * Manager and .env templates seed placeholders like `REPLACE` and `unset`,
+ * which are truthy, capture judge selection, and then 401 every case — which
+ * reads exactly like the model failing rather than the key being fake. Same
+ * `usableKey` guard scripts/evals/run.mjs applies to the model probe, and the
+ * same placeholder set apps/agents/app/config.py filters.
+ */
+const PLACEHOLDERS = new Set(['', 'placeholder', 'REPLACE', 'TODO', 'unset', 'changeme'])
+const usableKey = (v) => typeof v === 'string' && v.trim().length >= 20 && !PLACEHOLDERS.has(v.trim())
+
 function judgeConfig() {
   const model = process.env.EVAL_JUDGE_MODEL
-  if (process.env.ANTHROPIC_API_KEY) return { provider: 'anthropic', model: model ?? 'claude-sonnet-4-6', key: process.env.ANTHROPIC_API_KEY }
-  if (process.env.OPENAI_API_KEY)    return { provider: 'openai',    model: model ?? 'gpt-4.1',           key: process.env.OPENAI_API_KEY }
+  const a = process.env.ANTHROPIC_API_KEY
+  const o = process.env.OPENAI_API_KEY
   const g = process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY
-  if (g)                             return { provider: 'google',    model: model ?? 'gemini-2.5-pro',    key: g }
+  if (usableKey(a)) return { provider: 'anthropic', model: model ?? 'claude-sonnet-4-6', key: a }
+  if (usableKey(o)) return { provider: 'openai',    model: model ?? 'gpt-4.1',           key: o }
+  if (usableKey(g)) return { provider: 'google',    model: model ?? 'gemini-2.5-pro',    key: g }
   return null
 }
 
@@ -155,14 +168,40 @@ const JUDGE_SYSTEM =
   'Return ONLY minified JSON: {"reasoning":"<one or two sentences>","score":<0 or 1>}. ' +
   'Do not wrap it in markdown fences.'
 
+/**
+ * Evidence budget. Deliberately large, and truncation is DECLARED.
+ *
+ * This cost us a full scoring pass. At a 6k cap, a grounded answer over a
+ * 20-item tool result was judged a hallucination four separate times — the
+ * judge saw the first six rows, did not see the rows the answer actually cited,
+ * and reported invention with complete confidence. Every one of those verdicts
+ * was wrong, and they read exactly like a real product defect.
+ *
+ * So: a big budget, and when it is still exceeded, SAY SO in the prompt. A
+ * judge that knows the source was cut cannot treat "absent from the source" as
+ * "invented", which is the single inference groundedness turns on.
+ */
+const SOURCE_BUDGET = 24000
+const ANSWER_BUDGET = 8000
+
+function clip(text, budget) {
+  const s = typeof text === 'string' ? text : JSON.stringify(text, null, 2)
+  if (!s || s.length <= budget) return { text: s ?? '', truncated: false }
+  return { text: s.slice(0, budget), truncated: true }
+}
+
 function judgePrompt(criterion, { input, output, expectedOutput }) {
-  const j = (v) => (typeof v === 'string' ? v : JSON.stringify(v, null, 2))
+  const src = clip(input, SOURCE_BUDGET)
+  const ans = clip(output, ANSWER_BUDGET)
   return [
     `CRITERION (${criterion}): ${RUBRICS[criterion] ?? criterion}`,
     '',
-    `INPUT / SOURCE:\n${j(input).slice(0, 6000)}`,
-    expectedOutput ? `\nEXPECTED:\n${j(expectedOutput).slice(0, 3000)}` : '',
-    `\nANSWER TO GRADE:\n${j(output).slice(0, 6000)}`,
+    src.truncated
+      ? 'NOTE: the SOURCE below was truncated for length. Do NOT treat a detail\'s absence from it as invention — if a claim is merely unverifiable here, score 1 and say so.'
+      : '',
+    `INPUT / SOURCE:\n${src.text}`,
+    expectedOutput ? `\nEXPECTED:\n${clip(expectedOutput, 3000).text}` : '',
+    `\nANSWER TO GRADE:\n${ans.text}`,
   ].filter(Boolean).join('\n')
 }
 
@@ -204,14 +243,32 @@ async function callJudge(cfg, prompt) {
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: JUDGE_SYSTEM }] },
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0, maxOutputTokens: 512 },
+        generationConfig: {
+          temperature: 0,
+          // Gemini 2.5 is a THINKING model and its thinking tokens count
+          // against maxOutputTokens. At 512 it spent 509 on hidden reasoning
+          // and returned empty `parts` with finishReason MAX_TOKENS — every
+          // judgement failed as "judge returned no JSON" with nothing to
+          // diagnose. Thinking cannot be switched off either ("this model only
+          // works in thinking mode"), so the fix is headroom: budget for the
+          // reasoning AND the answer, not just the answer.
+          maxOutputTokens: 3072,
+        },
       }),
       signal: timeout,
     },
   )
   if (!r.ok) throw new Error(`judge(google) ${r.status}: ${(await r.text()).slice(0, 200)}`)
   const b = await r.json()
-  return b.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+  const cand = b.candidates?.[0]
+  const text = cand?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+  if (!text) {
+    // Say WHY it was empty. "no JSON" with a blank body is undiagnosable, and
+    // the two real causes — token exhaustion and a safety block — need
+    // opposite fixes.
+    throw new Error(`judge(google) returned no text (finishReason=${cand?.finishReason}, thoughtTokens=${b.usageMetadata?.thoughtsTokenCount ?? 0})`)
+  }
+  return text
 }
 
 /** Judges tolerate a fenced or chatty response; a parse failure must not read as a 0. */

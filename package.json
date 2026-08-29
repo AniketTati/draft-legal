@@ -21,7 +21,11 @@
     "langfuse:logs": "docker compose -f docker-compose.langfuse.yml logs -f langfuse-web langfuse-worker",
     "evals:push": "node scripts/evals/langfuse/push.mjs",
     "evals:run": "node scripts/evals/langfuse/run.mjs",
-    "evals:selftest": "node scripts/evals/langfuse/selftest.mjs"
+    "evals:selftest": "node scripts/evals/langfuse/selftest.mjs",
+    "evals:traffic": "node scripts/evals/langfuse/traffic.mjs",
+    "evals:analyze": "node scripts/evals/langfuse/analyze.mjs",
+    "evals:dashboards": "node scripts/evals/langfuse/dashboards.mjs",
+    "evals:score-prod": "node scripts/evals/langfuse/score-production.mjs"
   },
   "workspaces": [
     "apps/*",

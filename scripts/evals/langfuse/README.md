@@ -1,19 +1,33 @@
-# Langfuse eval harness
+# Langfuse eval + observability harness
 
-Offline evaluation for every LLM surface in the product — document
-classification and obligation extraction at one end, conversational chat at the
-other. Cases live in `datasets/*.json`, run against the real product, and land
-in Langfuse as a **dataset run** you can compare against every previous run.
+Evaluation and production analysis for every LLM surface in the product —
+document classification and obligation extraction at one end, the in-editor AI
+Assistant and the conversational Chat Agent at the other.
 
-Strategy, the online half, and where this came from: `docs/operations/LANGFUSE-EVALS.md`.
+Strategy and where this came from: `docs/operations/LANGFUSE-EVALS.md`.
 
 ```bash
 pnpm langfuse:up                                   # local Langfuse (once)
+
+# ── offline: did my change break the cases I curated? ──
 pnpm evals:push                                    # corpus → Langfuse
 pnpm evals:selftest                                # prove the harness works — no model, no cost
 pnpm evals:run -- --dataset extraction             # real run (needs agents-service + a key)
-pnpm evals:run -- --dataset chat --run-name pr-482
+
+# ── production: what is really happening, and is it any good? ──
+pnpm evals:traffic -- --corpus corpus.json --journeys 12   # generate real traffic
+pnpm evals:analyze -- --hours 6                            # volume/cost/latency/errors/quality
+pnpm evals:score-prod -- --hours 6 --sample 0.3            # LLM-judge real traces
+pnpm evals:dashboards                                      # standing dashboard in the UI
 ```
+
+| Script | Answers |
+| --- | --- |
+| `run.mjs` | Did my change break the curated cases? (offline) |
+| `traffic.mjs` | *(dev only)* Give the dashboards something real to show |
+| `analyze.mjs` | Volume, cost, latency, errors, quality — sliced by surface |
+| `score-production.mjs` | Is what real users get actually any good? (online) |
+| `dashboards.mjs` | The same slices, always current, for people who won't run a CLI |
 
 ## Why this is not `dataset.runExperiment()`
 
@@ -38,7 +52,29 @@ secrets.
 | `push.mjs` | `datasets/*.json` → Langfuse (idempotent) |
 | `run.mjs` | Execute a dataset as a run, score it, report |
 | `selftest.mjs` | Grades the harness itself — registered as `langfuse-harness` (t2) |
+| `traffic.mjs` | Drive real user journeys across every surface (dev only — spends budget) |
+| `analyze.mjs` | The production review, out of the metrics API |
+| `score-production.mjs` | Judge real traces and post the scores (online eval) |
+| `dashboards.mjs` | Create the standing dashboard via the API |
 | `datasets/` | The corpora |
+
+## Generating a traffic corpus
+
+`traffic.mjs` uses your real contracts when you give it a corpus file. Produce
+one from the local database:
+
+```bash
+docker exec clm_postgres psql -U clm -d clm_dev -tAc "
+select json_agg(row_to_json(t)) from (
+  select c.id, c.title, c.type, c.\"counterpartyName\", c.\"orgId\", c.\"expiryDate\"::text,
+         left(regexp_replace(v.\"plainText\", '\s+', ' ', 'g'), 3500) as text
+  from contracts c join contract_versions v on v.id = c.\"currentVersionId\"
+  where v.\"plainText\" is not null and length(v.\"plainText\") > 400
+  order by c.type, random() limit 40) t;" > corpus.json
+```
+
+Without `--corpus` it falls back to two synthetic contracts, so the script runs
+anywhere — but the analysis is only about *your* system if you feed it your data.
 
 ## A case
 
