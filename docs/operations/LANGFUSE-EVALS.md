@@ -295,13 +295,57 @@ Then the judge was re-run and reported a *different*, sharper failure — the
 count, not the counterparties — which independent arithmetic on the tool output
 confirms. **Treat a judge verdict as a pointer to a trace, not as a finding.**
 
-## 5. Honest limits
+## 5. Always-on, and the loop closing
+
+Everything in §3 runs when somebody runs it. These run by themselves, or close
+the loop back into the corpus.
+
+```bash
+pnpm evals:evaluators -- --apply --sampling 0.2   # Langfuse judges new traces itself
+pnpm evals:sessions   -- --hours 6                # grade whole conversations
+pnpm evals:promote    -- --hours 24 --apply       # failures → golden corpus
+pnpm evals:compare    -- --dataset draftlegal-extraction
+```
+
+**`evaluators.mjs`** registers our rubrics as Langfuse's own observation-level
+LLM-as-a-judge rules, plus the LLM connection they need. After this, new traces
+are scored with no script in the loop — verified: a chat turn produced five
+`source=EVAL` scores within fifteen seconds, across both generations and the
+tool step. Rules **converge** on re-run rather than skipping, so changing
+`--sampling` actually changes it instead of printing a reassuring "exists" while
+leaving a test-time 100% in place.
+
+**`score-sessions.mjs`** grades a conversation instead of a turn, anchored to
+the session. This is the failure people complain about and no per-turn score can
+see: every answer individually defensible, the conversation still broken. First
+run scored **11/15**, and the four failures were all real —
+
+- the assistant listed contracts in turn 2, then in turn 3 answered "the first
+  one" about a *different* contract
+- a contract supplied in turn 1 was "not found" by a later turn
+- a renewal analysis produced in turn 1 was denied to exist in the final turn
+
+**`promote.mjs`** turns a production failure into a permanent case, ranked by
+signal strength: a real user's thumbs-down outranks a human label, which
+outranks a judge score. `sourceTraceId` keeps each case one click from the
+conversation that produced it. `expectedOutput` is deliberately left unset —
+we know the answer was wrong, not what right looks like.
+
+**`compare.mjs`** diffs two runs of a dataset: pass rate per scorer with a
+delta, *and* the per-case verdict changes. The second half matters because two
+runs can post the same total with a different set of passing cases — a
+regression and a fix cancelling out, which the aggregate reports as "no change".
+
+## 6. Honest limits
 
 - **The offline corpora still have not been run against a live stack.** The
   production review (§4) exercised the same surfaces with live traffic, but
   `pnpm evals:run -- --dataset extraction|chat` — the curated cases with their
   `expectedOutput` assertions — has not been executed end to end. Those case
   expectations remain unvalidated until their first green run.
+- **Promoted regression cases have no expected output.** `promote.mjs` records
+  what went wrong, not what right looks like — inventing one would enshrine a
+  guess. Until a human writes them, those cases are graded by rubric only.
 - **The judge is only lightly calibrated.** It was checked on a two-case probe
   (a correct refusal scored 1; an invented governing law scored 0 with an
   accurate reason) and its production verdicts were spot-checked against the

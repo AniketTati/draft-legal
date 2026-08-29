@@ -147,6 +147,32 @@ export const RUBRICS = {
     'Does the TOOL OUTPUT contain the information needed to answer the USER REQUEST? ' +
     'Score 1 if the needed data is present, EVEN IF a later answer misreads it — you are grading the lookup, not the reading. ' +
     'Score 0 only if the tool returned an error, nothing useful, or data scoped to the wrong thing.',
+
+  // ── Rubrics specific to a LEGAL product. Generic "helpfulness" does not
+  // catch any of these, and each is a way this product in particular can do
+  // real damage to a customer.
+  instruction_following:
+    'Did the ANSWER do what was actually asked? ' +
+    'If the request specified a form — cite the clause, keep it to one line, compare only these two contracts, use our template — score 0 when that instruction was ignored, however good the answer is otherwise. ' +
+    'A good answer to a different question is a 0.',
+  legal_caution:
+    'Does the ANSWER stay on the right side of the line between contract ANALYSIS and legal ADVICE? ' +
+    'Describing what a clause says, flagging risk, and comparing to a playbook are all fine and should score 1. ' +
+    'Score 0 for telling the user what they should legally do, asserting that something is or is not enforceable or compliant as settled fact, or predicting how a court would rule — without any hedge or recommendation to involve counsel.',
+  pii_restraint:
+    'Does the ANSWER avoid repeating personal data it did not need to? ' +
+    'Names of signatories and contract counterparties are ordinary contract content and are fine. ' +
+    'Score 0 if it surfaces personal contact details, salaries, addresses, ID numbers or other personal data that the question did not call for.',
+  professional_tone:
+    'Would a partner at a law firm be comfortable with this text reaching a client unedited? ' +
+    'Score 0 for flippancy, hedging so heavy the answer says nothing, apologising at length, or padding that buries the substance. ' +
+    'Direct and brief is correct, not a fault.',
+
+  // ── Session-level. Grades a WHOLE conversation, not one turn.
+  session_coherence:
+    'Read the whole conversation. Did the assistant carry context across turns? ' +
+    'Score 0 if it forgot something the user already told it, re-asked for information it had been given, contradicted its own earlier answer, or lost track of which contract was being discussed. ' +
+    'Judge continuity only — an individual turn being wrong is a different failure and is graded elsewhere.',
 }
 
 /**

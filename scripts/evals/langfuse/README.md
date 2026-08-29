@@ -20,7 +20,16 @@ pnpm evals:analyze -- --hours 6                            # volume/cost/latency
 pnpm evals:score-prod -- --hours 6 --sample 0.3            # LLM-judge every step
 pnpm evals:annotate -- --seed --hours 24                   # queue traces for a human
 pnpm evals:annotate -- --calibrate                         # judge vs human agreement
+pnpm evals:sessions -- --hours 6                           # grade whole conversations
 pnpm evals:dashboards                                      # standing dashboard in the UI
+
+# ── always-on: Langfuse judges new traces by itself ──
+pnpm evals:evaluators -- --apply --sampling 0.2             # register continuous evaluators
+pnpm evals:evaluators -- --status
+
+# ── close the loop ──
+pnpm evals:promote -- --hours 24 --apply                    # failures → golden corpus
+pnpm evals:compare -- --dataset draftlegal-extraction       # did the change help?
 ```
 
 | Script | Answers |
@@ -71,6 +80,10 @@ secrets.
 | `analyze.mjs` | The production review, out of the metrics API |
 | `score-production.mjs` | Judge every step of real traces and post the scores (online eval) |
 | `annotate.mjs` | Human annotation queue + judge-vs-human calibration |
+| `score-sessions.mjs` | Grade whole conversations — context carried across turns |
+| `evaluators.mjs` | Register Langfuse's OWN continuous evaluators (runs without us) |
+| `promote.mjs` | Promote failing production traces into the golden corpus |
+| `compare.mjs` | Diff two dataset runs — aggregate and per-case |
 | `dashboards.mjs` | Create the standing dashboard via the API |
 | `datasets/` | The corpora |
 
@@ -135,6 +148,11 @@ latency and a model bill for nothing.
 | `judge:citation` | points at the clause it relied on |
 | `judge:tool_selection` | **step-level** — was calling this tool the right move? |
 | `judge:retrieval_sufficiency` | **step-level** — did the tool return what was needed? |
+| `judge:instruction_following` | did it do what was actually asked, in the form asked? |
+| `judge:legal_caution` | analysis vs unhedged legal advice — a legal-product risk |
+| `judge:pii_restraint` | personal data it did not need to repeat |
+| `judge:professional_tone` | would a partner send this to a client unedited? |
+| `judge:session_coherence` | **session-level** — context carried across turns |
 
 The last two grade an **observation inside a turn**, not the final answer, and
 they exist to split one failure into two. "The agent was wrong" has two causes
