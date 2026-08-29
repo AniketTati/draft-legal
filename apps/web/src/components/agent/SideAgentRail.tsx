@@ -30,7 +30,7 @@
  * the user's last choice.
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash } from 'lucide-react'
+import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 // One glyph for the machine: the diamond replaces every sparkle in the rail.
 import { AssistMark } from '@/components/ui/assist'
@@ -1554,6 +1554,7 @@ export function SideAgentRail() {
                 <MessageBubble
                   key={m.id}
                   msg={m}
+                  sessionId={sessionIdRef.current || threadIdRef.current || ''}
                   onActionApply={applyAction}
                   onActionCancel={cancelAction}
                   onActionUndo={undoAction}
@@ -1971,10 +1972,80 @@ function SuggestedPrompt({ text, onSelect }: { text: string; onSelect: (t: strin
   )
 }
 
+/**
+ * Was this answer any good?
+ *
+ * The score goes to Langfuse via POST /api/v1/agent/feedback, landing on the
+ * same trace the judge scored — so a turn the judge liked and the user did not
+ * becomes a visible, findable row rather than a complaint nobody can locate.
+ *
+ * One vote per message, and it stays. Letting people toggle endlessly turns a
+ * quality signal into a fidget toy, and the second vote is never more honest
+ * than the first. The API fails open, so a Langfuse outage shows the same
+ * "Thanks" the success path does — the user gave feedback either way, and
+ * telling them our observability stack is down helps nobody.
+ */
+function MessageFeedback({ messageId, sessionId }: { messageId: string; sessionId?: string }) {
+  const accessToken = useAuthStore((s) => s.accessToken)
+  const [sent, setSent] = useState<'up' | 'down' | null>(null)
+
+  if (!sessionId) return null
+
+  async function vote(rating: 'up' | 'down') {
+    if (sent) return
+    setSent(rating)   // optimistic: the vote is recorded for the user regardless
+    try {
+      await fetch('/api/v1/agent/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken ?? ''}` },
+        body: JSON.stringify({ sessionId, rating }),
+      })
+    } catch {
+      // Deliberately swallowed — see the note above.
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1 pl-0.5" data-testid="side-agent-feedback" data-msg={messageId}>
+      {sent ? (
+        <span className="text-[10.5px] text-ink-500">
+          Thanks — {sent === 'up' ? 'glad that helped' : 'noted, we review these'}
+        </span>
+      ) : (
+        <>
+          <span className="text-[10.5px] text-ink-400 mr-0.5">Helpful?</span>
+          <button
+            type="button"
+            aria-label="This answer was helpful"
+            data-testid="side-agent-feedback-up"
+            onClick={() => vote('up')}
+            className="p-1 rounded text-ink-400 hover:text-assist-700 hover:bg-paper-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-assist-500 transition-colors"
+          >
+            <ThumbsUp className="size-3" />
+          </button>
+          <button
+            type="button"
+            aria-label="This answer was not helpful"
+            data-testid="side-agent-feedback-down"
+            onClick={() => vote('down')}
+            className="p-1 rounded text-ink-400 hover:text-risk-700 hover:bg-paper-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-risk-500 transition-colors"
+          >
+            <ThumbsDown className="size-3" />
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 function MessageBubble({
-  msg, onActionApply, onActionCancel, onActionUndo, onChipSelect, streaming,
+  msg, sessionId, onActionApply, onActionCancel, onActionUndo, onChipSelect, streaming,
 }: {
   msg: RailMessage
+  /** Chat thread id — the agents service sets Langfuse's session_id from it,
+   *  which is how feedback finds the turn it belongs to without the browser
+   *  ever seeing a trace id. */
+  sessionId?: string
   onActionApply?:  (msgId: string, actionId: string, args: Record<string, unknown>) => void
   onActionCancel?: (msgId: string, actionId: string) => void
   onActionUndo?:   (msgId: string, actionId: string) => void
@@ -2102,6 +2173,13 @@ function MessageBubble({
           <Square className="size-2 fill-current text-ink-400" />
           Stopped — this answer is incomplete
         </div>
+      )}
+      {/* Was this answer any good? The only quality signal that comes from a
+          real person. Shown on finished, non-error assistant turns only —
+          asking about a half-streamed answer, or an error the user already
+          knows about, trains people to ignore the control. */}
+      {!isUser && !msg.error && !msg.streaming && (msg.content?.length ?? 0) > 0 && (
+        <MessageFeedback messageId={msg.id} sessionId={sessionId} />
       )}
       {/* P1 fix — render parsed action chips below the assistant bubble.
           U10 — and skeletons during streaming so the row reserves space

@@ -205,9 +205,14 @@ async def resolve_llm(
     extra_metadata: dict[str, Any] | None = None,
     provider_override: str | None = None,
     model_override: str | None = None,
+    trace_id: str | None = None,
 ) -> ResolvedLlm:
     """
     Resolve a LangChain LLM for the given tier.
+
+    `trace_id` groups a whole agent turn — its model calls and its tool calls —
+    into a single Langfuse trace. Omit it and each run is its own trace, which
+    is the right default for one-shot endpoints like /classify.
 
     If `org_id` is provided we ask the Node API for the per-org override +
     BYOK. If `org_id` is None we resolve from platform env directly (this
@@ -263,6 +268,7 @@ async def resolve_llm(
                 extra_metadata=extra_metadata,
                 provider_override=provider_override,
                 model_override=model_override,
+                trace_id=trace_id,
             )
         except ModelOverrideUnavailable:
             # A bad caller-pinned override is a caller bug, not flaky infra —
@@ -295,6 +301,7 @@ async def resolve_llm(
         thread_id=thread_id, tool_name=tool_name,
         extra_metadata=extra_metadata,
         provider_override=provider_override, model_override=model_override,
+        trace_id=trace_id,
     )
 
 
@@ -308,6 +315,7 @@ async def _resolve_via_node(
     extra_metadata: dict[str, Any] | None,
     provider_override: str | None = None,
     model_override: str | None = None,
+    trace_id: str | None = None,
 ) -> ResolvedLlm:
     """Internal — call Node's POST /api/internal/ai/resolve."""
     url = f"{settings.api_url.rstrip('/')}/api/internal/ai/resolve"
@@ -336,6 +344,7 @@ async def _resolve_via_node(
         thread_id=thread_id, tool_name=tool_name,
         extra_metadata=extra_metadata,
         provider_override=provider_override, model_override=model_override,
+        trace_id=trace_id,
     )
 
 
@@ -351,6 +360,7 @@ def _build_resolved(
     extra_metadata: dict[str, Any] | None,
     provider_override: str | None = None,
     model_override: str | None = None,
+    trace_id: str | None = None,
 ) -> ResolvedLlm:
     """Shared construction path for both platform and Node resolution."""
     provider, model, api_key, source = _apply_override(
@@ -375,6 +385,7 @@ def _build_resolved(
         thread_id=thread_id,
         tool_name=tool_name,
         extra_metadata=extra_metadata,
+        trace_id=trace_id,
     )
     return ResolvedLlm(
         llm=llm,

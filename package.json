@@ -25,7 +25,8 @@
     "evals:traffic": "node scripts/evals/langfuse/traffic.mjs",
     "evals:analyze": "node scripts/evals/langfuse/analyze.mjs",
     "evals:dashboards": "node scripts/evals/langfuse/dashboards.mjs",
-    "evals:score-prod": "node scripts/evals/langfuse/score-production.mjs"
+    "evals:score-prod": "node scripts/evals/langfuse/score-production.mjs",
+    "evals:annotate": "node scripts/evals/langfuse/annotate.mjs"
   },
   "workspaces": [
     "apps/*",

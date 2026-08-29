@@ -17,7 +17,9 @@ pnpm evals:run -- --dataset extraction             # real run (needs agents-serv
 # ── production: what is really happening, and is it any good? ──
 pnpm evals:traffic -- --corpus corpus.json --journeys 12   # generate real traffic
 pnpm evals:analyze -- --hours 6                            # volume/cost/latency/errors/quality
-pnpm evals:score-prod -- --hours 6 --sample 0.3            # LLM-judge real traces
+pnpm evals:score-prod -- --hours 6 --sample 0.3            # LLM-judge every step
+pnpm evals:annotate -- --seed --hours 24                   # queue traces for a human
+pnpm evals:annotate -- --calibrate                         # judge vs human agreement
 pnpm evals:dashboards                                      # standing dashboard in the UI
 ```
 
@@ -26,8 +28,21 @@ pnpm evals:dashboards                                      # standing dashboard 
 | `run.mjs` | Did my change break the curated cases? (offline) |
 | `traffic.mjs` | *(dev only)* Give the dashboards something real to show |
 | `analyze.mjs` | Volume, cost, latency, errors, quality — sliced by surface |
-| `score-production.mjs` | Is what real users get actually any good? (online) |
+| `score-production.mjs` | Is what real users get any good — and **which step** went wrong? (online) |
+| `annotate.mjs` | What does a *human* think, and does the judge agree with them? |
 | `dashboards.mjs` | The same slices, always current, for people who won't run a CLI |
+
+### Three sources of quality signal, and why you need all three
+
+| | Catches | Blind to |
+| --- | --- | --- |
+| **Judge** (`score-production.mjs`) | Anything a rubric anticipated, at scale, cheaply | Failures nobody wrote a rubric for. Is itself sometimes confidently wrong. |
+| **Human** (`annotate.mjs`) | Everything, including what the rubrics missed | Doesn't scale. Slow. |
+| **User** (`POST /api/v1/agent/feedback`) | What actually mattered to the person who asked | Sparse, biased toward extremes, no explanation |
+
+The judge is the only one that scales, which is exactly why it needs the other
+two: the human labels tell you whether to believe it, and the user votes tell
+you whether it is measuring anything people care about.
 
 ## Why this is not `dataset.runExperiment()`
 
@@ -54,7 +69,8 @@ secrets.
 | `selftest.mjs` | Grades the harness itself — registered as `langfuse-harness` (t2) |
 | `traffic.mjs` | Drive real user journeys across every surface (dev only — spends budget) |
 | `analyze.mjs` | The production review, out of the metrics API |
-| `score-production.mjs` | Judge real traces and post the scores (online eval) |
+| `score-production.mjs` | Judge every step of real traces and post the scores (online eval) |
+| `annotate.mjs` | Human annotation queue + judge-vs-human calibration |
 | `dashboards.mjs` | Create the standing dashboard via the API |
 | `datasets/` | The corpora |
 
@@ -117,6 +133,17 @@ latency and a model bill for nothing.
 | `judge:correctness` | same substance as expected |
 | `judge:helpfulness` | useful to a busy contracts lawyer |
 | `judge:citation` | points at the clause it relied on |
+| `judge:tool_selection` | **step-level** — was calling this tool the right move? |
+| `judge:retrieval_sufficiency` | **step-level** — did the tool return what was needed? |
+
+The last two grade an **observation inside a turn**, not the final answer, and
+they exist to split one failure into two. "The agent was wrong" has two causes
+with opposite fixes: the tool returned bad data, or the tool returned good data
+and the model misread it. One score on the answer cannot tell them apart. On the
+first real run this paid for itself immediately —
+`renewal_advice · retrieval_sufficiency 4/4` next to
+`agent.chat · groundedness 7/10` says the lookup was fine and the reading was
+not, which points at the tool's *description* rather than its query.
 
 The judge uses `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GOOGLE_API_KEY` (in
 that order), overridable with `EVAL_JUDGE_MODEL`. **Prefer a judge from a

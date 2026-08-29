@@ -185,6 +185,51 @@ corpus, plus a deliberate edge-case journey (empty document, boilerplate with no
 duties, a contract that does not exist, a bare "hi"). Traffic made only of happy
 paths produces a green dashboard that proves nothing.
 
+### Three sources of quality signal
+
+The judge is the only one that scales, which is exactly why it cannot stand
+alone.
+
+| | Catches | Blind to |
+| --- | --- | --- |
+| **Judge** — `score-production.mjs` | Anything a rubric anticipated, cheaply, at scale | Failures nobody wrote a rubric for; is itself sometimes confidently wrong |
+| **Human** — `annotate.mjs` | Everything, including what the rubrics missed | Does not scale |
+| **User** — `POST /api/v1/agent/feedback` | What actually mattered to the person who asked | Sparse, extremes-biased, unexplained |
+
+**Step-level, not just answer-level.** `score-production.mjs` scores each
+observation inside a turn: `tool_selection` and `retrieval_sufficiency` on the
+tool step, `groundedness` and `helpfulness` on the generation the user read.
+This exists to split one failure into two with opposite fixes — bad data in, or
+good data misread. On the first run it paid for itself: `renewal_advice`
+retrieval sufficiency 4/4 beside `agent.chat` groundedness 7/10 said the lookup
+was fine and the reading was not, independently confirming that the expiry-count
+defect lives in the tool's *description*, not its query.
+
+Getting there needed a fix in the product, not the harness. Tools were invoked
+without the trace callbacks, so a turn produced exactly one observation and the
+retrieval step was invisible; and each LLM call started its own root trace, so a
+turn arrived as three unrelated rows. `apps/agents/app/orchestrator.py` now
+mints one trace id per turn and passes callbacks into `tool.ainvoke`, so a turn
+is one trace with its steps nested. A turn went from 3 traces × 1 observation to
+1 trace × 3 observations.
+
+**Human annotation.** `annotate.mjs --seed` builds a Langfuse annotation queue
+from a deliberately MIXED sample: every judge failure plus a control sample of
+judge passes. Only-failures measures nothing — you cannot see a false positive
+if the annotator never sees a case the judge liked, and false positives are the
+failure mode we actually hit. `--calibrate` then reads the human labels back and
+reports agreement per criterion, listing every disagreement.
+
+Until someone labels a queue, **the judge has no baseline** and its numbers are
+a comparison signal, not a measurement.
+
+**User feedback.** Thumbs up/down on finished assistant turns in the rail →
+`POST /api/v1/agent/feedback` → a `user_feedback` score on the turn's trace,
+beside the judge scores. The browser sends only its chat session; the API
+resolves the trace, because `apps/agents` sets Langfuse's `session_id` from the
+thread id. It fails open — an observability outage must never surface as an
+error on a thumbs-up.
+
 ### Feed failures back
 
 A production trace that scores badly is the best dataset case there is, and

@@ -12,9 +12,18 @@ import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
+import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
+
+const FeedbackSchema = z.object({
+  sessionId: z.string().min(1),
+  /** Optional: the exact turn. Without it we resolve the session's latest trace. */
+  traceId:   z.string().optional(),
+  rating:    z.enum(['up', 'down']),
+  comment:   z.string().max(2000).optional(),
+})
 
 const AssistSchema = z.object({
   selectedText: z.string().min(1),
@@ -35,6 +44,44 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
     return reply.send(await upstream.json())
+  })
+
+  // POST /api/v1/agent/feedback — what the user thought of an answer.
+  //
+  // The only quality signal that comes from a real person rather than a rubric,
+  // and the cheapest one there is. It lands in Langfuse as a `user_feedback`
+  // score on the turn's trace, so it sits beside the judge scores and can be
+  // compared with them — a turn the judge liked and the user did not is the
+  // most interesting row in the dataset.
+  //
+  // Fails OPEN: if Langfuse is unconfigured or unreachable this returns 200
+  // with recorded:false. A thumbs-up must never show the user an error, and an
+  // observability outage must not look like a broken product.
+  app.post('/feedback', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const body = FeedbackSchema.parse(req.body)
+    const { sub: userId, orgId } = req.user
+
+    if (!langfuseConfigured()) {
+      return reply.send({ recorded: false, reason: 'observability_disabled' })
+    }
+
+    // The browser knows its chat session, never a Langfuse trace id — the
+    // agents service sets session_id from the thread, which is what makes this
+    // resolvable without threading trace ids through the UI.
+    const traceId = body.traceId ?? (await findTraceBySession(body.sessionId))
+    if (!traceId) {
+      return reply.send({ recorded: false, reason: 'trace_not_found' })
+    }
+
+    const ok = await postScore({
+      name: 'user_feedback',
+      value: body.rating === 'up' ? 1 : 0,
+      dataType: 'BOOLEAN',
+      traceId,
+      comment: body.comment,
+      metadata: { source: 'app', userId, orgId, sessionId: body.sessionId },
+    })
+    return reply.send({ recorded: ok, ...(ok ? {} : { reason: 'langfuse_write_failed' }) })
   })
 
   // POST /api/v1/agent/chat — proxy to Python agent service with SSE streaming

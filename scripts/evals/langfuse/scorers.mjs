@@ -129,6 +129,24 @@ export const RUBRICS = {
   citation:
     'Does the ANSWER cite the specific clause, section or document it relies on, where the source makes that possible? ' +
     'Score 0 for an assertion about contract content with no pointer to where it came from.',
+
+  // ── Step-level rubrics. These grade an OBSERVATION inside a turn, not the
+  // turn's final answer, and they exist to split one failure into two.
+  //
+  // "The agent gave a wrong answer" has two very different causes: the tool
+  // returned the wrong data, or the tool returned the right data and the model
+  // misread it. Those need opposite fixes — one is a query/endpoint bug, the
+  // other is a prompt or model problem — and a single score on the final answer
+  // cannot tell them apart. That ambiguity is exactly what cost us an hour on
+  // the expiry-count defect, which turned out to be the first kind.
+  tool_selection:
+    'Given the USER REQUEST, was calling this particular tool the right move? ' +
+    'Judge the CHOICE only, not the quality of what came back. ' +
+    'Score 0 if a different tool was clearly the right one, or if the request needed no tool at all.',
+  retrieval_sufficiency:
+    'Does the TOOL OUTPUT contain the information needed to answer the USER REQUEST? ' +
+    'Score 1 if the needed data is present, EVEN IF a later answer misreads it — you are grading the lookup, not the reading. ' +
+    'Score 0 only if the tool returned an error, nothing useful, or data scoped to the wrong thing.',
 }
 
 /**

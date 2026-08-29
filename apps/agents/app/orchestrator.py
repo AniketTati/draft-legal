@@ -17,6 +17,7 @@ import asyncio
 import json
 import re
 import logging
+import uuid
 from typing import Any, AsyncIterator, NotRequired, TypedDict
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -764,9 +765,18 @@ async def run_agent_chat_stream(
         _tier = "fast"
     else:
         _tier = "default"
+    # One Langfuse trace per TURN. Without it a turn arrives as three unrelated
+    # root traces — the tool-calling model call, the tool run, the answering
+    # model call — so "the answer was wrong; what did the tool return?" is not a
+    # question the dashboard can answer, and step-level evaluation has nothing
+    # to attach to. Minted here because this is the only place that knows a turn
+    # is starting.
+    turn_trace_id = uuid.uuid4().hex
+
     resolved = await resolve_llm(
         _tier, org_id=org_id, streaming=True,
         trace_name="agent.chat", user_id=user_id, thread_id=session_id,
+        trace_id=turn_trace_id,
         # docs/37 E13 — honour an explicit per-request pin.
         #
         # resolve_llm has accepted these since it was written, and this module's
@@ -1022,7 +1032,16 @@ async def run_agent_chat_stream(
                     # that yields tool_progress every HEARTBEAT_INTERVAL seconds.
                     HEARTBEAT_INTERVAL = 4.0
                     HEARTBEAT_FIRST    = 3.0  # don't emit on fast (<3s) tools
-                    tool_task = asyncio.create_task(tool.ainvoke(tc_args))
+                    # Pass the Langfuse callbacks INTO the tool run. Without
+                    # them the tool executes outside any traced context, so a
+                    # turn produced exactly one observation — the generation —
+                    # and the retrieval/tool step it depended on was invisible.
+                    # That makes step-level evaluation impossible: you can see
+                    # that an answer was wrong but not whether the tool fed it
+                    # bad data or the model misread good data.
+                    tool_task = asyncio.create_task(
+                        tool.ainvoke(tc_args, config={"callbacks": chat_callbacks})
+                    )
                     started_at = asyncio.get_event_loop().time()
                     next_beat  = started_at + HEARTBEAT_FIRST
                     try:

@@ -192,12 +192,18 @@ def _get_attributed_cls(factory: Any) -> Any:
         langfuse_attributes: dict[str, Any] = {}
         langfuse_trace_name: str | None = None
 
-        def _prep(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        def _prep(self, kwargs: dict[str, Any], *, name_it: bool = True) -> dict[str, Any]:
             merged = dict(self.langfuse_attributes)
             if kwargs.get("metadata"):
                 merged.update(kwargs["metadata"])
             kwargs["metadata"] = merged
-            if kwargs.get("parent_run_id") is None and kwargs.get("name") is None:
+            # `name_it=False` for tools and retrievers: those runs carry a name
+            # that MEANS something (`renewal_advice`, `contract_search`) and
+            # overwriting it with the turn's trace name produced a trace whose
+            # every observation was called "agent.chat" — unfilterable, and
+            # useless for step-level evaluation, which is entirely about telling
+            # the retrieval step apart from the generation step.
+            if name_it and kwargs.get("parent_run_id") is None and kwargs.get("name") is None:
                 kwargs["name"] = self.langfuse_trace_name
             return kwargs
 
@@ -211,20 +217,44 @@ def _get_attributed_cls(factory: Any) -> Any:
             return super().on_chain_start(serialized, inputs, **self._prep(kwargs))
 
         def on_tool_start(self, serialized, input_str, **kwargs):  # type: ignore[no-untyped-def]
-            return super().on_tool_start(serialized, input_str, **self._prep(kwargs))
+            return super().on_tool_start(serialized, input_str, **self._prep(kwargs, name_it=False))
 
         def on_retriever_start(self, serialized, query, **kwargs):  # type: ignore[no-untyped-def]
-            return super().on_retriever_start(serialized, query, **self._prep(kwargs))
+            return super().on_retriever_start(serialized, query, **self._prep(kwargs, name_it=False))
 
     _attributed_cls = _AttributedHandler
     return _attributed_cls
 
 
 def _build_attributed_handler(
-    factory: Any, attributes: dict[str, Any], trace_name: str
+    factory: Any, attributes: dict[str, Any], trace_name: str, trace_id: str | None = None
 ) -> Any:
-    """Instantiate the cached handler subclass for one LLM invocation."""
-    handler = _get_attributed_cls(factory)(public_key=settings.langfuse_public_key)
+    """
+    Instantiate the cached handler subclass for one LLM invocation.
+
+    `trace_id` groups several runs into ONE trace. A chat turn is a model call,
+    then a tool call, then another model call; with no shared id each is its own
+    root trace and the turn arrives in the dashboard as three unrelated rows,
+    with no way to ask "what did the tool return that made the answer wrong".
+
+    We pass it via the SDK's `trace_context` rather than opening a parent span,
+    because the turn is an async generator: OpenTelemetry's current-span context
+    is not reliably preserved across `yield` (PEP 568 was deferred), so a
+    context-manager span would silently stop parenting partway through a stream.
+    An explicit id has no such failure mode.
+    """
+    cls = _get_attributed_cls(factory)
+    kwargs: dict[str, Any] = {"public_key": settings.langfuse_public_key}
+    if trace_id:
+        kwargs["trace_context"] = {"trace_id": trace_id}
+    try:
+        handler = cls(**kwargs)
+    except TypeError:
+        # Older handler without trace_context — group-by-trace is a nice-to-have,
+        # tracing at all is not. Fall back rather than lose every span.
+        log.warning("[tracing] CallbackHandler does not accept trace_context; "
+                    "turn grouping disabled for this run")
+        handler = cls(public_key=settings.langfuse_public_key)
     handler.langfuse_attributes = attributes
     handler.langfuse_trace_name = trace_name
     return handler
@@ -271,9 +301,14 @@ def get_callback(
     thread_id: str | None = None,
     tool_name: str | None = None,
     extra_metadata: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> Any | None:
     """
     Build a Langfuse CallbackHandler for a single LLM invocation.
+
+    `trace_id` (optional, 32 lowercase hex) groups every run that shares it into
+    one trace — see _build_attributed_handler. Pass one per agent TURN so the
+    model calls and the tool calls of that turn arrive as one thing.
 
     Returns None when tracing is disabled — safe to pass through to
     LangChain's `callbacks=[...]`: an empty list or `[None]` would be a bug,
@@ -334,7 +369,7 @@ def get_callback(
                 attributes["langfuse_user_id"] = resolved_user
             if thread_id:
                 attributes["langfuse_session_id"] = thread_id
-            return _build_attributed_handler(factory, attributes, trace_name)
+            return _build_attributed_handler(factory, attributes, trace_name, trace_id)
 
         # v2 — everything on the constructor.
         return factory(
