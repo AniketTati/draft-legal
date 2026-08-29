@@ -18,7 +18,10 @@
     "langfuse:up": "docker compose -f docker-compose.langfuse.yml up -d",
     "langfuse:down": "docker compose -f docker-compose.langfuse.yml down",
     "langfuse:reset": "docker compose -f docker-compose.langfuse.yml down -v",
-    "langfuse:logs": "docker compose -f docker-compose.langfuse.yml logs -f langfuse-web langfuse-worker"
+    "langfuse:logs": "docker compose -f docker-compose.langfuse.yml logs -f langfuse-web langfuse-worker",
+    "evals:push": "node scripts/evals/langfuse/push.mjs",
+    "evals:run": "node scripts/evals/langfuse/run.mjs",
+    "evals:selftest": "node scripts/evals/langfuse/selftest.mjs"
   },
   "workspaces": [
     "apps/*",

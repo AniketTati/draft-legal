@@ -1,0 +1,187 @@
+# LLM evaluation on Langfuse
+
+Tracing (`LANGFUSE.md`) tells you what the model *did*. Evaluation tells you
+whether it was any **good** — and, more usefully, whether it is better or worse
+than last week. This is the second half.
+
+---
+
+## 1. How teams actually do this
+
+The pattern is consistent across Langfuse's own guidance and the write-ups
+around it, and it is worth stating before the implementation because it
+explains most of our design choices.
+
+**Two loops, not one.**
+
+| | Offline | Online |
+| --- | --- | --- |
+| Runs on | A curated dataset | Live production traces |
+| Answers | "Did my change break anything?" | "Is it drifting? What am I not testing?" |
+| When | Before you ship | Continuously |
+| Cost | Bounded — you choose the corpus | Controlled by sampling |
+
+They feed each other: production failures become dataset cases, and the dataset
+stops those failures recurring. A team with only offline evals is testing
+yesterday's understanding of the problem; a team with only online evals can see
+quality fall but cannot safely change anything.
+
+**The adoption order matters, and it is not the intuitive one.**
+Observability → error analysis → automated evaluators → CI gates → synthetic
+coverage → experiments → production monitoring. Judges come *after* you have
+looked at real failures, because until then you do not know which qualities to
+grade. Writing rubrics first produces scores that correlate with nothing.
+
+**Deterministic checks carry more than people expect.** Format validity, exact
+fields, tool selection, refusal behaviour — all expressible as code, all free
+and perfectly reliable. The recommended shape is a cheap code pre-screen in
+front of a judge, not a judge everywhere. A judge costs roughly $0.01–0.10 per
+assessment and is itself nondeterministic; spending that to answer "did it
+return `NDA`" is pure waste.
+
+**Golden datasets go stale.** The discipline is to keep adding sampled recent
+traces and fresh failures, stamp an `addedAt` on each item so you can see the
+age distribution, and retire cases for behaviour that no longer exists. A
+corpus that never changes slowly stops describing the product.
+
+**The named pitfalls**, all of which we have tried to design against:
+defining evaluation goals late; relying on a single method; letting judges drift
+without ever recalibrating against human judgement; treating evals as an
+engineering-only concern; and — the one that bites agent systems hardest —
+only grading the final answer while ignoring intermediate steps like retrieval
+and tool selection.
+
+Sources: [Langfuse evaluation overview](https://langfuse.com/docs/evaluation/overview),
+[LLM evaluation roadmap](https://langfuse.com/blog/2025-11-12-evals),
+[LLM-as-a-judge](https://langfuse.com/docs/evaluation/evaluation-methods/llm-as-a-judge),
+[golden datasets](https://langfuse.com/resources/engineering/golden-dataset-evaluation),
+[observation-level evals](https://langfuse.com/changelog/2026-02-13-observation-level-evals).
+
+---
+
+## 2. What we built
+
+`scripts/evals/langfuse/` — usage in its own `README.md`.
+
+```bash
+pnpm langfuse:up
+pnpm evals:push
+pnpm evals:selftest                      # free, no model, gates a PR
+pnpm evals:run -- --dataset extraction   # real
+```
+
+### Coverage — extraction through chat
+
+| Dataset | Surface | Seam |
+| --- | --- | --- |
+| `draftlegal-extraction` | `/classify`, `/extract_obligations` | agents service |
+| `draftlegal-chat` | `POST /api/v1/agent/chat` | public API — RBAC, cost cap and proxy all in path |
+| `draftlegal-harness-selftest` | none (`stub`) | proves the harness, not the product |
+
+Chat goes through the public API because that is the seam the user experiences
+and where most of this system's defects have actually lived (ADR-01, `docs/37`).
+Extraction calls the agents service directly because that *is* its seam — Node
+only forwards, and nothing about the forwarding is what an extraction eval is
+asking about.
+
+### Grading
+
+Deterministic where there is a right answer (`field_match`, `json_subset`,
+`tool_used`, `no_tool`); judged where there is not (`groundedness`,
+`correctness`, `helpfulness`, `citation`). Every judged score in the corpus is
+one a string comparison cannot express.
+
+Two cases exist purely to catch the failures that silence hides:
+
+- **`obl-none-present`** — boilerplate with no duties in it. An extractor that
+  must find something will invent one here, and no positive case can detect that.
+- **`chat-unknowable-refusal`** — asks about a contract that does not exist. A
+  confident answer is this product's most damaging possible failure, and it is
+  fluent and well-formed, so only a groundedness judge catches it.
+
+### Linking to the *product's* trace
+
+A dataset run item must be anchored to a trace, and the valuable trace is the
+one the agents service emitted — it has the prompts, tokens and cost.
+
+Chat already carries a thread id, which becomes the Langfuse `session_id`, so
+the harness finds its trace by session. Extraction endpoints had no session
+concept at all: their traces existed but were unaddressable. So
+`apps/agents/main.py` now binds an inbound **`x-eval-session-id`** header to the
+request's traces via a ContextVar in `app/tracing.py` — reaching all ~37 LLM
+call sites without touching any of them, and useful well beyond evals (it is
+how you find the trace for one customer's bad extraction). An explicit
+`thread_id` always wins, so a real chat session is never overwritten.
+
+When no product trace turns up within the timeout, the harness anchors the case
+to a trace of its own and marks it `[harness]`, so a case is never silently
+dropped from a run. A run that quietly contains fewer cases looks healthier
+than one that reports the failure.
+
+### What gates, and what does not
+
+`langfuse-harness` (the self-test) is registered in `scripts/evals/manifest.mjs`
+as **t2** — deterministic, free, needs no model — and gates PRs. Its `langfuse`
+precondition probes that the server *answers* and all three keys are present,
+so an unconfigured machine gets a loud SKIP rather than a false pass.
+
+The graded corpora deliberately **do not** gate. Quality is read by comparing
+runs in the UI, not asserted once; putting a judge score behind a pass/fail exit
+code is how assertions get loosened until they stop discriminating. Use
+`--threshold` for a nightly floor if you want one.
+
+---
+
+## 3. Online evaluation — production traces
+
+Not yet enabled. It is configuration in Langfuse rather than code here, and
+these are the decisions to make when you turn it on.
+
+**Use observation-level evaluators.** Trace-level evaluators are deprecated and
+stop producing results on Langfuse Cloud after **16 November 2026**.
+Observation-level also runs in seconds instead of minutes and lets you grade the
+step you actually care about.
+
+**Grade the steps, not just the answer.** The pitfall that hits agent systems
+hardest is scoring only the final reply. Target the retrieval observation for
+whether it found the right clause, and the final LLM observation for
+groundedness — a confidently wrong answer built on a bad retrieval is two
+different bugs, and one score cannot tell you which you have.
+
+**Sample.** At $0.01–0.10 per assessment, judging every observation on every
+production turn is a real line item. Start at 5–10% and filter to the
+observations that matter; raise it for a surface you are actively changing.
+
+**Setup:** Langfuse project → *Evaluators*. Needs an LLM Connection configured
+first. Reuse the rubrics in `scripts/evals/langfuse/scorers.mjs` so an online
+score means the same thing as the offline one with the same name — otherwise
+you cannot compare them, which is most of the value. Evaluators can also be
+created through the public API, which is how you'd version-control them.
+
+**Feed failures back.** A production trace that scores badly is the best kind of
+dataset case, and Langfuse can turn one into an item directly
+(`sourceTraceId` on the dataset item preserves where it came from). That is the
+loop; without it the corpus is a snapshot that ages.
+
+---
+
+## 4. Honest limits
+
+- **Chat and extraction corpora have not been executed against a live stack.**
+  The harness has been proven end to end against a running Langfuse — push, run,
+  trace linking, scoring, aggregation, read-back — using the `stub` target and
+  the self-test. Running the real corpora needs the API, the agents service, a
+  seeded fixture and a model key together; that has not happened yet, so treat
+  the extraction/chat case *expectations* as unvalidated until their first green
+  run.
+- **The judge is uncalibrated.** No one has yet checked its verdicts against
+  human judgement on a sample. Until someone does, judged scores are a
+  comparison signal between runs, not an absolute measure of quality.
+- **Fixture-dependent cases.** `chat-portfolio-count` and
+  `chat-search-by-counterparty` assert on the seeded corpus. If the fixture
+  changes, they need revisiting — which is exactly why they are scored on
+  groundedness and tool choice rather than on the specific number returned.
+- **No CI job runs the graded corpora.** `.github/workflows/nightly-evals.yml`
+  is still manual-only and blocked on `docs/37` E8 (eval identity), for
+  unrelated reasons that apply here too: a nightly judged run spends real money
+  and needs a dedicated org with a cost cap.

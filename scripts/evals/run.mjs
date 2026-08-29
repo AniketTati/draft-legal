@@ -171,7 +171,19 @@ async function probe() {
     // A build artifact, not a service — but just as absent on a clean checkout.
     venv: fs.existsSync(path.join(REPO, 'apps/agents/.venv/bin/python')),
     personas: personasSeeded(),
+    langfuse: langfuseReady(env),
   }
+}
+
+/** Probe the fact, not a proxy for it: Langfuse must ANSWER and all three
+ *  credentials must be present. Checking only that LANGFUSE_HOST is set would
+ *  pass on a machine where nothing is listening, and the suite would report a
+ *  connection error as a harness failure rather than a loud skip. */
+function langfuseReady(envFile) {
+  const val = (k) => process.env[k] ?? envFile.match(new RegExp(`^${k}=(.*)$`, 'm'))?.[1]?.trim()
+  const host = val('LANGFUSE_HOST')
+  if (!host || !val('LANGFUSE_PUBLIC_KEY') || !val('LANGFUSE_SECRET_KEY')) return false
+  return reachable(`${host.replace(/\/$/, '')}/api/public/health`)
 }
 
 // ── Run one check ───────────────────────────────────────────────────────────

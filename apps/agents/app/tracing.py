@@ -60,6 +60,7 @@ and never reaches into Langfuse internals.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from typing import Any
 
 from .config import settings
@@ -229,6 +230,35 @@ def _build_attributed_handler(
     return handler
 
 
+# ─── Request-scoped correlation ──────────────────────────────────────────────
+# Set once per HTTP request by the middleware in main.py, read by get_callback.
+#
+# Why this exists: most endpoints have no thread/session concept. /classify and
+# /extract_obligations take a blob of text and return JSON — there is nothing to
+# group their traces by, so an eval harness (or a support engineer chasing one
+# customer's bad extraction) has no way to say "the trace produced by THAT
+# request". Chat gets this for free from thread_id; everything else got nothing.
+#
+# A ContextVar rather than threading a parameter through: there are ~37 call
+# sites passing `callbacks` into LangChain, and every route would have to accept
+# and forward a correlation id to reach them. This reaches all of them without
+# touching any. ContextVars are per-task under asyncio, so concurrent requests
+# do not see each other's value.
+_correlation: ContextVar[dict[str, Any] | None] = ContextVar("langfuse_correlation", default=None)
+
+
+def set_correlation(session_id: str | None = None, metadata: dict[str, Any] | None = None):
+    """Bind a correlation id to the current request. Returns a reset token."""
+    if not session_id and not metadata:
+        return None
+    return _correlation.set({"session_id": session_id, "metadata": metadata or {}})
+
+
+def reset_correlation(token) -> None:
+    if token is not None:
+        _correlation.reset(token)
+
+
 def get_callback(
     *,
     trace_name: str,
@@ -257,6 +287,15 @@ def get_callback(
     factory = _load_handler_factory()
     if factory is None or not settings.langfuse_public_key or not settings.langfuse_secret_key:
         return None
+
+    # An explicit thread_id from the caller always wins — a chat turn's real
+    # session must not be overwritten by a correlation header.
+    corr = _correlation.get()
+    if corr:
+        thread_id = thread_id or corr.get("session_id")
+        merged = dict(corr.get("metadata") or {})
+        merged.update(extra_metadata or {})   # caller's keys win on conflict
+        extra_metadata = merged
 
     tags: list[str] = []
     if tier:     tags.append(f"tier:{tier}")

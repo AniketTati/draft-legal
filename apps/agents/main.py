@@ -44,6 +44,33 @@ app.add_middleware(
 
 
 @app.middleware("http")
+async def bind_trace_correlation(request: Request, call_next):
+    """Bind an inbound correlation id to this request's Langfuse traces.
+
+    Endpoints like /classify and /extract_obligations have no thread or session
+    of their own, so their traces were unaddressable: you could see them in the
+    dashboard but not say "the trace produced by THAT request". The eval harness
+    (scripts/evals/langfuse) needs exactly that to attach a dataset run and
+    scores to the real trace rather than to a stand-in, and support debugging
+    wants the same thing for one customer's bad extraction.
+
+    Purely additive: no header, no behaviour change. A chat turn's own thread_id
+    still wins over this — see get_callback.
+    """
+    token = tracing.set_correlation(
+        session_id=request.headers.get("x-eval-session-id"),
+        metadata={k: v for k, v in {
+            "eval_run": request.headers.get("x-eval-run"),
+            "caller": request.headers.get("x-internal-service"),
+        }.items() if v},
+    )
+    try:
+        return await call_next(request)
+    finally:
+        tracing.reset_correlation(token)
+
+
+@app.middleware("http")
 async def require_internal_secret(request: Request, call_next):
     """Gate every request behind the shared service-to-service secret.
 

@@ -5,6 +5,10 @@ token counts, latency, and cost, grouped into a session per chat thread. That
 is what turns "the agent gave a weird answer" from a guess into something you
 can open and read.
 
+> Tracing is what this document covers. For **evaluation** — golden datasets,
+> LLM-as-a-judge, dataset runs, online scoring of production traces — see
+> [LANGFUSE-EVALS.md](LANGFUSE-EVALS.md).
+
 **Two deployments, one code path.** The agents service reads three environment
 variables and traces to whatever is behind them. It does not know or care which
 kind of Langfuse it is talking to.

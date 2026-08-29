@@ -1,0 +1,96 @@
+{
+  "dataset": "draftlegal-extraction",
+  "description": "Document understanding: contract-type classification and obligation extraction. Deterministic scoring wherever the answer is a known value; the judge only grades obligation phrasing.",
+  "metadata": {
+    "capability": "extraction",
+    "owner": "agents",
+    "seam": "agents-service HTTP"
+  },
+  "items": [
+    {
+      "id": "clf-nda-mutual",
+      "target": "classify",
+      "input": {
+        "plainText": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement (this \"Agreement\") is entered into as of 14 March 2025 by and between Northwind Systems Inc., a Delaware corporation (\"Northwind\"), and Calder Analytics Ltd, a company registered in England and Wales (\"Calder\"). Each party may disclose to the other certain confidential and proprietary information. The receiving party shall hold all Confidential Information in strict confidence and shall not disclose it to any third party for a period of three (3) years from the date of disclosure."
+      },
+      "expectedOutput": { "contractType": "NDA" },
+      "scorers": ["field_match:contractType", "not_empty:reason", "latency_ms"],
+      "metadata": { "addedAt": "2026-08-29", "source": "handwritten", "difficulty": "easy", "signal": "explicit title" }
+    },
+    {
+      "id": "clf-msa-services",
+      "target": "classify",
+      "input": {
+        "plainText": "MASTER SERVICES AGREEMENT\n\nThis Master Services Agreement (the \"Agreement\") is made effective 1 January 2026 between Helio Cloud Inc. (\"Provider\") and Brightline Logistics LLC (\"Customer\"). Provider shall perform the services described in one or more Statements of Work executed by the parties and incorporated herein. This Agreement governs all such Statements of Work and sets out the general terms applicable to the ongoing provision of services, including fees, term and termination, limitation of liability, and indemnification."
+      },
+      "expectedOutput": { "contractType": "MSA" },
+      "scorers": ["field_match:contractType", "latency_ms"],
+      "metadata": { "addedAt": "2026-08-29", "source": "handwritten", "difficulty": "easy", "signal": "explicit title" }
+    },
+    {
+      "id": "clf-dpa-gdpr",
+      "target": "classify",
+      "input": {
+        "plainText": "DATA PROCESSING ADDENDUM\n\nThis Data Processing Addendum (\"DPA\") forms part of the agreement between the parties. The Customer is the Controller and the Vendor is the Processor within the meaning of Regulation (EU) 2016/679 (\"GDPR\"). The Processor shall process Personal Data only on documented instructions from the Controller, shall ensure that persons authorised to process the Personal Data are bound by confidentiality, and shall implement the technical and organisational measures set out in Annex II. Sub-processors are listed in Annex III and the Controller shall be notified of any intended changes."
+      },
+      "expectedOutput": { "contractType": "DATA_PROCESSING" },
+      "scorers": ["field_match:contractType", "latency_ms"],
+      "metadata": { "addedAt": "2026-08-29", "source": "handwritten", "difficulty": "medium", "signal": "GDPR controller/processor language" }
+    },
+    {
+      "id": "clf-sow-untitled",
+      "target": "classify",
+      "input": {
+        "plainText": "SCHEDULE 1\n\nContractor will design and deliver a data migration from the Customer's legacy warehouse to the new platform. Deliverables: (a) migration plan by 15 April 2026; (b) staged migration of all historical records; (c) post-migration validation report. The engagement is estimated at 240 hours at a blended rate of USD 185 per hour, invoiced monthly in arrears. This Schedule is governed by and incorporated into the Master Services Agreement between the parties dated 1 January 2026."
+      },
+      "expectedOutput": { "contractType": "SOW" },
+      "scorers": ["field_match:contractType", "latency_ms"],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "no title — must infer from deliverables + rate + incorporation into an MSA"
+      }
+    },
+    {
+      "id": "obl-saas-payment-and-notice",
+      "target": "obligations",
+      "input": {
+        "contractType": "MSA",
+        "effectiveDate": "2026-01-01",
+        "plainText": "5. FEES AND PAYMENT. Customer shall pay each invoice within thirty (30) days of the invoice date. Late amounts accrue interest at 1.5% per month.\n\n9. TERM AND RENEWAL. The initial term is twelve (12) months from the Effective Date and renews automatically for successive twelve (12) month periods unless either party gives written notice of non-renewal at least sixty (60) days before the end of the then-current term.\n\n11. SECURITY REPORTING. Provider shall notify Customer of any Security Incident affecting Customer Data without undue delay and in any event within seventy-two (72) hours of becoming aware of it."
+      },
+      "expectedOutput": {
+        "obligations": [
+          { "summary": "Pay invoices within 30 days" },
+          { "summary": "Give 60 days written notice to avoid auto-renewal" },
+          { "summary": "Notify customer of security incidents within 72 hours" }
+        ]
+      },
+      "scorers": ["not_empty:obligations", "json_subset", "judge:correctness", "latency_ms"],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "note": "json_subset only asserts the COUNT for arrays; judge:correctness is what checks the three duties are actually the ones found"
+      }
+    },
+    {
+      "id": "obl-none-present",
+      "target": "obligations",
+      "input": {
+        "contractType": "NDA",
+        "effectiveDate": "2026-03-14",
+        "plainText": "12. GOVERNING LAW. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles.\n\n13. ENTIRE AGREEMENT. This Agreement constitutes the entire agreement between the parties with respect to its subject matter and supersedes all prior negotiations, understandings and agreements."
+      },
+      "expectedOutput": { "obligations": [] },
+      "scorers": ["judge:correctness"],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "note": "The negative case. Boilerplate with no duties, no dates, no deliverables — an extractor that must find something will invent an obligation here. Corpora without a negative case cannot catch that."
+      }
+    }
+  ]
+}
