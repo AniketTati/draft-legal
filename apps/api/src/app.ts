@@ -9,7 +9,7 @@ import multipart from '@fastify/multipart'
 // @ts-ignore — @bull-board v5 has no types/exports field; works at runtime
 import { createBullBoard } from '@bull-board/api'
 // @ts-ignore
-import { BullMQAdapter } from '@bull-board/api/bullMQAdapter'
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter.js'
 // @ts-ignore
 import { FastifyAdapter } from '@bull-board/fastify'
 

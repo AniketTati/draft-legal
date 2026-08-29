@@ -296,8 +296,18 @@ jobs:
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -r requirements.txt
 
-      - name: Build the API
-        run: pnpm --filter api build
+      # No `pnpm --filter api build` + `node dist/index.js`.
+      #
+      # The first CI run of this job failed exactly there, and the Dockerfile
+      # already says why (see its header): `@clm/types` resolves its
+      # main/exports to `src/index.ts`, so the compiled output imports
+      # TypeScript at runtime. Running `dist` is explicitly not a supported
+      # path yet — it is tracked as Wave 4 packaging work.
+      #
+      # So start it the way PRODUCTION does. The Dockerfile's CMD is
+      # `node --import tsx src/index.ts`, which also matches `pnpm dev`
+      # one-to-one, so this job exercises the same module graph the product
+      # ships rather than one nothing runs.
 
       - name: Start the agents service in replay mode
         working-directory: apps/agents
@@ -325,7 +335,7 @@ jobs:
       - name: Start the API
         working-directory: apps/api
         run: |
-          node dist/index.js > /tmp/api.log 2>&1 &
+          node --import tsx src/index.ts > /tmp/api.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -sf http://localhost:3001/health > /dev/null; then exit 0; fi
             sleep 1
