@@ -29,7 +29,7 @@
  */
 import { check, report, section } from '../week-zero/lib/harness.mjs'
 import {
-  scoreMultiTurn, GRACEFUL_EMPTY, NULL_ANSWER_PHRASE,
+  scoreMultiTurn, GRACEFUL_EMPTY, NULL_ANSWER_PHRASE, WRITE_TOOLS,
 } from '../persona-tests/lib-multi.mjs'
 
 /** Build the shape askAgent returns, so these cases stay honest about the
@@ -219,6 +219,93 @@ section('9. shrugPass requires an actual pass')
     'shrug counts must be a subset of passes or the two numbers cannot be read together')
   check('…while still recording what the bypass suppressed', v.suppressed.length > 0,
     'suppression is a property of the reply, not of the verdict')
+}
+
+// ─── 10. notHallucinated fires on a claimed write, not on silence ───────────
+
+section('10. A claimed write with no write tool is a fabrication')
+{
+  const turn = {
+    ask: 'Draft a mutual NDA for Plaid.',
+    expect: {
+      expectedTools: ['contract_create_from_template', 'contract_search'],
+      notHallucinated: ['i have created', "i've created", 'has been created'],
+    },
+  }
+
+  // THE CASE THAT WAS INERT. Every corpus row using notHallucinated lists
+  // SEARCH_TOOLS in expectedTools, so this exact shape — search, find nothing,
+  // then claim the draft exists — passed. `thisTurn.size === 0` was never true.
+  const lied = score(turn, reply(
+    "I've created the NDA for Plaid and saved it to your drafts.",
+    { tools: ['contract_search'] },
+  ))
+  check('claiming a write after only a READ tool fails', lied.ok === false,
+    'this is the product\'s only fabrication test, and a single read call used to disarm it')
+  check('…and the failure names the missing write', lied.fails.some(f => /no write tool/.test(f)),
+    JSON.stringify(lied.fails))
+
+  const wrote = score(turn, reply(
+    "I've created the NDA for Plaid.",
+    { tools: ['contract_create_from_template'] },
+  ))
+  check('claiming a write after a real write passes', wrote.ok === true, wrote.fails.join('; '))
+
+  const silent = score(turn, reply(
+    'Three NDA templates are available; which would you like?',
+    { tools: ['contract_search'] },
+  ))
+  check('not claiming a write is fine with no write tool', silent.ok === true, silent.fails.join('; '))
+
+  // The set must be the apply-RPC one. The confirm-gate set and the prompt's
+  // prose list both EXCLUDE contract_create_from_template, which is the tool
+  // all five corpus rows are about — scoping to either makes them unsatisfiable.
+  check('contract_create_from_template counts as a write',
+    WRITE_TOOLS.has('contract_create_from_template'),
+    'the confirm-gate set omits it; using that set would make every notHallucinated row impossible to pass')
+  for (const t of ['contract_search', 'clause_search', 'portfolio_search', 'counterparty_get']) {
+    check(`${t} does not count as a write`, !WRITE_TOOLS.has(t))
+  }
+}
+
+// ─── 11. Latency is reported, never mixed into correctness ──────────────────
+
+section('11. A slow turn is slow, not wrong')
+{
+  const turn = {
+    ask: 'Show all carrier agreements.',
+    expect: { expectedTools: ['contract_search'], mustMentionAny: ['carrier'], maxLatencyMs: 60_000 },
+  }
+  const slow = score(turn, reply(
+    'Three carrier agreements include a fuel surcharge cap: Maersk, MSC and CMA CGM.',
+    { tools: ['contract_search'], latencyMs: 95_000 },
+  ))
+
+  // Latency used to land in the same `fails` array as "text missing". A slow CI
+  // runner therefore failed rows in CORRELATED BURSTS, which invalidates any
+  // interval over the corpus — and would have recorded infrastructure variance
+  // as model variance in the noise floor, inflating it permanently.
+  check('a correct but slow answer still passes on correctness', slow.ok === true,
+    slow.fails.join('; ') || 'ok')
+  check('…and no latency string leaks into fails',
+    !slow.fails.some(f => /latency/i.test(f)), JSON.stringify(slow.fails))
+  check('…while the breach IS reported', slow.overBudget === true,
+    'separating them must not mean losing the signal')
+  check('…with the numbers to act on',
+    slow.latencyMs === 95_000 && slow.latencyBudgetMs === 60_000)
+
+  const fast = score(turn, reply(
+    'Three carrier agreements include a fuel surcharge cap: Maersk, MSC and CMA CGM.',
+    { tools: ['contract_search'], latencyMs: 1_200 },
+  ))
+  check('a fast turn is not flagged', fast.overBudget === false)
+
+  const noBudget = score(
+    { ask: 'x', expect: { mustMentionAny: ['carrier'] } },
+    reply('carrier', { latencyMs: 999_999 }),
+  )
+  check('a row with no budget is never over it', noBudget.overBudget === false,
+    'absence of a budget must not read as a breach')
 }
 
 report('E14 grader truth')

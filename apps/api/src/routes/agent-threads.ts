@@ -26,6 +26,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { takeTurnProvenance } from '../lib/turn-provenance.js'
 
 // The API calling ITSELF, so localhost plus its own port is the correct value
 // and needs no deploy config. It used to read API_URL ?? AGENTS_API_URL ??
@@ -130,16 +131,23 @@ const ApplyActionSchema = z.object({
 
 const AppendTurnSchema = z.object({
   userMessage: z.string().min(1).max(10_000),
+  // PROVENANCE IS NOT ACCEPTED FROM THE CLIENT.
+  //
+  // These seven fields used to be optional here and were persisted verbatim, so
+  // the record of which model gave legal advice was whatever the browser
+  // claimed — forgeable by any authenticated user. It was already false in
+  // practice: the rail sent a hardcoded 'gpt-4.1-mini' regardless of what ran.
+  //
+  // `.strict()` REJECTS them rather than stripping them. Silently ignoring
+  // would leave both clients "working" while sending values that go nowhere,
+  // which is how the hardcoded literal survived unnoticed for so long. A 400 is
+  // the honest answer and it fails loudly during the client change.
+  //
+  // The real values come from turn-provenance.ts, stashed by the chat proxy
+  // from the agents service's done frame.
   assistant:   z.object({
-    content:      z.string(),
-    provider:     z.string().optional(),
-    model:        z.string().optional(),
-    tier:         z.string().optional(),
-    inputTokens:  z.number().int().optional(),
-    outputTokens: z.number().int().optional(),
-    costUsd:      z.number().optional(),
-    traceId:      z.string().optional(),
-  }),
+    content: z.string(),
+  }).strict(),
   toolCalls: z.array(z.object({
     id:        z.string().optional(),            // SSE id; kept for cross-ref
     toolName:  z.string().min(1),
@@ -269,6 +277,11 @@ export async function agentThreadRoutes(app: FastifyInstance) {
       return reply.status(404).send({ detail: 'Thread not found' })
     }
 
+    // What actually answered, stashed by the chat proxy from the agents
+    // service's done frame. Read-and-delete: one turn's provenance belongs to
+    // exactly one turn. The rail uses sessionId == threadId (agents.ts:111).
+    const prov = await takeTurnProvenance(orgId, threadId)
+
     // Single transaction: user message + assistant message + tool_calls +
     // thread title backfill + updatedAt bump. If any insert fails, the whole
     // turn is rejected — we never end up with a half-persisted exchange.
@@ -286,13 +299,12 @@ export async function agentThreadRoutes(app: FastifyInstance) {
           threadId,
           role: 'assistant',
           content: [{ type: 'text', text: body.assistant.content }],
-          provider: body.assistant.provider,
-          model:    body.assistant.model,
-          tier:     body.assistant.tier,
-          inputTokens:  body.assistant.inputTokens,
-          outputTokens: body.assistant.outputTokens,
-          costUsd:      body.assistant.costUsd,
-          traceId:      body.assistant.traceId,
+          // Server-derived, from what the agents service reported actually
+          // answered. Null when the turn did not go through /agent/chat (or the
+          // stash expired), which is honest — better than a plausible lie.
+          provider: prov?.provider ?? null,
+          model:    prov?.model    ?? null,
+          tier:     prov?.tier     ?? null,
         },
       })
 

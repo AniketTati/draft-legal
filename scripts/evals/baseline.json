@@ -5,7 +5,7 @@
   "checks": {
     "e1-gate-bites": {
       "status": "pass",
-      "total": 29
+      "total": 32
     },
     "l6-dead-controls": {
       "status": "pass",
@@ -25,7 +25,11 @@
     },
     "e14-grader-truth": {
       "status": "pass",
-      "total": 39
+      "total": 54
+    },
+    "e15-corpus-clock": {
+      "status": "pass",
+      "total": 10
     }
   }
 }

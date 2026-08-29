@@ -45,6 +45,13 @@ export const CHECKS = [
   { id: 'e14-grader-truth',   tier: 't1', needs: [],
     what: 'the multi-turn grader reports HOW a turn passed, not just that it did' },
 
+  // t1: pure static analysis of the seed script, the corpus and the runner. The
+  // DRIFT assertion deliberately lives in run-personas.mjs instead — a check
+  // that goes red on a calendar date with no code change is a flaky gate, and
+  // flaky gates get `continue-on-error`d.
+  { id: 'e15-corpus-clock',   tier: 't1', needs: [],
+    what: 'the persona runner refuses to score a corpus whose dates have drifted out from under its questions' },
+
   // ── t2 — needs the stack, but no model call ─────────────────────────────
   { id: 'l4-draft-tenancy',   tier: 't2', needs: ['db', 'api'],
     what: 'drafting cannot write into another org — the cross-tenant write' },
@@ -128,6 +135,26 @@ export const CHECKS = [
   // is a task rather than a manifest edit.
   { id: 'l11-cost-cap',        tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'the daily cost cap fails closed and BYOK is not bypassed' },
+  // t3 because of ONE assertion: the anti-fail-always control makes a real
+  // classify_clause call against a clean org, and without it "fails closed"
+  // could silently become "fails always" while every other assertion here still
+  // passed. Sections 1-4 are static and would run at t1; splitting them is a
+  // task rather than a manifest edit, and the behavioural money check — a
+  // poisoned override answered on the platform key — is the one that matters.
+  // t2: it drives review-queue + contracts through the real API and asserts on
+  // the column, but never reaches a model. The normaliser is exercised through
+  // GET /contracts/:id rather than by importing it, so this tests the read
+  // boundary the product actually uses.
+  // t2: it imports the compiled readDoneProvenance and drives the turn-append
+  // endpoint, but never reaches a model — the done frames it parses are
+  // synthetic. Requires `pnpm --filter api build` first, like any check that
+  // imports from dist.
+  { id: 'l18-provenance-unforgeable', tier: 't2', needs: ['db', 'api'],
+    what: 'the browser cannot say which model gave legal advice, and both chat surfaces disclose one is answering' },
+  { id: 'l17-confidence-provenance', tier: 't2', needs: ['db', 'api'],
+    what: 'a human verdict never destroys the extractor confidence it was made against' },
+  { id: 'l16-byok-fail-closed', tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+    what: 'a BYOK resolution failure refuses instead of billing the platform key' },
   { id: 'l12-memory-budget',   tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'session memory is bounded and listings survive into the next turn' },
   { id: 'l6b-ui-verify',       tier: 't3', needs: ['db', 'api', 'web', 'agents', 'model', 'playwright'],

@@ -48,6 +48,30 @@ export const ACKNOWLEDGED_EMPTY =
  *  count with real answers. Caught by e14 section 8. */
 export const NULL_ANSWER_PHRASE = /^(no\b|not\b|none\b|n\/a\b|couldn|cannot\b|unable\b|without\b)/i
 
+/**
+ * The tools that MUTATE something, mirrored from the WRITE_TOOLS map in
+ * apps/api/src/routes/agent-threads.ts — the only programmatic classification
+ * in the repo, and the one the apply-RPC permission gate uses.
+ *
+ * NOT the confirm-gate set (a tool is confirm-gated iff it returns
+ * awaitingConfirmation) and NOT the prompt's prose list. Both of those exclude
+ * `contract_create_from_template`, which is the very tool every
+ * `notHallucinated` row in the corpus is about — scoping to either would make
+ * the check unsatisfiable on all five.
+ *
+ * `l13-dead-names` is the pattern for keeping mirrors honest; if this drifts,
+ * e14 section 10 is where it shows up.
+ */
+export const WRITE_TOOLS = new Set([
+  'comment_add',
+  'request_create',
+  'contract_update',
+  'approval_route',
+  'contract_create_from_template',
+  'redline_apply',
+  'approval_decide',
+])
+
 export const TAXONOMY = {
   SINGLE:        'single-shot retrieval',
   NARROW:        'multi-turn narrowing',
@@ -159,18 +183,35 @@ export function scoreMultiTurn({ turn, response, index = 0, turnTools, cumulativ
   }
 
   if (turn.expect?.notHallucinated) {
+    // Fires when the reply CLAIMS a write happened and no write tool ran.
+    //
+    // This used to require `thisTurn.size === 0` — ANY tool call disarmed it.
+    // Every row using it lists SEARCH_TOOLS in expectedTools, so a turn that
+    // ran contract_search, found nothing, then said "I've created the draft"
+    // passed. It is the product's only fabrication test and it was inert on
+    // all five rows that use it.
+    const wroteSomething = [...thisTurn].some(t => WRITE_TOOLS.has(t))
     for (const phrase of turn.expect.notHallucinated) {
-      // The phrase being there is bad ONLY if no tool was called this turn
-      // (e.g. "I created the draft" without contract_create_from_template).
-      if (lower.includes(phrase.toLowerCase()) && thisTurn.size === 0) {
-        fails.push(`hallucinated: "${phrase}" with no tool call`)
+      if (lower.includes(phrase.toLowerCase()) && !wroteSomething) {
+        fails.push(`hallucinated: "${phrase}" with no write tool (turn tools: [${[...thisTurn].join(',') || 'none'}])`)
       }
     }
   }
 
-  if (turn.expect?.maxLatencyMs && response.latencyMs > turn.expect.maxLatencyMs) {
-    fails.push(`latency: ${response.latencyMs}ms > ${turn.expect.maxLatencyMs}ms`)
-  }
+  // Latency does NOT go in `fails`.
+  //
+  // It shared a denominator with correctness, so a slow CI runner or a degraded
+  // provider failed rows in CORRELATED BURSTS — which invalidates any binomial
+  // interval over the corpus and makes a latency regression indistinguishable
+  // from a correctness one. Worst of all it would have polluted the noise-floor
+  // measurement, recording infrastructure variance as model variance and
+  // producing a permanently inflated floor that hides real regressions.
+  //
+  // Reported separately, with its own budget, per docs/38's own rule that
+  // operational metrics stay out of the quality score.
+  const overBudget = Boolean(
+    turn.expect?.maxLatencyMs && response.latencyMs > turn.expect.maxLatencyMs,
+  )
 
   if (turn.expect?.minReplyChars && text.length < turn.expect.minReplyChars) {
     if (gracefulEmpty) suppressed.push(`minReplyChars ${turn.expect.minReplyChars}`)
@@ -183,6 +224,9 @@ export function scoreMultiTurn({ turn, response, index = 0, turnTools, cumulativ
   return {
     ok,
     fails,
+    latencyMs: response.latencyMs,
+    latencyBudgetMs: turn.expect?.maxLatencyMs ?? null,
+    overBudget,
     gracefulEmpty,
     suppressed,
     nullAnswerOnly,
@@ -256,6 +300,9 @@ export async function runConversation({ token, persona, conversation }) {
       suppressed: verdict.suppressed,
       nullAnswerOnly: verdict.nullAnswerOnly,
       shrugPass: verdict.shrugPass,
+      // Reported, never folded into ok. See scoreMultiTurn.
+      latencyBudgetMs: verdict.latencyBudgetMs,
+      overBudget: verdict.overBudget,
     })
     priorTurnsText.push(r.assistantText ?? '')
   }
@@ -291,6 +338,9 @@ export async function runConversations({ token, persona, conversations, onProgre
   // Of the turns that passed, how many did so without the rubric checking
   // anything — the agent declined and the bypass waved it through.
   const turnShrug = results.reduce((s, r) => s + r.turns.filter(t => t.shrugPass).length, 0)
+  // Latency is counted, never subtracted from turnPass — a slow correct answer
+  // is slow, not wrong, and mixing them makes both numbers unreadable.
+  const turnOverBudget = results.reduce((s, r) => s + r.turns.filter(t => t.overBudget).length, 0)
   return {
     persona,
     convTotal: results.length,
@@ -298,6 +348,7 @@ export async function runConversations({ token, persona, conversations, onProgre
     turnTotal,
     turnPass,
     turnShrug,
+    turnOverBudget,
     results,
   }
 }

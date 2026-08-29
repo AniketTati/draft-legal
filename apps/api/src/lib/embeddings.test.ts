@@ -2,7 +2,7 @@
  * Tests for the embeddings provider routing + reranker fallback (P7.7.1).
  *
  * Network-dependent code (actual Voyage / OpenAI calls) is exercised
- * via scripts/p77-1-verify.mjs when keys are present; these unit tests
+ * via scripts/archive/p77-1-verify.mjs when keys are present; these unit tests
  * cover only the pure logic that we don't want to break silently.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'

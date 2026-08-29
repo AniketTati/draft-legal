@@ -1,3 +1,4 @@
+import type { FieldConfidenceEntry, FieldReview } from './models'
 import { z } from 'zod'
 import { ContractType, RequestStatus, SystemRole, PermissionAction, PermissionResource, PermissionScope } from './enums'
 
@@ -46,6 +47,69 @@ function toPercentScale(score: number): number {
 export function normalizeRiskScore(score: number | null | undefined): number | null {
   if (score == null || Number.isNaN(score)) return null
   return toPercentScale(score)
+}
+
+/**
+ * Fold a stored `fieldConfidence` entry into the current shape on READ.
+ *
+ * Two shapes exist in the database and will for as long as un-backfilled rows
+ * do. The old one recorded a human verdict by OVERWRITING the extractor's
+ * confidence — verify wrote 1, reject wrote 0 — and stamped verifiedAt /
+ * verifiedBy (reject stamped both pairs, so `verifiedBy` cannot be used to tell
+ * them apart; `rejectedAt` is the only reliable discriminator).
+ *
+ * Old rows therefore come back with `confidence: null`, not the stored 1 or 0.
+ * Keeping the 1 would mean every verified field forever claims the extractor
+ * was certain, which poisons exactly the calibration dataset this change exists
+ * to build. `null` is honest: that value is gone and cannot be recovered.
+ *
+ * Tolerating both shapes on read is what makes the backfill optional rather
+ * than a migration window — see apps/api/scripts/backfill-field-confidence-review.ts.
+ */
+export function normalizeFieldConfidenceEntry(raw: unknown): FieldConfidenceEntry | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const e = raw as Record<string, unknown>
+
+  // Already the new shape: a nested review, or no human verdict at all.
+  const alreadyNew = 'review' in e || !('verifiedAt' in e || 'rejectedAt' in e)
+  if (alreadyNew) {
+    return {
+      confidence: typeof e.confidence === 'number' ? e.confidence : null,
+      quote:      (e.quote as string | null) ?? null,
+      section:    (e.section as string | null) ?? null,
+      issue:      (e.issue as string | null) ?? null,
+      ...(e.review ? { review: e.review as FieldReview } : {}),
+    }
+  }
+
+  // Old shape. `rejectedAt` is the discriminator, because reject wrote
+  // verifiedAt/verifiedBy too so the queue would skip the row.
+  const rejected = 'rejectedAt' in e && e.rejectedAt != null
+  return {
+    confidence: null,
+    quote:      (e.quote as string | null) ?? null,
+    section:    (e.section as string | null) ?? null,
+    issue:      (e.issue as string | null) ?? null,
+    review: {
+      verdict:  rejected ? 'rejected' : 'verified',
+      at:       String((rejected ? e.rejectedAt : e.verifiedAt) ?? ''),
+      by:       String((rejected ? e.rejectedBy : e.verifiedBy) ?? ''),
+      migrated: true,
+    },
+  }
+}
+
+/** Map form of the above, for a whole contract's fieldConfidence column. */
+export function normalizeFieldConfidence(
+  raw: unknown,
+): Record<string, FieldConfidenceEntry> {
+  if (raw == null || typeof raw !== 'object') return {}
+  const out: Record<string, FieldConfidenceEntry> = {}
+  for (const [field, entry] of Object.entries(raw as Record<string, unknown>)) {
+    const normalized = normalizeFieldConfidenceEntry(entry)
+    if (normalized) out[field] = normalized
+  }
+  return out
 }
 
 /**

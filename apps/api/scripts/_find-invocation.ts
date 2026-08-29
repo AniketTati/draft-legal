@@ -1,6 +1,6 @@
 /**
  * Dump the most-recent SkillInvocation row for a given threadId. Used by
- * scripts/d41-verify.mjs (top-level await isn't available via `tsx -e`).
+ * scripts/archive/d41-verify.mjs (top-level await isn't available via `tsx -e`).
  */
 import { PrismaClient } from '@prisma/client'
 

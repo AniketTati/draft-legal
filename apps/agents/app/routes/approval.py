@@ -82,18 +82,27 @@ async def _process_approval_summary(
         # 4. Run the 3-step LangGraph pipeline
         key_terms = contract.get("keyTerms") or {}
         risk_factors = contract.get("riskFactors") or []
-        result = await run_approval_summary(
-            plain_text=plain_text,
-            contract_type=contract.get("type", "OTHER"),
-            contract_value=float(contract["value"]) if contract.get("value") else None,
-            contract_title=contract.get("title", "Contract"),
-            counterparty_name=contract.get("counterpartyName"),
-            clauses=clauses,
-            key_terms=key_terms,
-            risk_factors=risk_factors,
-            risk_score=contract.get("riskScore"),
-            org_id=org_id,
-        )
+        try:
+            result = await run_approval_summary(
+                plain_text=plain_text,
+                contract_type=contract.get("type", "OTHER"),
+                contract_value=float(contract["value"]) if contract.get("value") else None,
+                contract_title=contract.get("title", "Contract"),
+                counterparty_name=contract.get("counterpartyName"),
+                clauses=clauses,
+                key_terms=key_terms,
+                risk_factors=risk_factors,
+                risk_score=contract.get("riskScore"),
+                org_id=org_id,
+            )
+        except RouterRefusal as e:
+            # Runs in a BackgroundTask. Returning without PATCHing leaves the
+            # instance with no aiSummary, and ApprovalCard already renders "no
+            # summary" after its grace window — an honest outcome. The old
+            # behaviour wrote "Summary unavailable (RuntimeError)" into
+            # aiSummary, which renders AS the summary.
+            logger.error("[approval] refusing instanceId=%s — %s", instance_id, e)
+            return
 
         if result.get("error"):
             logger.warning("[approval-summary] pipeline had error: %s", result["error"])

@@ -63,6 +63,48 @@ export interface AuthTokens {
   expiresIn: number
 }
 
+/**
+ * A human's verdict on one extracted field.
+ *
+ * Deliberately NESTED inside the entry rather than living in a sibling map at
+ * the top level of `fieldConfidence`. Two readers iterate that object's keys as
+ * field names (review-queue.ts and ContractDetailPage), and review-queue.ts
+ * filters rows with a Prisma `{ not: {} }` — so any top-level key would be read
+ * as a field and would make every analysed contract match that filter.
+ */
+export interface FieldReview {
+  verdict: 'verified' | 'rejected'
+  at:      string
+  by:      string
+  /** Set only by the backfill, on rows whose extractor confidence was already
+   *  destroyed and cannot be recovered. Lets those rows be excluded from a
+   *  calibration curve explicitly rather than silently skewing it. */
+  migrated?: boolean
+}
+
+/**
+ * One field's extraction result plus, if a human has ruled on it, their verdict.
+ *
+ * `confidence` is the EXTRACTOR's and is never overwritten by a human action.
+ * It used to be: verify wrote 1 and reject wrote 0, which destroyed the only
+ * variable you would regress a human verdict against — and did so retroactively,
+ * because the value is gone the moment someone clicks.
+ *
+ * That also collided with a real extractor output: review_agent.py is instructed
+ * to emit confidence 1.0 for "certain absence" when a field is genuinely not in
+ * the document, so 1 could never have distinguished AI-certain from
+ * human-verified. The two are now orthogonal fields.
+ *
+ * `null` means unknown — used by the backfill for rows already clobbered.
+ */
+export interface FieldConfidenceEntry {
+  confidence: number | null
+  quote?:     string | null
+  section?:   string | null
+  issue?:     string | null
+  review?:    FieldReview
+}
+
 export interface Contract {
   id: string
   orgId: string
@@ -82,7 +124,7 @@ export interface Contract {
   overallConfidence?: number
   summary?: string
   keyTerms: Record<string, unknown>
-  fieldConfidence: Record<string, unknown>
+  fieldConfidence: Record<string, FieldConfidenceEntry>
   analysisStatus: string
   analysisError?: string
   tags: string[]

@@ -131,8 +131,15 @@ wired them"**.
   `t.args`; no grader reads it.
 - **No noise floor.** Nobody has run the corpus twice unchanged, so no delta can
   be called real.
-- **Ground truth moves.** The corpus is re-anchored to today (`c9978cd`), so
-  date-dependent asks have no stable answer.
+- **Ground truth decays** — *corrected 2026-08-18; the original claim here was
+  wrong.* The corpus does **not** re-anchor to today: `seed-personas.ts` pins it
+  to 2026-04-27 and `SEED_TODAY` is an opt-in override, so a same-day re-run is
+  stable. The real problem is the second clock — the data is pinned while the
+  agent answers against the real one. Eleven time-relative asks ("expiring in
+  the next 30 days") select against windows that slide away from the data daily.
+  At 123 days of drift against a 30-day tightest window, those eleven have been
+  measuring nothing for roughly three months. `run-personas.mjs` now refuses to
+  run in that state; `e15-corpus-clock` gates that it still does.
 
 ---
 

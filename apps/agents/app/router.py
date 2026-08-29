@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import asyncio
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -136,7 +137,21 @@ def _tier_model_for(provider: str, tier: Tier) -> str | None:
 
 # ─── Caller-pinned provider/model override ───────────────────────────────────
 
-class CostCapExceeded(RuntimeError):
+class RouterRefusal(RuntimeError):
+    """The router could not produce the configuration the caller asked for.
+
+    Substituting a different one is never the right answer. Every subclass is
+    raised rather than swallowed, and `resolve_llm` re-raises the whole family
+    before its blanket handler.
+
+    A base class rather than a set of siblings because ~11 downstream handlers
+    need `except RouterRefusal: raise` above their own `except Exception`. With
+    siblings, each of those grows a tuple that the next refusal type silently
+    drops out of.
+    """
+
+
+class CostCapExceeded(RouterRefusal):
     """The org has spent past its daily cap and the policy is `block`.
 
     Raised, never swallowed: the whole point of a cap is that the call does not
@@ -145,8 +160,47 @@ class CostCapExceeded(RuntimeError):
     """
 
 
-class ModelOverrideUnavailable(RuntimeError):
+class ModelOverrideUnavailable(RouterRefusal):
     """A caller-pinned provider has no model we can build for the tier."""
+
+
+class ProviderResolutionFailed(RouterRefusal):
+    """We hold an org_id but could not learn that org's configuration.
+
+    Falling back to `_platform_resolve` here reads the AGENTS SERVICE's own env.
+    It cannot see OrgAiSettings (the tier override) and cannot see OrgAiKey (the
+    BYOK key), so by construction it picks a provider the org did not choose and
+    pays with a key the org did not supply. For a self-hosted product whose
+    pitch is "your contracts never leave your servers", that is a disclosure
+    path, and it used to log a warning and proceed.
+
+    The legitimate platform path is not this one: Node already returns
+    `source: "platform"` in a 200 when an org has no BYOK key. Node is the only
+    component that can decide platform is correct for an org, and it does.
+
+    `reason` is a closed vocabulary so callers can act without parsing prose:
+        invalid_request  400 — version skew between two deployed services
+        no_provider      503 — org tier override names a provider with no key
+        unauthorized     401 — bad INTERNAL_SERVICE_SECRET
+        upstream_error   500 — Node bug or its database is down
+        transport             connect/timeout/DNS — the only retryable one
+        router_unconfigured   API_URL/secret unset in this service
+
+    The message must never carry an API key. `orchestrator.py` formats
+    exceptions as `f"{type(e).__name__}: {e}"` straight into a user-visible SSE
+    frame, so this string reaches a browser.
+    """
+
+    def __init__(self, org_id: str, tier: str, reason: str, status: int | None = None) -> None:
+        self.org_id = org_id
+        self.tier = tier
+        self.reason = reason
+        self.status = status
+        detail = f"status={status}" if status is not None else "no response"
+        super().__init__(
+            f"could not resolve AI provider for org={org_id} tier={tier} "
+            f"({reason}, {detail})"
+        )
 
 
 def _apply_override(
@@ -248,22 +302,39 @@ async def resolve_llm(
     # invisible, so say so rather than degrading quietly.
     if org_id and not (settings.api_url and settings.internal_service_secret):
         import logging
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).error(
             "[router] org_id=%s was supplied but API_URL/INTERNAL_SERVICE_SECRET are not "
-            "configured — per-org BYOK keys and tier overrides CANNOT be applied, and this "
-            "request will bill the platform key.", org_id,
+            "configured — per-org BYOK keys and tier overrides CANNOT be applied. Refusing "
+            "rather than billing the platform key.", org_id,
         )
+        raise ProviderResolutionFailed(org_id, tier, "router_unconfigured")
 
     if org_id and settings.api_url and settings.internal_service_secret:
         try:
-            return await _resolve_via_node(
-                org_id, tier, streaming,
-                trace_name=trace_name, user_id=user_id,
-                thread_id=thread_id, tool_name=tool_name,
-                extra_metadata=extra_metadata,
-                provider_override=provider_override,
-                model_override=model_override,
-            )
+            try:
+                return await _resolve_via_node(
+                    org_id, tier, streaming,
+                    trace_name=trace_name, user_id=user_id,
+                    thread_id=thread_id, tool_name=tool_name,
+                    extra_metadata=extra_metadata,
+                    provider_override=provider_override,
+                    model_override=model_override,
+                )
+            except (httpx.TransportError, httpx.TimeoutException):
+                # ONE retry, transport only. A 4xx/503 is a decision and
+                # retrying it just doubles the latency before the same refusal.
+                # Transport is different: a chat turn does up to seven resolves
+                # against a 5s timeout, so "Node restarted mid-deploy" must not
+                # become a data-integrity event now that we no longer degrade.
+                await asyncio.sleep(0.25)
+                return await _resolve_via_node(
+                    org_id, tier, streaming,
+                    trace_name=trace_name, user_id=user_id,
+                    thread_id=thread_id, tool_name=tool_name,
+                    extra_metadata=extra_metadata,
+                    provider_override=provider_override,
+                    model_override=model_override,
+                )
         except ModelOverrideUnavailable:
             # A bad caller-pinned override is a caller bug, not flaky infra —
             # don't mask it behind the platform fallback.
@@ -275,15 +346,30 @@ async def resolve_llm(
             # to seven LLM calls, so the Node proxy's per-request gate does not
             # cover it.
             raise
+        except RouterRefusal:
+            # Everything else in the family, including a ProviderResolutionFailed
+            # raised by a retry below. Listed after the two literal clauses above
+            # rather than replacing them: l11-cost-cap.mjs greps this file for
+            # `except CostCapExceeded:` followed by `raise`, and collapsing them
+            # would turn that check red on a correct fix.
+            raise
         except Exception as e:
-            # Node unreachable / bad secret / 503 — fall back to platform env
-            # so the agent doesn't hard-fail on transient infra. Logged loud
-            # so we notice misconfigurations.
+            # Node unreachable / bad secret / non-2xx. This used to fall back to
+            # _platform_resolve(), which reads THIS service's env — so an org's
+            # BYOK key and tier override were abandoned and their contract text
+            # went to whichever provider we happen to hold a key for, recorded
+            # as a log line. See ProviderResolutionFailed for why that is never
+            # the right answer once org_id is present.
             import logging
-            logging.warning("[router] Node resolve failed for org=%s tier=%s — falling back to platform env. Error: %s",
-                            org_id, tier, e)
+            reason, status = _classify_resolve_failure(e)
+            logging.getLogger(__name__).error(
+                "[router] Node resolve failed for org=%s tier=%s (%s, status=%s) — refusing. Error: %s",
+                org_id, tier, reason, status, e,
+            )
+            raise ProviderResolutionFailed(org_id, tier, reason, status) from e
 
-    # Fallback path (no org_id, or Node call failed)
+    # Platform path — reached ONLY when the caller supplied no org_id. A Node
+    # failure with an org_id present raises above rather than landing here.
     pick = _platform_resolve(tier)
     if not pick:
         raise RuntimeError(f"No provider configured for tier={tier}. Set OPENAI_API_KEY (or ANTHROPIC_API_KEY) in .env.")
@@ -296,6 +382,32 @@ async def resolve_llm(
         extra_metadata=extra_metadata,
         provider_override=provider_override, model_override=model_override,
     )
+
+
+def _classify_resolve_failure(e: Exception) -> tuple[str, int | None]:
+    """Map an exception from _resolve_via_node onto (reason, status).
+
+    The three HTTP statuses share one decision — stop — but they mean very
+    different operational things, and the value of telling them apart is the
+    message. "Your AI Config names bogus/model-x, which has no key" is
+    actionable; "resolve failed" is not.
+    """
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status == 400:
+        return "invalid_request", status
+    if status in (401, 403):
+        return "unauthorized", status
+    if status == 503:
+        return "no_provider", status
+    if status is not None and status >= 500:
+        return "upstream_error", status
+    if isinstance(e, (httpx.TransportError, httpx.TimeoutException)):
+        return "transport", None
+    if status is not None:
+        return "upstream_error", status
+    # KeyError/ValueError from a 200 whose body we could not read is a contract
+    # mismatch between the two services, not flaky infra.
+    return "invalid_request", None
 
 
 async def _resolve_via_node(

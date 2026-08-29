@@ -695,12 +695,21 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // Body:  { orgId: string, tier: Tier }
   // Returns: { provider, model, apiKey, source: 'platform'|'byok', tier }
   // Errors: 400 invalid input, 503 NoProviderAvailable
+  // Every error branch carries a machine-readable `error` code alongside the
+  // human `detail`. The 429 branch below had one; the others did not, so
+  // router.py could only distinguish "over budget" from everything else and
+  // lumped 400/500/503 into one blanket handler that fell back to the platform
+  // key. Those three mean very different things -- 400 is version skew between
+  // two deployed services and is never retryable; 503 is an org tier override
+  // naming a provider with no key, which an org admin can fix; 500 may be
+  // transient -- and the caller cannot say which without a code to switch on.
   app.post('/resolve', async (req, reply) => {
     let body
     try {
       body = ResolveSchema.parse(req.body)
     } catch (err) {
       return reply.status(400).send({
+        error:  'invalid_request',
         detail: 'Invalid request',
         issues: (err as { issues?: unknown }).issues ?? String(err),
       })
@@ -711,8 +720,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     } catch (err) {
       if (err instanceof NoProviderAvailable) {
         return reply.status(503).send({
-          detail: err.message,
-          tier: err.tier,
+          error:     'no_provider_available',
+          detail:    err.message,
+          tier:      err.tier,
           attempted: err.attempted,
         })
       }
@@ -729,7 +739,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         })
       }
       app.log.error({ err }, 'aiRouter resolve failed')
-      return reply.status(500).send({ detail: 'Internal error' })
+      return reply.status(500).send({ error: 'upstream_error', detail: 'Internal error' })
     }
   })
 

@@ -746,7 +746,7 @@ palette on detail pages for contract-scoped questions).
 - **~18 of 39 MAJORs cleared** directly; several more partially addressed (error handling, empty states)
 - **~12 of 44 MINORs cleared**
 - **3 new DELIGHT additions**: global search, Your-day band, Linear-style activity feed
-- **27 verify scripts** committed (`scripts/b61-verify.mjs` through `scripts/b627-verify.mjs`) — every change has a Playwright regression check
+- **27 verify scripts** committed (`scripts/archive/b61-verify.mjs` through `scripts/archive/b627-verify.mjs`) — every change has a Playwright regression check
 - **~120 screenshots** committed under `scripts/screenshots/b6/`
 
 ### Updated category scores (my estimate)

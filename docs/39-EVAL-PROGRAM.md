@@ -152,8 +152,14 @@ Nothing measured before this is interpretable.
 
 **Order matters and the intuitive order is wrong.**
 
-- The corpus re-anchors to today (`c9978cd`), so a re-run two days apart measures
-  date drift, not model variance. **Freeze to a snapshot first.**
+- ~~The corpus re-anchors to today, so a re-run measures date drift.~~
+  **Wrong — corrected 2026-08-18.** The anchor is FIXED at 2026-04-27 and
+  `SEED_TODAY` is opt-in, so a same-day re-run is stable and the noise floor is
+  *not* contaminated by this. What decays is the gap between pinned data and the
+  real clock: eleven time-relative asks now select against windows their data no
+  longer covers. That is a comparability problem across months, not a run-to-run
+  one — so it does not block the noise floor, and `run-personas.mjs` refuses
+  to score a corpus in that state rather than reporting a number from it.
 - On a corpus where a refusal passes 53 of 91 asks, **refusals are the stable
   outcome** — measuring flip rate before repairing the grader yields a falsely
   low number and calibrates the instrument against its own defect. **Repair

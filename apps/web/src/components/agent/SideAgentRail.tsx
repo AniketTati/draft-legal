@@ -135,6 +135,10 @@ export interface RailSkill {
   followUps:      string[]
 }
 
+/** Shared so both chat surfaces state it identically. */
+export const DISCLOSURE =
+  "You’re talking to an AI assistant. It can be wrong — check anything you rely on against the source."
+
 export function SideAgentRail() {
   // Persist open/closed — read eagerly so first paint doesn't flicker.
   // U.8 — default depends on viewport: at 2xl+ (≥1536px) the rail sits
@@ -768,12 +772,10 @@ export function SideAgentRail() {
             },
             body: JSON.stringify({
               userMessage: clean,
-              assistant: {
-                content: finalText,
-                provider: 'openai',
-                model: 'gpt-4.1-mini',
-                tier: 'default',
-              },
+              // Provenance is server-derived and the API now REJECTS these
+              // keys. They were hardcoded literals: every rail turn was
+              // persisted as openai/gpt-4.1-mini regardless of what answered.
+              assistant: { content: finalText },
               toolCalls,
             }),
           })
@@ -1944,10 +1946,23 @@ function SideAgentEmptyState({
         <AssistMark className="size-[11px]" />
       </div>
       <div className="text-body font-semibold text-ink-950">How can I help?</div>
-      <p className="text-[11px] text-ink-500 mt-1 max-w-[260px] mx-auto leading-relaxed">
+      {/* EU AI Act Art 50(1), applicable since 2026-08-02: a user must be told
+          they are interacting with an AI system unless it is obvious from
+          context. It has to be perceivable in the interaction itself, not in
+          terms of service — and BEFORE the first reply, which the per-message
+          "Machine-authored" marker cannot do. The copy below used to say "I'm
+          context-aware" in the first person with no statement that it is a
+          machine at all. */}
+      <p
+        data-testid="ai-disclosure"
+        className="text-[11px] text-assist-700 mt-1 max-w-[260px] mx-auto leading-relaxed"
+      >
+        {DISCLOSURE}
+      </p>
+      <p className="text-[11px] text-ink-500 mt-1.5 max-w-[260px] mx-auto leading-relaxed">
         {context
-          ? `I'm focused on this ${context.type} — start with one below or ask anything.`
-          : 'I\'m context-aware — the page you\'re on, the contract you\'re viewing, the matter you\'re working. Start with one below or type a question.'}
+          ? `Focused on this ${context.type} — start with one below or ask anything.`
+          : 'Context-aware: the page you\'re on, the contract you\'re viewing, the matter you\'re working. Start with one below or type a question.'}
       </p>
       <div className="mt-4 space-y-1.5 text-left max-w-[280px] mx-auto">
         {suggestions.map((s, i) => (

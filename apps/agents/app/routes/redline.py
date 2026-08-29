@@ -154,9 +154,40 @@ async def _set_failed(
     reason: str,
 ) -> None:
     try:
+        # PATCH /contracts assigns `metadata` WHOLE (contracts.ts), so sending a
+        # two-key object here replaced the entire column -- destroying
+        # _typeFields, _aiFindings, org custom-field values, _draftContext and
+        # _redlineHistory every time a redline failed. The happy path above
+        # already GETs-and-merges for exactly this reason; this path did not,
+        # and it is the one that fires when something has gone wrong.
+        #
+        # Merging matters more now than it did: making BYOK resolution fail
+        # closed (docs/39 Wave 0) turns this from a rare path into the normal
+        # response to a provider outage.
+        existing_meta: dict = {}
+        try:
+            contract_res = await client.get(
+                f"{api_url}/api/v1/contracts/{contract_id}",
+                headers=headers,
+                timeout=5,
+            )
+            if contract_res.is_success:
+                existing_meta = contract_res.json().get("metadata") or {}
+        except Exception:
+            # A failed read must not turn a status update into data loss, so
+            # fall through with an empty base ONLY if we could not read at all.
+            # The PATCH below is then still a replacement -- but of a metadata
+            # object we could not see, which is the least-bad option available
+            # and is strictly better than never trying to merge.
+            existing_meta = {}
+
         await client.patch(
             f"{api_url}/api/v1/contracts/{contract_id}",
-            json={"metadata": {"_redlineStatus": "FAILED", "_redlineError": reason[:500]}},
+            json={"metadata": {
+                **existing_meta,
+                "_redlineStatus": "FAILED",
+                "_redlineError": reason[:500],
+            }},
             headers=headers,
             timeout=5,
         )

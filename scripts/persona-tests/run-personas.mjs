@@ -35,6 +35,67 @@ if (personas.length === 0) {
   process.exit(1)
 }
 
+// ── Data-freshness precondition ─────────────────────────────────────────────
+//
+// seed-personas.ts pins the corpus to a fixed date so the 810 contracts are
+// reproducible. The agent, however, answers against the REAL clock. So an ask
+// like "expiring in the next 30 days" selects against a window that slides away
+// from the data every day and eventually selects nothing — while the rubric
+// still expects the contracts it was written against.
+//
+// Nothing fails when that happens. The row just stops measuring what it was
+// written to measure. This refuses to run instead, because a number produced
+// from a decayed corpus is worse than no number: it looks like a quality
+// signal and is not.
+//
+// The threshold is the TIGHTEST window the corpus asks for, not a round number
+// — that is the exact point at which the narrowest ask can no longer select
+// the set it was authored against.
+function assertCorpusIsFresh() {
+  const seedPath = path.join(__dirname, '../../apps/api/scripts/seed-personas.ts')
+  let anchorDate = null
+  try {
+    const seed = fs.readFileSync(seedPath, 'utf8')
+    anchorDate = /const TODAY = new Date\(`\$\{SEED_TODAY \?\? '(\d{4}-\d{2}-\d{2})'\}/.exec(seed)?.[1] ?? null
+  } catch { /* reported below */ }
+
+  if (!anchorDate) {
+    console.error('\n✗ Could not read the corpus anchor from seed-personas.ts.')
+    console.error('  Refusing to run rather than reporting a number whose freshness is unknown.')
+    process.exit(2)
+  }
+
+  const corpus = ALL_PERSONAS
+    .map(p => path.join(__dirname, 'personas', `${p}.mjs`))
+    .filter(f => fs.existsSync(f))
+    .map(f => fs.readFileSync(f, 'utf8'))
+    .join('\n')
+  const windows = [...corpus.matchAll(/next (\d+) (days|months)/gi)]
+    .map(m => (m[2].toLowerCase() === 'months' ? Number(m[1]) * 30 : Number(m[1])))
+  if (windows.length === 0) return   // nothing time-relative; drift cannot bite
+
+  const tightest = Math.min(...windows)
+  const drift = Math.floor((Date.now() - Date.parse(`${anchorDate}T00:00:00Z`)) / 86_400_000)
+  if (drift <= tightest) {
+    console.log(`corpus anchored ${anchorDate} (${drift}d ago), tightest window ${tightest}d — fresh`)
+    return
+  }
+
+  console.error(`\n✗ CORPUS IS STALE — refusing to run.`)
+  console.error(`  data anchored ${anchorDate}, ${drift} days ago`)
+  console.error(`  tightest time-relative window in the corpus: ${tightest} days`)
+  console.error(`  Every "expiring in the next N days" ask is now selecting against a`)
+  console.error(`  window that no longer overlaps the data it was written for.`)
+  console.error(`\n  Fix by sliding the dates forward (the PRNG seed is unaffected, so the`)
+  console.error(`  contract mix is identical — only the dates move):`)
+  console.error(`\n    SEED_TODAY=$(date -u +%F) pnpm tsx --env-file=../../.env scripts/seed-personas.ts`)
+  console.error(`\n  Or rewrite the affected asks to absolute dates. Do not raise the`)
+  console.error(`  threshold: it is the point at which the narrowest ask stops meaning anything.`)
+  process.exit(2)
+}
+
+assertCorpusIsFresh()
+
 const allResults = []
 const startTime = Date.now()
 
@@ -102,13 +163,14 @@ for (const slug of personas) {
   const turnTotal = personaResults.reduce((s, r) => s + r.turns.length, 0)
   const turnPass  = personaResults.reduce((s, r) => s + r.turns.filter(t => t.ok).length, 0)
   const turnShrug = personaResults.reduce((s, r) => s + r.turns.filter(t => t.shrugPass).length, 0)
+  const turnSlow  = personaResults.reduce((s, r) => s + r.turns.filter(t => t.overBudget).length, 0)
   const convPass  = personaResults.filter(r => r.ok).length
   console.log(`\n  ${persona}: ${convPass}/${personaResults.length} conversations · ${turnPass}/${turnTotal} turns${turnShrug ? ` · ${turnShrug} passed on a shrug` : ''}`)
 
   allResults.push({
     persona,
     convPass, convTotal: personaResults.length,
-    turnPass, turnTotal, turnShrug,
+    turnPass, turnTotal, turnShrug, turnSlow,
     results: personaResults,
   })
 }
@@ -119,6 +181,7 @@ const totalConvPass = allResults.reduce((s, p) => s + p.convPass, 0)
 const totalTurn = allResults.reduce((s, p) => s + p.turnTotal, 0)
 const totalTurnPass = allResults.reduce((s, p) => s + p.turnPass, 0)
 const totalShrug = allResults.reduce((s, p) => s + p.turnShrug, 0)
+const totalSlow  = allResults.reduce((s, p) => s + (p.turnSlow ?? 0), 0)
 
 console.log(`\n${'═'.repeat(72)}`)
 console.log(`✓ Done — ${totalConvPass}/${totalConv} conversations · ${totalTurnPass}/${totalTurn} turns · ${(totalDuration / 1000).toFixed(1)}s`)
@@ -134,6 +197,11 @@ console.log(`Persona journeys: ${totalTurnPass}/${totalTurn} passed`)
 // the pass rate holds, the agent is getting more evasive and the headline
 // cannot see it.
 console.log(`  of which passed on a shrug: ${totalShrug}/${totalTurnPass} (${totalTurnPass ? ((totalShrug / totalTurnPass) * 100).toFixed(0) : 0}%)`)
+// Latency is reported BESIDE the pass rate, never inside it. It used to share
+// the same `fails` array as content failures, so a slow runner failed rows in
+// correlated bursts and a latency regression was indistinguishable from a
+// correctness one.
+console.log(`  over latency budget:        ${totalSlow}/${totalTurn} turns`)
 console.log('═'.repeat(72))
 for (const p of allResults) {
   console.log(`  ${p.persona.padEnd(24)} ${p.convPass}/${p.convTotal} conv · ${p.turnPass}/${p.turnTotal} turns · ${p.turnShrug} shrug`)
@@ -142,7 +210,7 @@ for (const p of allResults) {
 // Persist scorecard
 fs.writeFileSync(path.join(OUT, 'scorecard.json'), JSON.stringify({
   ranAt: new Date().toISOString(),
-  totalConv, totalConvPass, totalTurn, totalTurnPass, totalShrug,
+  totalConv, totalConvPass, totalTurn, totalTurnPass, totalShrug, totalSlow,
   totalDurationMs: totalDuration,
   personas: allResults.map(p => ({
     persona: p.persona,

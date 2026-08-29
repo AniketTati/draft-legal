@@ -14,7 +14,7 @@ from ..jsonish import loads_lenient
 import os
 
 from app.agents.assist_agent import run_assist, AssistAction
-from app.router import resolve_llm
+from app.router import RouterRefusal, resolve_llm
 from app.untrusted import wrap_untrusted_document
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -193,6 +193,10 @@ Classify now. JSON only."""
             "model":     model,
             "provider":  provider,
         }
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:  # noqa: BLE001
         return {"category": "skip", "position": "skip", "reasoning": "", "error": f"{type(e).__name__}: {str(e)[:160]}"}
 
@@ -272,6 +276,10 @@ async def complete(req: CompleteRequest, x_internal_secret: str = Header(default
             out = cut.rstrip()
 
         return {"completion": out, "model": model, "provider": provider}
+    except RouterRefusal:
+        # A refusal is not a model failure. Degrading here would write a
+        # confident wrong answer for a call that never reached a provider.
+        raise
     except Exception as e:  # noqa: BLE001
         return {"completion": "", "error": f"{type(e).__name__}: {str(e)[:180]}"}
 
@@ -710,6 +718,10 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
                     continue
                 yield json.dumps({"type": "delta", "text": piece}) + "\n"
             yield json.dumps({"type": "done"}) + "\n"
+        except RouterRefusal:
+            # A refusal is not a model failure. Degrading here would write a
+            # confident wrong answer for a call that never reached a provider.
+            raise
         except Exception as e:  # noqa: BLE001
             yield json.dumps({"type": "error", "message": f"{type(e).__name__}: {str(e)[:180]}"}) + "\n"
 
@@ -855,6 +867,10 @@ Produce the rewrite now. JSON only."""
                     ],
                     config={"callbacks": callbacks},
                 )
+            except RouterRefusal:
+                # A refusal is not a model failure. Degrading here would write a
+                # confident wrong answer for a call that never reached a provider.
+                raise
             except Exception as e:  # noqa: BLE001
                 return {
                     "clauseId": item.clauseId,
@@ -895,6 +911,10 @@ Produce the rewrite now. JSON only."""
                 "changes":      parsed.get("changes") or [],
                 "aggression":   req.aggression,
             }
+        except RouterRefusal:
+            # A refusal is not a model failure. Degrading here would write a
+            # confident wrong answer for a call that never reached a provider.
+            raise
         except Exception as e:  # noqa: BLE001
             return {
                 "clauseId": item.clauseId,
