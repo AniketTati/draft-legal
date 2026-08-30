@@ -29,6 +29,9 @@
  *   coverage     Are judgements actually being produced? Quality at 100% over
  *                two assessments is not evidence; it usually means the
  *                continuous evaluator has stopped.
+ *   guardrails   Deterministic violations — leaked credentials, payment data,
+ *                empty answers, malformed JSON. Threshold is ZERO and is not
+ *                configurable: one leaked credential is an incident, not a dip.
  *   spend        Cost in the window, against a ceiling.
  *
  * Thresholds are deliberately blunt and overridable. The point is not to be
@@ -164,6 +167,32 @@ if (qual) {
   check({ id: 'coverage', label: 'Assessments', actual: null, ok: false, unavailable: true, detail: 'metrics API unreachable' })
   check({ id: 'quality',  label: 'Quality',     actual: null, ok: false, unavailable: true, detail: 'metrics API unreachable' })
 }
+
+// ── guardrails ───────────────────────────────────────────────────────────────
+// Deterministic violations. Unlike quality, there is no acceptable rate here:
+// one leaked credential is an incident, not a dip in a metric. The threshold is
+// zero and is not configurable, because any number above zero that someone
+// chose is a number someone will later argue about during an incident.
+const guardRows = await metrics({
+  view: 'scores-boolean', dimensions: [{ field: 'name' }],
+  metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
+  filters: [{ column: 'name', operator: 'any of',
+              value: ['guard:secret_leak', 'guard:payment_data', 'guard:empty', 'guard:schema_valid'],
+              type: 'stringOptions' }],
+})
+if (guardRows) {
+  const breaches = guardRows
+    .map((r) => ({ name: r.name, rate: n(r.avg_value), count: n(r.count_count) }))
+    .filter((r) => r.count > 0 && r.rate < 1)
+  check({
+    id: 'guardrails', label: 'Guardrails', actual: breaches.length, ok: breaches.length === 0,
+    detail: guardRows.length === 0
+      ? 'no guardrail scores in window — run `pnpm evals guardrails`'
+      : breaches.length
+        ? `BREACHED: ${breaches.map((b) => `${b.name.replace('guard:', '')} ${Math.round((1 - b.rate) * b.count)}/${b.count}`).join(', ')}`
+        : `clean across ${guardRows.reduce((s, r) => s + n(r.count_count), 0)} checks`,
+  })
+} else check({ id: 'guardrails', label: 'Guardrails', actual: null, ok: false, unavailable: true, detail: 'metrics API unreachable' })
 
 // ── spend ────────────────────────────────────────────────────────────────────
 const costRows = await metrics({ view: 'observations', metrics: [{ measure: 'totalCost', aggregation: 'sum' }] })

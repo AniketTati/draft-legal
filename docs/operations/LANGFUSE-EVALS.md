@@ -550,9 +550,7 @@ call and we have none, and no human review cadence exists at all.
 
 Three specific things worth doing next, in order of value per hour:
 
-1. **Guardrails as code, not judges.** PII/secret leakage, schema validity on
-   every JSON-returning extractor, and refusal rate. Deterministic, free, and
-   they catch a class of failure no rubric currently looks for.
+1. ~~Guardrails as code~~ — **done**, see below.
 2. **A weekly review slot.** Twenty minutes on the annotation queue. Without a
    cadence the queue is a thing that gets built and never worked.
 3. **Implicit signals.** A user who retries the same question, or abandons the
@@ -564,7 +562,53 @@ Sources: [offline vs online evaluation](https://qaskills.sh/blog/offline-vs-onli
 [LLM monitoring best practices](https://openobserve.ai/blog/llm-monitoring-best-practices/),
 [observability metrics checklist](https://www.sthambh.com/blog/llm-observability-metrics-production).
 
-## 11. Honest limits
+## 11. Guardrails
+
+```bash
+pnpm evals:guardrails -- --hours 24
+```
+
+Deterministic checks over **every** trace, not a sample. The judge asks "was
+this answer good?"; these ask "did it do something it must never do?"
+
+| Check | Fails when |
+| --- | --- |
+| `guard:secret_leak` | An API key, token or private key appears in the output |
+| `guard:payment_data` | A Luhn-valid card number or IBAN appears |
+| `guard:schema_valid` | A JSON-returning extractor returned prose, or is missing required keys |
+| `guard:empty` | The user got nothing back |
+| `guard:refusal` | *(a rate, never a failure)* |
+
+**Not sampled, on purpose.** Everything else runs at 5% because a model
+judgement costs money. These are regular expressions: checking the other 95%
+costs nothing, and a leak found in one trace out of twenty is a leak you missed
+in nineteen. Sampling a free check is all downside.
+
+**The threshold is zero and is not configurable.** One leaked credential is an
+incident, not a dip in a metric — and any non-zero number someone picked is a
+number someone will argue about mid-incident.
+
+### What we deliberately do NOT flag
+
+Emails, phone numbers, addresses, personal names. This is a contract product:
+the documents are full of them and surfacing them is the job. A PII guardrail
+firing on every counterparty email is noise on nearly every trace, and a
+guardrail that cries wolf gets switched off inside a week — after which it
+protects nothing. Only the unambiguous things are flagged: machine credentials
+and payment instruments.
+
+The card check is deliberately narrow for the same reason — **card-shaped AND
+Luhn-valid AND written in grouped formatting.** Verified: `4539148803436467`
+written as a contract value is not flagged; `4539 1488 0343 6467` is.
+
+`guard:refusal` is a **rate, not a verdict.** Declining to invent a contract it
+cannot find is exactly right. What matters is a spike: retrieval broke, or a
+prompt changed, and answers went from useful to apologetic with nothing
+throwing an error.
+
+First run: **186 checks across 60 traces, zero violations.**
+
+## 12. Honest limits
 
 - **Both corpora now run green.** `extraction` 9/9 (2026-08-29) and `chat`
   10/10 (2026-08-30), every case linked to the *product's* own trace rather than

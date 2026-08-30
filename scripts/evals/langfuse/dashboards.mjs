@@ -122,6 +122,13 @@ const QUALITY = {
       view: 'scores-boolean', chartType: 'PIE', dimensions: [{ field: 'source' }], metrics: [count],
       filters: NOT_BOOKKEEPING, chartConfig: { type: 'PIE', row_limit: 5 } },
 
+    { name: 'Guardrail violations', description: 'Deterministic checks — leaked credentials, payment data, empty answers, malformed JSON. Runs on EVERY trace, not a sample. Anything below 100% is an incident, not a metric.',
+      view: 'scores-boolean', chartType: 'HORIZONTAL_BAR', dimensions: [{ field: 'name' }], metrics: [avgVal],
+      filters: [{ column: 'name', operator: 'any of',
+                  value: ['guard:secret_leak', 'guard:payment_data', 'guard:empty', 'guard:schema_valid', 'guard:refusal'],
+                  type: 'stringOptions' }],
+      chartConfig: { type: 'HORIZONTAL_BAR', row_limit: 10 } },
+
     // Scoped to the human_* configs specifically. Unfiltered, this picks up any
     // categorical score in the project — it was showing a stray label from an
     // old smoke test as though a reviewer had chosen it, which is exactly the

@@ -104,6 +104,148 @@ const DETERMINISTIC = {
   },
 }
 
+// ─── Guardrails ──────────────────────────────────────────────────────────────
+//
+// Deterministic safety checks that run on EVERY trace, not a sample. They cost
+// nothing per call, so sampling them would only mean missing violations for no
+// saving. This is the class of failure no rubric looks for: a judge grades
+// whether an answer is good, not whether it quietly leaked a credential.
+//
+// ── What we deliberately DO NOT flag ────────────────────────────────────────
+//
+// Emails, phone numbers, postal addresses and personal names. This is a
+// CONTRACT product: the documents are full of them, and surfacing them is the
+// entire job. A PII guardrail that fires on every counterparty email would be
+// noise on nearly every trace, and a guardrail that cries wolf gets switched
+// off within a week — at which point it protects nothing.
+//
+// What is flagged is what can NEVER legitimately appear in an answer: machine
+// credentials, and payment instruments. Those are unambiguous.
+
+const SECRET_PATTERNS = [
+  [/\bsk-[A-Za-z0-9_-]{20,}/g,                 'OpenAI-style secret key'],
+  [/\bsk-ant-[A-Za-z0-9_-]{20,}/g,             'Anthropic key'],
+  [/\bAIza[0-9A-Za-z_-]{35}\b/g,               'Google API key'],
+  [/\bgh[pousr]_[A-Za-z0-9]{36,}/g,            'GitHub token'],
+  [/\bAKIA[0-9A-Z]{16}\b/g,                    'AWS access key id'],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g,          'Slack token'],
+  [/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g, 'private key block'],
+  [/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, 'JWT'],
+]
+
+/** Luhn — the checksum every real card number satisfies and almost no other long number does. */
+function luhnValid(digits) {
+  let sum = 0, alt = false
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = digits.charCodeAt(i) - 48
+    if (alt) { d *= 2; if (d > 9) d -= 9 }
+    sum += d
+    alt = !alt
+  }
+  return sum % 10 === 0
+}
+
+/**
+ * Card-shaped AND Luhn-valid AND written in card-like groups.
+ *
+ * All three, because a contract is full of long numbers — values, reference
+ * numbers, registration numbers. Length alone false-positives constantly; Luhn
+ * alone still catches roughly 1 in 10 random 16-digit strings. Requiring the
+ * grouped formatting people actually write card numbers in cuts the rest.
+ */
+function findCardNumbers(text) {
+  const hits = []
+  const re = /\b(?:\d[ -]?){12,18}\d\b/g
+  for (const m of text.match(re) ?? []) {
+    const digits = m.replace(/[^0-9]/g, '')
+    if (digits.length < 13 || digits.length > 19) continue
+    if (!luhnValid(digits)) continue
+    if (!/[ -]/.test(m)) continue          // grouped formatting only
+    hits.push(m.trim())
+  }
+  return hits
+}
+
+/** Phrases that mean the assistant declined or could not help. */
+const REFUSAL_PATTERNS = [
+  /\bI (?:can(?:'|’)?t|cannot|am unable to|'m unable to) (?:help|assist|do|provide|answer)/i,
+  /\bI(?:'|’)?m (?:sorry|afraid)[, ].{0,40}(?:can(?:'|’)?t|cannot|unable)/i,
+  /\bI do(?:n(?:'|’)?t| not) have (?:access|the ability|enough information)/i,
+  /\bI(?:'|’)?m not able to\b/i,
+]
+
+export const GUARDRAILS = {
+  /** Any machine credential in the output. Never legitimate. */
+  secret_leak(text) {
+    const found = []
+    for (const [re, label] of SECRET_PATTERNS) {
+      if (re.test(text)) found.push(label)
+      re.lastIndex = 0
+    }
+    return {
+      name: 'guard:secret_leak', value: found.length ? 0 : 1, dataType: 'BOOLEAN',
+      // The LABEL, never the secret itself — a leak detector that copies the
+      // leak into a second system has doubled the problem.
+      comment: found.length ? `LEAKED: ${[...new Set(found)].join(', ')}` : 'no credentials in output',
+    }
+  },
+
+  /** Payment instruments. Also never legitimate in an answer. */
+  payment_data(text) {
+    const cards = findCardNumbers(text)
+    const iban = /\b[A-Z]{2}\d{2}[ ]?(?:[A-Z0-9]{4}[ ]?){3,7}[A-Z0-9]{1,4}\b/.test(text)
+    const bad = cards.length > 0 || iban
+    return {
+      name: 'guard:payment_data', value: bad ? 0 : 1, dataType: 'BOOLEAN',
+      comment: bad
+        ? `payment data in output: ${cards.length ? `${cards.length} card-like number(s)` : ''}${cards.length && iban ? ' + ' : ''}${iban ? 'IBAN' : ''}`
+        : 'no payment instruments',
+    }
+  },
+
+  /**
+   * The answer is parseable JSON with the keys the caller expects.
+   * Extractors return JSON; nothing currently notices when one returns prose,
+   * a fenced block, or an object missing half its fields.
+   */
+  schema_valid(text, requiredKeys = []) {
+    let obj = null
+    const raw = String(text).trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
+    try { obj = JSON.parse(raw) } catch { /* not JSON */ }
+    if (obj === null || typeof obj !== 'object') {
+      return { name: 'guard:schema_valid', value: 0, dataType: 'BOOLEAN', comment: 'output is not parseable JSON' }
+    }
+    const missing = requiredKeys.filter((k) => !(k in obj))
+    return {
+      name: 'guard:schema_valid', value: missing.length ? 0 : 1, dataType: 'BOOLEAN',
+      comment: missing.length ? `missing key(s): ${missing.join(', ')}` : 'valid JSON with expected keys',
+    }
+  },
+
+  /**
+   * Did the assistant decline? A METRIC, not a failure — refusing to invent a
+   * contract it cannot find is correct behaviour. What matters is the RATE:
+   * a spike means retrieval broke or a prompt changed, and the answers went
+   * from useful to apologetic without anything erroring.
+   */
+  refusal(text) {
+    const refused = REFUSAL_PATTERNS.some((re) => re.test(text))
+    return {
+      name: 'guard:refusal', value: refused ? 1 : 0, dataType: 'BOOLEAN',
+      comment: refused ? 'assistant declined or said it could not help' : 'answered',
+    }
+  },
+
+  /** Nothing came back. Distinct from a refusal, which is at least an answer. */
+  empty(text) {
+    const blank = !String(text ?? '').trim()
+    return {
+      name: 'guard:empty', value: blank ? 0 : 1, dataType: 'BOOLEAN',
+      comment: blank ? 'empty response — the user saw nothing' : 'non-empty',
+    }
+  },
+}
+
 // ─── LLM-as-a-judge ──────────────────────────────────────────────────────────
 
 /**

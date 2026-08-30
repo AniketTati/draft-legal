@@ -52,6 +52,7 @@ const PASSTHROUGH = {
   rehearse:   'rehearse.mjs',
   analyze:    'analyze.mjs',
   health:     'health.mjs',
+  guardrails: 'guardrails.mjs',
   score:      'score-production.mjs',
   sessions:   'score-sessions.mjs',
   annotate:   'annotate.mjs',
@@ -90,6 +91,7 @@ Docs: docs/operations/LANGFUSE-EVALS.md
 \x1b[1mEverything else\x1b[0m  (pnpm evals <name> -- [flags])
 
   health       Pass/fail production check — what the scheduled job runs
+  guardrails   Deterministic safety sweep over EVERY trace — no model, no cost
   traffic      Generate realistic traffic — DEV ONLY, spends real model budget
   score        LLM-judge recent traces, step by step
   sessions     Grade whole conversations, not single turns
@@ -148,6 +150,9 @@ switch (command) {
       steps.push(['judging recent traffic', 'score-production.mjs', flags])
       steps.push(['grading conversations',  'score-sessions.mjs',   flags])
     }
+    // Guardrails always run: they cost nothing, so leaving them out of a review
+    // only means reviewing without them.
+    steps.push(['guardrails', 'guardrails.mjs', flags])
     steps.push(['production review', 'analyze.mjs', flags])
     process.exit(runAll(steps))
     break
