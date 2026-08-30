@@ -142,14 +142,24 @@ check({
 })
 
 // ── quality + coverage ───────────────────────────────────────────────────────
-const qual = await metrics({
-  view: 'scores-boolean',
-  metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
-  filters: NOT_BOOKKEEPING,
-})
+// Quality now spans THREE score types and they live in three different metric
+// views. Reading only `scores-boolean` would have silently dropped every
+// numeric judgement the moment the rubrics changed type — the pass rate would
+// have looked stable while measuring almost nothing.
+const [qBool, qNum] = await Promise.all([
+  metrics({ view: 'scores-boolean',
+    metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
+    filters: NOT_BOOKKEEPING }),
+  metrics({ view: 'scores-numeric',
+    metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
+    filters: NOT_BOOKKEEPING }),
+])
+const qual = (qBool === null && qNum === null) ? null : [...(qBool ?? []), ...(qNum ?? [])]
 if (qual) {
-  const rate  = qual.length ? n(qual[0].avg_value) : null
-  const count = qual.length ? n(qual[0].count_count) : 0
+  // Weighted by count, not a mean of means: with 5 boolean and 200 numeric
+  // judgements, averaging the two averages would give the 5 equal weight.
+  const count = qual.reduce((s, r) => s + n(r.count_count), 0)
+  const rate  = count ? qual.reduce((s, r) => s + n(r.avg_value) * n(r.count_count), 0) / count : null
   check({
     id: 'coverage', label: 'Assessments', actual: count, ok: count >= T.minAssessments,
     detail: `${count} quality judgements (need ≥ ${T.minAssessments}) — too few means the judge has stopped`,

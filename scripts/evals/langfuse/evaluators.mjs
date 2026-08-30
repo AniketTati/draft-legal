@@ -128,17 +128,30 @@ function calibrationExamples(criterion) {
   ].join('\n')
 }
 
+/** The scale or label set, so the in-platform judge is anchored exactly as ours is. */
+function scaleBlock(criterion) {
+  const spec = RUBRICS[criterion]
+  if (spec?.dataType === 'NUMERIC' && spec.anchors) {
+    return ['', 'SCALE — use these anchors, interpolate between them:', ...spec.anchors.map((a) => `  ${a}`)].join('\n')
+  }
+  if (spec?.dataType === 'CATEGORICAL' && spec.categories) {
+    return `\nALLOWED LABELS (pick exactly one): ${spec.categories.join(' | ')}`
+  }
+  return null
+}
+
 function judgePrompt(criterion, vars) {
   return [
     `You are grading the output of a contract-lifecycle assistant.`,
     ``,
-    `CRITERION (${criterion}): ${RUBRICS[criterion]}`,
+    `CRITERION (${criterion}): ${RUBRICS[criterion]?.criterion ?? criterion}`,
+    scaleBlock(criterion),
     calibrationExamples(criterion) || null,
     ``,
     ...vars.map((v) => `${v.toUpperCase()}:\n{{${v}}}`),
     ``,
-    `Reason briefly, then score. Score 1 if the criterion is met, 0 if not.`,
-  ].filter((line) => line !== null).join('\n')
+    scoreInstruction(criterion),
+  ].filter((line) => line !== null && line !== '').join('\n')
 }
 
 /**
@@ -168,6 +181,17 @@ const EVALUATORS = [
     ],
   },
   {
+    // Categorical: the taxonomy that turns "quality dropped" into "nine of the
+    // twelve failures are misread_data", which is a fix rather than a worry.
+    criterion: 'failure_mode',
+    vars: ['input', 'output'],
+    target: 'GENERATION',
+    mapping: [
+      { variable: 'input',  source: 'input' },
+      { variable: 'output', source: 'output' },
+    ],
+  },
+  {
     criterion: 'retrieval_sufficiency',
     vars: ['input', 'output'],
     target: 'TOOL',
@@ -177,6 +201,35 @@ const EVALUATORS = [
     ],
   },
 ]
+
+function scoreInstruction(criterion) {
+  const type = RUBRICS[criterion]?.dataType ?? 'BOOLEAN'
+  if (type === 'NUMERIC') return 'Reason briefly, then give a score between 0.0 and 1.0 using the scale above.'
+  if (type === 'CATEGORICAL') return 'Reason briefly, then return exactly one of the allowed labels.'
+  return 'Reason briefly, then score. Score 1 if the criterion is met, 0 if not.'
+}
+
+/**
+ * Langfuse needs the output shape declared up front, and it differs per type.
+ * A CATEGORICAL evaluator additionally has to enumerate its labels — the model
+ * is constrained to them, which is most of why categorical is worth having over
+ * "just ask for a word".
+ */
+function outputDefinition(criterion) {
+  const spec = RUBRICS[criterion]
+  const type = spec?.dataType ?? 'BOOLEAN'
+  const reasoning = { description: 'One or two sentences explaining the verdict, citing the specific claim or data point that decided it.' }
+  if (type === 'NUMERIC') {
+    return { dataType: 'NUMERIC', reasoning,
+      score: { description: 'A number between 0.0 and 1.0, following the anchors in the criterion.' } }
+  }
+  if (type === 'CATEGORICAL') {
+    return { dataType: 'CATEGORICAL', reasoning,
+      score: { description: 'Exactly one label describing the primary problem.',
+               categories: spec.categories, shouldAllowMultipleMatches: false } }
+  }
+  return { dataType: 'BOOLEAN', reasoning, score: { description: 'true if the criterion is met, false if not.' } }
+}
 
 const NAME = (criterion) => `draftlegal ${criterion}`
 
@@ -262,11 +315,7 @@ for (const e of EVALUATORS) {
       // optional, and that is a good constraint: a bare 1/0 with no stated
       // reason is unreviewable, and reviewing the reason is how you catch a
       // judge that is confidently wrong.
-      outputDefinition: {
-        dataType: 'BOOLEAN',
-        reasoning: { description: 'One or two sentences explaining the verdict, citing the specific claim or data point that decided it.' },
-        score: { description: 'true if the criterion is met, false if not.' },
-      },
+      outputDefinition: outputDefinition(e.criterion),
       modelConfig: { provider: conn.provider, model: conn.model },
     })
     console.log(`  ✓ evaluator "${name}"`)

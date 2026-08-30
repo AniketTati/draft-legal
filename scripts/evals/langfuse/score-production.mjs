@@ -58,11 +58,14 @@ const auth = 'Basic ' + Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toStrin
  * confirm what the response shape already tells you.
  */
 const ANSWER_RUBRICS = {
-  'agent.chat':             ['groundedness', 'helpfulness'],
-  'ask.answer':             ['groundedness', 'citation'],
-  'obligations.extract':    ['groundedness'],
-  'compliance.check':       ['groundedness'],
-  'renewal.advice':         ['groundedness', 'helpfulness'],
+  // `failure_mode` only where a failure has more than one plausible cause. On a
+  // rewrite there is nothing to triage — it is either useful or it is not, and
+  // the numeric score already says so.
+  'agent.chat':             ['groundedness', 'helpfulness', 'failure_mode'],
+  'ask.answer':             ['groundedness', 'citation', 'failure_mode'],
+  'obligations.extract':    ['groundedness', 'failure_mode'],
+  'compliance.check':       ['groundedness', 'failure_mode'],
+  'renewal.advice':         ['groundedness', 'helpfulness', 'failure_mode'],
   'assist.rewrite':         ['helpfulness'],
   'assist.simplify':        ['helpfulness'],
   'assist.redline_propose': ['helpfulness'],
@@ -146,10 +149,29 @@ if (dryRun) {
 let scored = 0, failed = 0
 const tally = new Map()
 
-function record(key, value) {
-  const agg = tally.get(key) ?? { pass: 0, fail: 0 }
-  Number(value) >= 1 ? agg.pass++ : agg.fail++
+/**
+ * Three score types need three summaries. A boolean has a pass rate, a numeric
+ * has a mean, and a categorical has neither — `Number('hallucinated')` is NaN,
+ * so the old pass/fail counter silently filed every categorical verdict as a
+ * failure and printed nothing about it.
+ */
+function record(key, value, dataType) {
+  const agg = tally.get(key) ?? { type: dataType, n: 0, pass: 0, sum: 0, labels: new Map() }
+  agg.n++
+  if (dataType === 'CATEGORICAL') {
+    agg.labels.set(value, (agg.labels.get(value) ?? 0) + 1)
+  } else {
+    agg.sum += Number(value)
+    if (Number(value) >= 1) agg.pass++
+  }
   tally.set(key, agg)
+}
+
+/** Worth printing to the console mid-run? Type decides what "bad" means. */
+function isNoteworthy(value, dataType) {
+  if (dataType === 'CATEGORICAL') return value !== 'fine'
+  if (dataType === 'BOOLEAN') return Number(value) < 1
+  return Number(value) < 0.7          // numeric: anything below "minor blemish"
 }
 
 async function judgeAndPost({ criterion, ctx, traceId, observationId, label, surface, step }) {
@@ -160,11 +182,12 @@ async function judgeAndPost({ criterion, ctx, traceId, observationId, label, sur
       traceId, observationId, ...score,
       metadata: { onlineEval: true, surface, step },
     })
-    record(label, score.value)
+    const dt = RUBRICS[criterion]?.dataType ?? 'BOOLEAN'
+    record(label, score.value, dt)
     scored++
-    if (Number(score.value) < 1) {
-      console.log(`  ✗ ${label}  (${traceId.slice(0, 12)})`)
-      console.log(`      ${score.comment.slice(0, 200)}`)
+    if (isNoteworthy(score.value, dt)) {
+      console.log(`  ✗ ${label} = ${score.value}  (${traceId.slice(0, 12)})`)
+      console.log(`      ${String(score.comment ?? '').slice(0, 200)}`)
     }
   } catch (e) {
     failed++
@@ -197,6 +220,24 @@ for (const t of picked) {
     }
   }
 
+  // ── Trajectory: one score per turn, over the ORDERED tool list ───────────
+  //
+  // Only when there is more than one call. On a single-tool turn the trajectory
+  // and the tool choice are the same question, and paying a judge twice to
+  // answer it once is waste.
+  const toolCalls = observations.filter((x) => x.type === 'TOOL')
+  if (toolCalls.length > 1) {
+    const plan = toolCalls
+      .map((o, i) => `${i + 1}. ${o.name}(${asText(o.input).slice(0, 300)}) → ${asText(o.output).slice(0, 600)}`)
+      .join('\n')
+    await judgeAndPost({
+      criterion: 'trajectory',
+      ctx: { input: `USER REQUEST:\n${request}`, output: `TOOL CALLS, IN ORDER:\n${plan}` },
+      traceId: t.id,
+      label: `${t.name} · trajectory (${toolCalls.length} calls)`, surface: t.name, step: 'trajectory',
+    })
+  }
+
   // ── Answer scores: the LAST generation is what the user actually read ────
   const generations = observations.filter((x) => x.type === 'GENERATION')
   const answerObs = generations.at(-1) ?? null
@@ -227,7 +268,13 @@ for (const t of picked) {
 console.log(`\n  ${scored} scores posted${failed ? `, ${failed} failed` : ''}\n`)
 console.log('  by step:')
 for (const [k, a] of [...tally].sort()) {
-  const total = a.pass + a.fail
-  console.log(`    ${k.padEnd(46)} ${a.pass}/${total}  ${total ? ((a.pass / total) * 100).toFixed(0) : '—'}%`)
+  if (a.type === 'CATEGORICAL') {
+    const top = [...a.labels].sort((x, y) => y[1] - x[1]).map(([l, n]) => `${l} ×${n}`).join(', ')
+    console.log(`    ${k.padEnd(46)} ${top}`)
+  } else if (a.type === 'NUMERIC') {
+    console.log(`    ${k.padEnd(46)} mean ${(a.sum / a.n).toFixed(2)}  (n=${a.n})`)
+  } else {
+    console.log(`    ${k.padEnd(46)} ${a.pass}/${a.n}  ${a.n ? ((a.pass / a.n) * 100).toFixed(0) : '—'}%`)
+  }
 }
 console.log(`\n  ${LANGFUSE_HOST} → Tracing → Scores, or open a trace to see scores on each step\n`)

@@ -278,78 +278,161 @@ export const GUARDRAILS = {
  * nothing.
  */
 export const RUBRICS = {
-  groundedness:
-    'Is every factual claim in the ANSWER supported by the SOURCE material or the conversation input? ' +
-    'Score 0 if the answer states a contract term, party, date, or figure that does not appear in the source. ' +
-    'An answer that correctly says it does not know scores 1. Fluent invention is the failure this catches.',
-  correctness:
-    'Does the ANSWER convey the same substance as the EXPECTED answer? ' +
-    'Wording, ordering and extra detail do not matter. Score 0 if it contradicts the expected answer, ' +
-    'omits its central point, or answers a different question.',
-  helpfulness:
-    'Would a busy contracts lawyer consider this a useful reply to their request? ' +
-    'Score 0 for a non-answer, a refusal to do something the product can do, or a wall of text that buries the point. ' +
-    'Being brief is not a fault.',
-  citation:
-    'Does the ANSWER cite the specific clause, section or document it relies on, where the source makes that possible? ' +
-    'Score 0 for an assertion about contract content with no pointer to where it came from.',
-
-  // ── Step-level rubrics. These grade an OBSERVATION inside a turn, not the
-  // turn's final answer, and they exist to split one failure into two.
+  // ── NUMERIC (0.0–1.0) — graded qualities ──────────────────────────────────
   //
-  // "The agent gave a wrong answer" has two very different causes: the tool
-  // returned the wrong data, or the tool returned the right data and the model
-  // misread it. Those need opposite fixes — one is a query/endpoint bug, the
-  // other is a prompt or model problem — and a single score on the final answer
-  // cannot tell them apart. That ambiguity is exactly what cost us an hour on
-  // the expiry-count defect, which turned out to be the first kind.
-  tool_selection:
-    'Given the USER REQUEST, was calling this particular tool the right move? ' +
-    'Judge the CHOICE only, not the quality of what came back. ' +
-    'Score 0 if a different tool was clearly the right one, or if the request needed no tool at all.',
-  retrieval_sufficiency:
-    'Does the TOOL OUTPUT contain the information needed to answer the USER REQUEST? ' +
-    'Score 1 if the needed data is present, EVEN IF a later answer misreads it — you are grading the lookup, not the reading. ' +
-    'Score 0 only if the tool returned an error, nothing useful, or data scoped to the wrong thing.',
+  // Boolean threw away most of the signal. "Mostly right with one unsupported
+  // date" and "entirely fabricated" both scored 0, so a dashboard could not
+  // distinguish a drafting nit from a serious hallucination, and a small
+  // regression was invisible until it crossed the pass/fail line.
+  //
+  // Every numeric rubric carries ANCHORS. Asking a model for "a score out of 1"
+  // without them produces a number that drifts between runs and between models
+  // — the anchors are what make 0.7 mean the same thing tomorrow.
+  groundedness: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Is every factual claim in the ANSWER supported by the SOURCE material or the conversation input? ' +
+      'Fluent invention is the failure this catches.',
+    anchors: [
+      '1.0 — every claim traceable to the source, OR a correct "I could not find that"',
+      '0.7 — substantively grounded; one peripheral detail unsupported (a rounded figure, an inferred label)',
+      '0.3 — a CENTRAL claim is unsupported, even though parts of the answer are sourced',
+      '0.0 — invented: contract terms, parties, dates or figures that appear nowhere in the source',
+    ],
+  },
+  helpfulness: {
+    dataType: 'NUMERIC',
+    criterion: 'Would a busy contracts lawyer consider this a useful reply to their request?',
+    anchors: [
+      '1.0 — answers the actual question, directly, at the right length',
+      '0.7 — answers it, but buries the point or omits an obvious follow-through',
+      '0.3 — partially responsive; answers a narrower question than the one asked',
+      '0.0 — a non-answer, or refuses something the product can actually do',
+    ],
+  },
+  correctness: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Does the ANSWER convey the same substance as the EXPECTED answer? ' +
+      'Wording, ordering and extra detail do not matter.',
+    anchors: [
+      '1.0 — same substance',
+      '0.7 — central point right, a secondary point missing or muddled',
+      '0.3 — touches the topic but misses the central point',
+      '0.0 — contradicts the expected answer, or answers a different question',
+    ],
+  },
+  citation: {
+    dataType: 'NUMERIC',
+    criterion: 'Does the ANSWER point at the clause, section or document it relies on, where the source makes that possible?',
+    anchors: [
+      '1.0 — specific and checkable ("clause 9.4 of the Helio MSA")',
+      '0.7 — names the document but not the clause',
+      '0.3 — gestures at a source ("your standard terms") without identifying it',
+      '0.0 — asserts contract content with no pointer at all',
+    ],
+  },
+  retrieval_sufficiency: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Does the TOOL OUTPUT contain the information needed to answer the USER REQUEST? ' +
+      'You are grading the LOOKUP, not the reading — score high if the data is present even when a later answer misreads it.',
+    anchors: [
+      '1.0 — everything needed is present',
+      '0.7 — enough to answer, but the answer would need caveats',
+      '0.3 — related data that does not actually answer the question',
+      '0.0 — an error, nothing useful, or data scoped to the wrong thing',
+    ],
+  },
+  session_coherence: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Read the whole conversation. Did the assistant carry context across turns — remember what it was told, ' +
+      'stay consistent with its own earlier answers, and keep track of which contract was being discussed?',
+    anchors: [
+      '1.0 — held the thread throughout',
+      '0.7 — one small slip that did not derail the conversation',
+      '0.3 — repeatedly re-asked for information it already had, or lost the subject',
+      '0.0 — contradicted itself, or forgot the contract under discussion entirely',
+    ],
+  },
+  session_goal_progress: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Did the conversation move TOWARD what the user was trying to achieve? ' +
+      'Judge the direction of travel, not the politeness of individual turns. ' +
+      'Correctly establishing that a goal CANNOT be met, and saying so, is progress.',
+    anchors: [
+      '1.0 — reached the goal, or established clearly that it could not be reached',
+      '0.7 — made real progress but stopped short',
+      '0.3 — circled without advancing',
+      '0.0 — pursued the wrong interpretation and never corrected, or ended further away than it started',
+    ],
+  },
 
-  // ── Rubrics specific to a LEGAL product. Generic "helpfulness" does not
-  // catch any of these, and each is a way this product in particular can do
-  // real damage to a customer.
-  instruction_following:
-    'Did the ANSWER do what was actually asked? ' +
-    'If the request specified a form — cite the clause, keep it to one line, compare only these two contracts, use our template — score 0 when that instruction was ignored, however good the answer is otherwise. ' +
-    'A good answer to a different question is a 0.',
-  legal_caution:
-    'Does the ANSWER stay on the right side of the line between contract ANALYSIS and legal ADVICE? ' +
-    'Describing what a clause says, flagging risk, and comparing to a playbook are all fine and should score 1. ' +
-    'Score 0 for telling the user what they should legally do, asserting that something is or is not enforceable or compliant as settled fact, or predicting how a court would rule — without any hedge or recommendation to involve counsel.',
-  pii_restraint:
-    'Does the ANSWER avoid repeating personal data it did not need to? ' +
-    'Names of signatories and contract counterparties are ordinary contract content and are fine. ' +
-    'Score 0 if it surfaces personal contact details, salaries, addresses, ID numbers or other personal data that the question did not call for.',
-  professional_tone:
-    'Would a partner at a law firm be comfortable with this text reaching a client unedited? ' +
-    'Score 0 for flippancy, hedging so heavy the answer says nothing, apologising at length, or padding that buries the substance. ' +
-    'Direct and brief is correct, not a fault.',
+  // ── BOOLEAN — genuinely binary ────────────────────────────────────────────
+  // A partial credit here would be meaningless: either the right tool was
+  // called or a different one was.
+  tool_selection: {
+    dataType: 'BOOLEAN',
+    criterion:
+      'Given the USER REQUEST, was calling this particular tool the right move? ' +
+      'Judge the CHOICE only, not the quality of what came back. ' +
+      'Score 0 if a different tool was clearly right, or if no tool was needed.',
+  },
 
-  // ── Session-level. Grades a WHOLE conversation, not one turn.
-  // Coherence and progress are different questions and a conversation can fail
-  // either one alone. An assistant that remembers everything perfectly while
-  // walking the user steadily away from what they wanted scores 1 on coherence
-  // and is still a bad conversation. This is the "did we go in the right
-  // direction" check.
-  session_goal_progress:
-    'Read the whole conversation. Did it move TOWARD what the user was trying to achieve? ' +
-    'Judge the direction of travel, not the politeness or the individual answers. ' +
-    'Score 0 if the assistant pursued the wrong interpretation of the request and never corrected, ' +
-    'looped without advancing, ended further from the goal than it started, ' +
-    'or answered a narrower question than the one asked and stopped there. ' +
-    'A conversation that correctly establishes the goal cannot be met, and says so, scores 1 — that is progress.',
-  session_coherence:
-    'Read the whole conversation. Did the assistant carry context across turns? ' +
-    'Score 0 if it forgot something the user already told it, re-asked for information it had been given, contradicted its own earlier answer, or lost track of which contract was being discussed. ' +
-    'Judge continuity only — an individual turn being wrong is a different failure and is graded elsewhere.',
+  // ── Trajectory: the one thing a per-call score cannot see ────────────────
+  //
+  // `tool_selection` grades each call in isolation, so an agent that calls
+  // contract_search four times with the same query scores 1.0 four times — every
+  // individual call was a defensible choice. The failure only exists in the
+  // SEQUENCE. Multi-step agents fail this way constantly: looping, re-fetching
+  // what they already have, or answering after the first result when the
+  // question needed two lookups. Judged once per turn, over the whole tool list.
+  trajectory: {
+    dataType: 'NUMERIC',
+    criterion:
+      'Look at the ORDERED list of tool calls for this turn as a plan. Did it get ' +
+      'to what the USER REQUEST needed, without wasted or repeated steps? ' +
+      'Judge the path, not the final wording of the answer.',
+    anchors: [
+      '1.0 — every call earned its place, in a sensible order, and together they cover the request',
+      '0.7 — reaches the answer but with one redundant or out-of-order call',
+      '0.3 — repeats a call it already had the result of, or stops one lookup short of the request',
+      '0.0 — loops on the same call, or the sequence never gathers what was asked for',
+    ],
+  },
+
+  // ── CATEGORICAL — a taxonomy, not a grade ─────────────────────────────────
+  //
+  // "Quality is down 8 points" tells you to worry. "Nine of the twelve failures
+  // are misread_data" tells you what to fix. A number cannot carry that, no
+  // matter how fine-grained the scale — this is a different KIND of question,
+  // which is why it is a different score type rather than another rubric.
+  failure_mode: {
+    dataType: 'CATEGORICAL',
+    categories: [
+      'fine',            // nothing wrong
+      'hallucinated',    // stated something with no source at all
+      'misread_data',    // the source was right; the reading of it was wrong
+      'wrong_tool',      // looked in the wrong place
+      'incomplete',      // true as far as it goes, but stops short
+      'refused_wrongly', // declined something it could actually do
+      'malformed',       // right content, unusable shape
+    ],
+    criterion:
+      'Classify the PRIMARY problem with this answer, if any. Pick exactly one label. ' +
+      'Choose "fine" when nothing is wrong. ' +
+      'The distinction that matters most: "hallucinated" means the source did not contain it, ' +
+      'while "misread_data" means the source DID contain it and the answer got it wrong — ' +
+      'those two have completely different fixes.',
+  },
 }
+
+/** Just the criterion text, for callers that only want the wording. */
+export const RUBRIC_TEXT = Object.fromEntries(
+  Object.entries(RUBRICS).map(([k, v]) => [k, v.criterion]),
+)
 
 /**
  * Judge providers, in the same precedence order as apps/agents/app/config.py so
@@ -382,11 +465,22 @@ function judgeConfig() {
   return null
 }
 
-const JUDGE_SYSTEM =
-  'You are grading the output of a contract-lifecycle assistant. ' +
-  'Reason briefly first, then give a verdict. ' +
-  'Return ONLY minified JSON: {"reasoning":"<one or two sentences>","score":<0 or 1>}. ' +
-  'Do not wrap it in markdown fences.'
+/**
+ * The output contract varies by score type. One shared "give me a score" prompt
+ * cannot serve three: a numeric rubric needs a range, a categorical one needs
+ * its label set, a boolean needs neither.
+ */
+function judgeSystem(dataType) {
+  const shape = dataType === 'NUMERIC'
+    ? '"score":<a number between 0.0 and 1.0>'
+    : dataType === 'CATEGORICAL'
+      ? '"score":"<exactly one of the allowed labels>"'
+      : '"score":<0 or 1>'
+  return 'You are grading the output of a contract-lifecycle assistant. ' +
+    'Reason briefly first, then give a verdict. ' +
+    `Return ONLY minified JSON: {"reasoning":"<one or two sentences>",${shape}}. ` +
+    'Do not wrap it in markdown fences.'
+}
 
 /**
  * Evidence budget. Deliberately large, and truncation is DECLARED.
@@ -453,12 +547,21 @@ function calibrationExamples(criterion) {
 export function judgePrompt(criterion, { input, output, expectedOutput }) {
   const src = clip(input, SOURCE_BUDGET)
   const ans = clip(output, ANSWER_BUDGET)
+  const spec = RUBRICS[criterion]
+  // Anchors are what stop a numeric score drifting. Without them "0.7" means
+  // whatever the model felt like today and the trend line is noise.
+  const scaleBlock = spec?.dataType === 'NUMERIC' && spec.anchors
+    ? ['', 'SCALE — use these anchors, interpolate between them:', ...spec.anchors.map((a) => `  ${a}`)].join('\n')
+    : spec?.dataType === 'CATEGORICAL' && spec.categories
+      ? `\nALLOWED LABELS (pick exactly one): ${spec.categories.join(' | ')}`
+      : null
   return [
-    `CRITERION (${criterion}): ${RUBRICS[criterion] ?? criterion}`,
+    `CRITERION (${criterion}): ${spec?.criterion ?? criterion}`,
+    scaleBlock,
     calibrationExamples(criterion) || null,
     '',
     src.truncated
-      ? 'NOTE: the SOURCE below was truncated for length. Do NOT treat a detail\'s absence from it as invention — if a claim is merely unverifiable here, score 1 and say so.'
+      ? 'NOTE: the SOURCE below was truncated for length. Do NOT treat a detail\'s absence from it as invention — if a claim is merely unverifiable here, do not penalise it.'
       : '',
     `INPUT / SOURCE:\n${src.text}`,
     expectedOutput ? `\nEXPECTED:\n${clip(expectedOutput, 3000).text}` : '',
@@ -466,7 +569,8 @@ export function judgePrompt(criterion, { input, output, expectedOutput }) {
   ].filter(Boolean).join('\n')
 }
 
-async function callJudge(cfg, prompt) {
+async function callJudge(cfg, prompt, dataType = 'BOOLEAN') {
+  const JUDGE_SYSTEM = judgeSystem(dataType)
   const timeout = AbortSignal.timeout(60_000)
   if (cfg.provider === 'anthropic') {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -532,15 +636,38 @@ async function callJudge(cfg, prompt) {
   return text
 }
 
-/** Judges tolerate a fenced or chatty response; a parse failure must not read as a 0. */
-function parseVerdict(text) {
+/**
+ * Parse a verdict per score type. A parse failure THROWS rather than returning
+ * 0 — "the grader broke" and "the answer was bad" must never look the same.
+ */
+function parseVerdict(text, criterion) {
+  const spec = RUBRICS[criterion]
+  const type = spec?.dataType ?? 'BOOLEAN'
   const raw = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim()
   const match = raw.match(/\{[\s\S]*\}/)
   if (!match) throw new Error(`judge returned no JSON: ${raw.slice(0, 200)}`)
   const v = JSON.parse(match[0])
-  const score = Number(v.score)
-  if (!Number.isFinite(score)) throw new Error(`judge returned no numeric score: ${raw.slice(0, 200)}`)
-  return { score: score >= 0.5 ? 1 : 0, reasoning: String(v.reasoning ?? '').slice(0, 500) }
+  const reasoning = String(v.reasoning ?? '').slice(0, 500)
+
+  if (type === 'CATEGORICAL') {
+    const label = String(v.score ?? '').trim().toLowerCase()
+    // An unknown label is a broken grader, not a bad answer. Silently mapping
+    // it to a valid one would invent data and hide the real problem.
+    if (!spec.categories.includes(label)) {
+      throw new Error(`judge returned label "${label}", not one of: ${spec.categories.join(', ')}`)
+    }
+    return { score: label, reasoning }
+  }
+
+  const n = Number(v.score)
+  if (!Number.isFinite(n)) throw new Error(`judge returned no numeric score: ${raw.slice(0, 200)}`)
+  if (type === 'NUMERIC') {
+    // Clamp rather than reject: a model that answers 1.2 meant "the top of the
+    // scale", and throwing away an otherwise-good judgement over that is worse
+    // than recording the intent.
+    return { score: Math.max(0, Math.min(1, n)), reasoning }
+  }
+  return { score: n >= 0.5 ? 1 : 0, reasoning }
 }
 
 export function judgeAvailable() {
@@ -550,12 +677,13 @@ export function judgeAvailable() {
 async function judge(criterion, ctx) {
   const cfg = judgeConfig()
   if (!cfg) return null   // caller reports this as a skip, never as a pass
-  const text = await callJudge(cfg, judgePrompt(criterion, ctx))
-  const { score, reasoning } = parseVerdict(text)
+  const type = RUBRICS[criterion]?.dataType ?? 'BOOLEAN'
+  const text = await callJudge(cfg, judgePrompt(criterion, ctx), type)
+  const { score, reasoning } = parseVerdict(text, criterion)
   return {
     name: `judge:${criterion}`,
     value: score,
-    dataType: 'BOOLEAN',
+    dataType: type,
     comment: `[${cfg.provider}/${cfg.model}] ${reasoning}`,
   }
 }

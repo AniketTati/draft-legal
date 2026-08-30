@@ -234,10 +234,81 @@ function edgeJourney(n) {
   }
 }
 
-const BUILDERS = [intakeJourney, assistantJourney, chatJourney, renewalJourney]
+/**
+ * Questions that CANNOT be answered with one tool call.
+ *
+ * The traffic above produced at most one tool per turn and exercised two of
+ * about thirty tools, so every trace had the same shape and the tracing was
+ * never really tested. A single-tool trace cannot show you a chained lookup, a
+ * tool that fails mid-turn, or a model that picks the second tool badly after
+ * picking the first one well — which are the failures agents actually have.
+ *
+ * Each of these forces at least two calls: find something, then look inside it.
+ */
+function multiToolJourney(n) {
+  const c = pick(n + 4)
+  const s = `traffic-multi-${n}-${randomUUID().slice(0, 6)}`
+  const user = USERS[(n + 3) % USERS.length]
+  const party = c.counterpartyName ?? 'our largest counterparty'
+  return {
+    name: 'chat:multi-tool', sessionId: s, family: 'chat',
+    steps: [
+      // search → then read INSIDE the result
+      { label: 'multi.find_then_read', run: () => chat(
+        `Find our agreement with ${party} and tell me what it says about limitation of liability.`,
+        { sessionId: s, orgId: c.orgId, userId: user }) },
+      // history → then the renewal position for the same party
+      { label: 'multi.history_then_renewal', run: () => chat(
+        `What's our history with ${party}, and is anything with them expiring soon?`,
+        { sessionId: s, orgId: c.orgId, userId: user }) },
+      // Two NAMED contracts, so the comparison lands on documents that have
+      // text. "our three largest MSAs" sends the agent at the highest-value
+      // rows, and 294 of 421 contracts in this database have no version
+      // attached — so that phrasing tests the seed data, not the agent.
+      { label: 'multi.compare', run: () => chat(
+        `Compare the ${c.counterpartyName ?? 'Acme'} agreement and the ${pick(n + 6).counterpartyName ?? 'Globex'} agreement ` +
+        'on liability caps and termination rights.',
+        { sessionId: s, orgId: c.orgId, userId: user }) },
+    ],
+  }
+}
+
+/**
+ * A turn whose FIRST tool call fails. The interesting question is what the agent
+ * does next — recover with a different lookup, or give up and guess. Nothing in
+ * the happy-path traffic ever exercises that path.
+ */
+function recoveryJourney(n) {
+  const c = pick(n + 5)
+  const s = `traffic-recover-${n}-${randomUUID().slice(0, 6)}`
+  const user = USERS[(n + 1) % USERS.length]
+  return {
+    name: 'chat:recovery', sessionId: s, family: 'edge',
+    steps: [
+      { label: 'recover.bad_id_then_search', run: () => chat(
+        `Tell me the liability cap in contract cm-not-a-real-id-000. If you can't find it, search for ${c.counterpartyName ?? 'Acme'} instead.`,
+        { sessionId: s, orgId: c.orgId, userId: user }) },
+      { label: 'recover.ambiguous', run: () => chat(
+        'Show me the one about data protection.',
+        { sessionId: s, orgId: c.orgId, userId: user }) },
+    ],
+  }
+}
+
+const BUILDERS = [intakeJourney, assistantJourney, chatJourney, renewalJourney, multiToolJourney, recoveryJourney]
 const journeys = []
 for (let i = 0; i < journeyCount; i++) journeys.push(BUILDERS[i % BUILDERS.length](i))
 journeys.push(edgeJourney(0))   // always exactly one — it is a probe, not a load
+
+// --only multi,recovery → run just those. For iterating on one journey shape
+// without paying for the whole mix.
+const only = arg('only', null)
+const selected = only
+  ? journeys.filter((j) => only.split(',').some((k) => j.name.includes(k.trim())))
+  : journeys
+if (!selected.length) { console.error(`\n✗ --only ${only} matched no journey\n`); process.exit(1) }
+journeys.length = 0
+journeys.push(...selected)
 
 const totalSteps = journeys.reduce((n, j) => n + j.steps.length, 0)
 
@@ -289,6 +360,22 @@ for (const r of results) {
   a.n++; if (r.ok) { a.ok++; a.ms += r.ms }
   byFamily.set(r.family, a)
 }
+// Tool coverage. A trace that only ever calls one tool cannot show you a chained
+// lookup or a bad second choice, so "how many tools, how often more than one" is
+// the number that says whether this traffic exercised the agent or just pinged it.
+const toolCalls = results.flatMap((r) => r.tools ?? [])
+if (toolCalls.length) {
+  const perTurn = results.filter((r) => r.tools).map((r) => r.tools.length)
+  const multi = perTurn.filter((n) => n > 1).length
+  const byTool = new Map()
+  for (const name of toolCalls) byTool.set(name, (byTool.get(name) ?? 0) + 1)
+  console.log(`\n  tool calls: ${toolCalls.length} across ${perTurn.length} chat turns` +
+    `  ·  ${multi} turn(s) used more than one tool  ·  ${byTool.size} distinct tools`)
+  for (const [name, n] of [...byTool].sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${name.padEnd(24)} ${n}`)
+  }
+}
+
 console.log('\n  by surface family:')
 for (const [f, a] of [...byFamily].sort()) {
   console.log(`    ${f.padEnd(12)} ${String(a.ok).padStart(2)}/${String(a.n).padEnd(3)} ok   avg ${a.ok ? Math.round(a.ms / a.ok) : 0}ms`)

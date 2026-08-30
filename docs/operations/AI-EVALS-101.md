@@ -125,22 +125,81 @@ and a **rubric** — and ask it to score. That is all "LLM-as-a-judge" means.
 
 Ours looks like this (real, from `scorers.mjs`):
 
-> **groundedness** — Is every factual claim in the ANSWER supported by the SOURCE
-> material or the conversation input? Score 0 if the answer states a contract
-> term, party, date, or figure that does not appear in the source. An answer that
-> correctly says it does not know scores 1. Fluent invention is the failure this
-> catches.
+> **groundedness** (NUMERIC) — Is every factual claim in the ANSWER supported by
+> the SOURCE material or the conversation input?
+>
+> - `1.0` — every claim traceable to the source, OR a correct "I could not find that"
+> - `0.7` — substantively grounded; one peripheral detail unsupported
+> - `0.3` — a CENTRAL claim is unsupported
+> - `0.0` — invented: contract terms, parties, dates or figures not in the source
 
-**Why the rubric is written that way** — three deliberate properties, and an
+**Why the rubric is written that way** — four deliberate properties, and an
 interviewer may well probe them:
 
 1. **One property per rubric.** "Is this a good answer?" produces a number that
    drifts with the model and correlates with nothing. Each rubric asks exactly
    one question.
 2. **It names what a 0 looks like.** Vague rubrics get vague scores.
-3. **It resolves the ambiguous case explicitly** — "an answer that correctly
-   says it does not know scores 1." Without that line, a judge penalises the
-   agent for the *correct* refusal, which is the opposite of what you want.
+3. **It resolves the ambiguous case explicitly** — a correct "I don't know"
+   scores 1.0. Without that line, a judge penalises the agent for the *correct*
+   refusal, which is the opposite of what you want.
+4. **Every level is anchored.** "Score 0 to 1 for groundedness" gets a different
+   number every run, because the judge invents its own scale each time. Naming
+   what 0.7 and 0.3 *mean* is what makes the number reproducible enough to
+   trend. This is the same reason human annotation guidelines carry anchors, and
+   it is the standard answer to "how do you get inter-rater reliability from an
+   LLM judge?"
+
+### 3.2.1 Pick the score TYPE to match the question
+
+A rubric is not automatically pass/fail. Langfuse supports three types and using
+only one is a common, costly mistake:
+
+| Type | Answers | Ours |
+|---|---|---|
+| `BOOLEAN` (0/1) | *Did it do the right thing?* | `tool_selection` |
+| `NUMERIC` (0.0–1.0) | *How well?* | `groundedness`, `helpfulness`, `correctness`, `citation`, `retrieval_sufficiency`, `trajectory`, `session_coherence`, `session_goal_progress` |
+| `CATEGORICAL` (a label) | *What kind of failure?* | `failure_mode`: `hallucinated`, `misread_data`, `wrong_tool`, `incomplete`, `refused_wrongly`, `malformed`, `fine` |
+
+**Boolean-only hides where the failure is.** A real run from this repo:
+
+```
+contract_search · tool_selection            3/3   100%
+portfolio_compare · tool_selection          1/1   100%
+contract_search · retrieval_sufficiency     mean 0.20
+portfolio_compare · retrieval_sufficiency   mean 0.00
+agent.chat · groundedness                   mean 1.00
+agent.chat · trajectory (2 calls)           mean 0.67
+agent.chat · failure_mode                   fine ×2, wrong_tool ×1
+```
+
+The agent picks the right tools (100%) and invents nothing (1.00) — but what the
+tools *return* is useless (0.20, 0.00). **The model is fine; retrieval is broken.**
+With only the boolean we would have read `100%` and shipped.
+
+That distinction decides what you go and fix: a prompt, or a database query.
+
+**Categorical is not a number.** `failure_mode` has no average — you read it as a
+breakdown ("9 of 12 failures are `misread_data`"). A numeric score tells you to
+worry; a label tells you what to fix. They also land in *different* Langfuse
+metric views (`scores-boolean`, `scores-numeric`, `scores-categorical`), which is
+a real trap when building dashboards.
+
+### 3.2.2 `trajectory` — the score a per-call judge cannot produce
+
+`tool_selection` grades each call **in isolation**. An agent that calls
+`contract_search` four times with the same query scores 1.0 four times: every
+individual call was defensible. The failure exists only in the **sequence**.
+
+So `trajectory` is judged once per turn over the *ordered* tool list — catching
+looping, re-fetching what it already had, and stopping one lookup short of the
+question. It runs only when a turn used more than one tool; on a single-tool turn
+it asks the same question as `tool_selection`, and paying a judge twice for one
+answer is waste.
+
+This is the eval-design point worth being able to state: **the unit you score has
+to match the unit that can fail.** Multi-step agents fail at the sequence level,
+so something has to score the sequence.
 
 ### 3.3 Humans — slow, and the only ground truth
 
@@ -443,6 +502,28 @@ across runs rather than a pass/fail on one run.
 **"What do you sample, and why?"**
 Judge-based checks at 5%, because they cost $0.01–0.10 each and at 20% ours were
 48% of total model spend. Guardrails at 100%, because they are free.
+
+**"Why not just score everything pass/fail?"**
+Because a boolean forces a cliff edge, and it hides *where* the failure is. An
+answer missing one caveat and an answer inventing a liability cap both score 0;
+over a week both read as "83% pass". And in a real run of ours, `tool_selection`
+was 100% while `retrieval_sufficiency` averaged 0.20 — the agent chose correctly
+and got back nothing useful. Boolean-only would have shown 100% and we would have
+shipped a broken lookup. Numeric answers *how well*, categorical answers *what
+kind of failure*, boolean answers *did it do the right thing*.
+
+**"How do you stop an LLM judge drifting between runs?"**
+Anchor every level of the scale. "Score 0–1 for groundedness" makes the judge
+invent a scale each time; defining what 0.7 and 0.3 mean makes the number
+reproducible enough to trend. Then check the judge against human labels — anchors
+make it consistent, not correct.
+
+**"How do you evaluate a multi-step agent?"**
+Score at the level that can fail. Per-call scores miss sequence failures entirely
+— four identical `contract_search` calls each score "right tool", while the turn
+is obviously looping. So we score the ordered tool list once per turn
+(`trajectory`) alongside the per-call scores, and only when a turn used more than
+one tool.
 
 **"What's your biggest gap?"**
 No human review cadence, so the judge has no baseline. Everything downstream of

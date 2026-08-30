@@ -205,15 +205,34 @@ console.log('\n6. QUALITY — scores')
 // so the dashboard and this script report the SAME number; two quality figures
 // that disagree is worse than either one alone.
 const BOOKKEEPING = ['ran', 'latency_ms']
-const scores = await metrics({
-  view: 'scores-boolean', dimensions: [{ field: 'name' }],
-  metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
-  filters: [{ column: 'name', operator: 'none of', value: BOOKKEEPING, type: 'stringOptions' }],
-}, 'quality scores')
+// Quality now spans THREE score types and they live in three different metric
+// views. Reading only `scores-boolean` would have silently dropped every
+// numeric judgement the moment the rubrics changed type — the pass rate would
+// have looked stable while measuring almost nothing.
+const noBookkeeping = [{ column: 'name', operator: 'none of', value: BOOKKEEPING, type: 'stringOptions' }]
+const [boolScores, numScores, catScores] = await Promise.all([
+  metrics({ view: 'scores-boolean', dimensions: [{ field: 'name' }],
+    metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
+    filters: noBookkeeping }, 'boolean scores'),
+  metrics({ view: 'scores-numeric', dimensions: [{ field: 'name' }],
+    metrics: [{ measure: 'value', aggregation: 'avg' }, { measure: 'count', aggregation: 'count' }],
+    filters: noBookkeeping }, 'numeric scores'),
+  metrics({ view: 'scores-categorical', dimensions: [{ field: 'stringValue' }],
+    metrics: [{ measure: 'count', aggregation: 'count' }] }, 'categorical scores'),
+])
+const scores = [...numScores.map((r) => ({ ...r, _t: 'num' })), ...boolScores.map((r) => ({ ...r, _t: 'bool' }))]
 if (scores.length) {
-  console.log(`    ${pad('score', 30)}  ${padL('n', 6)}  ${padL('avg', 8)}`)
-  table(scores.map((r) => ({ s: r.name, c: n(r.count_count), a: n(r.avg_value) })),
-    [['s', 30], ['c', 6, true], ['a', 8, true, (v) => n(v).toFixed(2)]])
+  console.log(`    ${pad('score', 30)}  ${padL('n', 6)}  ${padL('avg', 8)}  type`)
+  table(scores.map((r) => ({ s: r.name, c: n(r.count_count), a: n(r.avg_value), t: r._t === 'num' ? 'numeric' : 'boolean' })),
+    [['s', 30], ['c', 6, true], ['a', 8, true, (v) => n(v).toFixed(2)], ['t', 8]])
+  // The categorical rubric is a taxonomy, so it is counted rather than averaged.
+  // "nine of twelve failures are misread_data" is the actionable form; an
+  // average of a label set would be meaningless.
+  if (catScores.length) {
+    console.log('\n    failure modes:')
+    table(catScores.map((r) => ({ s: r.stringValue ?? '(none)', c: n(r.count_count) })).sort((a, b) => b.c - a.c),
+      [['s', 30], ['c', 6, true]])
+  }
 } else {
   console.log('    no scores in this window.')
   console.log('    Offline: pnpm evals:run -- --dataset extraction')

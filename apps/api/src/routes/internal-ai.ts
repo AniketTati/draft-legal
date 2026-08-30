@@ -31,6 +31,7 @@ import { AuditAction } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
+import { findTopic } from '../lib/clause-topic.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -1834,7 +1835,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // that the agent can find the right SECTION and cite it verbatim.
     const q = body.query.trim()
     const lower = text.toLowerCase()
-    const qLower = q.toLowerCase()
     const matches: Array<{
       index: number
       beforeContext: string
@@ -1845,14 +1845,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     let cursor = 0
     while (matches.length < body.limit) {
-      const idx = lower.indexOf(qLower, cursor)
-      if (idx === -1) break
+      // Alias-aware, same reason as portfolio_compare: a query of "liability
+      // cap" has to find "Limitation of Liability" or it reports the clause
+      // missing from a contract that contains it.
+      const hit = findTopic(text, q, cursor)
+      if (!hit) break
+      const idx = hit.index
+      const mLen = hit.matchedPhrase.length
       const half = Math.floor(body.windowChars / 2)
       const start = Math.max(0, idx - half)
-      const end   = Math.min(text.length, idx + q.length + half)
+      const end   = Math.min(text.length, idx + mLen + half)
       const before = text.slice(start, idx)
-      const match  = text.slice(idx, idx + q.length)
-      const after  = text.slice(idx + q.length, end)
+      const match  = text.slice(idx, idx + mLen)
+      const after  = text.slice(idx + mLen, end)
 
       // Best-effort section heading detection: look backwards for a line
       // starting with a digit + dot + optional dot (e.g. "9.2", "3.1.4").
@@ -1861,7 +1866,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
 
       matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint })
-      cursor = idx + q.length
+      cursor = idx + mLen
     }
 
     // P7.5.1 — every window here is verbatim contract text going to the LLM:
@@ -4125,20 +4130,21 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const textByContract = new Map(versions.map(v => [v.contractId, v.plainText ?? '']))
     const half = Math.floor(body.excerptChars / 2)
     const matrix = body.topics.map(topic => {
-      const tLower = topic.toLowerCase()
       const perContract = contracts.map(c => {
         const text = textByContract.get(c.id) ?? ''
         if (!text) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
-        const lower = text.toLowerCase()
-        const idx = lower.indexOf(tLower)
-        if (idx === -1) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
+        // Alias-aware: a contract says "Limitation of Liability", never
+        // "liability cap". A literal match reported every clause as absent.
+        const hit = findTopic(text, topic)
+        if (!hit) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
+        const idx = hit.index
         const start = Math.max(0, idx - half)
-        const end   = Math.min(text.length, idx + topic.length + half)
+        const end   = Math.min(text.length, idx + hit.matchedPhrase.length + half)
         const excerpt = text.slice(start, end)
         const back = text.slice(Math.max(0, idx - 500), idx)
         const sec = back.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
         const sectionRef = sec ? sec[sec.length - 1].trim().replace(/[.\s)]+$/, '') : null
-        return { contractId: c.id, sectionRef, excerpt, found: true }
+        return { contractId: c.id, sectionRef, excerpt, found: true, matchedPhrase: hit.matchedPhrase }
       })
       const foundCount = perContract.filter(p => p.found).length
       return { topic, foundCount, perContract }

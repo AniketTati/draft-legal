@@ -102,6 +102,55 @@ input: the system prompt and ~30 tool definitions. That is normal for an agent
 and it is why input cost dominates. If someone asks "why is chat expensive?",
 this is the answer — not long replies, but a large prompt sent on every turn.
 
+### Multi-step traces: the shape that actually matters
+
+The trace above has one tool call. Most real agent turns have several, and the
+interesting failures only exist across them. Two shapes show up, and they mean
+different things.
+
+**Chained** — the model calls a tool, *reads the result*, then decides what to do
+next. `GENERATION` between the tools is the tell:
+
+```
+GENERATION  agent.chat          1.512s     ← decide: find the contract
+TOOL        contract_search     0.055s
+GENERATION  agent.chat          1.524s     ← read result, decide: now compare
+TOOL        portfolio_compare   0.023s
+GENERATION  agent.chat          1.665s     ← write the answer
+```
+
+**Parallel** — the model issues both calls at once, having decided up front it
+needs both. No `GENERATION` between them:
+
+```
+GENERATION  agent.chat              1.531s   ← decide: need history AND renewals
+TOOL        counterparty_memory     0.030s
+TOOL        contract_search         0.022s
+GENERATION  agent.chat              1.171s   ← write the answer
+```
+
+Parallel is cheaper (one fewer model round-trip). Chained is necessary when the
+second call *depends* on the first one's output — you cannot look up a contract's
+liability cap until you know its ID.
+
+**What to look for:**
+
+| Symptom in the trace | What it means |
+|---|---|
+| Same tool, same arguments, twice | The model is looping — it did not register the first result |
+| Chained where parallel would do | Slow for no reason; each hop is a full model call |
+| One tool, then a confident answer needing two lookups | Stopped early; check `groundedness` |
+| A tool errors, then the answer proceeds anyway | The model ignored a failure — the worst case, because it looks fine |
+
+That last row is why `scripts/evals/langfuse/traffic.mjs` includes a **recovery**
+journey that deliberately asks for a non-existent contract ID with a fallback.
+A healthy trace shows the failed lookup, then a *different* call, then an answer.
+A real run produced exactly that:
+`clause_search → contract_search → clause_search`.
+
+Latency note: the API returns observation latency in **seconds**, not
+milliseconds. `0.055` is 55ms.
+
 ### The scores
 
 ```
@@ -131,6 +180,94 @@ answer step. Grading the decide step produces a confident score about nothing.
 **This is a real config nuance, found by reading a comment rather than a number**,
 and it is exactly the habit to build: *the number tells you there is something to
 look at; the comment tells you whether to believe it.*
+
+---
+
+## Part 2.5 — The three score types, and why one is not enough
+
+Every score above is `BOOLEAN`. That was our whole setup for a while, and it hid
+things. Langfuse supports three types, and they answer different questions.
+
+| Type | Value | Answers | Example |
+|---|---|---|---|
+| `BOOLEAN` | 0 or 1 | *Did it do the right thing?* | `tool_selection` — was calling this tool the right move |
+| `NUMERIC` | 0.0–1.0 | *How well?* | `groundedness` — 0.7 is "one peripheral detail unsupported", 0.3 is "a central claim is unsupported" |
+| `CATEGORICAL` | a label | *What kind of failure?* | `failure_mode` — `hallucinated`, `misread_data`, `wrong_tool`, `incomplete`, `refused_wrongly`, `malformed`, `fine` |
+
+### Why boolean alone misleads
+
+A boolean forces every judgement to a cliff edge. An answer that is substantively
+right but omits one caveat scores the same 0 as one that invents a liability cap.
+Averaged over a week, both read as "83% pass" and you cannot tell a drift from a
+disaster.
+
+Worse, it hides *where* the failure is. Here is a real run from this repo:
+
+```
+contract_search · tool_selection            3/3   100%
+portfolio_compare · tool_selection          1/1   100%
+contract_search · retrieval_sufficiency     mean 0.20
+portfolio_compare · retrieval_sufficiency   mean 0.00
+agent.chat · groundedness                   mean 1.00
+agent.chat · trajectory (2 calls)           mean 0.67
+agent.chat · failure_mode                   fine ×2, wrong_tool ×1
+```
+
+Read it as a sentence: **the agent picks the right tools (100%) and does not make
+things up (groundedness 1.00), but what those tools return is nearly useless
+(0.20, 0.00).** The model is fine; the retrieval is broken.
+
+With only `tool_selection` we would have seen `100%` and concluded the agent was
+healthy. The numeric score is what separated "chose wrong" from "chose right, got
+nothing back" — and that distinction is the difference between fixing a prompt and
+fixing a database query.
+
+### Anchors are what make a numeric score reproducible
+
+"Score 0 to 1 for groundedness" gets you a different number every run, because the
+judge invents its own scale. Every numeric rubric here defines what each level
+*means*:
+
+```
+1.0 — every claim traceable to the source, OR a correct "I could not find that"
+0.7 — substantively grounded; one peripheral detail unsupported
+0.3 — a CENTRAL claim is unsupported
+0.0 — invented: contract terms, parties, dates or figures that are not in the source
+```
+
+That is the whole difference between a number you can trend and a number you
+cannot. In an interview: *anchored rubrics are how you get inter-rater
+reliability out of an LLM judge* — the same reason human annotation guidelines
+have them.
+
+### `trajectory`: the score a per-call judge cannot produce
+
+`tool_selection` grades each call **in isolation**. So an agent that calls
+`contract_search` four times with the same query scores 1.0 four times — every
+individual call was defensible. The failure exists only in the *sequence*.
+
+`trajectory` is judged once per turn over the ordered tool list, and only when a
+turn used more than one tool (on a single-tool turn it is the same question as
+`tool_selection`, and paying a judge twice to answer it once is waste). It is the
+score that catches looping, re-fetching, and stopping one lookup short.
+
+### Where each type shows up in the UI
+
+They land in **different metric views**, which trips people up:
+
+- `scores-boolean` — pass rates
+- `scores-numeric` — averages and distributions
+- `scores-categorical` — counts per label, *not* an average
+
+A categorical score has no mean. Charting `failure_mode` as a number produces
+nothing; you want a breakdown ("9 of 12 failures are `misread_data`"), which is
+the point of having it — a number tells you to worry, a label tells you what to
+fix.
+
+> **Count-weighted, not averaged.** When a health check spans boolean and numeric
+> views, average them by *count*. With 5 boolean and 200 numeric judgements,
+> averaging the two averages gives those 5 scores forty times the weight they
+> deserve.
 
 ---
 
