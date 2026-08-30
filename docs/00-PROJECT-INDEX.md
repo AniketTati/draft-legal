@@ -56,6 +56,7 @@ These docs complement the `CLM_Complete_Product_Specification.xlsx` which contai
 | 18 | `operations/18-TESTING-STRATEGY.md` | Test approach per phase, E2E scenarios, agent testing, load testing |
 | 19 | `operations/19-DEPLOYMENT-STRATEGY.md` | CI/CD, environments, feature flags, rollout plan, monitoring |
 | — | `operations/LANGFUSE.md` | LLM observability — self-hosted Langfuse for local dev, Langfuse Cloud for Cloud Run, what a trace contains, why traces go missing |
+| — | `operations/AI-QUALITY-FOR-PMS.md` | **Start here if you are not an engineer** — how AI quality is measured, how to read Langfuse, where we stand vs industry |
 | — | `operations/LANGFUSE-EVALS.md` | LLM evaluation — how teams do it, our offline harness (extraction→chat), online production evals, honest limits |
 | 22 | `22-VIBE-CODING-GUIDE.md` | Practical guide to building this with AI-assisted coding — tool setup, session patterns, prompting patterns, pitfalls, day-by-day plan |
 
