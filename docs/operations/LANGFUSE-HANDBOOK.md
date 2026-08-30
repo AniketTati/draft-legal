@@ -224,6 +224,101 @@ grade to the *same* wording. If they ever disagree, that is a bug — not a sign
 
 ---
 
+## Part 3.5 — What happens when a human labels a trace
+
+The question everyone asks: *"I reviewed a conversation and disagreed with the
+judge — how does the judge get updated?"*
+
+**It doesn't. Not on its own.** This is the single most common misconception
+about LLM-as-judge, and worth being precise about.
+
+### What labelling does mechanically
+
+Your labels land in Langfuse as scores named `human_groundedness`,
+`human_helpfulness`, `human_verdict`, `human_notes` — sitting on the same trace,
+right next to the judge's `judge:groundedness`. That is all that happens
+automatically. Two opinions, side by side, on one record.
+
+**There is no training step.** An LLM judge does not learn from scores. There is
+no gradient, no fine-tune, no weight update. It is a prompt and a model; the
+prompt is the only thing that can change.
+
+### The loop, in four steps
+
+```
+1. LABEL       You review traces in the queue and record what you think
+
+2. MEASURE     pnpm evals annotate -- --calibrate
+               Reports agreement per criterion and lists every disagreement.
+               This step only MEASURES. Nothing is updated.
+
+3. DECIDE      Open each disagreement and decide who was right.
+               The judge being wrong and you being wrong look identical in
+               that table — only the trace settles it.
+
+4. UPDATE      pnpm evals annotate -- --emit-examples
+               Turns the cases where the JUDGE was wrong into worked examples
+               and writes them into the judge's prompt.
+```
+
+Step 4 is the actual "update", and it is worth understanding why it takes this
+form. Since you cannot train the judge, you teach it by example: embed the
+corrected case in its prompt — *here is an input, here is the answer, here is the
+correct score, and here is why.* That is the standard calibration technique for
+LLM judges, and it works because the failure is usually not a missing rule but
+an **ambiguous** one, which a concrete case resolves better than another
+sentence of prose.
+
+What the generated example looks like:
+
+```
+--- CORRECTED EXAMPLE 1 ---
+INPUT:  How many contracts expire in the next 90 days?
+        --- TOOL RESULTS --- {"total": 20, rows with daysUntilExpiry -17..11}
+ANSWER: There are 20 contracts expiring in the next 90 days.
+CORRECT SCORE: 0
+WHY: total counts a window reaching 30 days BACKWARD. Only 8 rows had
+     daysUntilExpiry >= 0.
+```
+
+That `WHY` is your `human_notes` text. **It is the most valuable field in the
+queue** — "not_grounded" teaches the judge nothing, while one sentence of
+reasoning defines the boundary the criterion actually cares about.
+
+### Three rules the tooling enforces
+
+**Only disagreements become examples.** A case where the judge already agreed
+teaches it nothing and costs tokens on every future judgement, forever.
+
+**"unclear" is never a correction.** Forcing a binary onto a genuinely ambiguous
+case teaches the judge the wrong boundary — which is why the label exists.
+
+**Both judges must be updated.** The script judge reads the example file at run
+time. Langfuse's in-platform judge holds a *copy* of the prompt, so it needs
+`pnpm evals evaluators -- --apply` to pick up changes. If they drift, a
+disagreement between them tells you nothing about the product — only that one
+was updated and the other was not. The tooling now warns when the stored prompt
+has gone stale.
+
+### Then measure again
+
+```bash
+pnpm evals annotate -- --calibrate
+```
+
+**The number that matters is whether agreement went UP.** Adding examples is a
+change like any other, and it can make a judge worse — over-fit to a handful of
+corrections and it starts applying a narrow rule everywhere. Re-measuring is not
+optional bookkeeping; it is how you find that out.
+
+### Keep the example set small
+
+Every example is tokens on every judgement. A dozen well-chosen corrections beat
+fifty. Prefer cases where the judge was *confidently* wrong in a way that will
+recur, and retire examples whose behaviour the rubric now covers outright.
+
+---
+
 ## Part 4 — The pages, and what each is for
 
 ### Dashboards

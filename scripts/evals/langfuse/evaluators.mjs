@@ -37,6 +37,7 @@
  * for anything high-volume. `--sampling` on a re-run CONVERGES an existing rule
  * rather than skipping it, so changing your mind is one command.
  */
+import fs from 'node:fs'
 import { requireConfig, LANGFUSE_HOST } from './lf.mjs'
 import { RUBRICS } from './scorers.mjs'
 
@@ -91,16 +92,53 @@ function judgeConnection() {
  * `{{variables}}` are filled by the rule's mapping below. Each prompt is the
  * shared rubric plus the JSON contract Langfuse expects back.
  */
+/**
+ * Human corrections, from the same store the script judge reads.
+ *
+ * Both judges must carry the same corrections or they drift apart, and then a
+ * disagreement between them tells you nothing about the product — only that
+ * one of them was updated and the other was not.
+ *
+ * Note the operational consequence: after `--emit-examples` writes new
+ * corrections, the in-platform judge does NOT pick them up until
+ * `evaluators.mjs --apply` pushes the new prompt. The script judge reads the
+ * file at run time; this one has a copy stored inside Langfuse.
+ */
+function calibrationExamples(criterion) {
+  let examples = []
+  try {
+    const raw = fs.readFileSync(new URL('./calibration/examples.json', import.meta.url), 'utf8')
+    examples = JSON.parse(raw).examples ?? []
+  } catch { return '' }
+  const mine = examples.filter((e) => e.criterion === criterion).slice(0, 8)
+  if (!mine.length) return ''
+  return [
+    '',
+    'The following cases were previously scored INCORRECTLY and corrected by a',
+    'human reviewer. Match their reasoning.',
+    '',
+    ...mine.map((e, i) => [
+      `--- CORRECTED EXAMPLE ${i + 1} ---`,
+      `INPUT: ${String(e.input ?? '').slice(0, 900)}`,
+      `ANSWER: ${String(e.output ?? '').slice(0, 900)}`,
+      `CORRECT SCORE: ${e.correct}`,
+      `WHY: ${String(e.why ?? '').slice(0, 400)}`,
+    ].join('\n')),
+    '',
+  ].join('\n')
+}
+
 function judgePrompt(criterion, vars) {
   return [
     `You are grading the output of a contract-lifecycle assistant.`,
     ``,
     `CRITERION (${criterion}): ${RUBRICS[criterion]}`,
+    calibrationExamples(criterion) || null,
     ``,
     ...vars.map((v) => `${v.toUpperCase()}:\n{{${v}}}`),
     ``,
     `Reason briefly, then score. Score 1 if the criterion is met, 0 if not.`,
-  ].join('\n')
+  ].filter((line) => line !== null).join('\n')
 }
 
 /**
@@ -197,12 +235,29 @@ const evalByName = new Map((existingEvals.data ?? []).map((e) => [e.name, e]))
 
 for (const e of EVALUATORS) {
   const name = NAME(e.criterion)
-  if (evalByName.has(name)) { console.log(`  · evaluator "${name}" (exists)`); continue }
+  const existing = evalByName.get(name)
+  const wanted = judgePrompt(e.criterion, e.vars)
+  if (existing) {
+    // A stale prompt is worse than no prompt: it looks configured while
+    // silently missing every correction a reviewer has made since. The API has
+    // no update for evaluators, so say so rather than printing "exists" and
+    // moving on.
+    const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
+    if (norm(existing.prompt) !== norm(wanted)) {
+      console.log(`  ⚠ evaluator "${name}" exists but its prompt is STALE`)
+      console.log(`     (calibration examples have changed since it was created)`)
+      console.log(`     Delete it in the UI and re-run --apply to pick up the corrections:`)
+      console.log(`     ${LANGFUSE_HOST} → Evaluations → Evaluators → ${name}`)
+    } else {
+      console.log(`  · evaluator "${name}" (up to date)`)
+    }
+    continue
+  }
   try {
     await api('POST', '/api/public/unstable/evaluators', {
       type: 'llm_as_judge',
       name,
-      prompt: judgePrompt(e.criterion, e.vars),
+      prompt: wanted,
       // BOOLEAN output requires BOTH field definitions — `reasoning` is not
       // optional, and that is a good constraint: a bare 1/0 with no stated
       // reason is unreviewable, and reviewing the reason is how you catch a
