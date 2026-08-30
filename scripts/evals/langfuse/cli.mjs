@@ -49,6 +49,7 @@ const PASSTHROUGH = {
   run:        'run.mjs',
   selftest:   'selftest.mjs',
   traffic:    'traffic.mjs',
+  rehearse:   'rehearse.mjs',
   analyze:    'analyze.mjs',
   health:     'health.mjs',
   score:      'score-production.mjs',
@@ -75,6 +76,12 @@ Docs: docs/operations/LANGFUSE-EVALS.md
   pnpm evals:check      Before you ship. Proves the harness still grades
                         correctly, then runs the curated corpora. Exits non-zero
                         on a real failure, so CI can gate on it.
+
+  pnpm evals:rehearse   Dress rehearsal. Runs the ENTIRE production loop locally —
+                        traffic, Langfuse judging it unattended, the health check,
+                        the review — so you can see it work before pointing any of
+                        it at real users. Nothing but the LANGFUSE_* values change
+                        when you move.
 
   pnpm evals:review     What production actually did. Volume, cost, latency,
                         errors and quality, sliced by surface, with findings.

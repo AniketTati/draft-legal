@@ -510,7 +510,61 @@ Automation reports; it does not decide. Three things stay manual:
    bug cannot recur unnoticed. This is the step that makes the whole thing
    compound rather than age.
 
-## 10. Honest limits
+## 10. Rehearsing locally, and how this compares to industry practice
+
+### Local first
+
+```bash
+pnpm evals:rehearse            # the whole production loop, on your machine
+pnpm evals:rehearse -- --quick # smaller
+```
+
+Everything in this document already runs locally. `rehearse.mjs` sequences it
+into one command: generate real traffic, **wait for Langfuse to score it
+unattended**, run the health check the scheduled job runs, print the review.
+
+Step three is the one to watch. Everything else is a script you invoked; that
+step is the platform judging on its own, which is what production actually
+depends on. When you move, **nothing changes but the three `LANGFUSE_*` values** —
+same scripts, same thresholds, different host. That is the argument for
+rehearsing locally: it is not a different code path, so confidence transfers.
+
+### Where we sit against published practice (2026)
+
+| | Industry guidance | Us | |
+| --- | --- | --- | --- |
+| Sampling for LLM judging | **1–5%**, higher for high-risk flows | **5%** | ✅ was 20% — a rehearsal put the judge at **48% of total model spend** |
+| Scoring on the request path | Never — async, off the hot path | Async | ✅ |
+| Latency | p50/p90/p99 **and time-to-first-token** | p50/p95/max + TTFT | ✅ TTFT added; p99 not tracked |
+| Cost | A first-class metric, per request | Per surface, per model, per call | ✅ |
+| Judge metrics | A **small number** of high-signal ones | 8 rubrics | ⚠️ more than advised — too many judges makes monitoring noisy and expensive |
+| Human review | **At minimum weekly**, more during active development | No cadence set | ❌ |
+| Heuristic guardrails | PII, profanity, schema/format validity, refusal rate | None | ❌ these are CODE checks — cheap, deterministic, and we have none |
+| Implicit user signals | Retries, abandonment, session length | Explicit thumbs only | ❌ |
+| Offline→online loop | Production failures become dataset cases | `pnpm evals promote` | ✅ |
+
+**The honest read.** The expensive, hard parts — tracing, step-level judging,
+the offline/online loop, cost attribution — match or exceed common practice. The
+gaps are the *cheap* parts we skipped: deterministic guardrails cost nothing per
+call and we have none, and no human review cadence exists at all.
+
+Three specific things worth doing next, in order of value per hour:
+
+1. **Guardrails as code, not judges.** PII/secret leakage, schema validity on
+   every JSON-returning extractor, and refusal rate. Deterministic, free, and
+   they catch a class of failure no rubric currently looks for.
+2. **A weekly review slot.** Twenty minutes on the annotation queue. Without a
+   cadence the queue is a thing that gets built and never worked.
+3. **Implicit signals.** A user who retries the same question, or abandons the
+   thread, is telling you something louder than a thumbs-down — and they cost
+   nothing to record.
+
+Sources: [offline vs online evaluation](https://qaskills.sh/blog/offline-vs-online-llm-evaluation-2026),
+[LLM-as-a-judge techniques](https://deepeval.com/blog/llm-as-a-judge),
+[LLM monitoring best practices](https://openobserve.ai/blog/llm-monitoring-best-practices/),
+[observability metrics checklist](https://www.sthambh.com/blog/llm-observability-metrics-production).
+
+## 11. Honest limits
 
 - **Both corpora now run green.** `extraction` 9/9 (2026-08-29) and `chat`
   10/10 (2026-08-30), every case linked to the *product's* own trace rather than

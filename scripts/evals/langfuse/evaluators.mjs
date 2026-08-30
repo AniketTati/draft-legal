@@ -2,7 +2,7 @@
 /**
  * Langfuse's OWN continuous evaluators — the judge that runs without us.
  *
- *   node scripts/evals/langfuse/evaluators.mjs --apply --sampling 0.2
+ *   node scripts/evals/langfuse/evaluators.mjs --apply --sampling 0.05
  *   node scripts/evals/langfuse/evaluators.mjs --dry-run
  *   node scripts/evals/langfuse/evaluators.mjs --status
  *
@@ -26,9 +26,16 @@
  * also the right altitude — grading the retrieval step separately from the
  * answer is the whole point (see score-production.mjs).
  *
- * SAMPLING defaults to 0.2. At roughly $0.01–0.10 per assessment this is a real
- * line item, and a rule that fires on every observation of every turn is how an
- * observability bill surprises somebody.
+ * SAMPLING defaults to 0.05 — the low end of the 1–5% published guidance for
+ * production LLM judging, not a number picked for comfort. A local rehearsal at
+ * 20% put the judge at 48% OF TOTAL MODEL SPEND: the graders cost about as much
+ * as the product they were grading. At real traffic volumes that ratio is the
+ * difference between observability and an unexplained bill.
+ *
+ * Raise it deliberately: for a low-traffic high-risk flow, 5% of ten calls a day
+ * measures nothing, and near-complete coverage is the right call there. Lower it
+ * for anything high-volume. `--sampling` on a re-run CONVERGES an existing rule
+ * rather than skipping it, so changing your mind is one command.
  */
 import { requireConfig, LANGFUSE_HOST } from './lf.mjs'
 import { RUBRICS } from './scorers.mjs'
@@ -40,7 +47,7 @@ function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`)
   return i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : fallback
 }
-const sampling = Number(arg('sampling', '0.2'))
+const sampling = Number(arg('sampling', '0.05'))
 const apply    = process.argv.includes('--apply')
 const dryRun   = process.argv.includes('--dry-run')
 const status   = process.argv.includes('--status')
@@ -153,7 +160,7 @@ if (status) {
 }
 
 if (!apply && !dryRun) {
-  console.error('usage: evaluators.mjs --apply [--sampling 0.2] | --dry-run | --status')
+  console.error('usage: evaluators.mjs --apply [--sampling 0.05] | --dry-run | --status')
   process.exit(1)
 }
 

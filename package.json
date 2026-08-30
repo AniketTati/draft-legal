@@ -22,7 +22,8 @@
     "evals": "node scripts/evals/langfuse/cli.mjs",
     "evals:setup": "node scripts/evals/langfuse/cli.mjs setup",
     "evals:check": "node scripts/evals/langfuse/cli.mjs check",
-    "evals:review": "node scripts/evals/langfuse/cli.mjs review"
+    "evals:review": "node scripts/evals/langfuse/cli.mjs review",
+    "evals:rehearse": "node scripts/evals/langfuse/cli.mjs rehearse"
   },
   "workspaces": [
     "apps/*",

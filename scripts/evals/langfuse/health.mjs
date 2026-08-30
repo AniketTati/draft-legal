@@ -20,7 +20,11 @@
  *                check, which is the most dangerous possible green. Tracing
  *                breaking looks identical to a quiet night, so this is first.
  *   errors       Error-level observations as a share of all of them.
- *   latency      p95 on the slowest surface — the one users feel.
+ *   latency      p95 on the slowest surface.
+ *   ttft         time to FIRST TOKEN — what a streaming user actually feels.
+ *                Total latency and TTFT diverge badly: 24s total with 23s of
+ *                blank screen is a different product than 24s of visible
+ *                progress, and only this number tells them apart.
  *   quality      Judge pass rate, bookkeeping excluded.
  *   coverage     Are judgements actually being produced? Quality at 100% over
  *                two assessments is not evidence; it usually means the
@@ -49,6 +53,7 @@ const T = {
   minTraces:      Number(process.env.HEALTH_MIN_TRACES      ?? arg('min-traces', '1')),
   maxErrorRate:   Number(process.env.HEALTH_MAX_ERROR_RATE  ?? arg('max-error-rate', '0.05')),
   maxP95Ms:       Number(process.env.HEALTH_MAX_P95_MS      ?? arg('max-p95-ms', '45000')),
+  maxTtftMs:      Number(process.env.HEALTH_MAX_TTFT_MS     ?? arg('max-ttft-ms', '10000')),
   minQuality:     Number(process.env.HEALTH_MIN_QUALITY     ?? arg('min-quality', '0.70')),
   minAssessments: Number(process.env.HEALTH_MIN_ASSESSMENTS ?? arg('min-assessments', '5')),
   maxSpendUsd:    Number(process.env.HEALTH_MAX_SPEND_USD   ?? arg('max-spend-usd', '50')),
@@ -118,6 +123,20 @@ if (lat) {
     detail: worst ? `${worst.name} at ${Math.round(worst.p95)}ms (limit ${T.maxP95Ms}ms)` : 'no latency data',
   })
 } else check({ id: 'latency', label: 'Slowest p95', actual: null, ok: false, unavailable: true, detail: 'metrics API unreachable' })
+
+// ── time to first token ──────────────────────────────────────────────────────
+// The number a streaming UI is actually judged on. Total latency says how long
+// the whole answer took; TTFT says how long the user stared at nothing. They
+// diverge badly here — a turn can be 24s total with 23s of it before the first
+// character appears, which reads as broken however good the answer is.
+const ttftRows = await metrics({ view: 'observations', metrics: [{ measure: 'timeToFirstToken', aggregation: 'p95' }] })
+const ttft = ttftRows === null ? null : n(ttftRows[0]?.p95_timeToFirstToken)
+check({
+  id: 'ttft', label: 'Time to first token', actual: ttft, unavailable: ttft === null,
+  ok: (ttft ?? 0) <= T.maxTtftMs,
+  detail: ttft === null ? 'metrics API unreachable'
+    : `p95 ${Math.round(ttft)}ms before anything appears (limit ${T.maxTtftMs}ms)`,
+})
 
 // ── quality + coverage ───────────────────────────────────────────────────────
 const qual = await metrics({

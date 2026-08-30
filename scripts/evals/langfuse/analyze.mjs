@@ -104,6 +104,22 @@ console.log(`    ${pad('surface', 30)}  ${padL('n', 6)}  ${padL('p50', 9)}  ${pa
 table(latRows, [['name', 30], ['c', 6, true], ['p50', 9, true, ms], ['p95', 9, true, ms], ['max', 9, true, ms]])
 report.latency = latRows
 
+// Time to first token — for a streaming UI this is the number users judge, and
+// it can be almost the whole of total latency. Reported separately because
+// "24s total" and "23s of blank screen then 1s of text" are different products.
+const ttft = await metrics({
+  view: 'observations', dimensions: [{ field: 'traceName' }],
+  metrics: [{ measure: 'timeToFirstToken', aggregation: 'p95' }],
+}, 'time to first token')
+const ttftRows = ttft.map((r) => ({ name: r.traceName, ttft: n(r.p95_timeToFirstToken) }))
+  .filter((r) => r.ttft > 0).sort((a, b) => b.ttft - a.ttft)
+if (ttftRows.length) {
+  console.log('\n   time to FIRST token (what a streaming user waits through):')
+  console.log(`    ${pad('surface', 30)}  ${padL('p95', 9)}`)
+  table(ttftRows, [['name', 30], ['ttft', 9, true, ms]])
+  report.timeToFirstToken = ttftRows
+}
+
 // ─── 3. Cost ─────────────────────────────────────────────────────────────────
 console.log('\n3. COST — by model, then by surface')
 const byModel = await metrics({
