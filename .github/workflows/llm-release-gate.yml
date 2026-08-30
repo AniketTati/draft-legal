@@ -1,0 +1,120 @@
+# Pre-release LLM gate — run the golden corpora against a DEPLOYED environment
+# before you promote it.
+#
+# The everyday PR gate (ci.yml, tiers 1 and 2) proves the code does the right
+# thing given what the model said. It is blind to prompt and model regressions
+# by construction, because it replays or stubs the model. That is the correct
+# trade for something that must run on every PR in seconds, for free, on forks.
+#
+# This is the other half: real model calls against a real deployment, run
+# deliberately, before a release goes to users. It answers the question the PR
+# gate cannot — "is the ANSWER still good?"
+#
+# Point it at whatever you are about to promote:
+#   gh workflow run llm-release-gate.yml -f api_url=https://staging.example.com
+#
+# It gates on a THRESHOLD, not on perfection. Judged corpora are measurements
+# with real variance; demanding 100% teaches people to rerun until green, which
+# is worse than no gate. 0.8 is a floor that catches a real regression and
+# tolerates one judge disagreeing on a borderline case.
+name: LLM release gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Deployed API base URL to test against (e.g. https://staging…)'
+        required: true
+      threshold:
+        description: 'Minimum pass rate (0-1)'
+        required: false
+        default: '0.8'
+      datasets:
+        description: 'Space-separated corpora to run'
+        required: false
+        default: 'extraction chat'
+
+jobs:
+  gate:
+    name: Golden corpora vs deployment
+    runs-on: ubuntu-latest
+    # Never on a fork: secrets are unavailable there, so the suite would be
+    # green-and-meaningless rather than skipped.
+    if: github.repository_owner == 'AniketTati'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Refuse to run without the pieces it needs
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          EVAL_ORG_ID: ${{ secrets.EVAL_ORG_ID }}
+        run: |
+          missing=""
+          [ -z "${LANGFUSE_HOST}" ]       && missing="${missing} LANGFUSE_HOST"
+          [ -z "${LANGFUSE_PUBLIC_KEY}" ] && missing="${missing} LANGFUSE_PUBLIC_KEY"
+          [ -z "${LANGFUSE_SECRET_KEY}" ] && missing="${missing} LANGFUSE_SECRET_KEY"
+          # docs/37 E8 — a run with no identity can spend a customer's BYOK
+          # budget and be killed mid-suite by their daily cost cap, which
+          # misreports every later case as a model regression.
+          [ -z "${EVAL_ORG_ID}" ]         && missing="${missing} EVAL_ORG_ID"
+          if [ -n "${missing}" ]; then
+            echo "::error::Missing required secrets:${missing}"
+            echo "A gate that cannot run must FAIL, not pass quietly — see docs/operations/LANGFUSE-EVALS.md."
+            exit 1
+          fi
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Push the corpora
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: node scripts/evals/langfuse/push.mjs
+
+      - name: Run the corpora against the deployment
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          # Both names, because the two shared libraries read different ones.
+          API_BASE: ${{ github.event.inputs.api_url }}
+          PERSONA_API: ${{ github.event.inputs.api_url }}
+          AGENTS_BASE: ${{ secrets.AGENTS_URL }}
+          INTERNAL_SERVICE_SECRET: ${{ secrets.INTERNAL_SERVICE_SECRET }}
+          EVAL_ORG_ID: ${{ secrets.EVAL_ORG_ID }}
+          # The judge. Prefer a family DIFFERENT from the system under test —
+          # a model grading its own output scores it generously.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          # Names the run after the commit, so a regression is attributable in
+          # the Langfuse run comparison rather than being "yesterday's run".
+          EVAL_RUN_PREFIX: release
+        run: |
+          set -e
+          rc=0
+          for ds in ${{ github.event.inputs.datasets || 'extraction chat' }}; do
+            echo "── ${ds}"
+            node scripts/evals/langfuse/run.mjs \
+              --dataset "${ds}" \
+              --run-name "release-${GITHUB_SHA::7}-${ds}" \
+              --threshold "${{ github.event.inputs.threshold || '0.8' }}" || rc=1
+          done
+          exit $rc
+
+      - name: Where to look
+        if: failure()
+        run: |
+          echo "::notice::Compare this run against the previous one:"
+          echo "  ${{ secrets.LANGFUSE_HOST }} → Datasets → draftlegal-* → Runs"
+          echo "A drop against the last release is the signal; an absolute number is not."

@@ -50,6 +50,7 @@ const PASSTHROUGH = {
   selftest:   'selftest.mjs',
   traffic:    'traffic.mjs',
   analyze:    'analyze.mjs',
+  health:     'health.mjs',
   score:      'score-production.mjs',
   sessions:   'score-sessions.mjs',
   annotate:   'annotate.mjs',
@@ -81,6 +82,7 @@ Docs: docs/operations/LANGFUSE-EVALS.md
 
 \x1b[1mEverything else\x1b[0m  (pnpm evals <name> -- [flags])
 
+  health       Pass/fail production check — what the scheduled job runs
   traffic      Generate realistic traffic — DEV ONLY, spends real model budget
   score        LLM-judge recent traces, step by step
   sessions     Grade whole conversations, not single turns

@@ -429,7 +429,88 @@ asserted `tool_used:portfolio_search` for "how many contracts expire in the next
 was right and the expectation was wrong. Worth stating plainly, because the
 reflex on a red eval is to change the product.
 
-## 9. Honest limits
+## 9. Running this for real — production and pre-release
+
+Everything above describes machinery. This is the operating model: what runs
+automatically, what gates a release, and what a human still has to do.
+
+### The two loops, as jobs
+
+| | Pre-release | Production |
+| --- | --- | --- |
+| Question | "Did my change break anything?" | "Is it still going smoothly?" |
+| Runs | On demand, before promoting a build | On a schedule, twice daily |
+| Job | `.github/workflows/llm-release-gate.yml` | `.github/workflows/llm-health.yml` |
+| Needs | A deployed environment + model key + Langfuse | **Langfuse credentials only** |
+| Fails when | Pass rate drops below the threshold | Any threshold is breached |
+
+### Production: `llm-health.yml`
+
+Langfuse has **no alerting of its own** — there is no alert or webhook endpoint
+in its API — and a dashboard nobody opens at 3am is not monitoring. So the alarm
+comes from outside: a scheduled job reads the metrics API, applies thresholds,
+and *fails*, which turns GitHub's existing failed-workflow notifications into
+LLM alerting with no new service to run.
+
+Six checks, and the first is the one people forget:
+
+| Check | Default | Why |
+| --- | --- | --- |
+| **Traffic** | ≥ 10 traces | A silent pipeline scores 100% on everything else. Tracing breaking looks exactly like a quiet night. |
+| Error rate | ≤ 5% | |
+| Slowest p95 | ≤ 45s | The surface users actually feel |
+| **Assessments** | ≥ 5 | Quality at 100% over two judgements is not evidence — it usually means the continuous evaluator stopped |
+| Quality | ≥ 70% | Judge pass rate, bookkeeping excluded |
+| Spend | ≤ $50/day | |
+
+A failed metrics query counts as **unhealthy**, never healthy: defaulting an
+unreachable API to zero would satisfy every "less than" threshold at once.
+
+It needs only the three Langfuse secrets — no database, no model key, no running
+app. That is deliberate. A health check with heavy preconditions is one that
+gets disabled the first week it flakes.
+
+```bash
+pnpm evals health -- --hours 24     # same check, locally
+```
+
+### Pre-release: `llm-release-gate.yml`
+
+The everyday PR gate (`ci.yml`, tiers 1–2) proves the code does the right thing
+*given what the model said* — it replays or stubs the model, so it is blind to
+prompt and model regressions by construction. That is the right trade for
+something that runs on every PR in seconds, free, on forks.
+
+The release gate is the other half: real model calls against a real deployment,
+run deliberately before promotion.
+
+```bash
+gh workflow run llm-release-gate.yml -f api_url=https://staging.example.com
+```
+
+It gates on a **threshold (default 0.8), not on perfection**. Judged corpora
+have real variance; demanding 100% teaches people to rerun until green, which is
+worse than no gate. And it refuses to run without `EVAL_ORG_ID` — docs/37 E8: a
+run with no identity can spend a customer's BYOK budget and be killed mid-suite
+by their cost cap, which then misreports every later case as a model regression.
+
+**Read it as a delta.** An absolute pass rate means little; a drop against the
+previous release is the signal. That is what the run comparison in Langfuse's
+dataset view is for.
+
+### What still needs a human
+
+Automation reports; it does not decide. Three things stay manual:
+
+1. **Label the annotation queue** when the judge's numbers start driving
+   decisions. Without human labels the quality figure is an untested assumption.
+2. **Read the sessions behind a failed check.** The health job says *which*
+   threshold went, never *why*.
+3. **Promote real failures into the corpus** (`pnpm evals promote`) so the same
+   bug cannot recur unnoticed. This is the step that makes the whole thing
+   compound rather than age.
+
+## 10. Honest limits
 
 - **Both corpora now run green.** `extraction` 9/9 (2026-08-29) and `chat`
   10/10 (2026-08-30), every case linked to the *product's* own trace rather than
