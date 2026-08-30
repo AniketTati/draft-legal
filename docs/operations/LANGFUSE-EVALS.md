@@ -608,7 +608,40 @@ throwing an error.
 
 First run: **186 checks across 60 traces, zero violations.**
 
-## 12. Honest limits
+## 12. Known issue — the live evaluator grades the wrong generation
+
+Found while writing `LANGFUSE-HANDBOOK.md`, by reading a score's *comment*
+rather than its number.
+
+An agent turn contains **two** `GENERATION` observations: the one that decides
+to call a tool (whose text output is empty, because its output is the decision)
+and the one that writes the answer. Our `groundedness — live` rule filters on
+`type = GENERATION`, so it fires on **both**.
+
+The evidence, verbatim from a real score:
+
+> "The assistant has not yet generated a prose answer for the user; it has only
+> made a tool call to find the relevant contract."
+
+It scored **1**. The number looks fine and means nothing — it graded a step with
+no answer in it.
+
+**Impact:** roughly half the live groundedness judgements are being spent on
+tool-calling steps, which inflates the pass rate (an empty step is trivially
+"grounded") and wastes the sample budget on observations that cannot fail.
+
+**Why it is not yet fixed:** both generations share the name `agent.chat`, so
+the rule cannot tell them apart on `name`, and the evaluation-rule filter has no
+"last observation in trace" predicate. The options are to give the answering
+generation a distinct trace name in `orchestrator.py`, or to filter on a
+metadata field we would have to start setting. Either is a small product change
+rather than a config edit.
+
+`score-production.mjs` does **not** have this problem — it explicitly takes the
+*last* generation. So the script-run numbers are sound; only the in-platform
+`— live` scores are affected.
+
+## 13. Honest limits
 
 - **Both corpora now run green.** `extraction` 9/9 (2026-08-29) and `chat`
   10/10 (2026-08-30), every case linked to the *product's* own trace rather than
