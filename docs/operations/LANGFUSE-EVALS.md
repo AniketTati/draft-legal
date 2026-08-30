@@ -362,14 +362,79 @@ match what the field calls them. The mapping lives at the top of
 accuracy*. The names are not renamed to match because they are already attached
 to recorded scores, and renaming would orphan every trend line.
 
-## 7. Honest limits
+## 7. Two findings from the second-opinion pass
 
-- **The `chat` corpus has still not been run.** `extraction` has: first green
-  run 2026-08-29, **9/9 assertions**, all six cases linked to the *product's*
-  own trace rather than a harness stand-in, negative case included (boilerplate
-  with no duties → no invented obligation). The `chat` corpus needs a seeded
-  persona login as well as the stack, and has not been exercised end to end, so
-  those five case expectations remain unvalidated.
+`annotate.mjs --second-opinion` re-grades the human queue with a *different*
+model (`EVAL_JUDGE_MODEL=gemini-3.7-flash`) and reports agreement with the
+primary judge. It is explicitly **not** a human baseline — a model cannot be its
+own ground truth, and two models agreeing can be two models sharing a blind
+spot. What it does is triage: agreement means a reviewer can deprioritise;
+disagreement is the short list worth their time.
+
+First run: **12/18 agreement (67%)**, 6 disagreements. One of them is worth the
+whole exercise.
+
+On the trace where the agent answered *"20 contracts expiring in the next 90
+days"*, gemini-3.7-flash scored it **grounded**, reasoning:
+
+> "The answer accurately states there are 20 contracts expiring in the
+> timeframe, directly matching the `total: 20` field from the tool output."
+
+That is the newer, faster model **reproducing the product's own bug inside its
+grading** — treating `total` as "expiring" exactly as the agent did. The primary
+judge caught it; the second opinion did not. Two lessons, both load-bearing:
+
+1. **A newer model is not automatically the better judge.** 3.7-flash was
+   consistently more lenient here — every one of the six disagreements was
+   primary=0, second=1.
+2. **Agreement is not proof, and disagreement is not the judge being wrong.**
+   Only the trace settles it. In this case the primary was right.
+
+It also argues for fixing the tool rather than the prompt: when a second
+independent model reads `total: 20` and concludes "20 are expiring", the data
+shape is the problem, not the reading.
+
+## 8. Three harness bugs that each reported a product failure
+
+Every one of these produced a red result that looked like the agent
+misbehaving. None of them were.
+
+**The token that was an object.** `targets.mjs` did `await login(...)` and
+passed the result straight through as a bearer token. `login()` returns
+`{ accessToken, user }`, so every chat case sent `Bearer [object Object]` and
+got a 401 — which reads as "the API is down or the fixture is unseeded", not
+"the caller is wrong". Every other consumer in `scripts/persona-tests`
+destructures it.
+
+**The bridge that never ran.** The two shared libraries read different env vars
+for the API base — `API_BASE` in `week-zero/lib/harness.mjs`, `PERSONA_API` in
+`persona-tests/lib.mjs`. A plain assignment at the top of `targets.mjs` to
+reconcile them was dead code: **ES imports are hoisted**, so
+`persona-tests/lib.mjs` had already captured the default. The chat corpus ran
+against the wrong server and reported a bug that was already fixed on the server
+it was supposed to be testing. It now lives in `env-bridge.mjs`, imported first —
+imports evaluate in source order, so a side-effect module does run first.
+
+**The judge with no source.** `run.mjs` scored chat cases with the bare user
+question as the "source", so every tool-derived fact looked invented and
+groundedness failed on correct answers. `score-production.mjs` had always passed
+tool results; the offline runner had not, and the two disagreed about the same
+turn. Same class of bug as the 5k evidence truncation in §5 — the third time
+this project has watched a judge be confidently wrong because of what it was
+not shown.
+
+And one case where the corpus itself was simply wrong: `chat-portfolio-count`
+asserted `tool_used:portfolio_search` for "how many contracts expire in the next
+90 days". `renewal_advice` owns that question by its own description — the agent
+was right and the expectation was wrong. Worth stating plainly, because the
+reflex on a red eval is to change the product.
+
+## 9. Honest limits
+
+- **Both corpora now run green.** `extraction` 9/9 (2026-08-29) and `chat`
+  10/10 (2026-08-30), every case linked to the *product's* own trace rather than
+  a harness stand-in, negative cases included. Getting `chat` there took three
+  harness fixes, none of them in the product — see §9.
 - **Promoted regression cases have no expected output.** `promote.mjs` records
   what went wrong, not what right looks like — inventing one would enshrine a
   guess. Until a human writes them, those cases are graded by rubric only.

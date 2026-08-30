@@ -32,7 +32,7 @@ import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from .config import settings
-from .providers import build_llm
+from .providers import build_llm, normalise_model
 from .tracing import get_callback
 # docs/37 E12 — record/replay seam. Inert unless AGENT_REPLAY_MODE is set.
 from app.replay import wrap as _replay_wrap, mode as _replay_mode
@@ -367,6 +367,13 @@ def _build_resolved(
         provider=provider, model=model, api_key=api_key, source=source, tier=tier,
         provider_override=provider_override, model_override=model_override,
     )
+    # Normalise BEFORE anything records the name. providers.build_llm folds a
+    # retired model onto the supported one, but if we keep the old id here then
+    # ResolvedLlm.model — and therefore the Langfuse tag, the done frame, and
+    # every per-model cost figure — reports a model that did not answer. That
+    # is exactly the defect docs/37 E2 exists to prevent, reintroduced from the
+    # other end.
+    model = normalise_model(provider, model)
     llm = build_llm(provider, model, streaming=streaming, api_key=api_key)
     # docs/37 E12 — the record/replay seam. build_llm has exactly ONE caller,
     # which is why a single line here covers every LLM call in the service.

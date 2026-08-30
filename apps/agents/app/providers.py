@@ -33,11 +33,13 @@ MODEL_REGISTRY: list[ModelOption] = [
     ModelOption("openai",    "gpt-4o-mini",         "GPT-4o Mini",         128_000),
     ModelOption("openai",    "gpt-4-turbo",         "GPT-4 Turbo",         128_000),
     # ─── Google ─────────────────────────────────────────────────────────
-    ModelOption("google",    "gemini-2.5-pro",      "Gemini 2.5 Pro",      2_000_000),  # retrieval workhorse
+    # 2.5 Flash is the ONLY Google model this product uses. Every tier default
+    # in config.py and in the Node router points here. The 1.5 / 2.0 / 2.5-pro
+    # entries were removed rather than left selectable: leaving a model in the
+    # catalogue that nothing selects is how a stray per-org pin quietly puts one
+    # org on a different (and differently-priced) model than everyone else.
+    # _normalise_google below keeps an existing stored pin from 500-ing.
     ModelOption("google",    "gemini-2.5-flash",    "Gemini 2.5 Flash",    1_000_000),
-    ModelOption("google",    "gemini-1.5-pro",      "Gemini 1.5 Pro",      2_000_000),
-    ModelOption("google",    "gemini-1.5-flash",    "Gemini 1.5 Flash",    1_000_000),
-    ModelOption("google",    "gemini-2.0-flash",    "Gemini 2.0 Flash",    1_000_000),
     # ─── OpenRouter ─────────────────────────────────────────────────────
     # Single API key gateway. Model id is the OpenRouter slug
     # ("provider/model") and is passed through verbatim to their /v1.
@@ -54,7 +56,37 @@ _registry_index: dict[tuple[str, str], ModelOption] = {
 }
 
 
+# The one Google model this product runs on.
+GOOGLE_MODEL = "gemini-2.5-flash"
+
+
+def normalise_model(provider: str, model_id: str) -> str:
+    """
+    Fold any retired Google model onto the one we support.
+
+    Orgs have per-model pins stored in their AI config, and Cloud Run has a
+    DEFAULT_MODEL in env. Narrowing the catalogue without this would turn every
+    one of those stored values into a hard ValueError on the next request — a
+    config change landing as a 500 in a user's face, hours later, with a stack
+    trace that names the registry rather than the setting.
+
+    Substituting silently is normally the wrong instinct; here the alternative
+    is an outage for a deliberate, documented narrowing, and the warning says
+    exactly what happened.
+    """
+    if provider != "google" or model_id == GOOGLE_MODEL:
+        return model_id
+    import logging
+    logging.getLogger(__name__).warning(
+        "[providers] google model %r is no longer supported; using %s. "
+        "Update the stored pin (org AI config / DEFAULT_MODEL) to silence this.",
+        model_id, GOOGLE_MODEL,
+    )
+    return GOOGLE_MODEL
+
+
 def get_model_option(provider: str, model_id: str) -> ModelOption:
+    model_id = normalise_model(provider, model_id)
     key = (provider, model_id)
     if key not in _registry_index:
         raise ValueError(
@@ -78,6 +110,10 @@ def build_llm(
     org's own key without mutating env state.
     """
     get_model_option(provider, model_id)  # validates
+    # Take the normalised id back: without this the registry check passes on the
+    # substitute while the client below is still constructed with the retired
+    # model name.
+    model_id = normalise_model(provider, model_id)
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -97,10 +133,29 @@ def build_llm(
 
     if provider == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
+        # thinking_budget=0 is load-bearing, not a tuning knob.
+        #
+        # Gemini 2.5 is a thinking model and its hidden reasoning is drawn from
+        # the same output budget as the answer. Against this agent's real system
+        # prompt (~22k chars) plus 30 bound tools, 2.5-flash spends the whole
+        # budget thinking and returns EMPTY — no text, no tool call, finish
+        # reason STOP. The user sees "the model returned an empty response" on
+        # every single turn. Measured directly: with default thinking, no tool
+        # call; with thinking_budget=0, it calls renewal_advice correctly.
+        #
+        # This is the second time thinking-token exhaustion has produced a
+        # confident-looking nothing here — the LLM judge in
+        # scripts/evals/langfuse/scorers.mjs hit the same wall and needed a
+        # bigger budget instead. Flash can disable thinking; 2.5-pro cannot
+        # ("this model only works in thinking mode"), hence the guard.
+        kwargs: dict = {}
+        if model_id.startswith("gemini-2.5-flash"):
+            kwargs["thinking_budget"] = 0
         return ChatGoogleGenerativeAI(
             model=model_id,
             google_api_key=api_key or settings.google_api_key,
             streaming=streaming,
+            **kwargs,
         )
 
     if provider == "openrouter":

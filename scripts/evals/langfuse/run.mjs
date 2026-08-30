@@ -124,7 +124,18 @@ async function runCase(item) {
     metadata: { traceSource: row.traceSource, ...result.meta },
   })
 
-  const scoreCtx = { input: item.input, output: result.output, expectedOutput: item.expectedOutput, meta: result.meta }
+  // Give a judge the tool results as its SOURCE. Without this, groundedness on
+  // a chat case compares the answer against the bare user question and calls
+  // every tool-derived fact an invention — the harness reporting a
+  // hallucination that never happened. score-production.mjs already does this;
+  // the offline runner did not, and the two disagreed on the same turn.
+  const toolEvidence = (result.output?.tools ?? [])
+    .map((tc) => `[${tc?.name}] ${typeof tc?.result === 'string' ? tc.result : JSON.stringify(tc?.result ?? '')}`)
+    .join('\n').slice(0, 20000)
+  const judgeInput = toolEvidence
+    ? `${JSON.stringify(item.input)}\n\n--- TOOL RESULTS (the source) ---\n${toolEvidence}`
+    : item.input
+  const scoreCtx = { input: judgeInput, output: result.output, expectedOutput: item.expectedOutput, meta: result.meta }
   for (const spec_ of item.scorers ?? []) {
     let score
     try {

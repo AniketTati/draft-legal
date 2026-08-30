@@ -13,9 +13,15 @@ class RenewalAdviceArgs(BaseModel):
         None,
         description=(
             "Target a single contract's cached renewal advice. Omit to "
-            "get the portfolio view — every contract expiring within "
-            "lead_days days, with per-contract advice and portfolio "
-            "recommendation counts (renew / renegotiate / let_expire / pause)."
+            "get the portfolio view.\n\n"
+            "IMPORTANT — the portfolio window reaches BACKWARD as well as "
+            "forward: it returns contracts expiring within lead_days days AND "
+            "contracts that expired in the previous 30 days, so recently "
+            "lapsed renewals still surface. `total` is the row count and "
+            "therefore covers BOTH. When the user asks how many contracts are "
+            "expiring, answer with `expiringSoon`; `recentlyExpired` is the "
+            "already-lapsed half. A row with a negative `daysUntilExpiry` has "
+            "already expired — never describe it as upcoming."
         ),
     )
     lead_days: int = Field(

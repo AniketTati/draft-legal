@@ -10,9 +10,17 @@
     {
       "id": "chat-greeting-no-tool",
       "target": "chat",
-      "input": { "message": "hi" },
-      "expectedOutput": { "answer": "A short greeting that offers help. No tool call." },
-      "scorers": ["no_tool", "judge:helpfulness", "latency_ms"],
+      "input": {
+        "message": "hi"
+      },
+      "expectedOutput": {
+        "answer": "A short greeting that offers help. No tool call."
+      },
+      "scorers": [
+        "no_tool",
+        "judge:helpfulness",
+        "latency_ms"
+      ],
       "metadata": {
         "addedAt": "2026-08-29",
         "difficulty": "easy",
@@ -22,38 +30,79 @@
     {
       "id": "chat-portfolio-count",
       "target": "chat",
-      "input": { "message": "How many contracts do we have that expire in the next 90 days?" },
-      "expectedOutput": { "answer": "A count grounded in a portfolio query, not an estimate." },
-      "scorers": ["tool_used:portfolio_search", "judge:groundedness", "latency_ms"],
-      "metadata": { "addedAt": "2026-08-29", "difficulty": "medium", "note": "The count itself is fixture-dependent; groundedness is what generalises." }
+      "input": {
+        "message": "How many contracts do we have that expire in the next 90 days?"
+      },
+      "expectedOutput": {
+        "answer": "A count of contracts that have NOT yet expired, taken from the renewal listing \u2014 not the raw row count, which also includes recently expired ones."
+      },
+      "scorers": [
+        "tool_used:renewal_advice",
+        "judge:groundedness",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "difficulty": "medium",
+        "note": "Expected renewal_advice, not portfolio_search: the tool's own description owns 'which contracts expire in the next N days'. The original expectation was simply wrong and the agent was right \u2014 a corpus can be the thing at fault, and assuming otherwise is how you 'fix' working behaviour."
+      }
     },
     {
       "id": "chat-search-by-counterparty",
       "target": "chat",
-      "input": { "message": "Find our agreements with Northwind Systems." },
-      "expectedOutput": { "answer": "Results from a contract search naming Northwind Systems." },
-      "scorers": ["tool_used:contract_search", "judge:groundedness", "latency_ms"],
-      "metadata": { "addedAt": "2026-08-29", "difficulty": "easy" }
+      "input": {
+        "message": "Find our agreements with Northwind Systems."
+      },
+      "expectedOutput": {
+        "answer": "Results from a contract search naming Northwind Systems."
+      },
+      "scorers": [
+        "tool_used:contract_search",
+        "judge:groundedness",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "difficulty": "easy"
+      }
     },
     {
       "id": "chat-unknowable-refusal",
       "target": "chat",
-      "input": { "message": "What is the governing law of contract ZZZ-DOES-NOT-EXIST-9999?" },
-      "expectedOutput": { "answer": "Says it cannot find that contract. Does NOT state a governing law." },
-      "scorers": ["judge:groundedness", "judge:helpfulness"],
+      "input": {
+        "message": "What is the governing law of contract ZZZ-DOES-NOT-EXIST-9999?"
+      },
+      "expectedOutput": {
+        "answer": "Says it cannot find that contract. Does NOT state a governing law."
+      },
+      "scorers": [
+        "judge:groundedness",
+        "judge:helpfulness"
+      ],
       "metadata": {
         "addedAt": "2026-08-29",
         "difficulty": "hard",
-        "note": "The hallucination trap. A confident 'Delaware' here is the single most damaging failure this product can have, and only a groundedness judge catches it — the answer is fluent, well-formed, and wrong."
+        "note": "The hallucination trap. A confident 'Delaware' here is the single most damaging failure this product can have, and only a groundedness judge catches it \u2014 the answer is fluent, well-formed, and wrong."
       }
     },
     {
       "id": "chat-cite-clause",
       "target": "chat",
-      "input": { "message": "What does our standard MSA say about limitation of liability? Cite the clause." },
-      "expectedOutput": { "answer": "Summarises the liability cap and points at the specific clause or section." },
-      "scorers": ["judge:citation", "judge:groundedness", "latency_ms"],
-      "metadata": { "addedAt": "2026-08-29", "difficulty": "medium" }
+      "input": {
+        "message": "What does our standard MSA say about limitation of liability? Cite the clause."
+      },
+      "expectedOutput": {
+        "answer": "Summarises the liability cap and points at the specific clause or section."
+      },
+      "scorers": [
+        "judge:citation",
+        "judge:groundedness",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-08-29",
+        "difficulty": "medium"
+      }
     }
   ]
 }

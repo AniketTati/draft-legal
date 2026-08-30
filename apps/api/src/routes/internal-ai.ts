@@ -3367,9 +3367,29 @@ export async function internalAiRoutes(app: FastifyInstance) {
       else counts.unadvised++
     }
 
+    // The window deliberately reaches 30 days BACKWARD as well as `leadDays`
+    // forward, so a renewal that lapsed last week still surfaces. That is
+    // useful and stays — but `total` counted both halves, and the agent, told
+    // by the tool description that every row was "expiring in the next N days",
+    // reported the row count verbatim: "there are 20 contracts expiring in the
+    // next 90 days" when 12 of them had already expired. Found in production
+    // traces, reproduced across four sessions.
+    //
+    // Splitting the count is the fix. The agent should not have to infer the
+    // split by reading the sign of daysUntilExpiry across twenty rows, and
+    // anything that reports `total` as "expiring" is now visibly wrong rather
+    // than subtly wrong.
+    const expiringSoon    = items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry >= 0).length
+    const recentlyExpired = items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry < 0).length
+
     return reply.send({
       items,
       total:  items.length,
+      // Read THESE, not `total`, when answering "how many are expiring?".
+      expiringSoon,
+      recentlyExpired,
+      windowNote: `Window covers the next ${body.leadDays} days plus the previous 30. `
+        + `${expiringSoon} contract(s) have not yet expired; ${recentlyExpired} already have.`,
       counts,
       contractId: body.contractId ?? null,
     })

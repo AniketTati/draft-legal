@@ -21,6 +21,11 @@
  * them, and nothing about the forwarding is what an extraction eval is asking
  * about.
  */
+// MUST be first: reconciles API_BASE / PERSONA_API before the two libraries
+// below capture them. See env-bridge.mjs — an inline assignment here does not
+// work, because ES imports are hoisted above it.
+import './env-bridge.mjs'
+
 import { AGENTS, INTERNAL_SECRET, ADMIN } from '../../week-zero/lib/harness.mjs'
 import { askAgent, login } from '../../persona-tests/lib.mjs'
 
@@ -63,8 +68,16 @@ async function agentsPost(path, body, { timeoutMs = 120_000 } = {}) {
 let _token = null
 async function token() {
   if (_token) return _token
-  _token = await login(ADMIN.email, ADMIN.password)
-  if (!_token) throw new Error(`login failed for ${ADMIN.email} — is the API up and seeded? (pnpm db:seed)`)
+  // login() returns the whole body — { accessToken, user } — not a string.
+  // Passing the object through produced `Bearer [object Object]` and a 401 on
+  // every chat case, which read as an auth/seed problem rather than a caller
+  // bug. Every other consumer in scripts/persona-tests destructures it; this
+  // one did not.
+  const res = await login(ADMIN.email, ADMIN.password)
+  _token = typeof res === 'string' ? res : res?.accessToken
+  if (!_token) {
+    throw new Error(`login for ${ADMIN.email} returned no accessToken — is the API up and seeded? (pnpm db:seed)`)
+  }
   return _token
 }
 

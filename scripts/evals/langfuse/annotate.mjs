@@ -25,7 +25,8 @@
  * Annotating happens in the Langfuse UI (Annotation Queues). This script sets
  * the queue up and, later, reads the labels back to score the scorer.
  */
-import { requireConfig, listTraces, LANGFUSE_HOST } from './lf.mjs'
+import { requireConfig, listTraces, postScore, LANGFUSE_HOST } from './lf.mjs'
+import { runScorer } from './scorers.mjs'
 
 const cfg = requireConfig()
 const auth = 'Basic ' + Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString('base64')
@@ -38,6 +39,7 @@ const hours     = Number(arg('hours', '24'))
 const maxItems  = Number(arg('max', '20'))
 const doSeed    = process.argv.includes('--seed')
 const doCal     = process.argv.includes('--calibrate')
+const doSecond  = process.argv.includes('--second-opinion')
 const dryRun    = process.argv.includes('--dry-run')
 
 async function api(method, path, body) {
@@ -54,6 +56,37 @@ async function api(method, path, body) {
 }
 
 const QUEUE_NAME = 'draftLegal — agent quality review'
+
+/** Full trace detail — the list endpoint returns no input/output bodies. */
+async function getTrace(id) {
+  return api('GET', `/api/public/traces/${id}`).catch(() => null)
+}
+
+const asText = (v) => (v == null ? '' : typeof v === 'string' ? v : (typeof v?.content === 'string' ? v.content : JSON.stringify(v)))
+
+/** The user's actual request, dug out of a LangChain message list. */
+function userRequest(trace) {
+  const inp = trace.input
+  if (Array.isArray(inp)) {
+    const users = inp.filter((m) => m?.role === 'user')
+    const last = users.at(-1)?.content
+    if (last) return asText(last).slice(0, 4000)
+  }
+  return asText(inp).slice(0, 4000)
+}
+
+/** Every tool result in the turn — the evidence a groundedness verdict rests on. */
+function toolEvidence(trace, observations) {
+  const fromObs = observations.filter((o) => o.type === 'TOOL')
+    .map((o) => `[${o.name}] ${asText(o.output)}`).join('\n')
+  if (fromObs) return fromObs.slice(0, 20000)
+  const inp = trace.input
+  if (!Array.isArray(inp)) return ''
+  return inp.filter((m) => m?.role === 'tool').map((m) => asText(m.content)).join('\n').slice(0, 20000)
+}
+
+const QUEUE_NAME_MARKER = true
+
 
 /**
  * The labels an annotator picks from.
@@ -255,8 +288,107 @@ if (doCal) {
   console.log()
 }
 
-if (!doSeed && !doCal) {
+if (doSecond) {
+  // ── Second opinion: a DIFFERENT model re-grades the queue ─────────────────
+  //
+  // This is not a substitute for the human labels and must never be recorded
+  // as one. A model cannot be its own ground truth, and two models agreeing
+  // can be two models sharing a blind spot. What a second opinion DOES do is
+  // triage: where a newer, independent model agrees with the primary judge,
+  // confidence rises and a reviewer can skip it; where they disagree, that is
+  // precisely the short list worth a person's time.
+  //
+  // Scores land under `judge2:` so they can never be mistaken for `human_`.
+  const model = process.env.EVAL_JUDGE_MODEL
+  if (!model) {
+    console.error('\n✗ --second-opinion needs EVAL_JUDGE_MODEL set to a DIFFERENT model than the primary judge.')
+    console.error('  e.g. EVAL_JUDGE_MODEL=gemini-3.7-flash ... --second-opinion\n')
+    process.exit(1)
+  }
+  console.log(`\nsecond opinion — ${model}`)
+  console.log('  NOT a human baseline. This narrows what a reviewer must read.\n')
+
+  const queues = await api('GET', '/api/public/annotation-queues?limit=100').catch(() => ({ data: [] }))
+  const queue = (queues.data ?? []).find((q) => q.name === QUEUE_NAME)
+  if (!queue) { console.error(`✗ no queue "${QUEUE_NAME}". Run --seed first.\n`); process.exit(1) }
+
+  const items = await api('GET', `/api/public/annotation-queues/${queue.id}/items?limit=100`).catch(() => ({ data: [] }))
+  const traceIds = (items.data ?? []).filter((i) => i.objectType === 'TRACE').map((i) => i.objectId)
+  console.log(`  ${traceIds.length} queued trace(s)\n`)
+
+  // The primary judge's verdicts come off each TRACE, not from the scores list.
+  // The list endpoint pages at 100 and this project already has 300+ scores, so
+  // reading page one found none of the queued traces' verdicts and the whole
+  // pass reported "0 posted" — a silent empty result rather than an error,
+  // which is the worst way for a bug to present.
+  const primaryFor = (trace) => {
+    const m = new Map()
+    for (const s of trace.scores ?? []) {
+      if (!String(s.name).startsWith('judge:')) continue
+      m.set(String(s.name).slice('judge:'.length), Number(s.value))
+    }
+    return m
+  }
+
+  let posted = 0, agree = 0, disagree = 0
+  const conflicts = []
+
+  for (const tid of traceIds) {
+    const full = await getTrace(tid)
+    if (!full) continue
+    const obs = (full.observations ?? []).slice().sort((a, b) => new Date(a.startTime) - new Date(b.startTime))
+    const request = userRequest(full)
+    const evidence = toolEvidence(full, obs)
+    const gen = obs.filter((o) => o.type === 'GENERATION').at(-1)
+    const answer = asText(gen?.output ?? full.output)
+    if (!answer) continue
+    const ctx = {
+      input: evidence ? `${request}\n\n--- TOOL RESULTS (the source) ---\n${evidence}` : request,
+      output: answer,
+    }
+    const prior = primaryFor(full)
+    for (const criterion of ['groundedness', 'helpfulness']) {
+      const before = prior.get(criterion)
+      if (before === undefined) continue   // nothing to compare against
+      try {
+        const score = await runScorer(`judge:${criterion}`, ctx)
+        if (!score) continue
+        await postScore({
+          traceId: tid, name: `judge2:${criterion}`, value: score.value,
+          dataType: 'BOOLEAN', comment: score.comment,
+          metadata: { secondOpinion: true, model, primaryValue: before },
+        })
+        posted++
+        if (Number(score.value) === before) agree++
+        else {
+          disagree++
+          conflicts.push({ tid, criterion, primary: before, second: Number(score.value), why: score.comment })
+        }
+      } catch (e) {
+        console.log(`  ! ${tid.slice(0, 12)} / ${criterion}: ${e.message.slice(0, 120)}`)
+      }
+    }
+  }
+
+  const total = agree + disagree
+  console.log(`  ${posted} second-opinion scores posted`)
+  console.log(`  agreement with the primary judge: ${agree}/${total}` +
+    (total ? ` (${((agree / total) * 100).toFixed(0)}%)` : ''))
+  if (conflicts.length) {
+    console.log(`\n  DISAGREEMENTS — read these ${conflicts.length} first:`)
+    for (const c of conflicts) {
+      console.log(`    ${c.tid.slice(0, 12)}  ${c.criterion}: primary=${c.primary} second=${c.second}`)
+      console.log(`        ${String(c.why).slice(0, 190)}`)
+    }
+    console.log(`\n  The other ${agree} are where both models agreed — lower priority for a reviewer,`)
+    console.log('  but agreement is not proof: two models can share a blind spot.')
+  }
+  console.log(`\n  Human queue is untouched: ${LANGFUSE_HOST} → Annotation Queues\n`)
+}
+
+if (!doSeed && !doCal && !doSecond) {
   console.error('usage: annotate.mjs --seed [--hours 24] [--max 20] [--dry-run]')
   console.error('       annotate.mjs --calibrate [--hours 24]')
+  console.error('       EVAL_JUDGE_MODEL=<other-model> annotate.mjs --second-opinion')
   process.exit(1)
 }

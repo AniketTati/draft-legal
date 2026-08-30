@@ -184,6 +184,10 @@ export function SideAgentRail() {
   const [pendingEntityMentions, setPendingEntityMentions] = useState<EntityResult[]>([])
   const accessToken = useAuthStore((s) => s.accessToken)
   const sessionIdRef = useRef<string>('')
+  // What actually answered the current turn, filled from the done frame.
+  const answeredByRef = useRef<{ provider: string; model: string; tier: string }>({
+    provider: '', model: '', tier: 'default',
+  })
   // D.1.6a — persistent AgentThread id. Null until the first user message of
   // a thread creates one. Reset by newThread(). Kept as a ref so concurrent
   // turns in the same thread can share it without triggering re-renders.
@@ -509,8 +513,10 @@ export function SideAgentRail() {
           // thread. AgentThread persistence lands in D.1.6; this keeps the
           // existing chat memory in Redis working in the meantime.
           sessionId: sessionIdRef.current || threadIdRef.current || undefined,
-          provider: 'openai',
-          modelId: 'gpt-4.1-mini',
+          // No provider/model pin. The router picks per tier from the org's AI
+          // config (apps/api/src/lib/aiRouter.ts), which is where the
+          // gemini-2.5-flash default lives — a hardcoded pin here silently
+          // overrode all of it, and overrode per-org BYOK with it.
           // D.1.4a — opt into tool-binding + typed event stream.
           agentMode: true,
           // D.1.4a — let the agent know what page the user is on so
@@ -568,6 +574,15 @@ export function SideAgentRail() {
                 break
               }
               if (parsed.session_id) sessionIdRef.current = parsed.session_id
+              // docs/37 E2 — record what ACTUALLY answered. The done frame
+              // carries provider/model/tier; the persistence payload below used
+              // to hardcode 'openai' / 'gpt-4.1-mini', so every stored turn
+              // claimed a model that in general did not answer it. That makes
+              // per-model quality and cost analysis wrong at the source, and it
+              // is wrong silently.
+              if (parsed.provider) answeredByRef.current.provider = String(parsed.provider)
+              if (parsed.model)    answeredByRef.current.model    = String(parsed.model)
+              if (parsed.tier)     answeredByRef.current.tier     = String(parsed.tier)
 
               // D.1.4a — tool-call envelopes. `type` drives the dispatch.
               // "token" (or legacy untyped {delta}) → append delta
@@ -770,9 +785,9 @@ export function SideAgentRail() {
               userMessage: clean,
               assistant: {
                 content: finalText,
-                provider: 'openai',
-                model: 'gpt-4.1-mini',
-                tier: 'default',
+                provider: answeredByRef.current.provider || undefined,
+                model:    answeredByRef.current.model    || undefined,
+                tier:     answeredByRef.current.tier     || 'default',
               },
               toolCalls,
             }),
