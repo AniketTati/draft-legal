@@ -124,6 +124,20 @@ const SCORE_CONFIGS = [
     ],
   },
   {
+    // Three buttons can record a verdict but not a REASON, and the reason is
+    // the whole point: "not_grounded" tells you a number, "it cited clause 9.2
+    // but the cap is in 9.4" tells you what to fix. Langfuse supports a TEXT
+    // score type and this queue was built without one — a reviewer could
+    // disagree with the judge and had nowhere to say why.
+    //
+    // This is also what makes calibration diagnostic rather than just a
+    // percentage: when human and judge disagree, the note says which of them
+    // misread the trace.
+    name: 'human_notes',
+    dataType: 'TEXT',
+    description: 'WHY. What specifically was wrong (or right)? Quote the clause, the number, or the tool result that decided it. Most valuable when you disagree with the judge.',
+  },
+  {
     name: 'human_verdict',
     dataType: 'CATEGORICAL',
     description: 'What should happen about this turn?',
@@ -152,7 +166,24 @@ async function ensureScoreConfigs() {
 async function ensureQueue(scoreConfigIds) {
   const existing = await api('GET', '/api/public/annotation-queues?limit=100').catch(() => ({ data: [] }))
   const found = (existing.data ?? []).find((q) => q.name === QUEUE_NAME)
-  if (found) { console.log(`  · queue exists (${found.id})`); return found.id }
+  if (found) {
+    // The queue API is create-and-read only — there is no PATCH. So a score
+    // config added AFTER the queue was created never reaches the reviewer, and
+    // the only symptom is a field quietly missing from the annotation form.
+    // Say it out loud; a silent skip here is how someone spends an hour
+    // labelling without the field you added for them.
+    const attached = new Set(found.scoreConfigIds ?? [])
+    const missing = scoreConfigIds.filter((id) => !attached.has(id))
+    if (missing.length) {
+      console.log(`  · queue exists (${found.id}) — ⚠ ${missing.length} score config(s) NOT attached`)
+      console.log(`    The API cannot update a queue. Add them once in the UI:`)
+      console.log(`    ${LANGFUSE_HOST} → Annotation Queues → ${QUEUE_NAME} → Settings → add the human_* configs`)
+      console.log(`    (queued items are preserved; this is a form-field change, not a data change)`)
+    } else {
+      console.log(`  · queue exists (${found.id})`)
+    }
+    return found.id
+  }
   const made = await api('POST', '/api/public/annotation-queues', {
     name: QUEUE_NAME,
     description: 'Mixed sample of agent turns — every judge failure plus a control sample of passes. Label these to check the judge, not just the agent.',

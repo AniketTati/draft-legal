@@ -189,6 +189,18 @@ export const RUBRICS = {
     'Direct and brief is correct, not a fault.',
 
   // ── Session-level. Grades a WHOLE conversation, not one turn.
+  // Coherence and progress are different questions and a conversation can fail
+  // either one alone. An assistant that remembers everything perfectly while
+  // walking the user steadily away from what they wanted scores 1 on coherence
+  // and is still a bad conversation. This is the "did we go in the right
+  // direction" check.
+  session_goal_progress:
+    'Read the whole conversation. Did it move TOWARD what the user was trying to achieve? ' +
+    'Judge the direction of travel, not the politeness or the individual answers. ' +
+    'Score 0 if the assistant pursued the wrong interpretation of the request and never corrected, ' +
+    'looped without advancing, ended further from the goal than it started, ' +
+    'or answered a narrower question than the one asked and stopped there. ' +
+    'A conversation that correctly establishes the goal cannot be met, and says so, scores 1 — that is progress.',
   session_coherence:
     'Read the whole conversation. Did the assistant carry context across turns? ' +
     'Score 0 if it forgot something the user already told it, re-asked for information it had been given, contradicted its own earlier answer, or lost track of which contract was being discussed. ' +
