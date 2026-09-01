@@ -47,6 +47,24 @@ const hours  = Number(arg('hours', '3'))
 const limit  = Number(arg('limit', '50'))
 const sample = Number(arg('sample', '1.0'))
 const dryRun = process.argv.includes('--dry-run')
+
+/**
+ * --only helpfulness,groundedness → run just those rubrics.
+ *
+ * Without this, changing one rubric means re-judging every other rubric on
+ * every trace to see the effect — most of the spend, none of the new signal.
+ */
+const onlyArg = arg('only', null)
+const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim())) : null
+const wants = (criterion) => !only || only.has(criterion)
+if (only) {
+  const unknown = [...only].filter((c) => !RUBRICS[c])
+  if (unknown.length) {
+    console.error(`\n✗ --only names unknown rubric(s): ${unknown.join(', ')}`)
+    console.error(`  known: ${Object.keys(RUBRICS).join(', ')}\n`)
+    process.exit(1)
+  }
+}
 const cfg = requireConfig()
 const auth = 'Basic ' + Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString('base64')
 
@@ -120,10 +138,27 @@ function toolEvidence(trace, observations) {
 }
 
 const since = new Date(Date.now() - hours * 3600_000)
-const all = await listTraces({ limit: 100 })
-const candidates = (all?.data ?? [])
+// Paginate. The API caps a page at 100, so `--limit 200` silently scored 100
+// and reported success — the kind of quiet truncation that makes a coverage
+// claim wrong rather than incomplete.
+async function allTraces(max) {
+  const out = []
+  for (let page = 1; out.length < max && page <= 50; page++) {
+    const res = await listTraces({ limit: 100, page })
+    const rows = res?.data ?? []
+    out.push(...rows)
+    if (rows.length < 100) break
+  }
+  return out
+}
+
+const fetched = await allTraces(Math.max(limit * 3, 100))
+const candidates = fetched
   .filter((t) => new Date(t.timestamp) >= since)
   .filter((t) => ANSWER_RUBRICS[t.name])
+  // With --only, a trace whose rubrics are all filtered out is not a candidate:
+  // counting it would report coverage the run never actually attempted.
+  .filter((t) => !only || ANSWER_RUBRICS[t.name].some(wants) || TOOL_RUBRICS.some(wants) || wants('trajectory'))
   .slice(0, limit)
 
 // Deterministic sampling by position — a random sample scores a different
@@ -132,7 +167,7 @@ const picked = candidates.filter((_, i) => (sample >= 1 ? true : i % Math.round(
 
 console.log(`\nonline scoring — last ${hours}h`)
 console.log(`  ${candidates.length} scorable traces, ${picked.length} sampled (${(sample * 100).toFixed(0)}%)`)
-console.log(`  rubrics: ${Object.keys(RUBRICS).join(', ')}\n`)
+console.log(`  rubrics: ${Object.keys(RUBRICS).filter(wants).join(', ')}${only ? '  (--only)' : ''}\n`)
 
 if (dryRun) {
   for (const t of picked) {
@@ -140,7 +175,7 @@ if (dryRun) {
     const obs = full?.observations ?? []
     const tools = obs.filter((o) => o.type === 'TOOL').length
     console.log(`  [dry-run] ${t.name.padEnd(22)} ${obs.length} obs, ${tools} tool step(s) → ` +
-      `${ANSWER_RUBRICS[t.name].join('+')}${tools ? ` · ${TOOL_RUBRICS.join('+')} ×${tools}` : ''}`)
+      `${ANSWER_RUBRICS[t.name].filter(wants).join('+') || '—'}${tools && TOOL_RUBRICS.some(wants) ? ` · ${TOOL_RUBRICS.filter(wants).join('+')} ×${tools}` : ''}`)
   }
   console.log()
   process.exit(0)
@@ -212,7 +247,7 @@ for (const t of picked) {
       input: `USER REQUEST:\n${request}\n\nTOOL CALLED: ${o.name}`,
       output: `TOOL OUTPUT:\n${out}`,
     }
-    for (const criterion of TOOL_RUBRICS) {
+    for (const criterion of TOOL_RUBRICS.filter(wants)) {
       await judgeAndPost({
         criterion, ctx, traceId: t.id, observationId: o.id,
         label: `${o.name} · ${criterion}`, surface: t.name, step: 'tool',
@@ -226,7 +261,7 @@ for (const t of picked) {
   // and the tool choice are the same question, and paying a judge twice to
   // answer it once is waste.
   const toolCalls = observations.filter((x) => x.type === 'TOOL')
-  if (toolCalls.length > 1) {
+  if (toolCalls.length > 1 && wants('trajectory')) {
     const plan = toolCalls
       .map((o, i) => `${i + 1}. ${o.name}(${asText(o.input).slice(0, 300)}) → ${asText(o.output).slice(0, 600)}`)
       .join('\n')
@@ -245,7 +280,16 @@ for (const t of picked) {
   const answerText = (() => {
     try {
       const parsed = typeof answer === 'string' && answer.trim().startsWith('{') ? JSON.parse(answer) : null
-      return parsed?.content ? String(parsed.content) : answer
+      if (!parsed) return answer
+      if (parsed.content) return String(parsed.content)
+      // Empty content + tool_calls = the DECIDE step, not an answer. Falling
+      // back to `answer` here handed the judge a raw tool-call payload as the
+      // thing to grade; with no prose in it the judge scored 0 and invented a
+      // reason ("hallucinates a tool that does not exist"). A confident score
+      // about a step that never produced an answer is worse than no score.
+      // Older traces (pre per-turn grouping) are all shaped this way.
+      if (Array.isArray(parsed.tool_calls) && parsed.tool_calls.length) return ''
+      return answer
     } catch { return answer }
   })()
   if (!answerText || answerText === '""') continue
@@ -254,7 +298,7 @@ for (const t of picked) {
     input: evidence ? `${request}\n\n--- TOOL RESULTS (the source) ---\n${evidence}` : request,
     output: answerText,
   }
-  for (const criterion of ANSWER_RUBRICS[t.name]) {
+  for (const criterion of ANSWER_RUBRICS[t.name].filter(wants)) {
     await judgeAndPost({
       criterion, ctx, traceId: t.id,
       // Anchor to the generation when we have one: a score on the step the user

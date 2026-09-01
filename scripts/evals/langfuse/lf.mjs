@@ -207,12 +207,15 @@ export async function createTrace({ id, name, input, output, sessionId, userId, 
   return traceId
 }
 
-export async function listTraces({ sessionId, name, limit = 20 } = {}) {
+export async function listTraces({ sessionId, name, limit = 20, page } = {}) {
   // The API rejects limit > 100 with a 400. Clamp rather than surface that as
-  // a Langfuse error — the caller asked for "as many as you can".
+  // a Langfuse error — the caller asked for "as many as you can". Callers that
+  // need more than one page pass `page` and walk it; the clamp alone would
+  // otherwise cap any "score everything" run at 100 without saying so.
   const q = new URLSearchParams({ limit: String(Math.min(100, Math.max(1, limit))) })
   if (sessionId) q.set('sessionId', sessionId)
   if (name) q.set('name', name)
+  if (page) q.set('page', String(page))
   return lf('GET', `/api/public/traces?${q}`)
 }
 

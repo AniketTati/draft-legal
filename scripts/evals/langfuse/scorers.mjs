@@ -302,12 +302,41 @@ export const RUBRICS = {
   },
   helpfulness: {
     dataType: 'NUMERIC',
-    criterion: 'Would a busy contracts lawyer consider this a useful reply to their request?',
+    criterion:
+      'How helpful is this response to the user, given the retrieved contract context? ' +
+      'Judge it as an expert evaluator for a contract-lifecycle system would.',
+    // The five things a helpful CLM answer has to do. Spelled out rather than
+    // left to the judge's taste, because "helpful" without a definition is the
+    // rubric most prone to drifting with the model.
+    //
+    // Written about "the provision the user asked about" rather than naming one
+    // clause type: this rubric also grades assist.rewrite, assist.simplify and
+    // assist.redline_propose, where demanding a liability-clause citation would
+    // score every correct rewrite at 0.
+    guidance: [
+      '1. DIRECTLY ANSWER THE QUESTION. Explain what the contract actually says about',
+      '   the provision asked about. No unnecessary background or generic legal theory.',
+      '2. ACCURATELY REPRESENT THE CONTRACT. Every material term — caps, exclusions,',
+      '   exceptions, figures, dates — must be supported by the retrieved context.',
+      '   Do NOT reward a claim that rests only on general legal knowledge.',
+      '3. PROVIDE A USEFUL CITATION. Name the clause/section number or heading so the',
+      '   user can locate and verify it. "The MSA says…" with no locator is insufficient.',
+      '4. BE APPROPRIATELY CONCISE. Do NOT penalise brevity that fully answers the',
+      '   question. A focused question deserves the provision and its practical meaning.',
+      '5. AVOID UNSUPPORTED CONCLUSIONS. Do not infer terms absent from the context;',
+      '   do not invent a cap, a carve-out, or a clause number.',
+      '',
+      'IMPORTANT: if the retrieved context does not contain enough to answer, the',
+      'helpful response is one that SAYS SO explicitly. Saying "I could not find or',
+      'verify that provision" is correct behaviour and scores high — inventing an',
+      'answer instead is the failure this catches.',
+    ],
     anchors: [
-      '1.0 — answers the actual question, directly, at the right length',
-      '0.7 — answers it, but buries the point or omits an obvious follow-through',
-      '0.3 — partially responsive; answers a narrower question than the one asked',
-      '0.0 — a non-answer, or refuses something the product can actually do',
+      '1.00 — Excellent: identifies the relevant provision, summarises its material terms accurately, cites precisely, fully answers, no unsupported claims',
+      '0.75 — Good: answers correctly and finds the right provision, but misses a minor detail or the citation is less precise',
+      '0.50 — Partially helpful: some relevant information, but a meaningful omission, a vague citation, an incomplete summary, or a minor factual issue',
+      '0.25 — Poor: little relevant information, cites the wrong or unclear provision, or substantially fails to answer',
+      '0.00 — Not helpful: does not answer, fabricates, cites an unrelated provision, or contradicts the contract',
     ],
   },
   correctness: {
@@ -555,8 +584,14 @@ export function judgePrompt(criterion, { input, output, expectedOutput }) {
     : spec?.dataType === 'CATEGORICAL' && spec.categories
       ? `\nALLOWED LABELS (pick exactly one): ${spec.categories.join(' | ')}`
       : null
+  // Extended criteria, where a rubric defines them. Rendered BEFORE the scale so
+  // the judge reads what to look for, then how to score it.
+  const guidanceBlock = spec?.guidance
+    ? ['', 'WHAT TO EVALUATE:', ...spec.guidance.map((g) => g ? `  ${g}` : '')].join('\n')
+    : null
   return [
     `CRITERION (${criterion}): ${spec?.criterion ?? criterion}`,
+    guidanceBlock,
     scaleBlock,
     calibrationExamples(criterion) || null,
     '',
