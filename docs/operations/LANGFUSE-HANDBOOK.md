@@ -567,9 +567,40 @@ pnpm evals promote -- --hours 24 --apply
 
 ## Part 6 — Traps
 
+### The empty dashboard
+
+**This is the single most common "something is broken" report, and it is almost
+never broken.** Langfuse dashboards default to a **24-hour window**, and they
+render an out-of-range dashboard as blank — no banner, no "no data in this
+range", just empty tiles that look identical to a broken setup.
+
+Locally, traffic is not continuous. Come back after a weekend and every widget is
+empty because the newest trace is 37 hours old.
+
+Check it in one command:
+
+```bash
+pnpm evals health --hours 24
+```
+
+If the window is empty, the Traffic line now tells you which of the two causes it
+is:
+
+```
+✗ Traffic   0 traces in the last 24h — newest is 37.2h old.
+            Dashboards default to a 24h window, so they will look empty.
+            Run: pnpm evals traffic
+```
+
+*"newest is 37.2h old"* means nothing has run — generate traffic. No newest
+timestamp at all means tracing itself is broken, which is a different problem.
+
+Before concluding a widget is misconfigured, widen the range to 7 days. If data
+appears, the widget was always fine.
+
 | Trap | What happens | Fix |
 |---|---|---|
-| Time range too narrow | Healthy system looks dead | Widen to 24h+ |
+| Time range too narrow | Healthy system looks dead — **see above** | Widen to 7d; run `pnpm evals health` |
 | Reading the overall pass rate alone | "76%" tells you nothing actionable | Always read the by-criterion breakdown |
 | Trusting a score without its comment | Judges are confidently wrong | Read the reasoning first |
 | Assuming `EVAL` scores exist | If continuous grading stopped, quality looks stable because nothing is being graded | Check "Assessments" count and the continuous-vs-on-demand pie |

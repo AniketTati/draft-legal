@@ -92,11 +92,46 @@ function check({ id, label, actual, ok, detail, unavailable = false }) {
 // ── traffic ──────────────────────────────────────────────────────────────────
 const traceRows = await metrics({ view: 'traces', metrics: [{ measure: 'count', aggregation: 'count' }] })
 const traces = traceRows === null ? null : n(traceRows[0]?.count_count)
+
+/**
+ * How old is the newest trace, in hours? Only asked when the window is empty.
+ *
+ * "0 traces in the last 24h" has two very different causes and the number alone
+ * cannot tell them apart: tracing is broken, or nothing has run lately. On a
+ * local stack it is nearly always the second, and the symptom people actually
+ * report is "the dashboard is empty" — because Langfuse dashboards default to a
+ * 24h window, so data older than that renders as nothing at all, with no notice
+ * saying the window is the reason. Naming the age turns a mystery into a fact.
+ */
+async function newestTraceAgeHours() {
+  try {
+    const r = await fetch(`${cfg.host.replace(/\/$/, '')}/api/public/traces?limit=1`, {
+      headers: { Authorization: auth }, signal: AbortSignal.timeout(15_000),
+    })
+    if (!r.ok) return null
+    const newest = (await r.json())?.data?.[0]?.timestamp
+    return newest ? (Date.now() - new Date(newest).getTime()) / 3600_000 : null
+  } catch { return null }
+}
+
+let trafficDetail
+if (traces === null) {
+  trafficDetail = 'metrics API unreachable'
+} else if (traces === 0) {
+  const age = await newestTraceAgeHours()
+  trafficDetail = age === null
+    ? `0 traces — and no traces at all in this project`
+    : `0 traces in the last ${hours}h — newest is ${age.toFixed(1)}h old. ` +
+      `Dashboards default to a 24h window, so they will look empty. Run: pnpm evals traffic`
+} else {
+  trafficDetail = `${traces} traces (need ≥ ${T.minTraces})`
+}
+
 check({
   id: 'traffic', label: 'Traffic', actual: traces,
   unavailable: traces === null,
   ok: traces >= T.minTraces,
-  detail: traces === null ? 'metrics API unreachable' : `${traces} traces (need ≥ ${T.minTraces})`,
+  detail: trafficDetail,
 })
 
 // ── errors ───────────────────────────────────────────────────────────────────

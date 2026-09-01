@@ -302,10 +302,15 @@ journeys.push(edgeJourney(0))   // always exactly one — it is a probe, not a l
 
 // --only multi,recovery → run just those. For iterating on one journey shape
 // without paying for the whole mix.
+//
+// Copy before clearing. With no --only, `selected` was the SAME array object as
+// `journeys`, so `journeys.length = 0` emptied both and the push spread nothing
+// — a full run silently became zero journeys, reporting "0/0 calls succeeded"
+// rather than failing.
 const only = arg('only', null)
 const selected = only
   ? journeys.filter((j) => only.split(',').some((k) => j.name.includes(k.trim())))
-  : journeys
+  : [...journeys]
 if (!selected.length) { console.error(`\n✗ --only ${only} matched no journey\n`); process.exit(1) }
 journeys.length = 0
 journeys.push(...selected)
