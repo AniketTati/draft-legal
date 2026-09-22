@@ -84,12 +84,12 @@ export function WelcomeChecklist() {
   })
 
   const dismiss = useMutation({
-    mutationFn: () => {
-      const current = (org?.settings ?? {}) as Record<string, unknown>
-      return api
-        .patch('/organization', { settings: { ...current, welcomeChecklistDismissed: true } })
-        .then((r) => r.data)
-    },
+    // The server merges settings, so send only the flag. Echoing the fetched
+    // settings back would re-save the redacted view the API returns.
+    mutationFn: () =>
+      api
+        .patch('/organization', { settings: { welcomeChecklistDismissed: true } })
+        .then((r) => r.data),
     onMutate: () => setLocallyHidden(true),
     onSettled: () => qc.invalidateQueries({ queryKey: ['organization'] }),
   })

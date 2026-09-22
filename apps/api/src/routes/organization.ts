@@ -16,6 +16,50 @@ const UpdateOrgSchema = z.object({
   settings: z.record(z.unknown()).optional(),
 })
 
+// Settings keys owned by dedicated admin routes (integrations.ts manages
+// `slack`). PATCH /organization must not write them: its merge is shallow, so
+// a client echoing back the redacted summary would wipe the real config.
+const SERVER_MANAGED_SETTINGS = new Set(['slack'])
+
+// Belt-and-braces: never serialize a credential-looking key, at any depth.
+const SECRET_KEY = /secret|token|password|api[_-]?key|private[_-]?key/i
+
+function stripSecrets(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripSecrets)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([k]) => !SECRET_KEY.test(k))
+        .map(([k, v]) => [k, stripSecrets(v)]),
+    )
+  }
+  return value
+}
+
+/**
+ * org.settings as any member may see it. GET /organization is readable by
+ * every role, so the Slack signing secret and bot token are replaced by the
+ * same non-secret summary GET /integrations/slack gives admins.
+ */
+function publicSettings(raw: unknown): Record<string, unknown> {
+  const all = (raw ?? {}) as Record<string, unknown>
+  const settings = stripSecrets(all) as Record<string, unknown>
+  const slack = all.slack as
+    { teamId?: string; signingSecret?: string; botToken?: string; configuredAt?: string } | undefined
+  if (slack) {
+    settings.slack = slack.teamId
+      ? {
+          connected:        true,
+          teamId:           slack.teamId,
+          configuredAt:     slack.configuredAt ?? null,
+          hasSigningSecret: Boolean(slack.signingSecret),
+          hasBotToken:      Boolean(slack.botToken),
+        }
+      : { connected: false }
+  }
+  return settings
+}
+
 const InstallPackSchema = z.object({
   packId: z.enum(['saas', 'healthcare', 'manufacturing', 'biotech', 'logistics']),
 })
@@ -35,7 +79,7 @@ export async function organizationRoutes(app: FastifyInstance) {
       subscriptionTier: org.subscriptionTier,
       logoUrl: org.logoUrl,
       brandColor: org.brandColor,
-      settings: org.settings,
+      settings: publicSettings(org.settings),
       createdAt: org.createdAt,
       updatedAt: org.updatedAt,
     })
@@ -50,11 +94,12 @@ export async function organizationRoutes(app: FastifyInstance) {
     })
     if (!org) return reply.status(404).send({ detail: 'Organization not found' })
 
-    // Merge settings if provided
+    // Merge settings if provided, never touching server-managed keys
     const currentSettings = (org.settings as Record<string, unknown>) ?? {}
-    const newSettings = body.settings
-      ? { ...currentSettings, ...body.settings }
-      : currentSettings
+    const incoming = Object.fromEntries(
+      Object.entries(body.settings ?? {}).filter(([k]) => !SERVER_MANAGED_SETTINGS.has(k)),
+    )
+    const newSettings = { ...currentSettings, ...incoming }
 
     const updated = await prisma.organization.update({
       where: { id: req.user.orgId },
@@ -73,7 +118,7 @@ export async function organizationRoutes(app: FastifyInstance) {
       subscriptionTier: updated.subscriptionTier,
       logoUrl: updated.logoUrl,
       brandColor: updated.brandColor,
-      settings: updated.settings,
+      settings: publicSettings(updated.settings),
     })
   })
 
