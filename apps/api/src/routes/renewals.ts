@@ -15,6 +15,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { buildCsv } from '../lib/csv.js'
+import { renewalNotice } from '../lib/renewal-notice.js'
 
 const ListSchema = z.object({
   bucket: z.enum(['all', 'this_week', 'next_30', 'next_60', 'next_90', 'overdue']).default('all'),
@@ -38,6 +39,9 @@ interface RenewalRow {
   // noticeDays to show the notice-to-terminate deadline, which is the date
   // that actually binds — expiry alone is too late to act on.
   keyTerms:         Record<string, unknown> | null
+  // C6 — the auto-renewal notice deadline, derived server-side by the same
+  // function the daily scan alerts on, so the page and the alert agree.
+  notice: { autoRenew: boolean; days: number | null; deadline: string | null }
   // Renewal-specific from metadata
   renewalDecision:    string | null   // renew | renegotiate | let_expire | pause | unknown
   renewalDecisionAt:  string | null
@@ -100,6 +104,10 @@ export async function renewalRoutes(app: FastifyInstance) {
         keyTerms:         (c.keyTerms && typeof c.keyTerms === 'object' && !Array.isArray(c.keyTerms))
           ? (c.keyTerms as Record<string, unknown>)
           : null,
+        notice:           (() => {
+          const n = renewalNotice({ expiryDate: c.expiryDate, keyTerms: c.keyTerms })
+          return { autoRenew: n.autoRenew, days: n.noticeDays, deadline: n.deadline?.toISOString() ?? null }
+        })(),
         renewalDecision:    md.renewalDecision ?? null,
         renewalDecisionAt:  md.renewalDecisionAt ?? null,
         renewalAdvice:    md.renewalAdvice
