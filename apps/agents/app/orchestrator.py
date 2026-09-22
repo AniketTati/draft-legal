@@ -249,7 +249,7 @@ async def run_chat(
 ) -> str:
     provider = provider or active_provider()
     model_id = model_id or active_model()
-    history = await get_session_history(session_id)
+    history = await get_session_history(session_id, org_id=org_id, user_id=user_id)
     graph = get_graph(provider, model_id)
 
     # Wave 3.5 — resolve the LLM per request, same shape as the streaming
@@ -288,8 +288,8 @@ async def run_chat(
     })
 
     response = result["response"]
-    await append_to_session(session_id, "user", message)
-    await append_to_session(session_id, "assistant", response)
+    await append_to_session(session_id, "user", message, org_id=org_id, user_id=user_id)
+    await append_to_session(session_id, "assistant", response, org_id=org_id, user_id=user_id)
 
     return response
 
@@ -725,7 +725,7 @@ async def run_agent_chat_stream(
     so clients that only recognize the old {delta} envelope still render
     correctly.
     """
-    history = await get_session_history(session_id)
+    history = await get_session_history(session_id, org_id=org_id, user_id=user_id)
     all_tools = get_read_tools(org_id, user_id)
     # D.4.1 — Narrow the tool catalog if the skill declared an allowlist.
     # Missing/empty list → fall through to the full catalog (safer default
@@ -1323,12 +1323,13 @@ async def run_agent_chat_stream(
     # or hallucinate placeholder cuids. Now the next turn's restore
     # rebuilds the AIMessage(tool_calls) + ToolMessage(content) chain
     # so the LLM sees the exact ids that were returned earlier.
-    await append_to_session(session_id, "user", message)
+    await append_to_session(session_id, "user", message, org_id=org_id, user_id=user_id)
     if final_text or turn_tool_calls:
         await append_to_session(
             session_id,
             "assistant",
             final_text,
+            org_id=org_id, user_id=user_id,
             tool_calls=turn_tool_calls or None,
             tool_results=turn_tool_results or None,
         )

@@ -392,8 +392,23 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X3 — Empty stubs.** `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
 
 - **X4 — Lost-update race on `organization.settings`.** `PATCH /organization` and `POST /organization/install-industry-pack` (which awaits the multi-query `seedOrgDefaults` between read and write) read the whole settings blob and write it back, so they can silently undo a concurrent Slack secret rotation/disconnect in `integrations.ts`. Merge atomically in SQL (`settings || $1::jsonb`, `jsonb_set`) or move Slack credentials out of `settings`. (Found in S1 review.)
-- **X5 — `PATCH /organization` lets `configure:integration` (LEGAL_OPS) set `piiRedactionMode`**, turning off PII redaction org-wide, and writes no audit event. Gate security-relevant keys behind `configure:organization` and audit the change. (Found in S1 review.)
-- **X6 — Slack `teamId` is not unique across orgs.** `PUT /integrations/slack` does not check collisions and `lib/slack.ts` `findOrgBySlackTeam` uses `findFirst` with no ordering, so one org can claim another's team id and break its Slack integration (DoS, no data crossing). (Found in S1 review.)
+- **X5 — `PATCH /organization` lets `configure:integration` (LEGAL_OPS) set `piiRedactionMode`. — IN-PROGRESS.**
+  - **Plan:**
+    - Confirmed: the PATCH merges any settings key for a `configure:integration` holder, validates no value, and audits nothing. `piiRedactionMode` is the only protection setting in `org.settings`; the cost cap and AI keys already sit behind `configure:organization` in `admin-ai.ts`. The web never sets it.
+    - Fix (`routes/organization.ts`):
+      - A change to `piiRedactionMode` needs `configure:organization` (ADMIN by default, as for the AI config), and the value must be `redact | tokenize | off`.
+      - A real change writes an `AI_SETTINGS_UPDATED` audit event with the old and new values.
+      - `lib/pii-policy.ts` drops this process's cached mode.
+    - Acceptance: LEGAL_OPS gets 403 and the mode is unchanged; ADMIN changes it with an audit row; a bad value gets 400; LEGAL_OPS still saves unprotected keys.
+    - Test: extend `routes/organization.integration.test.ts`.
+  - Original note: , turning off PII redaction org-wide, and writes no audit event. Gate security-relevant keys behind `configure:organization` and audit the change. (Found in S1 review.)
+- **X6 — Slack `teamId` is not unique across orgs. — IN-PROGRESS.**
+  - **Plan:**
+    - Confirmed: `findOrgBySlackTeam` takes the first org (unordered) listing the team id. The inbound routes then check Slack's signature against that org's secret. A second org that saves the same team id makes the first org's Slack requests fail verification.
+    - Not fixed by refusing duplicates: two orgs can legitimately share one Slack workspace, with separate Slack apps and separate signing secrets.
+    - Fix: `findOrgsBySlackTeam` returns every candidate (oldest first, capped), and `routes/slack.ts` authenticates as the org whose signing secret verifies the request. A squatter can't displace the real org, a shared workspace works, and an unverifiable request stays 401.
+    - Test: `routes/slack-team.integration.test.ts`, with a squatting org holding a different secret, in both creation orders.
+  - Original note: `PUT /integrations/slack` does not check collisions and `lib/slack.ts` `findOrgBySlackTeam` uses `findFirst` with no ordering, so one org can claim another's team id and break its Slack integration (DoS, no data crossing). (Found in S1 review.)
 - **X7 — REST ignores `own` scope outside the contract list (High). — DONE.**
   - **Plan:** a shared `lib/own-scope-guard.ts`. An `onRoute` hook appends an ownership check (`ownerId = req.user.sub`, else 404) after each route's own `requirePermission`, which is what sets `req.permissionScope`. It is registered in every plugin whose routes take a contract `:id`: contracts (38 routes), comments, share, and signatures (`/contracts/:id/...` only). That covers today's and future sub-routes in one place instead of 45 hand edits. List/search surfaces get explicit filters: `GET /contracts/export`; `/search` (ES `ids` filter from owned contracts, pgvector `ownerId`, Postgres fallback, hydration); `/search/advanced` and `/search/facets` (ES `ids`); `/search/ask` (`searchClauses` ownerId); `/search/portfolio-query` refused for own-scope callers, since its agent searches org-wide as the service; `GET /counterparties/:id` and `GET /matters/:id` (contract lists, plus the matter's thread ids limited to the caller's own). Test: `routes/own-scope-rest.integration.test.ts` — a SALES_REP gets 404 on another rep's contract and its sub-routes and doesn't see it in export/search/counterparty/matter views; ADMIN and the owner are unaffected.
   - **What changed:**
@@ -416,7 +431,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - FINANCE, APPROVER and VIEWER (no `view:request`), and API keys without `requests:read`, no longer see a matter's requests, request entries in the dashboard feed, or the org's open-request count. Their dashboard counts only requests they raised.
   - **Left out:** listed under X21. Found in review and filed separately: X18, X19 (which also covers the own-scope invoice auto-match) and X20.
   - Original note: A SALES_REP gets org-wide data from `POST /search/ask` (`search.ts:213`, verbatim clause text — now a one-line fix: pass `ownerId` to `searchClauses`), `/search`, `/search/advanced`, `/search/facets`, `GET /contracts/:id` (all versions' `plainText`), `/contracts/:id/ask`, `GET /contracts/export` (CSV, 5k rows), `GET /counterparties/:id` and `GET /matters/:id`. Only `GET /contracts` and the requests list honour it. The UI therefore exposes what S2 closed in the agent. Apply `req.permissionScope === 'own'` (reuse `contractScopeWhere` / ES `ids` from S2) on each. (Found in S2 review.)
-- **X8 — Agent chat session history is not bound to user/org. — IN-PROGRESS.**
+- **X8 — Agent chat session history is not bound to user/org. — DONE.**
   - **Plan:**
     - Confirmed: `memory.py` keys Redis history by the client's `session_id` alone, and the orchestrator replays tool calls and results from it on the next turn. `/agent/chat` echoes `session_id` back in every event, so namespacing it in the API would leak into the client. Bind it at the memory layer instead.
     - Fix: `get_session_history` and `append_to_session` take keyword-only `org_id`/`user_id`. These come from the verified JWT via `agents.ts`. The key becomes `session:{org}:{user}:{session_id}`. The five orchestrator call sites pass them, and the four `scripts/agent-loops` probes that read memory directly are updated.
@@ -425,8 +440,31 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Tests:
       - A TS tripwire on `memory.py` and `orchestrator.py` (no Python runner in CI).
       - A local behavioural check against the dev Redis.
+  - **What changed:**
+    - `apps/agents/app/memory.py`: history is stored under `session:{org_id}:{user_id}:{session_id}`, and `get_session_history` / `append_to_session` require `org_id` / `user_id` as keyword-only arguments. The five orchestrator call sites pass the caller from the request; `agents.ts` already fills that from the JWT.
+    - The four `scripts/agent-loops` probes that read memory directly pass the same org and user they chat as.
+    - Old unbound keys are never read again and expire within 24h. On deploy, chats already in progress start fresh.
+  - **Verification:**
+    - Local run of `memory.py` against a fake Redis: the owner sees the history; the same session id from another user, or the same user in another org, gets `[]`.
+    - Tripwire `lib/agents-session-binding.test.ts` (4 cases) checks the key shape, the required owner, that every Redis read and write goes through the bound key, and that every orchestrator call passes the owner. All four fail on the pre-fix Python.
+    - `routes/agent-chat-identity.integration.test.ts` checks the forwarded `user_id` / `org_id` are the JWT's even when the body names someone else. The API already did this; it is now pinned.
+    - The api unit suite passes (223/223, run on a tree that also held other stretch work in progress). The X8 integration test passes.
+    - A fresh subagent reviewed this adversarially. Nothing got through: the identity can't be influenced, and no other store keys conversation content by the client id alone. It found that the tripwire covered only the Python half, now fixed as above, and the feedback-route issue filed as X22.
+  - **Left out:**
+    - `:` isn't escaped in the key. Org and user ids are cuids, and the client controls only the last segment, so no collision is reachable.
+    - `ChatRequest` still defaults `user_id` / `org_id` (only trusted callers reach it).
+    - The agents service compares its secret with `!=` rather than `hmac.compare_digest`.
   - Original note: `agents.ts:179` forwards the client's `sessionId` unchecked; Python keys history as `session:{id}` (`memory.py:27`) and replays prior tool results, and `GET /matters/:id` exposes other users' thread ids — so a user can replay another user's (incl. org-scope, cross-org) tool output. Bind the session key to `orgId:userId`, and purge `session:*` after deploying S2 (pre-fix sessions hold org-wide results for 24h). (Found in S2 review.)
-- **X9 — Agent tools check `view:contract` where REST checks a different permission.** `org_memory` / `playbook_check` return playbook positions (walkaway language) to roles without `view:playbook`; `approval_list scope:'all'` returns the org approval queue (incl. `aiSummary`) to roles without `view:workflow`. (Found in S2 review.)
+- **X9 — Agent tools check `view:contract` where REST checks a different permission. — IN-PROGRESS.**
+  - **Plan:**
+    - Confirmed, and one more pair: `redline_propose` and `redline_propose_batch` check `view:contract`, where REST's `/contracts/:id/clauses/:clauseId/suggest` needs `edit:contract`. Their variants are built from the org's playbook positions, walkaway and fallback language included.
+    - Fix: `resolveCallerScope` (S2) takes any resource and action. Each tool then checks what REST checks:
+      - `playbook_check`: also `view:playbook`.
+      - `org_memory`: playbook positions only with `view:playbook`, clause-library items only with `view:clause`. Anything withheld is named, so the model says "not available to you", not "none exist".
+      - `approval_list`: `view:workflow` for my-queue, `configure:workflow` for all (REST's `/approvals/all`).
+      - `redline_propose(_batch)`: `edit:contract`, at that scope.
+    - Test: `routes/agent-tool-permissions.integration.test.ts`, with real DB roles as in the S2 test.
+  - Original note: `org_memory` / `playbook_check` return playbook positions (walkaway language) to roles without `view:playbook`; `approval_list scope:'all'` returns the org approval queue (incl. `aiSummary`) to roles without `view:workflow`. (Found in S2 review.)
 - **X10 — Write tools ignore permission scope.** `checkToolPermission` (`agent-threads.ts:63-89`) checks grant only, so a custom role with own-scope `edit:contract` can `contract_update`/`approval_route`/`comment_add`/`redline_apply` any org contract. No default role affected. (Found in S2 review.)
 - **X11 — Text→HTML conversion does not escape, and Gotenberg renders it server-side (High).** — IN-PROGRESS.
   - **Plan:**
@@ -489,6 +527,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X20 — Upload accepts any `parentContractId` (Medium).** `POST /contracts/upload` stores the form's `parentContractId` unchecked. A user in org B can file an upload as an amendment of an org-A contract; org A's `/contracts/:id/family` then lists org B's contract (title, type, status), because the relation isn't org-filtered. Validate the parent against the caller's org (and ownership for own scope, as the guard now does for `/amendments`), and filter the family query by `orgId`. (Found while fixing X7.)
 - **X21 — Own-scope follow-ups (Low).** Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
+- **X22 — Agent feedback trusts a client-supplied trace or session id (Low).** `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
 ---
 
 ## Run log
@@ -517,4 +556,5 @@ H2 — DONE — the 7 never-fired webhook events now emit at their real triggers
 H3 — DONE — README/CHANGELOG/BUILD_TRACKER/evals README corrected to match the code (history kept, corrections noted); doc tripwire — fc0039f
 X15 — DONE — portfolio_agent sends x-org-id; header tripwire extended — 16082b1
 X7 — DONE — own scope enforced across REST: by-id guard on every contract/obligation/invoice/room/request route, lists + aggregates filtered, signature GETs gated; two adversarial passes — ba78c65
-X19 — DONE — invoice contract links must be a live contract of the caller's org (owned, for own scope); auto-match scoped the same way; reconcile bounded; repair migration for pre-fix cross-org links — (sha: X19)
+X19 — DONE — invoice contract links must be a live contract of the caller's org (owned, for own scope); auto-match scoped the same way; reconcile bounded; repair migration for pre-fix cross-org links — 6c01291
+X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — (sha: X8)
