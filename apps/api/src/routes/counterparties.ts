@@ -57,6 +57,8 @@ export async function counterpartyRoutes(app: FastifyInstance) {
       where: {
         orgId,
         deletedAt: null,
+        // X7 — own-scope callers count only their own contracts.
+        ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}),
         OR: [
           { counterpartyId: { in: ids } },
           { counterpartyName: { in: names } },
@@ -190,6 +192,8 @@ export async function counterpartyRoutes(app: FastifyInstance) {
       where: {
         orgId,
         deletedAt: null,
+        // X7 — an own-scope caller sees only their own contracts with this party.
+        ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}),
         OR: [
           { counterpartyId: id },
           { counterpartyName: counterparty.name },

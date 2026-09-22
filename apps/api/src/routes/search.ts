@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
@@ -52,16 +52,31 @@ const PortfolioQuerySchema = z.object({
   query: z.string().min(1).max(1000),
 })
 
+/**
+ * X7 — an own-scope caller (e.g. SALES_REP) searches only their own contracts.
+ * ES docs carry no ownerId, so their ids are pushed into the ES query as a
+ * filter (before top-k); Prisma and pgvector filter on ownerId directly.
+ */
+async function ownScopeOf(req: FastifyRequest): Promise<{ ownerId?: string; ids?: string[] }> {
+  if (req.permissionScope !== 'own') return {}
+  const owned = await prisma.contract.findMany({
+    where: { orgId: req.user.orgId, ownerId: req.user.sub, deletedAt: null },
+    select: { id: true }, orderBy: { updatedAt: 'desc' }, take: 10_000,
+  })
+  return { ownerId: req.user.sub, ids: owned.map(c => c.id) }
+}
+
 export async function searchRoutes(app: FastifyInstance) {
   // ── POST /api/v1/search  — full-text via Elasticsearch ────────────────────
   app.post('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const body = SearchSchema.parse(req.body)
     const { orgId } = req.user
+    const own = await ownScopeOf(req)
 
     let esResults: Awaited<ReturnType<typeof searchContracts>> = []
 
     try {
-      esResults = await searchContracts(orgId, body.q, body.limit)
+      esResults = await searchContracts(orgId, body.q, body.limit, own.ids)
     } catch {
       app.log.warn('Elasticsearch unavailable, falling back to DB search')
     }
@@ -69,7 +84,7 @@ export async function searchRoutes(app: FastifyInstance) {
     if (esResults.length > 0) {
       const ids = esResults.map(r => r.id!)
       const contracts = await prisma.contract.findMany({
-        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null },
+        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) },
         include: { counterparty: { select: { id: true, name: true } } },
       })
       const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
@@ -90,6 +105,7 @@ export async function searchRoutes(app: FastifyInstance) {
         orgId,
         deletedAt: null,
         diligenceRoomId: null,
+        ...(own.ownerId ? { ownerId: own.ownerId } : {}),
         OR: [
           { title: { contains: body.q, mode: 'insensitive' } },
           { counterpartyName: { contains: body.q, mode: 'insensitive' } },
@@ -110,6 +126,7 @@ export async function searchRoutes(app: FastifyInstance) {
   app.post('/advanced', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const body = AdvancedSearchSchema.parse(req.body)
     const { orgId } = req.user
+    const own = await ownScopeOf(req)
     const { limit, mode, q, ...filters } = body
 
     try {
@@ -117,12 +134,12 @@ export async function searchRoutes(app: FastifyInstance) {
         if (!q) return reply.status(400).send({ detail: 'q is required for semantic/hybrid mode' })
 
         // Semantic: clause-level similarity search
-        const clauseMatches = await searchClauses(q, orgId, limit)
+        const clauseMatches = await searchClauses(q, orgId, limit, undefined, own.ownerId)
 
         if (mode === 'semantic') {
           const contractIds = [...new Set(clauseMatches.map(m => m.contractId))]
           const contracts = await prisma.contract.findMany({
-            where: { id: { in: contractIds }, orgId, deletedAt: null, diligenceRoomId: null },
+            where: { id: { in: contractIds }, orgId, deletedAt: null, diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) },
             include: { counterparty: { select: { id: true, name: true } } },
           })
           const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
@@ -137,7 +154,7 @@ export async function searchRoutes(app: FastifyInstance) {
         // Hybrid: RRF merge of ES + pgvector results
         let esHits: { id?: string; score?: number | null }[] = []
         try {
-          const esResult = await advancedSearch(orgId, { q, ...filters }, limit * 2)
+          const esResult = await advancedSearch(orgId, { q, ...filters, ...(own.ids ? { ids: own.ids } : {}) }, limit * 2)
           esHits = esResult.hits
         } catch { /* ES down — fall back to semantic only */ }
 
@@ -155,7 +172,7 @@ export async function searchRoutes(app: FastifyInstance) {
         const sortedIds = fused.slice(0, limit).map(f => f.id)
 
         const contracts = await prisma.contract.findMany({
-          where: { id: { in: sortedIds }, orgId, deletedAt: null, diligenceRoomId: null },
+          where: { id: { in: sortedIds }, orgId, deletedAt: null, diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) },
           include: { counterparty: { select: { id: true, name: true } } },
         })
         const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
@@ -169,10 +186,10 @@ export async function searchRoutes(app: FastifyInstance) {
       }
 
       // Keyword / structured filter mode (ES)
-      const esResult = await advancedSearch(orgId, { q, ...filters }, limit)
+      const esResult = await advancedSearch(orgId, { q, ...filters, ...(own.ids ? { ids: own.ids } : {}) }, limit)
       const ids = esResult.hits.map(h => h.id!)
       const contracts = await prisma.contract.findMany({
-        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null },
+        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) },
         include: { counterparty: { select: { id: true, name: true } } },
       })
       const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
@@ -192,9 +209,10 @@ export async function searchRoutes(app: FastifyInstance) {
   app.get('/facets', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const params = FacetsSchema.parse(req.query)
     const { orgId } = req.user
+    const own = await ownScopeOf(req)
 
     try {
-      const facets = await getContractFacets(orgId, params)
+      const facets = await getContractFacets(orgId, { ...params, ...(own.ids ? { ids: own.ids } : {}) })
       return reply.send(facets)
     } catch (err) {
       app.log.warn({ err }, 'ES facets unavailable, returning empty')
@@ -209,11 +227,12 @@ export async function searchRoutes(app: FastifyInstance) {
   app.post('/ask', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { question, contractId, limit } = AskSchema.parse(req.body)
     const { orgId } = req.user
+    const own = await ownScopeOf(req)
 
     // Retrieve relevant clause chunks via pgvector. We over-fetch here
     // (4×) so the reranker has more material to choose from.
     const overfetch = Math.min(limit * 4, 60)
-    const dense = await searchClauses(question, orgId, overfetch, contractId)
+    const dense = await searchClauses(question, orgId, overfetch, contractId, own.ownerId)
 
     if (!dense.length) {
       return reply.send({ answer: null, sources: [], message: 'No relevant clauses found' })
@@ -257,6 +276,11 @@ export async function searchRoutes(app: FastifyInstance) {
   app.post('/portfolio-query', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { query } = PortfolioQuerySchema.parse(req.body)
     const { orgId, sub: userId } = req.user
+    // X7 — the portfolio agent searches org-wide as the agents service, so it
+    // can't honour an own-scope caller. Refuse rather than widen their access.
+    if (req.permissionScope === 'own') {
+      return reply.status(403).send({ detail: 'Portfolio queries need access to all contracts. Use search to find your own.' })
+    }
 
     const agentRes = await fetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/portfolio-query`,

@@ -313,12 +313,12 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
 
 // ─── Full-text search ─────────────────────────────────────────────────────────
 
-export async function searchContracts(orgId: string, query: string, size = 20) {
+export async function searchContracts(orgId: string, query: string, size = 20, ids?: string[]) {
   const raw = await es.search({
     index: CONTRACT_INDEX,
     body: {
       size,
-      query: buildESQuery(orgId, { q: query }),
+      query: buildESQuery(orgId, { q: query, ...(ids ? { ids } : {}) }),
       highlight: {
         fields: {
           title:            { number_of_fragments: 1 },

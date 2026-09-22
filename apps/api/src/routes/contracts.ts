@@ -27,6 +27,7 @@ import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
+import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
   UpdateContractSchema,
@@ -43,6 +44,8 @@ function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
 }
 
 export async function contractRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
   // ── List ────────────────────────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const query = ContractFilterSchema.parse(req.query)
@@ -286,6 +289,8 @@ export async function contractRoutes(app: FastifyInstance) {
     if (q.type)            where.type = q.type
     if (q.counterpartyId)  where.counterpartyId = q.counterpartyId
     if (q.ownerId)         where.ownerId = q.ownerId
+    // X7 — an own-scope caller exports only their own contracts.
+    if (req.permissionScope === 'own') where.ownerId = req.user.sub
     // 0-100 bands, matching riskBand() in the web app so an exported row lands
     // in the same band the user saw on screen. These read 0.67/0.34 before,
     // which on real 0-100 data put the entire portfolio in "high".
@@ -1000,9 +1005,11 @@ export async function contractRoutes(app: FastifyInstance) {
     // Scope check: ensure the clause belongs to a contract in this org.
     const clause = await prisma.contractClause.findUnique({
       where: { id: clauseId },
-      select: { version: { select: { contract: { select: { orgId: true, id: true } } } } },
+      select: { version: { select: { contract: { select: { orgId: true, id: true, ownerId: true } } } } },
     })
-    if (!clause || clause.version.contract.orgId !== orgId) {
+    if (!clause || clause.version.contract.orgId !== orgId
+      // X7 — an own-scope editor may only mark clauses on contracts it owns.
+      || (req.permissionScope === 'own' && clause.version.contract.ownerId !== userId)) {
       return reply.status(404).send({ detail: 'Clause not found' })
     }
 
@@ -1370,7 +1377,9 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     // Top-3 signed peers of the same type by cosine similarity on avg
-    // clause embedding. Excludes this contract and unsigned drafts.
+    // clause embedding. Excludes this contract and unsigned drafts. X7 — an
+    // own-scope caller's peers come only from contracts they own.
+    const peerOwnerId = req.permissionScope === 'own' ? req.user.sub : null
     const peers = await prisma.$queryRaw<Array<{
       contract_id:   string
       title:         string
@@ -1398,6 +1407,7 @@ export async function contractRoutes(app: FastifyInstance) {
                AND c."deletedAt" IS NULL
                AND c.status IN ('APPROVED','EXECUTED')
                AND c.type      = ${contract.type}
+               AND (${peerOwnerId}::text IS NULL OR c."ownerId" = ${peerOwnerId}::text)
                AND cc.embedding IS NOT NULL
                AND cc."isSubChunk" = FALSE
         GROUP  BY c.id, c.title, c.type, c.value, c."counterpartyName", c."updatedAt", c."riskScore"
@@ -1483,10 +1493,10 @@ export async function contractRoutes(app: FastifyInstance) {
         parentContractId: true,
         relationshipType: true,
         parentContract: {
-          select: { id: true, title: true, type: true, status: true, relationshipType: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true },
         },
         amendments: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, ...ownContractWhere(req) },
           select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
@@ -1494,6 +1504,12 @@ export async function contractRoutes(app: FastifyInstance) {
     })
 
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    // X7 — an own-scope caller sees only the relatives it owns.
+    const p = contract.parentContract
+    const parent = p && (req.permissionScope !== 'own' || p.ownerId === req.user.sub)
+      ? { id: p.id, title: p.title, type: p.type, status: p.status, relationshipType: p.relationshipType }
+      : null
 
     // Siblings: other children of the same parent (excluding this contract)
     const siblings = contract.parentContractId
@@ -1503,13 +1519,14 @@ export async function contractRoutes(app: FastifyInstance) {
             id: { not: id },
             orgId,
             deletedAt: null,
+            ...ownContractWhere(req),
           },
           select: { id: true, title: true, type: true, status: true, relationshipType: true },
         })
       : []
 
     return reply.send({
-      parent:   contract.parentContract ?? null,
+      parent,
       children: contract.amendments,
       siblings,
     })

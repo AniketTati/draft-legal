@@ -32,7 +32,6 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -40,6 +39,7 @@ import { sendSigningEmailForSigner } from '../lib/signing-email.js'
 import { queueSigningReminder, queueSealSignedPdf } from '../lib/queue.js'
 import { extractObligationsForContract, CostCapExceededError } from '../lib/obligation-extract.js'
 import { fireWebhook } from '../lib/webhook-events.js'
+import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
 const SignersSchema = z.object({
   signers: z.array(z.object({
@@ -71,6 +71,8 @@ function newToken(): string {
 }
 
 export async function signatureRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app, /\/contracts\/:id(\/|$)/)
 
   // ── POST /contracts/:id/send-for-signature ────────────────────────────
   app.post<{ Params: { id: string } }>(
@@ -231,12 +233,31 @@ export async function signatureRoutes(app: FastifyInstance) {
   // Filterable by status. Authenticated users see their own org only.
   app.get<{ Querystring: { status?: string; limit?: string; offset?: string } }>(
     '/signature-requests',
-    { preHandler: requireAuth },
+    // X7 — was requireAuth only: any member saw every request in the org with
+    // its contract's title and counterparty.
+    { preHandler: requirePermission('view', 'contract') },
     async (req, reply) => {
       const { orgId } = req.user
       const limit = Math.min(100, parseInt(req.query.limit ?? '50', 10) || 50)
       const offset = Math.max(0, parseInt(req.query.offset ?? '0', 10) || 0)
       const where: Record<string, unknown> = { orgId }
+      if (req.permissionScope === 'own') {
+        // Own contracts, plus requests where the caller is a signer (the
+        // sidebar's "awaiting me" badge reads this list).
+        const [owned, me] = await Promise.all([
+          prisma.contract.findMany({ where: { orgId, ownerId: req.user.sub, deletedAt: null }, select: { id: true } }),
+          prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } }),
+        ])
+        // Signer emails are stored as typed, so match the linked user id, or
+        // the address ignoring case.
+        where.OR = [
+          { contractId: { in: owned.map(c => c.id) } },
+          { signers: { some: { OR: [
+            { userId: req.user.sub },
+            ...(me?.email ? [{ email: { equals: me.email, mode: 'insensitive' } }] : []),
+          ] } } },
+        ]
+      }
       if (req.query.status && ['PENDING', 'COMPLETED', 'VOIDED', 'EXPIRED'].includes(req.query.status)) {
         where.status = req.query.status
       }
@@ -279,7 +300,9 @@ export async function signatureRoutes(app: FastifyInstance) {
   // ── GET /contracts/:id/signature-requests ─────────────────────────────
   app.get<{ Params: { id: string } }>(
     '/contracts/:id/signature-requests',
-    { preHandler: requireAuth },
+    // X7 — was requireAuth only (no permission check at all). With view:contract
+    // the own-scope guard applies too.
+    { preHandler: requirePermission('view', 'contract') },
     async (req, reply) => {
       const { id } = req.params
       const { orgId } = req.user

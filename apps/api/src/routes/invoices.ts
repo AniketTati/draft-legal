@@ -13,13 +13,14 @@
  *   POST  /api/v1/invoices/:id/rematch    — re-run auto-matcher
  *   GET   /api/v1/invoices/stats          — header KPIs
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { fireWebhook } from '../lib/webhook-events.js'
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const CreateSchema = z.object({
   contractId:    z.string().optional(),  // optional manual link
@@ -186,7 +187,22 @@ async function autoMatchInvoice(orgId: string, invoice: {
   return null
 }
 
+/**
+ * X7 — own-scope callers see the invoices on contracts they own, plus unlinked
+ * invoices they entered themselves; never another rep's contract title,
+ * counterparty or matched obligation.
+ */
+function ownInvoiceWhere(userId: string) {
+  return { OR: [{ contract: { is: { ownerId: userId } } }, { contractId: null, createdById: userId }] }
+}
+const ownInvoiceScope = (req: FastifyRequest) => req.permissionScope === 'own' ? [ownInvoiceWhere(req.user.sub)] : []
+
 export async function invoiceRoutes(app: FastifyInstance) {
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.invoice.count({ where: { id, orgId: req.user.orgId, ...ownInvoiceWhere(req.user.sub) } })) > 0,
+    'Invoice not found',
+  ))
+
   // ── POST / — create + auto-match ─────────────────────────────────────
   app.post('/', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     let body
@@ -265,7 +281,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
 
-    const where: Record<string, unknown> = { orgId }
+    const where: Record<string, unknown> = { orgId, AND: ownInvoiceScope(req) }
     if (q.status !== 'all') where.status = q.status
     if (q.contractId)       where.contractId = q.contractId
     if (q.vendor)           where.vendorName = { contains: q.vendor, mode: 'insensitive' }
@@ -295,15 +311,16 @@ export async function invoiceRoutes(app: FastifyInstance) {
   // ── GET /stats ────────────────────────────────────────────────────────
   app.get('/stats', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
+    const AND = ownInvoiceScope(req)
     const [pending, matched, reconciled, disputed] = await Promise.all([
-      prisma.invoice.count({ where: { orgId, status: 'PENDING' } }),
-      prisma.invoice.count({ where: { orgId, status: 'MATCHED' } }),
-      prisma.invoice.count({ where: { orgId, status: 'RECONCILED' } }),
-      prisma.invoice.count({ where: { orgId, status: 'DISPUTED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'PENDING' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'MATCHED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'RECONCILED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'DISPUTED' } }),
     ])
     // Total invoiced amount in pending+matched buckets
     const open = await prisma.invoice.findMany({
-      where: { orgId, status: { in: ['PENDING', 'MATCHED'] } },
+      where: { orgId, AND, status: { in: ['PENDING', 'MATCHED'] } },
       select: { amount: true, currency: true },
       take: 5_000,
     })

@@ -19,7 +19,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { prisma } from '../lib/prisma.js'
 
 // Wave 1.7 — matters group contracts; there is no dedicated MATTER permission
@@ -48,6 +48,9 @@ export async function matterRoutes(app: FastifyInstance) {
   // ── GET /api/v1/matters ────────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
+    // X7 — counts cover only what the caller can open (as GET /:id does).
+    const own = req.permissionScope === 'own'
+    const requestScope = await permissionScopeFor(req, 'view', 'request')
     const q = z.object({
       status:  z.enum([...MATTER_STATUSES, 'all']).default('all'),
       ownerId: z.string().optional(),
@@ -70,7 +73,11 @@ export async function matterRoutes(app: FastifyInstance) {
         owner: { select: { id: true, name: true, email: true } },
         counterparty: { select: { id: true, name: true } },
         _count: {
-          select: { contracts: true, requests: true, threads: true },
+          select: {
+            contracts: own ? { where: { ownerId: req.user.sub } } : true,
+            requests:  requestScope === 'own' ? { where: { requestedById: req.user.sub } } : requestScope ? true : { where: { id: { in: [] as string[] } } },
+            threads:   own ? { where: { userId: req.user.sub } } : true,
+          },
         },
       },
     })
@@ -100,13 +107,18 @@ export async function matterRoutes(app: FastifyInstance) {
   app.get('/:id', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
     const { id } = req.params as { id: string }
+    // Requests follow their own permission (view:request): own-scope callers
+    // see the ones they raised; a role without it sees none.
+    const requestScope = await permissionScopeFor(req, 'view', 'request')
     const matter = await prisma.matter.findFirst({
       where: { id, orgId, deletedAt: null },
       include: {
         owner: { select: { id: true, name: true, email: true, avatarUrl: true } },
         counterparty: { select: { id: true, name: true, website: true } },
+        // X7 — an own-scope caller sees only their own contracts in the matter,
+        // and only their own chat threads (a thread id is a way into its content).
         contracts: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, type: true, status: true,
@@ -116,7 +128,10 @@ export async function matterRoutes(app: FastifyInstance) {
           },
         },
         requests: {
-          where: { deletedAt: null },
+          where: {
+            deletedAt: null,
+            ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }),
+          },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true, requestNumber: true, title: true, type: true,
@@ -125,7 +140,7 @@ export async function matterRoutes(app: FastifyInstance) {
           },
         },
         threads: {
-          where: { archivedAt: null },
+          where: { archivedAt: null, ...(req.permissionScope === 'own' ? { userId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, scopeType: true, scopeId: true,
@@ -215,7 +230,9 @@ export async function matterRoutes(app: FastifyInstance) {
 
   // ── POST /api/v1/matters/:id/attach — link a contract/request/thread ──
   app.post('/:id/attach', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
-    const { orgId } = req.user
+    const { orgId, sub: userId } = req.user
+    // X7 — an own-scope editor attaches only what it owns.
+    const own = req.permissionScope === 'own'
     const { id } = req.params as { id: string }
     const body = z.object({
       kind: z.enum(['contract', 'request', 'thread']),
@@ -238,17 +255,17 @@ export async function matterRoutes(app: FastifyInstance) {
     let result: { count: number }
     if (body.data.kind === 'contract') {
       result = await prisma.contract.updateMany({
-        where: { id: body.data.entityId, orgId, deletedAt: null },
+        where: { id: body.data.entityId, orgId, deletedAt: null, ...(own ? { ownerId: userId } : {}) },
         data:  { matterId: id },
       })
     } else if (body.data.kind === 'request') {
       result = await prisma.contractRequest.updateMany({
-        where: { id: body.data.entityId, orgId, deletedAt: null },
+        where: { id: body.data.entityId, orgId, deletedAt: null, ...(own ? { requestedById: userId } : {}) },
         data:  { matterId: id },
       })
     } else {
       result = await prisma.agentThread.updateMany({
-        where: { id: body.data.entityId, orgId },
+        where: { id: body.data.entityId, orgId, ...(own ? { userId } : {}) },
         data:  { matterId: id },
       })
     }

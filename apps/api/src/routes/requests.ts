@@ -9,9 +9,16 @@ import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/type
 import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
-
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 export async function requestRoutes(app: FastifyInstance) {
+  // X7 — the list honoured `own` (requestedById) but GET/PATCH/convert by id
+  // did not, so a SALES_REP could read any request in the org.
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.contractRequest.count({ where: { id, orgId: req.user.orgId, requestedById: req.user.sub } })) > 0,
+    'Request not found',
+  ))
+
   // GET /api/v1/requests
   app.get('/', { preHandler: requirePermission('view', 'request') }, async (req, reply) => {
     const query = req.query as { status?: string; cursor?: string; limit?: string; search?: string }

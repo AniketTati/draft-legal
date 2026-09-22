@@ -54,3 +54,15 @@ export function requirePermission(action: string, resource: string) {
     req.permissionScope = result.scope
   }
 }
+
+/**
+ * The scope an already-authenticated caller holds for action:resource, or null
+ * when not granted — evaluated exactly as requirePermission does. For routes
+ * that return several kinds of record under one gate (the dashboard, a
+ * matter's requests) and must narrow each by its own permission (X7).
+ */
+export async function permissionScopeFor(req: FastifyRequest, action: string, resource: string): Promise<string | null> {
+  if (req.user.sub === 'system') return 'org'
+  const permissions = req.user.apiPermissions ?? await getPermissionsForRoles(req.user.orgId, req.user.roles)
+  return evaluatePermission(permissions, action, resource).scope
+}

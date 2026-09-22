@@ -36,6 +36,7 @@ import { z } from 'zod'
 // Wave 1.7 — this router mutates AI-extracted contract fields (keyTerms /
 // metadata) on verify/reject, so it must be RBAC-gated, not requireAuth-only.
 import { requirePermission } from '../middleware/permissions.js'
+import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import { prisma } from '../lib/prisma.js'
 import { reindexContract } from '../lib/elasticsearch.js'
 
@@ -112,6 +113,8 @@ function valueOfField(contract: Record<string, unknown>, field: string): string 
 }
 
 export async function reviewQueueRoutes(app: FastifyInstance) {
+  // X7 — verify/reject name the contract `:contractId`; own scope must own it.
+  guardOwnScopeContractRoutes(app, /\/:contractId(\/|$)/, 'contractId')
 
   // ── GET /api/v1/review-queue ────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
@@ -129,6 +132,8 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       // a still-PENDING contract.
       analysisStatus: { in: ['DONE', 'INDEXING'] },
       fieldConfidence: { not: {} },
+      // X7 — own-scope callers review only the contracts they own.
+      ...ownContractWhere(req),
     }
     if (q.contractId) where.id = q.contractId
 

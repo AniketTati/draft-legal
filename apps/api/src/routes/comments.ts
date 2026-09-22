@@ -8,8 +8,11 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
 export async function commentRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
 
   // ── List comments for a contract ──────────────────────────────────────────
   app.get('/:id/comments', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {

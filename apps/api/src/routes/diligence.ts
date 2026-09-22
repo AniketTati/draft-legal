@@ -29,6 +29,7 @@ import { AuditAction } from '@clm/types'
 import { queueParseDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, CONTRACT_DOCUMENT_TYPES } from '../lib/file-type.js'
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const CreateRoomSchema = z.object({
   name:        z.string().min(1).max(200),
@@ -46,6 +47,13 @@ const PatchRoomSchema = z.object({
 const MAX_FILES_PER_UPLOAD = 50
 
 export async function diligenceRoutes(app: FastifyInstance) {
+  // X7 — an own-scope caller (view:contract at `own`) sees only the rooms it
+  // created: the room, its documents, results and export.
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.diligenceRoom.count({ where: { id, orgId: req.user.orgId, createdById: req.user.sub } })) > 0,
+    'Diligence room not found',
+  ))
+
   // ── POST / — create room ─────────────────────────────────────────────
   app.post('/', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     let body
@@ -74,7 +82,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
     const rooms = await prisma.diligenceRoom.findMany({
-      where: { orgId, deletedAt: null },
+      where: { orgId, deletedAt: null, ...(req.permissionScope === 'own' ? { createdById: req.user.sub } : {}) },
       orderBy: { updatedAt: 'desc' },
       take: 200,
       include: {

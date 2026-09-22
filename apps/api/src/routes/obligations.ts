@@ -18,7 +18,7 @@
  *     KPI counts: open, due-soon, overdue, completed (last 30d). Used
  *     by the page header.
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
@@ -30,6 +30,7 @@ import { AuditAction } from '@clm/types'
 import { buildCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { checkUpload, servableContentType, EVIDENCE_TYPES } from '../lib/file-type.js'
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const ListSchema = z.object({
   status:     z.enum(['OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
@@ -46,7 +47,18 @@ const ListSchema = z.object({
   offset:     z.coerce.number().int().min(0).default(0),
 })
 
+/** X7 — own-scope callers see only the obligations of contracts they own. */
+function ownObligationWhere(req: FastifyRequest): { contract?: { is: { ownerId: string } } } {
+  return req.permissionScope === 'own' ? { contract: { is: { ownerId: req.user.sub } } } : {}
+}
+
 export async function obligationRoutes(app: FastifyInstance) {
+  // X7 — by id, an own-scope caller must own the obligation's contract.
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.obligation.count({ where: { id, orgId: req.user.orgId, contract: { is: { ownerId: req.user.sub } } } })) > 0,
+    'Obligation not found',
+  ))
+
   // ── GET / ──────────────────────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     let q
@@ -56,7 +68,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
 
-    const where: Record<string, unknown> = { orgId }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req) }
     if (q.status !== 'all') where.status = q.status
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
@@ -138,7 +150,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid query', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId } = req.user
-    const where: Record<string, unknown> = { orgId }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req) }
     if (q.status !== 'all') where.status = q.status
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
@@ -197,16 +209,18 @@ export async function obligationRoutes(app: FastifyInstance) {
     const dueSoonHorizon = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000)
     const recentCompletedSince = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
+    const own = ownObligationWhere(req)
+
     const [open, dueSoon, overdue, completedRecent] = await Promise.all([
-      prisma.obligation.count({ where: { orgId, status: 'OPEN' } }),
+      prisma.obligation.count({ where: { orgId, ...own, status: 'OPEN' } }),
       prisma.obligation.count({
-        where: { orgId, status: 'OPEN', dueDate: { gte: now, lte: dueSoonHorizon } },
+        where: { orgId, ...own, status: 'OPEN', dueDate: { gte: now, lte: dueSoonHorizon } },
       }),
       prisma.obligation.count({
-        where: { orgId, status: 'OPEN', dueDate: { lt: now, not: null } },
+        where: { orgId, ...own, status: 'OPEN', dueDate: { lt: now, not: null } },
       }),
       prisma.obligation.count({
-        where: { orgId, status: 'COMPLETED', completedAt: { gte: recentCompletedSince } },
+        where: { orgId, ...own, status: 'COMPLETED', completedAt: { gte: recentCompletedSince } },
       }),
     ])
 

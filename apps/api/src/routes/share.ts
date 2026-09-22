@@ -12,6 +12,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { resolveSecret } from '../lib/secrets.js'
 import { sendShareLinkEmail } from '../lib/share-email.js'
+import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
 // Portal tokens are signed with PORTAL_JWT_SECRET, isolated from the user
 // JWT_SECRET. Resolved lazily + cached; production fails closed if missing/
@@ -49,6 +50,8 @@ export function verifyPortalToken(token: string): PortalTokenPayload {
 }
 
 export async function shareRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
 
   // ── Create a share link ───────────────────────────────────────────────────
   app.post('/:id/share', { preHandler: requirePermission('configure', 'contract') }, async (req, reply) => {
