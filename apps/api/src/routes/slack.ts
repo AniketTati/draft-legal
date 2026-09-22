@@ -44,7 +44,7 @@ export async function slackRoutes(app: FastifyInstance) {
   async function authenticate(req: SlackRequest, teamId: string | undefined) {
     // Slack signs the raw urlencoded body; a request without one (sent as
     // another content type) has nothing to verify.
-    if (!teamId || req.rawBody === undefined) return null
+    if (typeof teamId !== 'string' || !teamId || req.rawBody === undefined) return null
     const timestamp = String(req.headers['x-slack-request-timestamp'] ?? '')
     const signature = String(req.headers['x-slack-signature'] ?? '')
     // X6 — the org is the one whose signing secret signed this request. One
@@ -116,6 +116,7 @@ export async function slackRoutes(app: FastifyInstance) {
     }
     try { payload = JSON.parse(body.payload ?? '{}') }
     catch { return reply.status(400).send({ detail: 'invalid payload' }) }
+    if (!payload || typeof payload !== 'object') return reply.status(400).send({ detail: 'invalid payload' })
 
     const auth = await authenticate(req as SlackRequest, payload.team?.id)
     if (!auth) return reply.status(401).send({ detail: 'invalid Slack signature or unconnected workspace' })

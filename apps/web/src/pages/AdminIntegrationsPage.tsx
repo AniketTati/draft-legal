@@ -1102,7 +1102,7 @@ function SlackSection() {
               <dt className="text-ink-500">Workspace ownership</dt>
               {/* X6 — Slack confirmed the bot token belongs to this workspace, so no other org's claim on the same team ID can take its requests. */}
               <dd className={data.teamVerified ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
-                {data.teamVerified ? 'verified by the bot token' : 'unverified — add the bot token so no other org can claim this workspace'}
+                {data.teamVerified ? 'verified by the bot token' : 'unverified — reconnect with the bot token so no other org can claim this workspace'}
               </dd>
             </div>
             {data.configuredAt && (

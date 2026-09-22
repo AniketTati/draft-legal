@@ -73,7 +73,10 @@ export async function findOrgsBySlackTeam(teamId: string): Promise<Array<{ orgId
     SELECT id, settings -> 'slack' AS slack
     FROM   organizations
     WHERE  settings -> 'slack' ->> 'teamId' = ${teamId}
-    ORDER  BY (settings -> 'slack' ->> 'teamVerified') = 'true' DESC NULLS LAST, "createdAt" ASC
+    -- A config saved before verification existed has no flag: it ranks as
+    -- unverified (by age), not behind every new claim. Compare the JSON value,
+    -- so only a real boolean true counts.
+    ORDER  BY COALESCE(settings -> 'slack' -> 'teamVerified' = 'true'::jsonb, false) DESC, "createdAt" ASC
     LIMIT  20`
   return rows
     .map(row => ({ orgId: row.id, config: row.slack as SlackOrgConfig }))

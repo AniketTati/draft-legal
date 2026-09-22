@@ -458,9 +458,17 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - bot-token verification (match, other workspace, rejected), against a mocked `auth.test`.
     - Against the pre-fix code, 7 fail.
     - Suite: typecheck (api and web) 0, lint 0 errors.
-    - A fresh subagent reviewed the first cut. Its three findings (cap fill, malformed-secret 500, HMAC amplification) and one info item (empty raw body) are fixed above. It confirmed a squatter can never receive another org's traffic, and that interactions are scoped to the resolved org. A second pass on this design runs after the commit.
+    - A fresh subagent reviewed the first cut. Its three findings (cap fill, malformed-secret 500, HMAC amplification) and one info item (empty raw body) are fixed above. It confirmed a squatter can never receive another org's traffic, and that interactions are scoped to the resolved org.
+    - A second pass on the verification design (follow-up commit):
+      - Configs saved before X6 had no flag, and SQL `NULLS LAST` put them behind every new claim. Twenty fresh orgs could knock any existing install offline. They now rank as unverified, by age, and only a JSON `true` counts.
+      - A non-string `team.id` in `/interactions` (a 500 that reached error tracking) is refused.
+      - `scripts/backfill-slack-verification.ts` verifies configs that already hold a bot token.
+      - The admin hint says to reconnect with the bot token, because the connected view has no edit form.
+      - Tests 10/10; the two new cases fail before the follow-up.
+  - **Deploy:** run `scripts/backfill-slack-verification.ts --fix` once, so existing installs with a bot token are verified.
   - **Left as is:**
     - An org without a bot token stays displaceable by 20 older unverified claims. The admin page now says so and how to fix it.
+    - Any bot token for a workspace verifies claims on it. A member of the victim's own Slack workspace who can install apps could therefore create verified claims. That is insider-level, and still no data crosses.
     - Per-org request URLs would remove the team-id lookup entirely, but that is a Slack-app configuration change for every existing install.
   - Original note: `PUT /integrations/slack` does not check collisions and `lib/slack.ts` `findOrgBySlackTeam` uses `findFirst` with no ordering, so one org can claim another's team id and break its Slack integration (DoS, no data crossing). (Found in S1 review.)
 - **X7 — REST ignores `own` scope outside the contract list (High). — DONE.**
@@ -744,4 +752,5 @@ X11 — DONE — every Gotenberg render goes through one sanitiser (bounded pars
 X6 — DONE — Slack requests resolve to the org whose secret verifies them, verified (bot-token) claims first; malformed rows and non-urlencoded bodies can't break or bypass it — 6079b64
 X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidates, skips oversized ones instead of refusing the email — 4e7a90e
 X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — 6412597
-X10 — DONE — agent write tools respect own scope on apply and undo (incl. created records); replies can't be filed under another contract's comment — (sha: X10)
+X10 — DONE — agent write tools respect own scope on apply and undo (incl. created records); replies can't be filed under another contract's comment — f5964ec
+X6 (follow-up) — DONE — pre-X6 Slack configs rank as unverified by age (not last); non-string team ids refused; backfill script for existing bot tokens — (sha: X6f)

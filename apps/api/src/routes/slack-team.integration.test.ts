@@ -14,12 +14,11 @@ import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, pr
 let app: TestApp
 const TEAM = `T-X6-${Date.now()}`
 
-async function slackOrg(name: string, secret: unknown, contractTitle: string, team = TEAM, teamVerified = false) {
+async function slackOrg(name: string, secret: unknown, contractTitle: string, team = TEAM, teamVerified: boolean | 'legacy' = false) {
   const org = await makeOrg(name)
-  await prisma.organization.update({
-    where: { id: org },
-    data: { settings: { slack: { teamId: team, signingSecret: secret, configuredAt: new Date().toISOString(), teamVerified } } as never },
-  })
+  const slack: Record<string, unknown> = { teamId: team, signingSecret: secret, configuredAt: new Date().toISOString() }
+  if (teamVerified !== 'legacy') slack.teamVerified = teamVerified   // a pre-X6 config has no flag at all
+  await prisma.organization.update({ where: { id: org }, data: { settings: { slack } as never } })
   await makeContract(org, await makeUser(org), { title: contractTitle })
   return org
 }
@@ -98,6 +97,33 @@ describe('a verified owner cannot be crowded out', () => {
     const res = await command('owner-secret', 'search Zeta', VTEAM)
     expect(res.statusCode).toBe(200)
     expect(res.body).toContain('Owner Contract Zeta')
+  })
+
+  it('a config saved before verification existed ranks by age, not behind every new claim', async () => {
+    const LTEAM = `T-X6L-${Date.now()}`
+    await slackOrg('X6 Legacy Owner', 'legacy-secret', 'Legacy Contract Theta', LTEAM, 'legacy')
+    for (let i = 0; i < 20; i++) await slackOrg(`X6 New Squatter ${i}`, `new-squat-${i}`, `NewSquat ${i}`, LTEAM)
+    const res = await command('legacy-secret', 'search Theta', LTEAM)
+    expect(res.statusCode).toBe(200)
+    expect(res.body).toContain('Legacy Contract Theta')
+  })
+
+  it('an interaction naming its team as a non-string is refused, not a 500', async () => {
+    for (const team of [123, { id: 'x' }, ['T1'], true]) {
+      const body = new URLSearchParams({ payload: JSON.stringify({ type: 'block_actions', team: { id: team } }) }).toString()
+      const ts = String(Math.floor(Date.now() / 1000))
+      const sig = `v0=${crypto.createHmac('sha256', 'real-secret').update(`v0:${ts}:${body}`).digest('hex')}`
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/slack/interactions', payload: body,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-slack-request-timestamp': ts, 'x-slack-signature': sig },
+      })
+      expect(res.statusCode, JSON.stringify(team)).toBe(401)
+    }
+    const nullPayload = await app.inject({
+      method: 'POST', url: '/api/v1/slack/interactions', payload: 'payload=null',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    })
+    expect(nullPayload.statusCode).toBe(400)
   })
 
   it('a malformed row doesn\'t take the team down for everyone', async () => {
