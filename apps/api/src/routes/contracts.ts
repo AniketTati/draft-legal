@@ -419,7 +419,11 @@ export async function contractRoutes(app: FastifyInstance) {
         mimeType = part.mimetype
         filename = part.filename
       } else {
-        const val = (part as any).value as string
+        const val = (part as any).value as unknown
+        // X20 — form fields are text. A part sent as application/json arrives
+        // as an object, which a Prisma where clause reads as a FILTER (so a
+        // parent check could match any contract).
+        if (typeof val !== 'string') continue
         if (part.fieldname === 'title') title = val
         if (part.fieldname === 'type') type = val
         if (part.fieldname === 'counterpartyName') counterpartyName = val
@@ -429,6 +433,17 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
+
+    // X20 — a parent link must name a live contract of this org (one the
+    // caller owns, for own scope, as the /:id/amendments guard requires).
+    // It was stored unchecked, and the parent's family view then listed this
+    // contract — across orgs, too.
+    if (parentContractId) {
+      const parent = await prisma.contract.count({
+        where: { id: parentContractId, orgId, deletedAt: null, ...ownContractWhere(req) },
+      })
+      if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
+    }
 
     // Wave 1.8 — validate the upload by MAGIC BYTES, not the client-declared
     // mimetype (which is spoofable). A user could otherwise store HTML/SVG/
@@ -1494,10 +1509,10 @@ export async function contractRoutes(app: FastifyInstance) {
         parentContractId: true,
         relationshipType: true,
         parentContract: {
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true },
         },
         amendments: {
-          where: { deletedAt: null, ...ownContractWhere(req) },
+          where: { deletedAt: null, orgId, ...ownContractWhere(req) },
           select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
@@ -1508,7 +1523,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     // X7 — an own-scope caller sees only the relatives it owns.
     const p = contract.parentContract
-    const parent = p && (req.permissionScope !== 'own' || p.ownerId === req.user.sub)
+    const parent = p && p.orgId === orgId && !p.deletedAt && (req.permissionScope !== 'own' || p.ownerId === req.user.sub)
       ? { id: p.id, title: p.title, type: p.type, status: p.status, relationshipType: p.relationshipType }
       : null
 

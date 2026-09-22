@@ -696,7 +696,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - A misconfigured custom role with own-scope view but org-scope edit gets matches org-wide on create and rematch, because the scope comes from `edit:contract`.
     - An own-scope rematch that finds nothing unlinks the invoice, as rematch always has. That loses a link but exposes nothing.
   - Original note: The create route stores `body.contractId` without checking its org, and the 201 response includes that contract's title and counterparty. Validate the contract against the caller's org (and ownership for own scope). For own scope, limit the auto-matcher to the caller's contracts, in both create and `/:id/rematch`. (Found in X7 review; confirmed.)
-- **X20 — Upload accepts any `parentContractId` (Medium). — IN-PROGRESS.**
+- **X20 — Upload accepts any `parentContractId` (Medium). — DONE.**
   - **Plan:**
     - Confirmed: `POST /contracts/upload` stores the form's `parentContractId` unchecked. It is the only client-supplied parent id; binder splits and `/amendments` set it server-side.
     - `/contracts/:id/family`'s children and parent aren't filtered by org, so a cross-org link shows the other org's contract.
@@ -705,6 +705,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - The family view filters children and parent by org.
       - Repair migration `20260923020000_unlink_cross_org_parents` clears existing cross-org parent links.
     - Test: `routes/contract-parent-link.integration.test.ts`, with S3 mocked as in the upload tests.
+  - **What changed:**
+    - `POST /contracts/upload` accepts a parent only when it is a live contract of the caller's org, owned for own scope (else 404 and nothing is stored). Form fields must be text: a part sent as JSON arrived as an object, which a Prisma `where` reads as a filter.
+    - `/contracts/:id/family` filters children and parent by org, and hides a deleted parent.
+    - Migration `20260923020000_unlink_cross_org_parents` clears cross-org parent links, and their `relationshipType`.
+  - **Verification:**
+    - `routes/contract-parent-link.integration.test.ts` has 7 cases: cross-org, other rep, JSON-typed field, own-scope positive, same-org positive, deleted parent, and cross-org child and parent in family plus the migration SQL. Against the pre-fix code, 5 fail; the two positives are the controls.
+    - A fresh subagent reviewed this adversarially with 14 probes. No other path sets a parent from client input, and `/:id/family` is the only reader that follows the link. Its findings are fixed above (JSON-typed field, deleted parent, `relationshipType`), and it found X25 and X26.
   - Original note: `POST /contracts/upload` stores the form's `parentContractId` unchecked. A user in org B can file an upload as an amendment of an org-A contract; org A's `/contracts/:id/family` then lists org B's contract (title, type, status), because the relation isn't org-filtered. Validate the parent against the caller's org (and ownership for own scope, as the guard now does for `/amendments`), and filter the family query by `orgId`. (Found while fixing X7.)
 - **X21 — Own-scope follow-ups (Low).** Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
@@ -715,6 +722,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
   - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
 - **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium).** `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
+- **X25 — Matters take other orgs' ids (Medium).**
+  - `PATCH /contracts/:id` accepts any `matterId` (`schemas.ts:92`, `contracts.ts`). `GET /matters/:id` then lists the contract without an org filter, and the list's count includes it. `/:id/amendments` copies the foreign `matterId` onto new amendments.
+  - `POST` / `PATCH /matters` accept another org's `counterpartyId` or `ownerId` (`matters.ts:37,43,170,203`). The matter view then returns that org's counterparty name and website, and the user's name, email and avatar.
+  - Check each id against the caller's org, and filter the matter's includes by org. (Found in X20 review; both confirmed.)
+- **X26 — Binder re-split deletes whatever `metadata._splitInto` names (Low).** `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
 ---
 
 ## Run log
@@ -753,4 +765,5 @@ X6 — DONE — Slack requests resolve to the org whose secret verifies them, ve
 X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidates, skips oversized ones instead of refusing the email — 4e7a90e
 X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — 6412597
 X10 — DONE — agent write tools respect own scope on apply and undo (incl. created records); replies can't be filed under another contract's comment — f5964ec
-X6 (follow-up) — DONE — pre-X6 Slack configs rank as unverified by age (not last); non-string team ids refused; backfill script for existing bot tokens — (sha: X6f)
+X6 (follow-up) — DONE — pre-X6 Slack configs rank as unverified by age (not last); non-string team ids refused; backfill script for existing bot tokens — 69d23eb
+X20 — DONE — upload parent must be a live, visible same-org contract (text field only); family view org-filtered, deleted parent hidden; repair migration — (sha: X20)
