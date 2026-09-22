@@ -20,7 +20,17 @@ validates both.
 from __future__ import annotations
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# The one variant vocabulary: redline_propose returns it, the Node apply
+# route's schema accepts only it, and the UI labels it (Least / Moderate /
+# Aggressive). This description used to say 'conservative', so a model that
+# followed it got a 400 from the apply route (C9).
+AGGRESSION_LEVELS = ("least", "moderate", "aggressive")
+_AGGRESSION_SYNONYMS = {
+    "conservative": "least", "minimal": "least", "light": "least", "lightest": "least",
+    "balanced": "moderate", "medium": "moderate",
+}
 
 
 class RedlineApplyArgs(BaseModel):
@@ -32,9 +42,23 @@ class RedlineApplyArgs(BaseModel):
     )
     aggression: str | None = Field(
         None,
-        description="Which variant was chosen: 'conservative' | 'moderate' | 'aggressive'.",
+        description=(
+            "Which variant was chosen: 'least' | 'moderate' | 'aggressive' — the "
+            "`aggression` value of that variant in the redline_propose result."
+        ),
     )
     rationale: str | None = Field(None, max_length=2000, description="Why this rewrite, in one sentence, for the audit trail.")
+
+    @field_validator("aggression", mode="before")
+    @classmethod
+    def _one_vocabulary(cls, v: object) -> str | None:
+        if v is None or v == "":
+            return None
+        key = str(v).strip().lower()
+        key = _AGGRESSION_SYNONYMS.get(key, key)
+        if key not in AGGRESSION_LEVELS:
+            raise ValueError(f"aggression must be one of {', '.join(AGGRESSION_LEVELS)}")
+        return key
 
 
 def build_redline_apply(_org_id: str, _user_id: str | None = None) -> StructuredTool:

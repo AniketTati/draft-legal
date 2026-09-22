@@ -237,11 +237,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C9 — `redline_apply` sends a variant name the API rejects
 
-- **Status:** TODO
+- **Status:** DONE
 - **Severity:** Medium
 - **Evidence:** `apps/agents/app/tools/redline_apply.py` tells the model to pass `'conservative'`, but the Node schema accepts only `least | moderate | aggressive`, so the call 400s. The UI labels the same tier "least".
 - **Acceptance criteria:** one vocabulary across the Python tool, the Node schema and the UI labels; a test or probe covers applying each variant.
 - **Worklog:**
+  - **Plan (confirmed defect):** `apps/agents/app/tools/redline_apply.py:35` tells the model the variants are `'conservative' | 'moderate' | 'aggressive'`. The Node schema (`internal-ai.ts:590`, `z.enum(['least','moderate','aggressive'])`), `redline_propose`'s own output (`aggression: 'least'|…`), `assist.py`, `clause-propose-batch.ts`, `queue.ts` and the UI (`RedlinePreview.tsx`) all use `least`. So a model following the tool description sends `conservative` and the apply 400s. Approach: the one vocabulary is `least | moderate | aggressive`, as everything but this one description already uses. The Python tool states it and validates it at the tool boundary, normalising the obvious synonyms (`conservative`/`minimal`/`light` → `least`, `balanced`/`medium` → `moderate`) so a stale prompt still lands, and returning a clear error for anything else. Node stays strict. Tests: `routes/redline-apply.integration.test.ts` applies each variant through `/internal/ai/tools/redline_apply` (new version created, text spliced, `aggression` recorded) and shows `conservative` is refused; a source tripwire in `lib/agents-internal-headers.test.ts`'s sibling checks that the Python tool's vocabulary equals the Node enum.
+  - **Plan review:** fixing the caller keeps a single, already-dominant vocabulary. Adding `conservative` to Node would create a second one. Normalising in Python costs nothing and protects against model drift. No permission or tenancy change; the apply path still goes through `checkToolPermission` and a confirmation card.
+  - **Changed:** `apps/agents/app/tools/redline_apply.py`: `AGGRESSION_LEVELS = ("least", "moderate", "aggressive")`. The description now tells the model to pass the chosen variant's own `aggression` value. A pydantic `field_validator` normalises obvious synonyms (`conservative`/`minimal`/`light` → `least`, `balanced`/`medium` → `moderate`) and rejects anything else with the allowed list. The tool uses `args_schema=RedlineApplyArgs`, so LangChain runs the validator. Node and the UI were already `least|moderate|aggressive` and are unchanged.
+  - **Verified:** `routes/redline-apply.integration.test.ts` (4) applies **each variant** through `/internal/ai/tools/redline_apply`: a new v2 with the proposed text spliced in and `metadata.redline.aggression` recorded. `conservative` is refused with a 400, the failure the old tool description caused. `lib/redline-vocabulary.test.ts` (3, source tripwire): **2 of 3 fail on the old `redline_apply.py`**, all pass now; it asserts the Python tuple equals the Node enum and that the UI uses the same three. Python compiles. The validator was not executed at runtime (no agent deps locally); the tripwire pins the vocabulary it enforces. Full suite: typecheck, lint (0 errors), api unit 182/182, api integration 64/64.
+
 
 ## C10 — Binder re-split duplicates children, and DOCX binders fail opaquely
 
@@ -356,4 +361,5 @@ C4 — DONE — PATCH /contracts/:id merges metadata (null deletes); re-analysis
 C5 — VERIFY-PENDING — corrections write through to columns (+ES); reject clears; queue in nav + linked from contract; needs a visual check — 39a3f2a
 C6 — DONE — renewal scan alerts on the auto-renewal notice deadline (server-derived); /renewals and the page use the same function — d415565
 C7 — DONE — indexContract fills clauseFlags from the version on every path; flags POST re-indexes; facets + filters verified on real ES — 88e8d17
-C8 — VERIFY-PENDING — redline.py sends x-org-id + fetches /playbook/positions; empty successes become FAILED with a reason the panel shows; needs a live LLM run — (sha: C8)
+C8 — VERIFY-PENDING — redline.py sends x-org-id + fetches /playbook/positions; empty successes become FAILED with a reason the panel shows; needs a live LLM run — 31816bb
+C9 — DONE — redline_apply uses least|moderate|aggressive (synonyms normalised); each variant applies; vocabulary tripwire — (sha: C9)
