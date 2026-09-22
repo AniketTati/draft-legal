@@ -28,6 +28,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { queueParseDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
+import { checkUpload, CONTRACT_DOCUMENT_TYPES } from '../lib/file-type.js'
 
 const CreateRoomSchema = z.object({
   name:        z.string().min(1).max(200),
@@ -189,15 +190,31 @@ export async function diligenceRoutes(app: FastifyInstance) {
         for await (const chunk of part.file) chunks.push(chunk)
         files.push({
           buffer:   Buffer.concat(chunks),
-          mimeType: part.mimetype || 'application/pdf',
+          mimeType: part.mimetype,
           filename: part.filename || 'document.pdf',
         })
       }
     }
     if (files.length === 0) return reply.status(400).send({ detail: 'No files uploaded' })
+    // S3 — validate every file's bytes before storing any. A data room batch
+    // often holds a stray .doc or spreadsheet: skip those with a reason
+    // rather than failing the other 49. The detected type replaces the declared one.
+    const skipped: Array<{ filename: string; detail: string }> = []
+    const accepted: typeof files = []
+    for (const f of files) {
+      const checked = checkUpload(f.buffer, f.mimeType, CONTRACT_DOCUMENT_TYPES)
+      if (checked.ok) accepted.push({ ...f, mimeType: checked.mimeType })
+      else skipped.push({ filename: f.filename, detail: checked.detail })
+    }
+    if (accepted.length === 0) {
+      return reply.status(415).send({
+        detail: skipped.map(s => `${s.filename}: ${s.detail}`).join(' '),
+        skipped,
+      })
+    }
 
     const created = []
-    for (const f of files) {
+    for (const f of accepted) {
       const cleanTitle = f.filename
         .replace(/\.[^.]+$/, '')
         .replace(/[_\-]+/g, ' ')
@@ -268,7 +285,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
       orgId, userId,
       action: AuditAction.CONTRACT_UPLOADED,
       resourceType: 'diligence_room', resourceId: id,
-      metadata: { fileCount: files.length, source: 'diligence_upload' },
+      metadata: { fileCount: accepted.length, skippedCount: skipped.length, source: 'diligence_upload' },
     })
 
     // Bump the room's updatedAt so it floats to the top of the list.
@@ -276,7 +293,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
       where: { id }, data: { updatedAt: new Date() },
     })
 
-    return reply.status(201).send({ data: created, count: created.length })
+    return reply.status(201).send({ data: created, count: created.length, skipped })
   })
 
   // ── GET /:id/documents — list with extraction status ─────────────────

@@ -8,8 +8,8 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
 import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
+import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 
-const ALLOWED_MIME = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'])
 
 export async function requestRoutes(app: FastifyInstance) {
   // GET /api/v1/requests
@@ -98,13 +98,12 @@ export async function requestRoutes(app: FastifyInstance) {
         if (part.type === 'field') {
           fields[part.fieldname] = part.value as string
         } else if (part.type === 'file') {
-          if (!ALLOWED_MIME.has(part.mimetype)) {
-            await part.toBuffer() // drain
-            return reply.status(400).send({ detail: 'Only PDF and DOCX files are supported' })
-          }
           fileBuffer = await part.toBuffer()
+          // S3 — validate the bytes, not the declared mimetype.
+          const checked = checkUpload(fileBuffer, part.mimetype, PDF_OR_DOCX)
+          if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
           filename = part.filename
-          mimeType = part.mimetype
+          mimeType = checked.mimeType
         }
       }
 

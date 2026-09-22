@@ -863,6 +863,8 @@ export function ContractDetailPage() {
       return api.post(`/contracts/${id}/attach`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Attachment not added', { description: err.response?.data?.detail ?? 'Upload failed. Try again.' }),
   })
   const deleteAttachment = useMutation({
     mutationFn: (idx: number) => api.delete(`/contracts/${id}/attachments/${idx}`),

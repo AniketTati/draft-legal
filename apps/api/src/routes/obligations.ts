@@ -29,6 +29,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { buildCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
+import { checkUpload, servableContentType, EVIDENCE_TYPES } from '../lib/file-type.js'
 
 const ListSchema = z.object({
   status:     z.enum(['OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
@@ -258,7 +259,7 @@ export async function obligationRoutes(app: FastifyInstance) {
           const chunks: Buffer[] = []
           for await (const chunk of part.file) chunks.push(chunk)
           fileBuffer = Buffer.concat(chunks)
-          mimeType   = part.mimetype || 'application/octet-stream'
+          mimeType   = part.mimetype
           filename   = part.filename || 'evidence.bin'
         } else if (part.fieldname === 'note') {
           note = String((part as { value?: unknown }).value ?? '').slice(0, 4000)
@@ -276,6 +277,10 @@ export async function obligationRoutes(app: FastifyInstance) {
       if (fileBuffer.byteLength > 25 * 1024 * 1024) {
         return reply.status(413).send({ detail: 'Evidence file too large (25MB max)' })
       }
+      // S3 — the evidence is served back by presigned URL with the stored type.
+      const checked = checkUpload(fileBuffer, mimeType, EVIDENCE_TYPES)
+      if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+      mimeType = checked.mimeType
       evidenceS3Key = `${orgId}/obligations/${id}/${Date.now()}-${filename.replace(/[^\x20-\x7E]/g, '').slice(0, 200)}`
       await s3.send(new PutObjectCommand({
         Bucket: S3_BUCKET,
@@ -339,6 +344,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       Bucket: S3_BUCKET,
       Key:    o.evidenceS3Key,
       ResponseContentDisposition: `attachment; filename="${o.evidenceFilename ?? 'evidence'}"`,
+      ResponseContentType: servableContentType(o.evidenceMimeType),
     }), { expiresIn: 600 })
 
     return reply.send({ url, filename: o.evidenceFilename, mimeType: o.evidenceMimeType })

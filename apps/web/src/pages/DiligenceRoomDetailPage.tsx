@@ -118,10 +118,15 @@ export function DiligenceRoomDetailPage() {
       })
       return r.data
     },
-    onSuccess: () => {
+    onSuccess: (data: { skipped?: Array<{ filename: string; detail: string }> }) => {
       qc.invalidateQueries({ queryKey: ['diligence-room', id] })
       qc.invalidateQueries({ queryKey: ['diligence-results', id] })
-      setUploadError(null)
+      // Files the server could not accept (e.g. a legacy .doc) are skipped,
+      // not fatal — say which ones and why so they can be re-saved and re-added.
+      const skipped = data?.skipped ?? []
+      setUploadError(skipped.length
+        ? `Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'}: ${skipped.map(s => `${s.filename} — ${s.detail}`).join(' ')}`
+        : null)
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => {
       setUploadError(err.response?.data?.detail ?? 'Upload failed.')

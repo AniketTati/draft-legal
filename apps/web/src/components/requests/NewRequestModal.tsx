@@ -253,7 +253,10 @@ export function NewRequestModal({ onClose }: Props) {
           </div>
 
           {create.isError && (
-            <p className="text-dense text-risk-700">Failed to submit request. Please try again.</p>
+            <p className="text-dense text-risk-700">
+              {(create.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                ?? 'Failed to submit request. Please try again.'}
+            </p>
           )}
         </div>
 

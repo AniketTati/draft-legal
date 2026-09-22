@@ -42,6 +42,7 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { bareAddress, extractContractTag } from '../lib/email-address.js'
 import { AuditAction } from '@clm/types'
+import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 
 const InboundEmailSchema = z.object({
   to: z.string().min(1),
@@ -138,14 +139,11 @@ type MultipartPart =
   | { type: 'file';  fieldname: string; filename: string; mimetype: string; toBuffer: () => Promise<Buffer>; value?: undefined }
   | { type: 'field'; fieldname: string; value: unknown; filename?: undefined; mimetype?: undefined; toBuffer?: undefined }
 
-// Legacy 'application/msword' (.doc) is deliberately absent: the extraction
-// pipeline (lib/document.ts) has no OLE reader, so such an attachment would be
-// stored and then fail parsing. Better to skip it and report no usable
-// attachment than to land a version that can never be read or diffed.
-const ALLOWED_MIMES = new Set([
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-])
+// Attachments are chosen by content via checkUpload(…, PDF_OR_DOCX). Legacy
+// .doc is deliberately absent: the extraction pipeline (lib/document.ts) has no
+// OLE reader, so such an attachment would be stored and then fail parsing.
+// Better to skip it and report no usable attachment than to land a version
+// that can never be read or diffed.
 
 export async function inboundEmailRoutes(app: FastifyInstance) {
 
@@ -267,8 +265,14 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
       })
     }
 
-    // Pick the first attachment that's a contract document.
-    const pdfOrDocx = body.attachments.find(a => ALLOWED_MIMES.has(a.contentType.toLowerCase()))
+    // Pick the first attachment whose BYTES are a PDF/DOCX — the declared
+    // content type is sender-controlled (S3). The detected type is what we store.
+    let pdfOrDocx: (typeof body.attachments)[number] | undefined
+    let mimeType = ''
+    for (const a of body.attachments) {
+      const checked = checkUpload(Buffer.from(a.contentBase64, 'base64'), a.contentType, PDF_OR_DOCX)
+      if (checked.ok) { pdfOrDocx = a; mimeType = checked.mimeType; break }
+    }
     if (!pdfOrDocx) {
       return reply.status(400).send({
         error: 'No PDF or DOCX attachment found. We only attach PDF/DOCX as new versions.',
@@ -290,7 +294,7 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
         Bucket: S3_BUCKET,
         Key: s3Key,
         Body: buffer,
-        ContentType: pdfOrDocx.contentType,
+        ContentType: mimeType,
         Metadata: {
           'sender': senderEmail,
           'contract-id': contractId,
@@ -314,7 +318,7 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
         versionNumber: nextVersion,
         s3Key,
         fileSize: buffer.length,
-        mimeType: pdfOrDocx.contentType,
+        mimeType: mimeType,
         // email:<sender> attribution — same shape as portal:<linkId>.
         // The reader (e.g. NegotiationStatusStrip) treats both as
         // "from counterparty" by checking the prefix.
@@ -351,7 +355,7 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
       contractId,
       versionId:  version.id,
       s3Key,
-      mimeType:   pdfOrDocx.contentType,
+      mimeType:   mimeType,
       orgId:      contract.orgId,
       filename:   pdfOrDocx.filename,
     })

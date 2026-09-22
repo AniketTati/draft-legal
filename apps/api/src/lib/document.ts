@@ -60,18 +60,21 @@ export async function extractDocument(
   mimeType: string,
   filename: string,
 ): Promise<ExtractResult> {
-  if (mimeType === 'application/pdf' || filename.endsWith('.pdf')) {
+  // The stored type is detected from the bytes at upload; the filename is
+  // client-supplied, so it only decides when the type is unknown (legacy rows).
+  const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  const known = mimeType === 'application/pdf' || mimeType === DOCX || mimeType === 'text/plain'
+  const is = (type: string, ext: string) => mimeType === type || (!known && filename.endsWith(ext))
+
+  if (is('application/pdf', '.pdf')) {
     return extractPdf(buffer)
   }
 
-  if (
-    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    filename.endsWith('.docx')
-  ) {
+  if (is(DOCX, '.docx')) {
     return extractDocx(buffer)
   }
 
-  if (mimeType === 'text/plain' || filename.endsWith('.txt')) {
+  if (is('text/plain', '.txt')) {
     const text = buffer.toString('utf-8')
     return { plainText: text, htmlContent: `<pre>${text}</pre>`, mimeType: 'text/plain' }
   }

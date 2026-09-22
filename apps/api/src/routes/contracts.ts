@@ -25,6 +25,7 @@ import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
+import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import {
   CreateContractSchema,
   UpdateContractSchema,
@@ -428,31 +429,9 @@ export async function contractRoutes(app: FastifyInstance) {
     // back with an attacker-chosen Content-Type (content-confusion / stored
     // XSS). We sniff the real type and use it; text/plain is allowed only when
     // no binary signature is present. Everything else is rejected.
-    const detectBinaryType = (b: Buffer): string | null => {
-      if (b.subarray(0, 4).toString('latin1') === '%PDF') return 'application/pdf'
-      if (b.subarray(0, 4).toString('hex') === '504b0304') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' // DOCX (zip)
-      if (b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1') return 'application/msword' // legacy DOC (OLE)
-      return null
-    }
-    const detected = detectBinaryType(fileBuffer)
-    // Legacy .doc is detectable, but the extraction pipeline has no OLE reader
-    // (lib/document.ts handles PDF/DOCX/TXT and throws on anything else).
-    // Accepting it meant the upload succeeded and analysis then failed with an
-    // opaque "Unsupported file type" — reject up front with a fix instead.
-    if (detected === 'application/msword') {
-      return reply.status(415).send({
-        detail: 'Legacy .doc files are not supported. Open the file in Word, save it as .docx, and upload again.',
-      })
-    }
-    if (detected) {
-      mimeType = detected // trust the bytes, not the client
-    } else if ((mimeType === 'text/plain' || mimeType === '') && fileBuffer.length > 0) {
-      mimeType = 'text/plain'
-    } else {
-      return reply.status(415).send({
-        detail: 'Unsupported or mismatched file type. Allowed: PDF, DOCX, TXT.',
-      })
-    }
+    const checked = checkUpload(fileBuffer, mimeType, CONTRACT_DOCUMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType // trust the bytes, not the client
 
     // Clean filename → readable title
     const cleanFilename = filename
@@ -622,9 +601,12 @@ export async function contractRoutes(app: FastifyInstance) {
     const key = canonicalKey(version)
     if (!key) return reply.status(404).send({ detail: 'No file stored for this version' })
 
+    // Serve as an allowlisted type only: objects stored before upload
+    // validation (S3) may carry a client-declared text/html or SVG type.
+    const storedType = key === version?.renderedPdfKey ? 'application/pdf' : version?.mimeType
     const url = await getSignedUrl(
       s3,
-      new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
+      new GetObjectCommand({ Bucket: S3_BUCKET, Key: key, ResponseContentType: servableContentType(storedType) }),
       { expiresIn: 3600 },
     )
 
@@ -691,6 +673,10 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
+    // S3 — same content check as /upload: the version is parsed and served back.
+    const checked = checkUpload(fileBuffer, mimeType, CONTRACT_DOCUMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType
 
     const s3Key = `${orgId}/contracts/${id}/${Date.now()}-${filename}`
     await s3.send(new PutObjectCommand({
@@ -1692,6 +1678,10 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
+    // S3 — attachments are served back by presigned URL with the stored type.
+    const checked = checkUpload(fileBuffer, mimeType, ATTACHMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType
 
     const s3Key = `${orgId}/contracts/${id}/attachments/${Date.now()}-${filename}`
     await s3.send(new PutObjectCommand({
@@ -1769,6 +1759,7 @@ export async function contractRoutes(app: FastifyInstance) {
         Bucket: S3_BUCKET,
         Key: attachment.s3Key,
         ResponseContentDisposition: `attachment; filename="${attachment.filename}"`,
+        ResponseContentType: servableContentType(attachment.mimeType),
       }),
       { expiresIn: 300 },
     )

@@ -21,6 +21,7 @@ import { verifyPortalToken } from './share.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
+import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 
 async function resolvePortalToken(portalToken: string) {
   let payload
@@ -246,17 +247,14 @@ export async function portalRoutes(app: FastifyInstance) {
 
     const file = await (req as unknown as { file: () => Promise<{ filename: string; mimetype: string; toBuffer: () => Promise<Buffer> } | undefined> }).file()
     if (!file) return reply.status(400).send({ error: 'file is required' })
-    const allowedMime = new Set([
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    ])
-    if (!allowedMime.has(file.mimetype)) {
-      return reply.status(400).send({ error: 'Only .pdf or .docx files accepted' })
-    }
     const buffer = await file.toBuffer()
     if (buffer.length > 25 * 1024 * 1024) {
       return reply.status(413).send({ error: 'File too large (25MB limit)' })
     }
+    // S3 — validate the bytes; the declared mimetype is attacker-controlled.
+    const checked = checkUpload(buffer, file.mimetype, PDF_OR_DOCX)
+    if (!checked.ok) return reply.status(checked.status).send({ error: checked.detail })
+    const mimeType = checked.mimeType
 
     // Next version number for this contract
     const latest = await prisma.contractVersion.findFirst({
@@ -276,7 +274,7 @@ export async function portalRoutes(app: FastifyInstance) {
         Bucket: S3_BUCKET,
         Key: s3Key,
         Body: buffer,
-        ContentType: file.mimetype,
+        ContentType: mimeType,
         Metadata: {
           'uploaded-by': `portal:${link.id}`,
           'contract-id': payload.contractId,
@@ -296,7 +294,7 @@ export async function portalRoutes(app: FastifyInstance) {
         versionNumber: nextVersion,
         s3Key,
         fileSize:      buffer.length,
-        mimeType:      file.mimetype,
+        mimeType:      mimeType,
         createdById:   `portal:${link.id}`,
         changeNote:    `Uploaded by counterparty via portal (${file.filename})`,
       },
@@ -325,7 +323,7 @@ export async function portalRoutes(app: FastifyInstance) {
       contractId: payload.contractId,
       versionId:  version.id,
       s3Key,
-      mimeType:   file.mimetype,
+      mimeType:   mimeType,
       orgId:      payload.orgId,
       filename:   file.filename,
     })
