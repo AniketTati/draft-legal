@@ -436,12 +436,32 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Other API replicas keep the old mode for up to 60s (per-process cache).
     - The PII gaps outside this route are filed as X23.
   - Original note: , turning off PII redaction org-wide, and writes no audit event. Gate security-relevant keys behind `configure:organization` and audit the change. (Found in S1 review.)
-- **X6 — Slack `teamId` is not unique across orgs. — IN-PROGRESS.**
+- **X6 — Slack `teamId` is not unique across orgs. — DONE.**
   - **Plan:**
     - Confirmed: `findOrgBySlackTeam` takes the first org (unordered) listing the team id. The inbound routes then check Slack's signature against that org's secret. A second org that saves the same team id makes the first org's Slack requests fail verification.
     - Not fixed by refusing duplicates: two orgs can legitimately share one Slack workspace, with separate Slack apps and separate signing secrets.
     - Fix: `findOrgsBySlackTeam` returns every candidate (oldest first, capped), and `routes/slack.ts` authenticates as the org whose signing secret verifies the request. A squatter can't displace the real org, a shared workspace works, and an unverifiable request stays 401.
     - Test: `routes/slack-team.integration.test.ts`, with a squatting org holding a different secret, in both creation orders.
+  - **What changed:**
+    - `lib/slack.ts` `findOrgsBySlackTeam` returns every org naming the team, and `routes/slack.ts` authenticates as the one whose signing secret verifies the request. A shared workspace (separate apps and secrets) keeps working.
+    - Candidates are tried in order: verified claims first, then oldest, 20 at most (raw SQL). Any cap can be filled by squatters (the first review showed 20 older orgs doing it), so a claim can be verified. When an admin saves a bot token, Slack's `auth.test` must confirm it belongs to that team. A mismatch or a rejected token gets 400. If Slack can't be reached, the claim is saved unverified.
+    - A squatter can't verify a workspace it isn't in. The admin page shows "Workspace ownership: verified / unverified — add the bot token".
+    - Hardening:
+      - Only string secrets count, and one bad row can't fail a request for the others.
+      - Requests without the urlencoded raw body are refused (previously checked against an empty body).
+      - The Slack routes take at most 256KB, which bounds the HMAC work per candidate.
+  - **Verification:**
+    - `routes/slack-team.integration.test.ts` has 8 cases:
+      - a squatter claiming first, a shared workspace, an unsigned request, a non-urlencoded request;
+      - 20 older squatters against a verified owner;
+      - a malformed secret row;
+      - bot-token verification (match, other workspace, rejected), against a mocked `auth.test`.
+    - Against the pre-fix code, 7 fail.
+    - Suite: typecheck (api and web) 0, lint 0 errors.
+    - A fresh subagent reviewed the first cut. Its three findings (cap fill, malformed-secret 500, HMAC amplification) and one info item (empty raw body) are fixed above. It confirmed a squatter can never receive another org's traffic, and that interactions are scoped to the resolved org. A second pass on this design runs after the commit.
+  - **Left as is:**
+    - An org without a bot token stays displaceable by 20 older unverified claims. The admin page now says so and how to fix it.
+    - Per-org request URLs would remove the team-id lookup entirely, but that is a Slack-app configuration change for every existing install.
   - Original note: `PUT /integrations/slack` does not check collisions and `lib/slack.ts` `findOrgBySlackTeam` uses `findFirst` with no ordering, so one org can claim another's team id and break its Slack integration (DoS, no data crossing). (Found in S1 review.)
 - **X7 — REST ignores `own` scope outside the contract list (High). — DONE.**
   - **Plan:** a shared `lib/own-scope-guard.ts`. An `onRoute` hook appends an ownership check (`ownerId = req.user.sub`, else 404) after each route's own `requirePermission`, which is what sets `req.permissionScope`. It is registered in every plugin whose routes take a contract `:id`: contracts (38 routes), comments, share, and signatures (`/contracts/:id/...` only). That covers today's and future sub-routes in one place instead of 45 hand edits. List/search surfaces get explicit filters: `GET /contracts/export`; `/search` (ES `ids` filter from owned contracts, pgvector `ownerId`, Postgres fallback, hydration); `/search/advanced` and `/search/facets` (ES `ids`); `/search/ask` (`searchClauses` ownerId); `/search/portfolio-query` refused for own-scope callers, since its agent searches org-wide as the service; `GET /counterparties/:id` and `GET /matters/:id` (contract lists, plus the matter's thread ids limited to the caller's own). Test: `routes/own-scope-rest.integration.test.ts` — a SALES_REP gets 404 on another rep's contract and its sub-routes and doesn't see it in export/search/counterparty/matter views; ADMIN and the owner are unaffected.
@@ -640,4 +660,5 @@ X8 — DONE — agent chat history keyed by (org, user, session) from the verifi
 X18 — DONE — signer tokens only to callers who can send for signature (plus a signer's own row); tokens masked in logs — (sha: X18)
 X5 — DONE — piiRedactionMode needs configure:organization, a valid value and an audit row committed with the change — c41eb70
 X4 — DONE — organization.settings writers merge/remove/append only their own keys in SQL; no more lost updates — 7f2de2c
-X11 — DONE — every Gotenberg render goes through one sanitiser (bounded parse, CSP, no loads/navigation); extracted text escaped; Gotenberg JS/network off in compose + deploy — (sha: X11)
+X11 — DONE — every Gotenberg render goes through one sanitiser (bounded parse, CSP, no loads/navigation); extracted text escaped; Gotenberg JS/network off in compose + deploy — 922352d
+X6 — DONE — Slack requests resolve to the org whose secret verifies them, verified (bot-token) claims first; malformed rows and non-urlencoded bodies can't break or bypass it — (sha: X6)

@@ -31,6 +31,7 @@ import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { mergeOrgSettings, removeOrgSetting } from '../lib/org-settings.js'
+import { slackTeamOfToken } from '../lib/slack.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { hashApiKey, API_KEY_PREFIX } from '../middleware/auth.js'
 import { queueWebhookDelivery } from '../lib/queue.js'
@@ -288,7 +289,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
     const slack = ((org?.settings as Record<string, unknown> | null)?.slack ?? null) as
-      { teamId?: string; signingSecret?: string; botToken?: string; configuredAt?: string } | null
+      { teamId?: string; signingSecret?: string; botToken?: string; configuredAt?: string; teamVerified?: boolean } | null
     if (!slack?.teamId) return reply.send({ connected: false })
     return reply.send({
       connected:        true,
@@ -296,6 +297,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
       configuredAt:     slack.configuredAt ?? null,
       hasSigningSecret: Boolean(slack.signingSecret),
       hasBotToken:      Boolean(slack.botToken),
+      teamVerified:     slack.teamVerified === true,
     })
   })
 
@@ -314,6 +316,19 @@ export async function integrationsRoutes(app: FastifyInstance) {
     if (body.botToken && !body.botToken.startsWith('xoxb-')) {
       return reply.status(400).send({ detail: 'Bot token must start with xoxb-' })
     }
+    // X6 — a bot token proves which workspace this is. Verified claims win when
+    // several orgs name the same team id, so a squatter can't displace this one.
+    let teamVerified = false
+    if (body.botToken) {
+      const team = await slackTeamOfToken(body.botToken.trim())
+      if (team && !team.ok) {
+        return reply.status(400).send({ detail: `Slack rejected the bot token (${team.error}).` })
+      }
+      if (team?.ok && team.teamId !== body.teamId.trim()) {
+        return reply.status(400).send({ detail: `That bot token belongs to Slack workspace ${team.teamId}, not ${body.teamId.trim()}.` })
+      }
+      teamVerified = Boolean(team?.ok)
+    }
     // X4 — set only `slack`, atomically; a whole-blob write undid concurrent changes.
     await mergeOrgSettings(orgId, {
       slack: {
@@ -321,9 +336,10 @@ export async function integrationsRoutes(app: FastifyInstance) {
         signingSecret: body.signingSecret.trim(),
         ...(body.botToken ? { botToken: body.botToken.trim() } : {}),
         configuredAt:  new Date().toISOString(),
+        teamVerified,
       },
     })
-    return reply.send({ ok: true })
+    return reply.send({ ok: true, teamVerified })
   })
 
   app.delete('/slack', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {

@@ -20,7 +20,7 @@ import { AuditAction } from '@clm/types'
 import { advanceWorkflow } from '../lib/workflow-engine.js'
 import { notificationQueue } from '../lib/queue.js'
 import {
-  verifySlackSignature, findOrgBySlackTeam, resolveSlackUser,
+  verifySlackSignature, findOrgsBySlackTeam, resolveSlackUser,
   searchResultBlocks, helpBlocks,
 } from '../lib/slack.js'
 
@@ -42,20 +42,26 @@ export async function slackRoutes(app: FastifyInstance) {
 
   /** Verify the v0 signature and resolve the org for a Slack request. */
   async function authenticate(req: SlackRequest, teamId: string | undefined) {
-    if (!teamId) return null
-    const found = await findOrgBySlackTeam(teamId)
-    if (!found) return null
-    const ok = verifySlackSignature(
-      found.config.signingSecret,
-      String(req.headers['x-slack-request-timestamp'] ?? ''),
-      req.rawBody ?? '',
-      String(req.headers['x-slack-signature'] ?? ''),
-    )
-    return ok ? found : null
+    // Slack signs the raw urlencoded body; a request without one (sent as
+    // another content type) has nothing to verify.
+    if (!teamId || req.rawBody === undefined) return null
+    const timestamp = String(req.headers['x-slack-request-timestamp'] ?? '')
+    const signature = String(req.headers['x-slack-signature'] ?? '')
+    // X6 — the org is the one whose signing secret signed this request. One
+    // bad candidate row must not fail the request for the others.
+    for (const found of await findOrgsBySlackTeam(teamId)) {
+      try {
+        if (verifySlackSignature(found.config.signingSecret, timestamp, req.rawBody, signature)) return found
+      } catch { /* not this org */ }
+    }
+    return null
   }
 
+  // Slack payloads are small; the limit also bounds the HMAC work per request.
+  const SLACK_BODY_LIMIT = 256 * 1024
+
   // ── POST /commands — `/contract` slash command ────────────────────────
-  app.post('/commands', async (req, reply) => {
+  app.post('/commands', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
     const body = req.body as Record<string, string>
     const auth = await authenticate(req as SlackRequest, body.team_id)
     if (!auth) return reply.status(401).send({ detail: 'invalid Slack signature or unconnected workspace' })
@@ -99,7 +105,7 @@ export async function slackRoutes(app: FastifyInstance) {
   })
 
   // ── POST /interactions — block_actions (Approve / Reject buttons) ────
-  app.post('/interactions', async (req, reply) => {
+  app.post('/interactions', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
     const body = req.body as Record<string, string>
     let payload: {
       type?: string

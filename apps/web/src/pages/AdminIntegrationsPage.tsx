@@ -1020,6 +1020,7 @@ interface SlackConfig {
   configuredAt?: string | null
   hasSigningSecret?: boolean
   hasBotToken?: boolean
+  teamVerified?: boolean
 }
 
 const API_BASE = `${window.location.origin}/api/v1`
@@ -1095,6 +1096,13 @@ function SlackSection() {
               {/* Missing bot token is a setup step still waiting on this admin. */}
               <dd className={data.hasBotToken ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
                 {data.hasBotToken ? 'configured' : 'not set — buttons fall back to web links'}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-ink-500">Workspace ownership</dt>
+              {/* X6 — Slack confirmed the bot token belongs to this workspace, so no other org's claim on the same team ID can take its requests. */}
+              <dd className={data.teamVerified ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
+                {data.teamVerified ? 'verified by the bot token' : 'unverified — add the bot token so no other org can claim this workspace'}
               </dd>
             </div>
             {data.configuredAt && (
