@@ -62,6 +62,7 @@ import { CitationPills, type CitationBundle } from '@/components/agent/CitationP
 import { RedlinePreview, type RedlineProposal } from '@/components/agent/RedlinePreview'
 import { ToolCallChip, type RailToolCall } from '@/components/agent/SideAgentRail'
 import { cn } from '@/lib/utils'
+import { buildAgentChatBody, readProvenance, type Provenance } from '@/lib/agent-chat'
 
 interface ThreadSummary {
   id: string
@@ -112,11 +113,11 @@ interface ChatMessage {
   stopped?: boolean
   /**
    * TRUST — which model actually produced this turn, read off the SSE
-   * envelope. The page pins a provider in its request and the server does
-   * not necessarily honour it (a live run asking for gpt-4.1-mini came back
-   * from gemini-2.5-pro), so the only truthful source is the frames.
+   * envelope. The org's AI config picks the model per tier, so the only
+   * truthful source is the frames: the `done` frame's resolved values
+   * (see lib/agent-chat.ts readProvenance).
    */
-  provenance?: { model?: string; tier?: string }
+  provenance?: Provenance
   /** Wall-clock duration of the run, shown alongside the model. */
   elapsedMs?: number
   /** The user text that produced this turn, so a failed turn can be retried. */
@@ -654,20 +655,16 @@ export function AgentHomePage() {
           'authorization': `Bearer ${accessToken}`,
           'accept': 'text/event-stream',
         },
-        body: JSON.stringify({
+        // No provider/model pin (C3): the org's AI config picks per tier, as
+        // it does for the side rail. A hard-coded pin here outranked Admin →
+        // AI Config and billed a model the org had not chosen. (The old
+        // reason for pinning — gpt-4o sending query="*" — is handled by
+        // contract_search treating wildcards as match-all.)
+        body: JSON.stringify(buildAgentChatBody({
           message: clean,
           sessionId: threadId ?? undefined,
-          agentMode: true,
-          // Pin the same provider+model as the side rail (SideAgentRail) so
-          // both surfaces give identical answers to identical questions.
-          // Without this, the Assistant page silently used the org's default
-          // model (often gpt-4o) which has known tool-call quirks — e.g.
-          // passing query="*" to contract_search expecting a wildcard,
-          // which returns zero hits. See "Assistant vs Ask" bug fix.
-          provider: 'openai',
-          modelId:  'gpt-4.1-mini',
-          ...(pickedSkill ? { skillSlug: pickedSkill } : {}),
-        }),
+          skillSlug: pickedSkill,
+        })),
         signal: abortRef.current.signal,
       })
       if (!res.ok || !res.body) throw new Error(`Stream failed (${res.status})`)
@@ -677,7 +674,7 @@ export function AgentHomePage() {
       let buf = ''
       let assembled = ''
       let newSessionId: string | undefined
-      let provenance: { model?: string; tier?: string } | undefined
+      let provenance: Provenance | undefined
       const startedAt = Date.now()
       // Track tool calls locally so we can persist them after stream end.
       // Reading from React state inside this fn would be a stale-closure trap.
@@ -697,16 +694,9 @@ export function AgentHomePage() {
             const evt = JSON.parse(data)
             if (evt.session_id) newSessionId = evt.session_id
             // TRUST — record which model is actually answering. Every frame
-            // carries `model_id`; the terminal `done` frame adds `tier`. The
-            // request above asks for gpt-4.1-mini and does not always get it,
-            // so the footer under the answer must report the frames, not the
-            // request.
-            if (evt.model_id || evt.model || evt.tier) {
-              provenance = {
-                model: String(evt.model_id ?? evt.model ?? provenance?.model ?? ''),
-                tier: evt.tier ? String(evt.tier) : provenance?.tier,
-              }
-            }
+            // is stamped with the requested model_id; the terminal `done`
+            // frame carries the resolved provider/model/tier, which wins.
+            provenance = readProvenance(provenance, evt)
             if (evt.type === 'token' && (evt.delta || evt.content)) {
               assembled += (evt.delta ?? evt.content)
               setMessages(prev => prev.map(m =>
@@ -964,6 +954,11 @@ export function AgentHomePage() {
             userMessage: clean,
             assistant: {
               content: assembled,
+              // What actually answered (from the done frame), so a reloaded
+              // thread and per-model cost/quality analysis report the truth.
+              ...(provenance?.provider ? { provider: provenance.provider } : {}),
+              ...(provenance?.model ? { model: provenance.model } : {}),
+              ...(provenance?.tier ? { tier: provenance.tier } : {}),
             },
             toolCalls: localToolCalls
               .filter(tc => tc.status === 'ok' || tc.status === 'error')

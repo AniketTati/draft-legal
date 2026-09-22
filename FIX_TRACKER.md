@@ -149,11 +149,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C3 — `/agent` hard-codes a model and overrides the org's AI config
 
-- **Status:** TODO
+- **Status:** VERIFY-PENDING
 - **Severity:** High (the "bring your own model" promise silently fails, and it bills the wrong model)
 - **Evidence:** `apps/web/src/pages/AgentHomePage.tsx` pins `openai/gpt-4.1-mini`, outranking Admin → Org → AI Config. A related fix already landed for unpinned chat requests; the full-page assistant still pins.
 - **Acceptance criteria:** with no explicit user choice, `/agent` turns run on the org's configured provider/model for the tier; an explicit in-session pin (if the UI offers one) is still honoured; the "which model answered" readout shows the model actually used.
 - **Worklog:**
+  - **Plan (confirmed defect):** `AgentHomePage.tsx:667-668` sends `provider: 'openai', modelId: 'gpt-4.1-mini'` on every turn. Python treats an explicit pin as outranking the org's tier ladder, so `/agent` ignores Admin → AI Config (the side rail stopped pinning in an earlier fix). There is also a readout bug: `chat.py` stamps every frame with the **requested** `provider`/`model_id`, and only the `done` frame carries the resolved `provider`/`model`/`tier`, yet the page reads `evt.model_id ?? evt.model`, preferring the request. The page also never persists which model answered, so reloaded threads show none. The UI offers no model picker, so there is no in-session pin to preserve. Approach: new `apps/web/src/lib/agent-chat.ts` with `buildAgentChatBody()` (no provider/model unless an explicit pin is passed, which keeps the door open for a future picker) and `readProvenance()` (the done frame's resolved values win over the per-frame request stamp). AgentHomePage uses both, and persists `provider`/`model`/`tier` with the turn as the side rail does. Test: `lib/agent-chat.test.ts`.
+  - **Plan review:** right layer — the server already resolves unpinned turns from the org's config (the same path the side rail uses), so the fix is to stop pinning. The old comment's reason for pinning (gpt-4o's `query="*"` quirk) is handled server-side: `contract_search` treats `*`/`%`/`all` as match-all (`internal-ai.ts`). No permission or tenancy impact; the model choice stays server-side and per-org.
+  - **Changed:** new `apps/web/src/lib/agent-chat.ts` (`buildAgentChatBody`, `readProvenance`). `AgentHomePage.tsx` no longer pins `openai/gpt-4.1-mini`. The provenance footer takes the `done` frame's resolved provider/model/tier over the per-frame request stamp, and the persisted turn now carries `provider`/`model`/`tier` (as the side rail's does), so reloaded threads keep the readout.
+  - **Verified:** `lib/agent-chat.test.ts` (4) covers: no provider/model in the body without an explicit pin; an explicit pin passes through; the resolved model beats the requested stamp; unpinned turns end with the resolved model. These fail before the change because the module does not exist; the old page hard-coded the pin inline. No other web surface pins a model (grep). Full suite green: typecheck, lint 0 errors, web 14/14, api unit 171/171, api integration 43/43.
+  - **Why VERIFY-PENDING:** a live `/agent` turn was not run (no agents service or LLM key here). **Remaining check:** set Admin → Org → AI Config default tier to a non-OpenAI model, ask `/agent` a question, and confirm the footer shows that model. Reload the thread and confirm the footer persists.
+  - **Assumption:** the page has no model picker, so "an explicit in-session pin is still honoured" is satisfied by `buildAgentChatBody({ pin })`, which is ready for one but has no UI.
+
 
 ## C4 — Re-analysis wipes the contract's stored reports
 
@@ -309,4 +316,5 @@ S1 — DONE — GET /organization redacts Slack secrets; PATCH can't overwrite s
 S2 — VERIFY-PENDING — agent read tools resolve the caller's view scope server-side and push it into Prisma, pgvector and ES; needs a live SALES_REP chat probe — 701b0b5
 S3 — DONE — every upload path validates bytes via lib/file-type.ts; detected type stored; presigned downloads serve only allowlisted types — 4b91cbc
 C1 — VERIFY-PENDING — create-key dialog sends chosen scopes + expiry; server refuses scope-less keys; needs a visual check of the dialog — cc1965b
-C2 — DONE — no-target escalation keeps the step with its approver + notifies admins; exact step-order matching; escalated visible; repair migration — (sha: C2)
+C2 — DONE — no-target escalation keeps the step with its approver + notifies admins; exact step-order matching; escalated visible; repair migration — 45861da
+C3 — VERIFY-PENDING — /agent stops pinning gpt-4.1-mini; readout + persisted turn use the resolved model; needs a live turn — (sha: C3)
