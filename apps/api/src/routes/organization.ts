@@ -10,6 +10,7 @@ import { seedOrgDefaults, INDUSTRY_PACK_INFO } from '../lib/org-seed.js'
 import type { IndustryPackId } from '../lib/org-seed.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { clearOrgPiiModeCache } from '../lib/pii-policy.js'
+import { mergeOrgSettings, addToOrgSettingsList, type OrgDb } from '../lib/org-settings.js'
 import { AuditAction } from '@clm/types'
 
 const UpdateOrgSchema = z.object({
@@ -121,21 +122,25 @@ export async function organizationRoutes(app: FastifyInstance) {
         }
       }
     }
-    const newSettings = { ...currentSettings, ...incoming }
 
     const changed: Record<string, { from: unknown; to: unknown }> = {}
     for (const k of protectedChanges) {
       if (currentSettings[k] !== incoming[k]) changed[k] = { from: currentSettings[k] ?? null, to: incoming[k] }
     }
-    const write = (db: Pick<typeof prisma, 'organization'>) => db.organization.update({
-      where: { id: req.user.orgId },
-      data: {
-        ...(body.name && { name: body.name }),
-        ...(body.logoUrl !== undefined && { logoUrl: body.logoUrl }),
-        ...(body.brandColor !== undefined && { brandColor: body.brandColor }),
-        settings: newSettings as any,
-      },
-    })
+    // X4 — merge only the keys this request sets, in SQL: writing back a copy
+    // read earlier undid concurrent changes (an install-industry-pack racing an
+    // ADMIN's piiRedactionMode change reverted it).
+    const write = async (db: OrgDb) => {
+      if (Object.keys(incoming).length) await mergeOrgSettings(req.user.orgId, incoming, db)
+      return db.organization.update({
+        where: { id: req.user.orgId },
+        data: {
+          ...(body.name && { name: body.name }),
+          ...(body.logoUrl !== undefined && { logoUrl: body.logoUrl }),
+          ...(body.brandColor !== undefined && { brandColor: body.brandColor }),
+        },
+      })
+    }
     let updated: Awaited<ReturnType<typeof write>> | undefined
     if (Object.keys(changed).length) {
       // The change and its audit row commit together.
@@ -190,16 +195,10 @@ export async function organizationRoutes(app: FastifyInstance) {
       // and then layers the industry pack content.
       await seedOrgDefaults(org.id, org.slug, req.user.sub, { industryPack: body.packId })
 
-      // Persist which pack was installed, so the wizard / settings page can show it.
-      const settings = (org.settings as Record<string, unknown>) ?? {}
-      const installedPacks = new Set<string>(Array.isArray(settings.installedIndustryPacks)
-        ? (settings.installedIndustryPacks as string[])
-        : [])
-      installedPacks.add(body.packId)
-      await prisma.organization.update({
-        where: { id: org.id },
-        data: { settings: { ...settings, installedIndustryPacks: Array.from(installedPacks) } as any },
-      })
+      // Persist which pack was installed, so the wizard / settings page can show
+      // it. X4 — appended in SQL: the copy of settings read before the (slow)
+      // seed was written back whole, undoing any change made in between.
+      await addToOrgSettingsList(org.id, 'installedIndustryPacks', body.packId)
 
       return reply.send({
         ok: true,

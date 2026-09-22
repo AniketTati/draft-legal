@@ -391,7 +391,25 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X2 — Custom-field backfill.** Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
 - **X3 — Empty stubs.** `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
 
-- **X4 — Lost-update race on `organization.settings`.** `PATCH /organization` and `POST /organization/install-industry-pack` (which awaits the multi-query `seedOrgDefaults` between read and write) read the whole settings blob and write it back, so they can silently undo a concurrent Slack secret rotation/disconnect in `integrations.ts`. Merge atomically in SQL (`settings || $1::jsonb`, `jsonb_set`) or move Slack credentials out of `settings`. (Found in S1 review.)
+- **X4 — Lost-update race on `organization.settings`. — DONE.**
+  - **Plan:**
+    - Confirmed, and reproduced by the X5 review: `install-industry-pack` read the settings and wrote the whole blob back about 0.5s later (after `seedOrgDefaults`), which undid an ADMIN's `piiRedactionMode` change while the audit log said otherwise.
+    - The four writers each read the whole JSON blob and write it all back: `PATCH /organization`, `install-industry-pack`, and Slack `PUT`/`DELETE` in `integrations.ts`.
+    - Fix: new `lib/org-settings.ts` with atomic SQL: merge the touched top-level keys (`settings || $1::jsonb`), remove a key (`settings - key`), and add to a list (`installedIndustryPacks`) without a stale read. All four writers use it; the PATCH still runs inside X5's audit transaction.
+    - Acceptance: writes racing a slow install, and writes to different keys, don't undo each other.
+    - Test: `routes/org-settings-race.integration.test.ts`.
+  - **What changed:**
+    - `lib/org-settings.ts` does single-statement SQL updates: `mergeOrgSettings` (`settings || patch`), `removeOrgSetting` (`settings - key`) and `addToOrgSettingsList` (a de-duplicated append).
+    - `PATCH /organization` merges only the keys it was sent, still inside X5's audit transaction. `install-industry-pack` appends its pack id instead of writing back the copy it read before seeding. Slack `PUT`/`DELETE` set or remove only `slack`.
+  - **Verification:**
+    - `routes/org-settings-race.integration.test.ts` (3 cases; `seedOrgDefaults` mocked with a 400ms delay):
+      - An install in flight no longer reverts an ADMIN's `piiRedactionMode` change (the X5 review's repro).
+      - 12 parallel PATCHes of different keys all land.
+      - A second pack keeps the first.
+    - Against the pre-fix routes, the first two fail: the mode is reverted to `off`, and keys are lost.
+    - The org, Slack and API-key suites pass (21/21).
+  - **Left out:** same-key writes are still last-writer-wins, as intended.
+  - Original note: `PATCH /organization` and `POST /organization/install-industry-pack` (which awaits the multi-query `seedOrgDefaults` between read and write) read the whole settings blob and write it back, so they can silently undo a concurrent Slack secret rotation/disconnect in `integrations.ts`. Merge atomically in SQL (`settings || $1::jsonb`, `jsonb_set`) or move Slack credentials out of `settings`. (Found in S1 review.)
 - **X5 — `PATCH /organization` lets `configure:integration` (LEGAL_OPS) set `piiRedactionMode`. — DONE.**
   - **Plan:**
     - Confirmed: the PATCH merges any settings key for a `configure:integration` holder, validates no value, and audits nothing. `piiRedactionMode` is the only protection setting in `org.settings`; the cost cap and AI keys already sit behind `configure:organization` in `admin-ai.ts`. The web never sets it.
@@ -595,4 +613,5 @@ X7 — DONE — own scope enforced across REST: by-id guard on every contract/ob
 X19 — DONE — invoice contract links must be a live contract of the caller's org (owned, for own scope); auto-match scoped the same way; reconcile bounded; repair migration for pre-fix cross-org links — 6c01291
 X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — 42bbfe2
 X18 — DONE — signer tokens only to callers who can send for signature (plus a signer's own row); tokens masked in logs — (sha: X18)
-X5 — DONE — piiRedactionMode needs configure:organization, a valid value and an audit row committed with the change — (sha: X5)
+X5 — DONE — piiRedactionMode needs configure:organization, a valid value and an audit row committed with the change — c41eb70
+X4 — DONE — organization.settings writers merge/remove/append only their own keys in SQL; no more lost updates — (sha: X4)

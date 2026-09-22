@@ -30,6 +30,7 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
+import { mergeOrgSettings, removeOrgSetting } from '../lib/org-settings.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { hashApiKey, API_KEY_PREFIX } from '../middleware/auth.js'
 import { queueWebhookDelivery } from '../lib/queue.js'
@@ -313,20 +314,13 @@ export async function integrationsRoutes(app: FastifyInstance) {
     if (body.botToken && !body.botToken.startsWith('xoxb-')) {
       return reply.status(400).send({ detail: 'Bot token must start with xoxb-' })
     }
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
-    const settings = (org?.settings ?? {}) as Record<string, unknown>
-    await prisma.organization.update({
-      where: { id: orgId },
-      data: {
-        settings: {
-          ...settings,
-          slack: {
-            teamId:        body.teamId.trim(),
-            signingSecret: body.signingSecret.trim(),
-            ...(body.botToken ? { botToken: body.botToken.trim() } : {}),
-            configuredAt:  new Date().toISOString(),
-          },
-        } as never,
+    // X4 — set only `slack`, atomically; a whole-blob write undid concurrent changes.
+    await mergeOrgSettings(orgId, {
+      slack: {
+        teamId:        body.teamId.trim(),
+        signingSecret: body.signingSecret.trim(),
+        ...(body.botToken ? { botToken: body.botToken.trim() } : {}),
+        configuredAt:  new Date().toISOString(),
       },
     })
     return reply.send({ ok: true })
@@ -334,10 +328,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
 
   app.delete('/slack', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
     const { orgId } = req.user
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
-    const settings = { ...((org?.settings ?? {}) as Record<string, unknown>) }
-    delete settings.slack
-    await prisma.organization.update({ where: { id: orgId }, data: { settings: settings as never } })
+    await removeOrgSetting(orgId, 'slack')   // X4 — atomic, touches only `slack`
     return reply.status(204).send()
   })
 
