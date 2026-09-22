@@ -1004,6 +1004,10 @@ export function ContractDetailPage() {
 
   const keyTerms = contract.keyTerms ?? {}
   const fieldConfidence: Record<string, any> = contract.fieldConfidence ?? {}
+  // C5 — unverified fields under the Extraction Queue's default bar (0.7).
+  const lowConfidenceCount = Object.values(fieldConfidence).filter(
+    (e: any) => e && !e.verifiedAt && typeof e.confidence === 'number' && e.confidence < 0.7,
+  ).length
   const riskFactors: string[] = contract.riskFactors ?? []
   const clauseFlags: Record<string, boolean> = contract.versions?.[0]?.clauseFlags ?? {}
   // P2.1 — trust-signal: was this version's text produced by OCR? If
@@ -2172,7 +2176,18 @@ export function ContractDetailPage() {
                 {keyTermEntries.length > 0 ? (
                   <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-section text-ink-950">Key Terms</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-section text-ink-950">Key Terms</h3>
+                        {lowConfidenceCount > 0 && (
+                          <button
+                            onClick={() => navigate(`/review-queue?contractId=${id}`)}
+                            className="text-dense text-attention-700 hover:underline underline-offset-2"
+                            data-testid="key-terms-review-link"
+                          >
+                            Review {lowConfidenceCount} low-confidence field{lowConfidenceCount === 1 ? '' : 's'}
+                          </button>
+                        )}
+                      </div>
                       <div className="flex items-center gap-3 text-dense text-ink-500">
                         <span className="flex items-center gap-1"><CheckCircle2 className="size-3 text-ink-400" />High</span>
                         <span className="flex items-center gap-1"><AlertTriangle className="size-3 text-attention-600" />Review</span>
