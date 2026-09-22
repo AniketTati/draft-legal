@@ -23,7 +23,7 @@ import { fireWebhook } from '../lib/webhook-events.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const CreateSchema = z.object({
-  contractId:    z.string().optional(),  // optional manual link
+  contractId:    z.string().min(1).optional(),  // optional manual link
   vendorName:    z.string().min(1).max(200),
   invoiceNumber: z.string().max(100).optional(),
   amount:        z.coerce.number().positive(),
@@ -49,10 +49,14 @@ interface MatchResult {
   reason:       string
 }
 
-/** Pick the single best payment obligation that matches an invoice. */
+/**
+ * Pick the single best payment obligation that matches an invoice. X19 — for
+ * an own-scope caller (`ownerId`), only obligations on contracts it owns: a
+ * match is returned with the contract's title and the obligation's text.
+ */
 async function autoMatchInvoice(orgId: string, invoice: {
   vendorName: string; amount: number; currency: string; invoiceDate: Date; description?: string | null
-}): Promise<MatchResult | null> {
+}, ownerId?: string): Promise<MatchResult | null> {
   // Pull every OPEN payment obligation in the org and score against the invoice.
   // Capped at 500 — orgs running >500 OPEN payment obligations can re-run match
   // post-creation via /rematch with a more restrictive contract filter.
@@ -61,6 +65,8 @@ async function autoMatchInvoice(orgId: string, invoice: {
       orgId,
       status: 'OPEN',
       type:   'payment',
+      // A live contract only — and, for own scope, one the caller owns.
+      contract: { is: { deletedAt: null, ...(ownerId ? { ownerId } : {}) } },
     },
     include: {
       contract: { select: { counterpartyName: true, currency: true, value: true } },
@@ -218,6 +224,17 @@ export async function invoiceRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'invalid invoiceDate' })
     }
 
+    // X19 — a manual link must name a live contract of this org (one the
+    // caller owns, for own scope). It was stored unchecked, and the response
+    // then carried another org's contract title and counterparty.
+    const ownerId = req.permissionScope === 'own' ? userId : undefined
+    if (body.contractId) {
+      const linkable = await prisma.contract.count({
+        where: { id: body.contractId, orgId, deletedAt: null, ...(ownerId ? { ownerId } : {}) },
+      })
+      if (!linkable) return reply.status(404).send({ detail: 'Contract not found' })
+    }
+
     // Auto-match BEFORE inserting so we can stamp matchedObligationId + score on creation.
     const match = await autoMatchInvoice(orgId, {
       vendorName: body.vendorName,
@@ -225,7 +242,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
       currency:   body.currency,
       invoiceDate,
       description: body.description ?? null,
-    })
+    }, ownerId)
 
     // If user supplied a contractId, force the contract link to that one
     // (overrides the auto-match's contract). The obligation match still
@@ -376,7 +393,9 @@ export async function invoiceRoutes(app: FastifyInstance) {
     // Close the matched obligation if it's still open.
     if (inv.matchedObligationId) {
       await prisma.obligation.updateMany({
-        where: { id: inv.matchedObligationId, status: { in: ['OPEN', 'OVERDUE'] } },
+        // Bounded to this org and the invoice's own contract, so a bad link
+        // can never close someone else's obligation.
+        where: { id: inv.matchedObligationId, orgId, contractId: inv.contractId ?? undefined, status: { in: ['OPEN', 'OVERDUE'] } },
         data: {
           status:         'COMPLETED',
           completedAt:    now,
@@ -435,7 +454,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
       currency:   inv.currency,
       invoiceDate: inv.invoiceDate,
       description: inv.description ?? null,
-    })
+    }, req.permissionScope === 'own' ? req.user.sub : undefined)
 
     const data: Record<string, unknown> = {
       matchedObligationId: match?.obligationId ?? null,
