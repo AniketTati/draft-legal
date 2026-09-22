@@ -6,7 +6,7 @@
  *                     of the CONTRACT_INDEX doc (Wave 3.1) → queue embed-contract
  */
 import { Worker } from 'bullmq'
-import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
+import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
@@ -14,8 +14,9 @@ import { extractDocument } from '../lib/document.js'
 import { embedContractVersion } from '../lib/embeddings.js'
 import { legalChunkAndStore } from '../lib/legal-chunker.js'
 import { indexContract } from '../lib/elasticsearch.js'
-import { splitPdf, getPdfPageCount } from '../lib/pdf-splitter.js'
-import { queueDetectBinder, queueParseDocument, queueEmbedContract, queuePlaybookReview } from '../lib/queue.js'
+import { getPdfPageCount } from '../lib/pdf-splitter.js'
+import { splitBinder } from '../lib/binder-split.js'
+import { queueDetectBinder, queueEmbedContract, queuePlaybookReview } from '../lib/queue.js'
 import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob } from '../lib/queue.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
@@ -214,116 +215,8 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
 }
 
 // ─── split-binder ─────────────────────────────────────────────────────────────
-
-async function handleSplitBinder(data: SplitBinderJob): Promise<void> {
-  const { contractId, orgId, userId, splits } = data
-
-  console.info('[parse-worker] split-binder start contractId=%s splits=%d', contractId, splits.length)
-
-  await prisma.contract.update({
-    where: { id: contractId },
-    data: { analysisStatus: 'SPLITTING' },
-  })
-
-  // Fetch original version to get s3Key + mimeType
-  const version = await prisma.contractVersion.findFirst({
-    where: { contractId },
-    orderBy: { createdAt: 'asc' },
-    select: { id: true, s3Key: true, mimeType: true },
-  })
-  if (!version?.s3Key) throw new Error(`No S3 key found for contractId=${contractId}`)
-
-  // Download original PDF
-  const s3Res = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: version.s3Key }))
-  const chunks: Uint8Array[] = []
-  for await (const chunk of s3Res.Body as AsyncIterable<Uint8Array>) chunks.push(chunk)
-  const buffer = Buffer.concat(chunks)
-
-  const totalPages = await getPdfPageCount(buffer)
-  const slices = await splitPdf(buffer, splits, totalPages)
-
-  const childIds: string[] = []
-  for (const slice of slices) {
-    const childS3Key = `${orgId}/contracts/${contractId}/splits/${slice.title.replace(/\s+/g, '-')}.pdf`
-    await s3.send(new PutObjectCommand({
-      Bucket: S3_BUCKET,
-      Key:    childS3Key,
-      Body:   slice.pdfBytes,
-      ContentType: 'application/pdf',
-    }))
-
-    // P2.3 — schema-aligned: Contract uses `createdBy` (not `uploadedBy`),
-    // ContractVersion has no `filename` column. Parent-child link via
-    // parentContractId; relationshipType='exhibit_only' marks it as a
-    // binder slice rather than an amendment.
-    const child = await prisma.contract.create({
-      data: {
-        orgId,
-        ownerId:          userId,
-        createdBy:        userId,
-        title:            slice.title,
-        type:             slice.type,
-        analysisStatus:   'PENDING',
-        parentContractId: contractId,
-        relationshipType: 'exhibit_only',
-        versions: {
-          create: {
-            versionNumber: 1,
-            htmlContent:   '',
-            plainText:     '',
-            s3Key:    childS3Key,
-            mimeType: 'application/pdf',
-            fileSize: slice.pdfBytes.byteLength,
-            createdById: userId,
-            changeNote:  `Split from binder (pages ${slice.pageStart}-${slice.pageEnd})`,
-          },
-        },
-      },
-      include: { versions: true },
-    })
-
-    const childVersion = child.versions[0]
-
-    await prisma.contract.update({
-      where: { id: child.id },
-      data:  { currentVersionId: childVersion.id },
-    })
-
-    // Wave 3.2 — index the split child so it's searchable. plainText is empty
-    // until its own parse job runs (queued below), which re-indexes with full
-    // text via handleChunkAndIndex. Fire-and-forget.
-    indexContract(child.id, {
-      orgId,
-      title:          child.title,
-      type:           child.type,
-      status:         child.status,
-      plainText:      '',
-      tags:           child.tags,
-      createdAt:      child.createdAt.toISOString(),
-    }).catch(err => console.warn('[parse-worker] ES index on binder child failed childId=%s: %s', child.id, err?.message ?? err))
-
-    queueParseDocument({
-      contractId: child.id,
-      versionId:  childVersion.id,
-      s3Key:      childS3Key,
-      mimeType:   'application/pdf',
-      filename:   `${slice.title}.pdf`,
-      orgId,
-    })
-    childIds.push(child.id)
-  }
-
-  // Mark parent as DONE — store child IDs so UI can show "Adjust splits" banner
-  const parentMeta = (await prisma.contract.findUnique({
-    where: { id: contractId }, select: { metadata: true },
-  }))?.metadata as object ?? {}
-  await prisma.contract.update({
-    where: { id: contractId },
-    data: { analysisStatus: 'DONE', metadata: { ...parentMeta, _splitInto: childIds } },
-  })
-
-  console.info('[parse-worker] split-binder done contractId=%s children=%s', contractId, childIds.join(','))
-}
+// The body lives in lib/binder-split.ts so it can be tested without
+// constructing this file's BullMQ Worker.
 
 // ─── Worker ──────────────────────────────────────────────────────────────────
 
@@ -338,7 +231,7 @@ export const parseWorker = new Worker(
     } else if (job.name === 'chunk-and-index') {
       await handleChunkAndIndex(job.data as ChunkAndIndexJob)
     } else if (job.name === 'split-binder') {
-      await handleSplitBinder(job.data as SplitBinderJob)
+      await splitBinder(job.data as SplitBinderJob)
     }
   },
   { connection: redis, concurrency: 3 }

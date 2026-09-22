@@ -802,6 +802,9 @@ export function ContractDetailPage() {
   const suggestedSplits: any[] = (contract as any)?.metadata?._suggestedSplits ?? []
   const binderDetected = !!(contract as any)?.metadata?._binderDetected
   const splitInto: string[] = (contract as any)?.metadata?._splitInto ?? []
+  // C10 — set when a binder can't be split (not a PDF) or a re-split was refused.
+  const binderSplitUnsupported: string | null = (contract as any)?.metadata?._binderSplitUnsupported ?? null
+  const splitError: string | null = (contract as any)?.metadata?._splitError ?? null
   const autoSplitDone = splitInto.length > 0
 
   // Stuck detection: in-progress but updatedAt hasn't changed in 3 minutes
@@ -826,6 +829,10 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract-family', id] })
       navigate('/contracts')
     },
+    // The route refuses a non-PDF binder (422) or a re-split that would
+    // replace contracts that have moved on (409) — say which, and why.
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Could not split this document', { description: err.response?.data?.detail ?? 'Try again.' }),
   })
 
   // Contract Family
@@ -2003,8 +2010,9 @@ export function ContractDetailPage() {
           <span className="font-medium">Multiple agreements detected</span>
           <span>
             — We found {suggestedSplits.length > 0 ? suggestedSplits.length : 'multiple'} separate agreements in this document.
+            {binderSplitUnsupported && <> {binderSplitUnsupported}</>}
           </span>
-          <Button
+          {!binderSplitUnsupported && <Button
             variant="outline"
             size="xs"
             onClick={() => {
@@ -2019,7 +2027,12 @@ export function ContractDetailPage() {
             className="ml-auto flex-shrink-0"
           >
             Review &amp; Split →
-          </Button>
+          </Button>}
+        </div>
+      )}
+      {splitError && (
+        <div className="bg-attention-50 border-b border-attention-200 text-attention-700 px-6 py-2.5 text-body" data-testid="split-error">
+          {splitError}
         </div>
       )}
 

@@ -10,6 +10,7 @@ import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
+import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob } from '../lib/queue.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -98,7 +99,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
 
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
-    select: { plainText: true },
+    select: { plainText: true, mimeType: true },
   })
   if (!version?.plainText) {
     // Stale job from a previous run — a fresh parse job will re-queue detect-binder. Skip silently.
@@ -122,6 +123,28 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
   }
   console.info('[agent-worker] detect-binder result contractId=%s isBinder=%s confidence=%.2f',
     contractId, result.isBinder, result.confidence)
+
+  // C10 — splitting is PDF-only. A DOCX binder used to be auto-split anyway
+  // and die inside pdf-lib after three retries. Flag it with the fix and
+  // analyse it as one document instead.
+  if (result.isBinder && result.confidence >= 0.7 && version.mimeType && version.mimeType !== 'application/pdf') {
+    const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
+    await prisma.contract.update({
+      where: { id: contractId },
+      data: {
+        metadata: {
+          ...((contract?.metadata as Record<string, unknown>) ?? {}),
+          _binderDetected: true,
+          _binderDocumentCount: result.documents.length,
+          _binderSplitUnsupported: SPLIT_REQUIRES_PDF,
+        } as never,
+        analysisStatus: 'CLASSIFYING',
+      },
+    })
+    queueClassifyDocument({ contractId, versionId, orgId })
+    console.info('[agent-worker] detect-binder: non-PDF binder contractId=%s — not split, analysed as one document', contractId)
+    return
+  }
 
   if (result.isBinder && result.confidence >= 0.7) {
     // Fetch existing metadata (_totalPages stored by parse worker)

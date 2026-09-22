@@ -26,6 +26,7 @@ import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAn
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
+import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
 import {
   CreateContractSchema,
   UpdateContractSchema,
@@ -1803,7 +1804,18 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
+    // C10 — say now, not after three failed retries, when the split can't run.
+    const original = await prisma.contractVersion.findFirst({
+      where: { contractId: id }, orderBy: { createdAt: 'asc' }, select: { mimeType: true },
+    })
+    if (original?.mimeType && original.mimeType !== 'application/pdf') {
+      return reply.status(422).send({ detail: SPLIT_REQUIRES_PDF })
+    }
+    const blocker = resplitBlocker(await previousSplitChildren(id, orgId))
+    if (blocker) return reply.status(409).send({ detail: blocker })
+
     // Queue the split job — worker handles S3 download, slicing, child creation
+    // (and replaces any children from a previous split).
     queueSplitBinder({ contractId: id, orgId, userId, splits })
 
     await createAuditEvent({
