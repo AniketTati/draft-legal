@@ -77,6 +77,11 @@ const InboundEmailSchema = z.object({
 // attachment is ever consumed downstream, so a small cap costs nothing.
 const MAX_ATTACHMENTS   = 5
 const MAX_TOTAL_BYTES   = 30 * 1024 * 1024
+// X14 — the number of file parts READ. Inline images usually come before the
+// document, so a low cap here rejected ordinary emails outright; only the
+// document candidates below are buffered.
+const MAX_FILE_PARTS    = 50
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
 async function readInboundBody(req: FastifyRequest): Promise<unknown> {
   const isMultipart = typeof (req as { isMultipart?: () => boolean }).isMultipart === 'function'
@@ -89,12 +94,25 @@ async function readInboundBody(req: FastifyRequest): Promise<unknown> {
 
   const parts = (req as unknown as {
     parts: (o?: unknown) => AsyncIterable<MultipartPart>
-  }).parts({ limits: { files: MAX_ATTACHMENTS, fields: 40 } })
+  }).parts({ limits: { files: MAX_FILE_PARTS, fields: 40, fileSize: MAX_ATTACHMENT_BYTES }, throwFileSizeLimit: false })
 
   for await (const part of parts) {
     if (part.type === 'file') {
-      if (attachments.length >= MAX_ATTACHMENTS) continue
+      // X14 — keep only parts that ARE a PDF/DOCX (by content, as chosen
+      // below), so inline images can't use up the slots. Anything else is
+      // listed by name for the "no usable attachment" reply.
+      const listOnly = { filename: part.filename, contentType: part.mimetype, contentBase64: '' }
+      if (attachments.filter(a => a.contentBase64).length >= MAX_ATTACHMENTS) {
+        for await (const chunk of part.file) void chunk   // drain, unbuffered
+        attachments.push(listOnly)
+        continue
+      }
       const buf = await part.toBuffer()
+      // Over the per-file limit: skip it and let the next candidate be tried.
+      if (part.file.truncated || !checkUpload(buf, part.mimetype, PDF_OR_DOCX).ok) {
+        attachments.push(listOnly)
+        continue
+      }
       totalBytes += buf.length
       if (totalBytes > MAX_TOTAL_BYTES) {
         throw new Error('Inbound email payload exceeds the size limit')
@@ -136,7 +154,7 @@ async function readInboundBody(req: FastifyRequest): Promise<unknown> {
 }
 
 type MultipartPart =
-  | { type: 'file';  fieldname: string; filename: string; mimetype: string; toBuffer: () => Promise<Buffer>; value?: undefined }
+  | { type: 'file';  fieldname: string; filename: string; mimetype: string; toBuffer: () => Promise<Buffer>; file: AsyncIterable<Buffer> & { truncated?: boolean }; value?: undefined }
   | { type: 'field'; fieldname: string; value: unknown; filename?: undefined; mimetype?: undefined; toBuffer?: undefined }
 
 // Attachments are chosen by content via checkUpload(…, PDF_OR_DOCX). Legacy
@@ -269,11 +287,16 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
     // content type is sender-controlled (S3). The detected type is what we store.
     let pdfOrDocx: (typeof body.attachments)[number] | undefined
     let mimeType = ''
+    let tooLarge = false
     for (const a of body.attachments) {
-      const checked = checkUpload(Buffer.from(a.contentBase64, 'base64'), a.contentType, PDF_OR_DOCX)
+      const bytes = Buffer.from(a.contentBase64, 'base64')
+      // X14 — an oversized document is skipped, so the next one gets its turn.
+      if (bytes.length > MAX_ATTACHMENT_BYTES) { tooLarge = true; continue }
+      const checked = checkUpload(bytes, a.contentType, PDF_OR_DOCX)
       if (checked.ok) { pdfOrDocx = a; mimeType = checked.mimeType; break }
     }
     if (!pdfOrDocx) {
+      if (tooLarge) return reply.status(413).send({ error: 'Attachment too large (25MB limit)' })
       return reply.status(400).send({
         error: 'No PDF or DOCX attachment found. We only attach PDF/DOCX as new versions.',
         attachments: body.attachments.map(a => ({ filename: a.filename, contentType: a.contentType })),
@@ -281,9 +304,6 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
     }
 
     const buffer = Buffer.from(pdfOrDocx.contentBase64, 'base64')
-    if (buffer.length > 25 * 1024 * 1024) {
-      return reply.status(413).send({ error: 'Attachment too large (25MB limit)' })
-    }
     if (buffer.length === 0) {
       return reply.status(400).send({ error: 'Empty attachment' })
     }
