@@ -128,6 +128,7 @@ export async function cleanupAll(): Promise<void> {
     // Tool calls and messages cascade from the thread.
     await del(() => prisma.agentThread.deleteMany({ where: { orgId } }))
     await del(() => prisma.userRole.deleteMany({ where: { user: { orgId } } }))
+    await del(() => prisma.role.deleteMany({ where: { orgId } }))
     await del(() => prisma.user.deleteMany({ where: { orgId } }))
     await del(() => prisma.organization.delete({ where: { id: orgId } }))
   }

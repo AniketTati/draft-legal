@@ -155,13 +155,16 @@ export async function approvalRoutes(app: FastifyInstance) {
   app.get('/all', { preHandler: requirePermission('configure', 'workflow') }, async (req, reply) => {
     const { orgId } = req.user
 
+    // ESCALATED is included for oversight: older escalations with no target
+    // parked instances in that state (C2), and an admin is who can unstick them.
     const instances = await prisma.approvalInstance.findMany({
-      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       include: {
         steps: {
           where: { status: 'PENDING' },
           orderBy: { stepOrder: 'asc' },
         },
+        definition: { select: { steps: true } },
       },
       orderBy: { submittedAt: 'desc' },
       take: 100,
@@ -195,7 +198,15 @@ export async function approvalRoutes(app: FastifyInstance) {
     const approverMap  = new Map(approvers.map(u => [u.id, u]))
 
     const data = instances.map(instance => {
-      const currentStep = instance.steps.find(s => s.stepOrder === (instance.currentStepOrder > 0 ? instance.currentStepOrder : 1))
+      // Step orders are whatever the workflow definition uses — the builder
+      // and seed number from 0, older definitions from 1. Match exactly
+      // (as /my-queue does); coercing 0 to 1 hid every first-step approval.
+      const currentStep = instance.steps.find(s => s.stepOrder === instance.currentStepOrder)
+      const defOrders = [...new Set(
+        ((instance.definition?.steps ?? []) as Array<{ order?: number }>)
+          .map(d => d.order).filter((o): o is number => typeof o === 'number'),
+      )].sort((a, b) => a - b)
+      const position = defOrders.indexOf(instance.currentStepOrder)
       const submitter = submitterMap.get(instance.submittedById)
       const contract  = contractMap.get(instance.contractId)
       const currentApprover = currentStep ? approverMap.get(currentStep.approverId) : null
@@ -207,7 +218,10 @@ export async function approvalRoutes(app: FastifyInstance) {
         status:            instance.status,
         submittedAt:       instance.submittedAt,
         submittedByName:   submitter?.name ?? 'Unknown',
-        currentStepOrder:  instance.currentStepOrder > 0 ? instance.currentStepOrder : 1,
+        currentStepOrder:  instance.currentStepOrder,
+        // 1-based "step N of M" for display, from the workflow definition.
+        currentStepPosition: position >= 0 ? position + 1 : null,
+        stepCount:         defOrders.length || null,
         currentStepName:   currentStep?.stepName ?? null,
         currentApproverName: currentApprover?.name ?? null,
         currentApproverEmail: currentApprover?.email ?? null,

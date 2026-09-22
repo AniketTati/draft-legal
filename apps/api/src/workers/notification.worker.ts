@@ -10,16 +10,14 @@
 import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
-import { queueNotification } from '../lib/queue.js'
 import type { NotificationJob, EscalationJob, SigningReminderJob } from '../lib/queue.js'
-import { createAuditEvent } from '../lib/audit.js'
-import { AuditAction } from '@clm/types'
 import { sendSigningEmailForSigner } from '../lib/signing-email.js'
 import { sendEmail, isEmailConfigured } from '../lib/mailer.js'
 // L6 #3 — the delivery path. Lives in lib/ rather than here because importing
 // this file constructs a BullMQ Worker as a side effect, so nothing could
 // import it to check whether the preference gate is actually honoured.
 import { deliverNotification } from '../lib/notification-delivery.js'
+import { handleEscalate } from '../lib/approval-escalation.js'
 
 // ─── notify ───────────────────────────────────────────────────────────────────
 // The body lives in lib/notification-delivery.ts so it can be imported and
@@ -31,89 +29,8 @@ async function handleNotify(data: NotificationJob): Promise<void> {
 }
 
 // ─── escalate ─────────────────────────────────────────────────────────────────
-
-async function handleEscalate(data: EscalationJob): Promise<void> {
-  const { instanceId, stepId, orgId, escalateTo } = data
-
-  // Idempotent: if step is already decided, skip
-  const step = await prisma.approvalStep.findUnique({ where: { id: stepId } })
-  if (!step || step.status !== 'PENDING') {
-    console.info('[escalate] step %s already decided (status=%s) — skipping', stepId, step?.status)
-    return
-  }
-
-  if (escalateTo) {
-    // Reassign: mark original step ESCALATED, create new PENDING step for escalateTo
-    const instance = await prisma.approvalInstance.findUnique({ where: { id: instanceId } })
-
-    await prisma.$transaction([
-      prisma.approvalStep.update({
-        where: { id: stepId },
-        data:  { status: 'ESCALATED', decidedAt: new Date() },
-      }),
-      prisma.approvalStep.create({
-        data: {
-          approvalInstanceId: instanceId,
-          orgId,
-          stepOrder:  step.stepOrder,
-          stepName:   step.stepName,
-          approverId: escalateTo,
-          status:     'PENDING',
-          escalateAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // default 48h for escalated step
-        },
-      }),
-    ])
-
-    const contract = instance
-      ? await prisma.contract.findUnique({ where: { id: instance.contractId } })
-      : null
-    const escalateeUser = await prisma.user.findUnique({ where: { id: escalateTo } })
-
-    queueNotification({
-      orgId,
-      userId:       escalateTo,
-      type:         'ESCALATION',
-      title:        'Contract escalated to you for approval',
-      body:         `"${contract?.title ?? 'Contract'}" approval was not acted upon and has been escalated to you.`,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
-      email:        escalateeUser?.email ?? undefined,
-    })
-  } else {
-    // No escalateTo: flag the step and instance as ESCALATED — surface to submitter
-    await prisma.$transaction([
-      prisma.approvalStep.update({
-        where: { id: stepId },
-        data:  { status: 'ESCALATED' },
-      }),
-      prisma.approvalInstance.update({
-        where: { id: instanceId },
-        data:  { status: 'ESCALATED' },
-      }),
-    ])
-
-    // Notify the original approver again
-    const approver = await prisma.user.findUnique({ where: { id: step.approverId } })
-    queueNotification({
-      orgId,
-      userId:       step.approverId,
-      type:         'ESCALATION',
-      title:        'Approval overdue — action required',
-      body:         `An approval assigned to you is overdue. Please review and decide.`,
-      resourceType: 'approval_step',
-      resourceId:   stepId,
-      email:        approver?.email ?? undefined,
-    })
-  }
-
-  createAuditEvent({
-    orgId,
-    action:       AuditAction.APPROVAL_ESCALATED,
-    resourceType: 'approval_instance',
-    resourceId:   instanceId,
-    metadata:     { stepId, escalateTo: escalateTo ?? null },
-  }).catch(() => {})
-}
+// The body lives in lib/approval-escalation.ts so it can be tested without
+// constructing this file's BullMQ Worker.
 
 // ─── signing-reminder ─────────────────────────────────────────────────────────
 // Phase 07 Step 8 — re-emails any still-PENDING signers on a SignatureRequest

@@ -122,7 +122,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         WHERE s."orgId" = ${orgId}
           AND s."approverId" = ${userId}
           AND s.status = 'PENDING'
-          AND s."stepOrder" = GREATEST(i."currentStepOrder", 1)
+          AND s."stepOrder" = i."currentStepOrder"
       `.then(rows => Number(rows[0]?.count ?? 0)),
       prisma.contract.count({
         where: {
@@ -170,7 +170,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       // and legal_ops in the KPI strip so they can spot "1 deal stuck
       // somewhere in the org" without joining each approval queue.
       prisma.approvalInstance.count({
-        where: { orgId, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        where: { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       }),
       // P7.1.1 — Negotiations I own (Maya's primary JTBD). Returns full
       // rows (not just count) because the dashboard renders inline cards

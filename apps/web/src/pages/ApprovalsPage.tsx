@@ -30,6 +30,9 @@ interface AllApprovalRow {
   submittedAt:       string
   submittedByName:   string
   currentStepOrder:  number
+  /** 1-based position of the current step in the workflow, and its step count (C2). */
+  currentStepPosition?: number | null
+  stepCount?:        number | null
   currentStepName:   string | null
   currentApproverName: string | null
   currentApproverEmail: string | null
@@ -386,7 +389,7 @@ export function ApprovalsPage() {
                               ) : (
                                 <>
                                   <div className="font-medium truncate" title={row.currentStepName ?? undefined}>{row.currentStepName ?? '—'}</div>
-                                  <div className="text-ink-400 mt-0.5 tabular-nums">{stepLabel(row.currentStepOrder, row.totalSteps)}</div>
+                                  <div className="text-ink-400 mt-0.5 tabular-nums">{stepLabel(row.currentStepPosition ?? row.currentStepOrder, row.stepCount ?? row.totalSteps)}</div>
                                 </>
                               )}
                             </td>

@@ -69,7 +69,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
     ] = await Promise.all([
       prisma.contract.count({ where: { orgId, deletedAt: null } }),
       prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED' } }),
-      prisma.approvalInstance.count({ where: { orgId, status: 'PENDING' } }),
+      // ESCALATED is still awaiting a decision (C2) — count it as pending.
+      prisma.approvalInstance.count({ where: { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } } }),
       prisma.contract.count({
         where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: expiringHorizon } },
       }),
