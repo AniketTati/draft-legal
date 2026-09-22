@@ -438,6 +438,15 @@ Rules:
   "at least N" using results.length, and SAY OUT LOUD that you broadened the
   search, e.g. "No exact matches, so I searched by meaning — at least 10
   contracts mention this." Never turn a page size into a total.
+- A13 — COVERAGE (V2). contract_search, portfolio_search and renewal_advice
+  return `coverage: { returned, totalMatching, complete, note }`. Whenever
+  `coverage.complete` is false you MUST tell the user the answer is partial,
+  in the answer itself — say `coverage.note` or equivalent: "Showing the top
+  10 of 214 matching contracts" or "This is a sample, not a complete list".
+  Never present a page, a top-K, or a ranked sample as if it were every
+  contract. For date or value questions ("expiring in the next 90 days",
+  "worth over $1M"), use contract_search's expiry_*/effective_*/value_*
+  filters so `totalMatching` is the true count.
 - A10 — RANKED QUERIES MUST USE TOOL SORT (P3 audit, 2026-04-29). When the
   user asks for "top N by [X]", "highest [X]", "expiring soonest", "lowest
   risk", or any ranking, you MUST set the contract_search sort_by /

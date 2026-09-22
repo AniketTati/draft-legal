@@ -269,6 +269,14 @@ const ContractSearchSchema = z.object({
   // failure mode: the LLM just reads the first N rows the DB returned.
   sortBy:    z.enum(['updatedAt', 'value', 'effectiveDate', 'expiryDate', 'createdAt', 'riskScore']).default('updatedAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  // V2 — ranges, so "expiring in the next 90 days" or "worth over $1M" is
+  // answered by a filter (with a true count), not by sorting a sample.
+  expiryDateFrom:    z.string().refine(v => !Number.isNaN(Date.parse(v)), 'expiryDateFrom must be a date').optional(),
+  expiryDateTo:      z.string().refine(v => !Number.isNaN(Date.parse(v)), 'expiryDateTo must be a date').optional(),
+  effectiveDateFrom: z.string().refine(v => !Number.isNaN(Date.parse(v)), 'effectiveDateFrom must be a date').optional(),
+  effectiveDateTo:   z.string().refine(v => !Number.isNaN(Date.parse(v)), 'effectiveDateTo must be a date').optional(),
+  valueMin:          z.number().optional(),
+  valueMax:          z.number().optional(),
 })
 
 const ContractSummarizeSchema = z.object({
@@ -710,6 +718,29 @@ const ContractUpdateSchema = z.object({
   payload: z.record(z.unknown()).default({}),
 })
 
+/**
+ * V2 — how complete a list answer is, carried WITH the rows so the model
+ * can't present a page or a ranked sample as the whole answer. `note` is a
+ * sentence the assistant can say as-is (orchestrator rule A13).
+ */
+export interface Coverage { returned: number; totalMatching: number | null; complete: boolean; note: string }
+export function coverageOf(returned: number, totalMatching: number | null, noun = 'contracts'): Coverage {
+  if (totalMatching == null) {
+    return { returned, totalMatching: null, complete: false,
+      note: `This is a ranked sample of ${returned} ${noun}, not a complete list — this search has no total count.` }
+  }
+  const complete = returned >= totalMatching
+  return { returned, totalMatching, complete,
+    note: complete ? `All ${totalMatching} matching ${noun} are shown.` : `Showing ${returned} of ${totalMatching} matching ${noun}.` }
+}
+
+/** Inclusive date range for a Prisma filter; a bare YYYY-MM-DD `to` covers that whole day. */
+function dateRange(from?: string, to?: string): { gte?: Date; lte?: Date } | undefined {
+  if (!from && !to) return undefined
+  const end = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? `${to}T23:59:59.999Z` : to
+  return { ...(from ? { gte: new Date(from) } : {}), ...(end ? { lte: new Date(end) } : {}) }
+}
+
 export async function internalAiRoutes(app: FastifyInstance) {
   // S2 — the caller's view scope, resolved from their roles (never from the
   // body). Sends 403 and returns null when they may not view `resource`.
@@ -887,6 +918,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (body.status)           where.status           = body.status
     if (body.type)             where.type             = body.type
     if (body.counterpartyName) where.counterpartyName = { contains: body.counterpartyName, mode: 'insensitive' }
+    const rangeWhere: Record<string, unknown> = {}
+    const expiry = dateRange(body.expiryDateFrom, body.expiryDateTo)
+    if (expiry) rangeWhere.expiryDate = expiry
+    const effective = dateRange(body.effectiveDateFrom, body.effectiveDateTo)
+    if (effective) rangeWhere.effectiveDate = effective
+    if (body.valueMin != null || body.valueMax != null) {
+      rangeWhere.value = { ...(body.valueMin != null ? { gte: body.valueMin } : {}), ...(body.valueMax != null ? { lte: body.valueMax } : {}) }
+    }
+    Object.assign(where, rangeWhere)
 
     // Text query: hit title + counterpartyName. Full-text via Elasticsearch
     // is out of scope for D.1.4b — the ES integration layer already exists
@@ -967,6 +1007,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
             deletedAt: null,
             id:        { in: orderedIds },
             ...contractScopeWhere(scope), diligenceRoomId: null,
+            ...rangeWhere,
           }
           if (body.status)           semanticWhere.status           = body.status
           if (body.type)             semanticWhere.type             = body.type
@@ -1010,6 +1051,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Null forces the model onto the `searchMode` branch, which says to
       // report a lower bound and announce that the search was broadened.
       totalMatching: usedFallback ? null : totalMatching,
+      coverage:      coverageOf(finalResults.length, usedFallback ? null : totalMatching),
       results: finalResults.map(c => ({
         ...c,
         value: c.value != null ? Number(c.value) : null,
@@ -1596,6 +1638,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // a candidate container and later zip with any clause hits from
     // `dense` belonging to it.
     let bm25: Array<{ id?: string; score?: number | null }> = []
+    let bm25Total: number | null = null   // V2 — ES's count of keyword matches (the countable half)
     try {
       const filters: Record<string, unknown> = { q: body.query }
       if (body.contractType)     filters.type            = body.contractType
@@ -1614,6 +1657,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
       const esRes = await advancedSearch(body.orgId, filters as never, body.topK * 2)
       bm25 = esRes.hits
+      bm25Total = typeof esRes.total === 'number' ? esRes.total : null
     } catch (err) {
       app.log.warn({ err }, '[portfolio_search] ES advancedSearch failed, dense only')
     }
@@ -1765,10 +1809,25 @@ export async function internalAiRoutes(app: FastifyInstance) {
       if (typeof e === 'string') h.excerpt = e
     })
 
+    // V2 — hits are the top-K by relevance, not everything that matches. The
+    // keyword side is countable (ES total); the semantic side is ranked only.
+    const returnedContracts = new Set(hits.map(h => h.contractId)).size
+    const coverage: Coverage = bm25Total == null
+      ? coverageOf(returnedContracts, null)
+      : {
+          returned: returnedContracts,
+          totalMatching: bm25Total,
+          complete: returnedContracts >= bm25Total,
+          note: returnedContracts >= bm25Total
+            ? `All ${bm25Total} contracts matching the keywords are shown (plus any found by meaning).`
+            : `Showing the ${returnedContracts} most relevant contracts; ${bm25Total} contracts match the keywords, so this is not a complete list.`,
+        }
+
     return reply.send({
       query:   body.query,
       hits,
       total:   hits.length,
+      coverage,
       sources: {
         // Adaptive-router signal: did we actually get to use both
         // ranking sources, or was one down? The agent can read this
@@ -3423,27 +3482,33 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!scope) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), ...(body.contractId ? {} : { diligenceRoomId: null }) }
+    const select = {
+      id: true, title: true, type: true, status: true,
+      counterpartyName: true, metadata: true, effectiveDate: true,
+      expiryDate: true, value: true, currency: true,
+    } as const
+    // V2 — upcoming renewals first (soonest first), then ones that lapsed in
+    // the last 30 days (most recent first). A single expiryDate-asc query
+    // over the whole window filled the page with LAPSED contracts before any
+    // upcoming one, and its page counts were reported as if complete.
+    let contracts
+    let upcomingTotal = 0, lapsedTotal = 0
     if (body.contractId) {
-      where.id = body.contractId
+      contracts = await prisma.contract.findMany({ where: { ...where, id: body.contractId } as never, select, take: 1 })
     } else {
       const now = Date.now()
-      where.expiryDate = {
-        lte: new Date(now + body.leadDays * 24 * 3600 * 1000),
-        gte: new Date(now - 30 * 24 * 3600 * 1000),
-      }
-      where.status = 'EXECUTED'
+      const upcomingWhere = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now), lte: new Date(now + body.leadDays * 24 * 3600 * 1000) } }
+      const lapsedWhere   = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now - 30 * 24 * 3600 * 1000), lt: new Date(now) } }
+      const [upcoming, lapsed, u, l] = await Promise.all([
+        prisma.contract.findMany({ where: upcomingWhere as never, select, orderBy: { expiryDate: 'asc' }, take: body.limit }),
+        prisma.contract.findMany({ where: lapsedWhere as never, select, orderBy: { expiryDate: 'desc' }, take: body.limit }),
+        prisma.contract.count({ where: upcomingWhere as never }),
+        prisma.contract.count({ where: lapsedWhere as never }),
+      ])
+      contracts = [...upcoming, ...lapsed]
+      upcomingTotal = u
+      lapsedTotal = l
     }
-
-    const contracts = await prisma.contract.findMany({
-      where: where as never,
-      select: {
-        id: true, title: true, type: true, status: true,
-        counterpartyName: true, metadata: true, effectiveDate: true,
-        expiryDate: true, value: true, currency: true,
-      },
-      take: body.contractId ? 1 : Math.min(body.limit * 3, 300),
-      orderBy: { expiryDate: 'asc' },
-    })
 
     type Advice = {
       recommendation?: string; confidence?: string; rationale?: string
@@ -3496,8 +3561,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // split by reading the sign of daysUntilExpiry across twenty rows, and
     // anything that reports `total` as "expiring" is now visibly wrong rather
     // than subtly wrong.
-    const expiringSoon    = items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry >= 0).length
-    const recentlyExpired = items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry < 0).length
+    //
+    // V2 — and they are now TRUE counts over the whole window, not counts of
+    // the returned page, so "how many renew in the next 90 days" is right
+    // even when more exist than one page shows.
+    const expiringSoon    = body.contractId ? items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry >= 0).length : upcomingTotal
+    const recentlyExpired = body.contractId ? items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry < 0).length : lapsedTotal
+    const totalMatching = body.contractId ? items.length : upcomingTotal + lapsedTotal
 
     return reply.send({
       items,
@@ -3505,8 +3575,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Read THESE, not `total`, when answering "how many are expiring?".
       expiringSoon,
       recentlyExpired,
+      totalMatching,
+      coverage: coverageOf(items.length, totalMatching),
       windowNote: `Window covers the next ${body.leadDays} days plus the previous 30. `
-        + `${expiringSoon} contract(s) have not yet expired; ${recentlyExpired} already have.`,
+        + `${expiringSoon} contract(s) have not yet expired; ${recentlyExpired} already have.`
+        + (items.length < totalMatching ? ` Only ${items.length} of the ${totalMatching} are listed below.` : ''),
+      // Recommendation mix among the LISTED rows only.
       counts,
       contractId: body.contractId ?? null,
     })
