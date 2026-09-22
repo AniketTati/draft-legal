@@ -392,7 +392,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X3 — Empty stubs.** `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
 
 - **X4 — Lost-update race on `organization.settings`.** `PATCH /organization` and `POST /organization/install-industry-pack` (which awaits the multi-query `seedOrgDefaults` between read and write) read the whole settings blob and write it back, so they can silently undo a concurrent Slack secret rotation/disconnect in `integrations.ts`. Merge atomically in SQL (`settings || $1::jsonb`, `jsonb_set`) or move Slack credentials out of `settings`. (Found in S1 review.)
-- **X5 — `PATCH /organization` lets `configure:integration` (LEGAL_OPS) set `piiRedactionMode`. — IN-PROGRESS.**
+- **X5 — `PATCH /organization` lets `configure:integration` (LEGAL_OPS) set `piiRedactionMode`. — DONE.**
   - **Plan:**
     - Confirmed: the PATCH merges any settings key for a `configure:integration` holder, validates no value, and audits nothing. `piiRedactionMode` is the only protection setting in `org.settings`; the cost cap and AI keys already sit behind `configure:organization` in `admin-ai.ts`. The web never sets it.
     - Fix (`routes/organization.ts`):
@@ -401,6 +401,22 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - `lib/pii-policy.ts` drops this process's cached mode.
     - Acceptance: LEGAL_OPS gets 403 and the mode is unchanged; ADMIN changes it with an audit row; a bad value gets 400; LEGAL_OPS still saves unprotected keys.
     - Test: extend `routes/organization.integration.test.ts`.
+  - **What changed:**
+    - `routes/organization.ts`: changing `piiRedactionMode` requires `configure:organization`. The value must be `redact | tokenize | off`, and the protected-key check uses `Object.hasOwn`, so `constructor` and similar names are ordinary keys.
+    - A real change writes an `AI_SETTINGS_UPDATED` audit row (old and new values) in the same transaction as the settings write. If the audit can't be written, nothing changes.
+    - The cached mode is cleared in this process.
+    - `lib/audit.ts`: `createAuditEvent` takes an optional `within(tx)` write that commits with the audit row.
+  - **Verification:**
+    - `routes/organization.integration.test.ts` now has 11 cases:
+      - LEGAL_OPS is refused; ordinary keys still save; an invalid value gets 400; ADMIN's change is audited once.
+      - An audit failure leaves the mode unchanged.
+      - Built-in object names are treated as ordinary keys.
+    - Against the pre-fix code, 4 fail: refusal, validation, audit, and audit-failure atomicity. The built-in-names case passes either way.
+    - A fresh subagent reviewed this adversarially. It tried key tricks, value tricks, prototype keys and every other writer of `settings`, and found no way to set the mode directly. Its findings are fixed above: audit after commit, prototype-name keys, and a duplicated cache helper.
+    - One finding stays open for X4: LEGAL_OPS can undo an ADMIN's change through the settings read-modify-write race (e.g. `install-industry-pack` writing a stale copy of the settings back). X4 is the next commit.
+  - **Left out:**
+    - Other API replicas keep the old mode for up to 60s (per-process cache).
+    - The PII gaps outside this route are filed as X23.
   - Original note: , turning off PII redaction org-wide, and writes no audit event. Gate security-relevant keys behind `configure:organization` and audit the change. (Found in S1 review.)
 - **X6 — Slack `teamId` is not unique across orgs. — IN-PROGRESS.**
   - **Plan:**
@@ -544,6 +560,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X21 — Own-scope follow-ups (Low).** Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
 - **X22 — Agent feedback trusts a client-supplied trace or session id (Low).** `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
+- **X23 — PII redaction has gaps outside the chat tools (Medium).** Found in X5 review.
+  - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
+  - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
+  - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
 ---
 
 ## Run log
@@ -575,3 +595,4 @@ X7 — DONE — own scope enforced across REST: by-id guard on every contract/ob
 X19 — DONE — invoice contract links must be a live contract of the caller's org (owned, for own scope); auto-match scoped the same way; reconcile bounded; repair migration for pre-fix cross-org links — 6c01291
 X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — 42bbfe2
 X18 — DONE — signer tokens only to callers who can send for signature (plus a signer's own row); tokens masked in logs — (sha: X18)
+X5 — DONE — piiRedactionMode needs configure:organization, a valid value and an audit row committed with the change — (sha: X5)

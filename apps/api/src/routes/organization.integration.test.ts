@@ -7,7 +7,7 @@
  * server-managed `slack` key — otherwise a client echoing back the redacted
  * summary (WelcomeChecklist does exactly this) would wipe the real config.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { getApp, closeApp, makeOrg, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 const SIGNING_SECRET = 'it-slack-signing-secret-0123456789'
@@ -96,5 +96,55 @@ describe('PATCH /organization cannot overwrite server-managed settings', () => {
       expect(slack.teamId).toBe('T123')
       expect(slack.signingSecret).toBe(SIGNING_SECRET)
     }
+  })
+})
+
+// X5 — PATCH /organization is open to configure:integration (LEGAL_OPS). PII
+// redaction is a data-protection control: switching it off sends SSNs, card
+// numbers and dates of birth to the LLM providers, so it needs the admin
+// permission the rest of the AI config needs, a valid value, and an audit row.
+describe('PATCH /organization protects piiRedactionMode', () => {
+  const patch = (roles: string[], settings: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: '/api/v1/organization', headers: auth(org, roles), payload: { settings } })
+  const mode = async () =>
+    ((await prisma.organization.findUniqueOrThrow({ where: { id: org }, select: { settings: true } })).settings as Record<string, unknown>).piiRedactionMode
+
+  it('LEGAL_OPS cannot switch redaction off', async () => {
+    const res = await patch(['LEGAL_OPS'], { piiRedactionMode: 'off' })
+    expect(res.statusCode).toBe(403)
+    expect(await mode()).toBeUndefined()
+  })
+
+  it('LEGAL_OPS still saves ordinary settings', async () => {
+    expect((await patch(['LEGAL_OPS'], { welcomeChecklistDismissed: true })).statusCode).toBe(200)
+  })
+
+  it('only the three real modes are accepted', async () => {
+    expect((await patch(['ADMIN'], { piiRedactionMode: 'none' })).statusCode).toBe(400)
+    expect(await mode()).toBeUndefined()
+  })
+
+  it('an ADMIN can change it, and the change is audited', async () => {
+    expect((await patch(['ADMIN'], { piiRedactionMode: 'tokenize' })).statusCode).toBe(200)
+    expect(await mode()).toBe('tokenize')
+    const events = await prisma.auditEvent.findMany({ where: { orgId: org, action: 'AI_SETTINGS_UPDATED', resourceType: 'organization' } })
+    expect(events).toHaveLength(1)
+    expect(events[0].metadata).toEqual({ changed: { piiRedactionMode: { from: null, to: 'tokenize' } } })
+    // Saving the same value again is not a change.
+    await patch(['ADMIN'], { piiRedactionMode: 'tokenize' })
+    expect(await prisma.auditEvent.count({ where: { orgId: org, action: 'AI_SETTINGS_UPDATED' } })).toBe(1)
+  })
+
+  it('if the audit row cannot be written, the change is not applied either', async () => {
+    const spy = vi.spyOn(prisma, '$transaction').mockRejectedValueOnce(new Error('audit store unavailable'))
+    const res = await patch(['ADMIN'], { piiRedactionMode: 'off' })
+    spy.mockRestore()
+    expect(res.statusCode).toBe(500)
+    expect(await mode()).toBe('tokenize')
+  })
+
+  it('built-in object names are ordinary keys, not protected ones', async () => {
+    expect((await patch(['LEGAL_OPS'], { constructor: 'x', toString: 'y' })).statusCode).toBe(200)
+    expect((await patch(['ADMIN'], { hasOwnProperty: 'z' })).statusCode).toBe(200)
   })
 })

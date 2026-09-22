@@ -5,9 +5,12 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requireAuth } from '../middleware/auth.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { seedOrgDefaults, INDUSTRY_PACK_INFO } from '../lib/org-seed.js'
 import type { IndustryPackId } from '../lib/org-seed.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { clearOrgPiiModeCache } from '../lib/pii-policy.js'
+import { AuditAction } from '@clm/types'
 
 const UpdateOrgSchema = z.object({
   name: z.string().min(1).optional(),
@@ -20,6 +23,14 @@ const UpdateOrgSchema = z.object({
 // `slack`). PATCH /organization must not write them: its merge is shallow, so
 // a client echoing back the redacted summary would wipe the real config.
 const SERVER_MANAGED_SETTINGS = new Set(['slack'])
+
+// X5 — settings that protect data. This route is open to configure:integration
+// (LEGAL_OPS), which could switch PII redaction off org-wide, unaudited. They
+// need the permission the rest of the AI config needs, a valid value, and an
+// audit row for every change.
+const PROTECTED_SETTINGS: Record<string, readonly string[]> = {
+  piiRedactionMode: ['redact', 'tokenize', 'off'],
+}
 
 // Belt-and-braces: never serialize a credential-looking key, at any depth.
 const SECRET_KEY = /secret|token|password|api[_-]?key|private[_-]?key/i
@@ -99,9 +110,24 @@ export async function organizationRoutes(app: FastifyInstance) {
     const incoming = Object.fromEntries(
       Object.entries(body.settings ?? {}).filter(([k]) => !SERVER_MANAGED_SETTINGS.has(k)),
     )
+    const protectedChanges = Object.keys(incoming).filter(k => Object.hasOwn(PROTECTED_SETTINGS, k))
+    if (protectedChanges.length) {
+      if (!await permissionScopeFor(req, 'configure', 'organization')) {
+        return reply.status(403).send({ detail: `Changing ${protectedChanges.join(', ')} requires configure:organization` })
+      }
+      for (const k of protectedChanges) {
+        if (!PROTECTED_SETTINGS[k].includes(incoming[k] as string)) {
+          return reply.status(400).send({ detail: `${k} must be one of: ${PROTECTED_SETTINGS[k].join(', ')}` })
+        }
+      }
+    }
     const newSettings = { ...currentSettings, ...incoming }
 
-    const updated = await prisma.organization.update({
+    const changed: Record<string, { from: unknown; to: unknown }> = {}
+    for (const k of protectedChanges) {
+      if (currentSettings[k] !== incoming[k]) changed[k] = { from: currentSettings[k] ?? null, to: incoming[k] }
+    }
+    const write = (db: Pick<typeof prisma, 'organization'>) => db.organization.update({
       where: { id: req.user.orgId },
       data: {
         ...(body.name && { name: body.name }),
@@ -110,6 +136,23 @@ export async function organizationRoutes(app: FastifyInstance) {
         settings: newSettings as any,
       },
     })
+    let updated: Awaited<ReturnType<typeof write>> | undefined
+    if (Object.keys(changed).length) {
+      // The change and its audit row commit together.
+      await createAuditEvent({
+        orgId:        req.user.orgId,
+        userId:       req.user.sub,
+        action:       AuditAction.AI_SETTINGS_UPDATED,
+        resourceType: 'organization',
+        resourceId:   req.user.orgId,
+        metadata:     { changed },
+        ipAddress:    req.ip,
+      }, { within: async tx => { updated = await write(tx) } })
+      clearOrgPiiModeCache(req.user.orgId)
+    } else {
+      updated = await write(prisma)
+    }
+    if (!updated) return reply.status(500).send({ detail: 'Organization update failed' })
 
     return reply.send({
       id: updated.id,

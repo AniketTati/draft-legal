@@ -88,7 +88,13 @@ export function hashAuditRow(row: {
   return crypto.createHash('sha256').update(payload).digest('hex')
 }
 
-export async function createAuditEvent(params: AuditParams): Promise<void> {
+export async function createAuditEvent(
+  params: AuditParams,
+  // Run a write in the same transaction as the audit row, so a change and
+  // its record commit together: a failed audit can't leave a silent change
+  // (X5). Re-run on a serialization retry, so it must be idempotent.
+  opts: { within?: (tx: Prisma.TransactionClient) => Promise<void> } = {},
+): Promise<void> {
   // Lookup the previous event for this org, then create the new one
   // with prevHash + hash. We use a transaction with serializable
   // isolation to avoid two concurrent writes both reading the same
@@ -106,6 +112,7 @@ export async function createAuditEvent(params: AuditParams): Promise<void> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       await prisma.$transaction(async (tx) => {
+        await opts.within?.(tx)
         const prev = await tx.auditEvent.findFirst({
           where: { orgId: params.orgId },
           orderBy: { createdAt: 'desc' },
