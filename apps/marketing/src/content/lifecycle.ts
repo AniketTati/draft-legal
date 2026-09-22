@@ -12,11 +12,11 @@ export const lifecycle: Stage[] = [
     slug: 'intake',
     step: 1,
     name: 'Intake',
-    blurb: 'Capture every contract request — from email, Slack, or a portal — and route it.',
+    blurb: 'Capture every contract request through an intake form or the API — and route it.',
     agent: 'Intake + Classify Agents',
     details: [
       'Auto-classify type, priority, counterparty, value, jurisdiction',
-      'Pull data from Salesforce, HubSpot, your ticketing tool',
+      'Planned: pull data from Salesforce, HubSpot, and ticketing tools',
       'Route to the right legal owner or auto-approve simple NDAs',
     ],
   },
@@ -53,7 +53,7 @@ export const lifecycle: Stage[] = [
     details: [
       'Route by value, contract type, jurisdiction, counterparty risk',
       'Approver sees an AI summary + risk flags + diff vs. template',
-      'Slack and Teams approvals so legal doesn\'t become a bottleneck',
+      'Approve from Slack (Teams gets notification cards) so legal doesn\'t become a bottleneck',
     ],
   },
   {

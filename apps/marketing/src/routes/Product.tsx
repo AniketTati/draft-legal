@@ -111,7 +111,7 @@ export default function Product() {
                     {idx === 2 &&
                       'When the redline returns, detects every change against your fallback positions, ranks by deal-breaker risk, and proposes counter-language with rationale. The negotiator stays in control.'}
                     {idx === 3 &&
-                      'Routes by your rules — by value, type, or counterparty. Each approver sees an AI summary, the diff, and the risk flags. Slack and Teams approvals supported.'}
+                      'Routes by your rules — by value, type, or counterparty. Each approver sees an AI summary, the diff, and the risk flags. Approvers can decide from Slack; Teams receives notification cards.'}
                     {idx === 4 &&
                       'Generates the signing packet, sends tokenized links to external signers, applies cryptographic signatures with embedded certificates, and produces a tamper-evident final PDF.'}
                     {idx === 5 &&

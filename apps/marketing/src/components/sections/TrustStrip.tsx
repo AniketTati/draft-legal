@@ -5,7 +5,7 @@ const items = [
   { icon: Lock, label: 'Encryption at rest & in transit' },
   { icon: ShieldCheck, label: 'RBAC with action × resource × scope' },
   { icon: FileSearch, label: 'Append-only audit log' },
-  { icon: KeyRound, label: 'JWT (RS256) + optional SAML SSO' },
+  { icon: KeyRound, label: 'JWT (HS256) sessions · SSO on the roadmap' },
   { icon: ScrollText, label: 'AI plans gated by human approval' },
   { icon: Database, label: 'Postgres row-level isolation' },
 ]

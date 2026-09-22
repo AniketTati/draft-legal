@@ -148,11 +148,11 @@ export default function Contact() {
                       <Check className="h-6 w-6" />
                     </span>
                     <h2 className="mt-5 text-xl font-bold text-slate-900">
-                      Thanks — we'll be in touch.
+                      Thanks — we've got your message.
                     </h2>
                     <p className="mt-2 max-w-sm text-sm leading-6 text-slate-600">
-                      You should hear from us within one business day. In the meantime, the full
-                      product is on GitHub if you want to look around.
+                      We'll reply by email. In the meantime, the full product is on GitHub if you
+                      want to look around.
                     </p>
                   </div>
                 ) : (

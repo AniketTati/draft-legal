@@ -11,17 +11,17 @@ const sections = [
   {
     icon: KeyRound,
     title: 'Authentication & authorization',
-    body: 'JWT (RS256) with 15-minute access tokens and 7-day refresh. SAML / OIDC SSO stubs are wired in the UI; full IdP integration is on the roadmap. Authorization is enforced server-side as {action × resource × scope} triples — there are no client-only checks.',
+    body: 'JWT (HS256) with 15-minute access tokens and 7-day refresh. SAML / OIDC SSO is on the roadmap — not available yet. Authorization is enforced server-side as {action × resource × scope} triples — there are no client-only checks.',
   },
   {
     icon: ShieldCheck,
     title: 'Role-based access control',
-    body: 'Granular RBAC with the Permission Engine: every API call passes through requirePermission(). Roles are composable, scopes can be org-wide or matter-scoped, and changes are versioned in the audit log.',
+    body: 'Granular RBAC with the Permission Engine: every API call passes through requirePermission(). Each user holds one or more of the built-in roles and gets the combined permissions; a permission applies org-wide or only to the user\'s own records. Role changes are recorded in the audit log. Custom roles and matter-level scopes are planned.',
   },
   {
     icon: FileSearch,
     title: 'Append-only audit log',
-    body: 'Every state-changing action — by humans or agents — is recorded with actor, IP, timestamp, payload, and a chained hash. Logs are append-only and exportable. Agent plans are logged before execution; approvals are logged with the plan they approved.',
+    body: 'State-changing actions — by humans or agents — are recorded with actor, IP, timestamp, payload, and a chained hash, so altering a past entry is detectable. Agent actions are recorded with the arguments that were applied. An in-app audit viewer, audit export, and database-level append-only enforcement are planned.',
   },
   {
     icon: Lock,
@@ -41,7 +41,7 @@ const sections = [
   {
     icon: ScrollText,
     title: 'Compliance roadmap',
-    body: 'SOC 2 Type II is on our roadmap — not yet audited; in the meantime, self-hosting keeps your contracts on your own infrastructure. GDPR: the API provides data-export and deletion endpoints, and self-hosting keeps you in control of data residency. HIPAA-aligned controls are planned for Enterprise.',
+    body: 'SOC 2 Type II is on our roadmap — not yet audited; in the meantime, self-hosting keeps your contracts on your own infrastructure. GDPR: dedicated data-export and deletion endpoints are planned; today, self-hosting keeps data residency and deletion in your hands. HIPAA-aligned controls are planned for Enterprise.',
   },
 ]
 

@@ -1,7 +1,6 @@
 import { useParams, Navigate, Link } from 'react-router-dom'
 import { ChevronRight, Download, Sparkles } from 'lucide-react'
 import { templates } from '@/content/templates'
-import { EmailCapture } from '@/components/sections/EmailCapture'
 import { CtaStrip } from '@/components/sections/CtaStrip'
 import { SEO } from '@/lib/seo'
 import { SITE_URL } from '@/lib/utils'
@@ -120,18 +119,14 @@ export default function TemplateDetail() {
                     </h3>
                   </div>
                   <p className="mt-3 text-xs leading-5 text-slate-600">
-                    Drop your work email — we'll send the .docx and add you to product updates
-                    (one email a month, unsubscribe anytime).
+                    Free to use. No email required.
                   </p>
-                  <div className="mt-4">
-                    <EmailCapture source={`template_${t.slug}`} cta="Email it to me" />
-                  </div>
                   <a
                     href={t.downloadFile}
                     download
-                    className="mt-3 block text-center text-xs text-slate-500 underline-offset-4 hover:text-emerald-700 hover:underline"
+                    className="mt-4 block rounded-md bg-emerald-700 px-4 py-2.5 text-center text-sm font-medium text-white hover:bg-emerald-800"
                   >
-                    or download directly →
+                    Download the .docx →
                   </a>
                 </div>
 
