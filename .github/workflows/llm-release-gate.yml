@@ -1,7 +1,7 @@
 # Pre-release LLM gate — run the golden corpora against a DEPLOYED environment
 # before you promote it.
 #
-# The everyday PR gate (ci.yml, tiers 1 and 2) proves the code does the right
+# The everyday PR gate (ci.yml — tier 1 today; tier 2 is a TODO there) proves the code does the right
 # thing given what the model said. It is blind to prompt and model regressions
 # by construction, because it replays or stubs the model. That is the correct
 # trade for something that must run on every PR in seconds, for free, on forks.

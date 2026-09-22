@@ -161,6 +161,9 @@ time, and now gates merges.
 - **Real features:** per-change redline accept/reject, playbook comparison,
   inline approval, PAdES/X.509 e-signature (tamper-evident), durable Yjs collab
   persistence.
+  - *Correction (2026-09-23, FIX_TRACKER H3):* the Yjs work persists collab
+    state server-side (`collab_states`), but the editor is not bound to it, so
+    live multi-user co-editing is not available. See BUILD_TRACKER W2 2.4.
 - **Parallel approvals:** N-of-M with short-circuit + deadlock-safe clamping.
 - **BYOK:** per-org API keys are actually used at inference time.
 - **Prompt-injection defenses** on untrusted contract text.

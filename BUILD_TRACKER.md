@@ -313,7 +313,7 @@ Three distinct query patterns, each needing a different approach:
 **Frontend**
 - [x] ContractsPage: facets sidebar (type, status, jurisdiction, risk band, expiring-soon, 7 clause flags), Filters button with active count badge
 - [x] ContractsPage: risk score column, advanced search via `/search/advanced` when filters active
-- [x] ContractDetailPage: "Ask AI" tab — chat UI with suggested questions, [Clause N] citations, streaming feel
+- [~] ContractDetailPage: "Ask AI" tab — chat UI with suggested questions, [Clause N] citations, streaming feel — *(2026-09-23, FIX_TRACKER H3: this tab no longer exists; contract Q&A lives in the side agent rail.)*
 - [x] ContractDetailPage: clause flags badges (amber) on Overview tab
 - [x] ContractDetailPage: per-field confidence indicators (green/yellow/red dot), source quote tooltip on hover, issue warning
 - [x] ContractDetailPage: risk badge on AI Summary card
@@ -867,7 +867,7 @@ After (Phase 3.3):
 **Status:** `[x] Done` (8 of 10 backend items, 6 of 7 frontend items, agents deferred to V1.5)
 **Acceptance:** ✓ Send contract for signature → SignerPortal renders document → signer types name → contract auto-filed as EXECUTED with signed-PDF certificate appended.
 
-> **Design principle (kept):** Fully self-hosted. `pdf-lib` for PDF certificate stamping. Lazy-loaded `nodemailer` for email when SMTP is set. `pdf-lib` X.509 / PAdES cryptographic signing deferred to V1.5 — current legal record is typed-name + IP + UA + timestamp anchored in audit_events. (See ADL 2026-03-17.)
+> **Design principle (kept):** Fully self-hosted. `pdf-lib` for PDF certificate stamping. Lazy-loaded `nodemailer` for email when SMTP is set. `pdf-lib` X.509 / PAdES cryptographic signing deferred to V1.5 — current legal record is typed-name + IP + UA + timestamp anchored in audit_events. (See ADL 2026-03-17.) *Update: PAdES signing shipped 2026-07-07 (W2 2.7).*
 
 #### Checklist
 **Backend**
@@ -884,7 +884,7 @@ After (Phase 3.3):
 - [x] **Reminder scheduler** (BullMQ delayed jobs): T-3d "first" + T-1d "final" reminders scheduled at send time + manual reminders fire immediately. Worker rechecks SR/Signer status before sending; SEQUENTIAL flows only nudge the lowest signOrder bucket.
 - [x] **Email helper** (`apps/api/src/lib/signing-email.ts`): always console-logs the link (dev-friendly), sends real email if `SMTP_HOST` is set (lazy-loaded nodemailer, async, non-fatal on failure). HTML + plain-text bodies.
 - [x] Audit events: SIGNATURE_SENT, SIGNATURE_COMPLETED, SIGNATURE_VOIDED + per-event SignatureEvent rows (SENT/VIEWED/SIGNED/DECLINED/VOIDED/REMINDED/COMPLETED + auto-EXPIRED).
-- [ ] X.509 / PAdES cryptographic signing (deferred to V1.5)
+- [x] X.509 / PAdES cryptographic signing — *shipped 2026-07-07 (W2 2.7, `lib/pades-signing.ts`); was listed here as deferred (corrected 2026-09-23, FIX_TRACKER H3).*
 
 **Frontend**
 - [ ] ~~Drag signature fields onto PDF preview~~ (V2 — current model is typed-name acceptance below the document, which is sufficient for binding under most jurisdictions)
@@ -1031,9 +1031,9 @@ After (Phase 3.3):
 
 #### Core Admin (build first — these support the platform itself)
 - [x] Bulk CSV import: upload → validate → preview → confirm → per-row results (`POST /contracts/bulk-import`, `lib/csv.ts`, `BulkImportDialog.tsx`; verified by probe P59)
-- [x] RBAC manager: admin UI to create roles, assign permissions (`AdminRolesPage.tsx`, `routes/admin-users.ts`; verified by probe P60)
+- [~] RBAC manager: admin UI to create roles, assign permissions (`AdminRolesPage.tsx`, `routes/admin-users.ts`; verified by probe P60) — *(2026-09-23, FIX_TRACKER H3: assigning roles to users works; the roles page is read-only — creating or editing roles is not built.)*
 - [x] Onboarding setup wizard (`OnboardingWizard.tsx` — industry pack + first contract; invites via dashboard WelcomeChecklist)
-- [x] Admin settings panel (`AdminOrgPage.tsx` — General / Alert Rules / AI Config / System Dashboard / Data Management; flags in `organization.settings` JSONB)
+- [~] Admin settings panel (`AdminOrgPage.tsx` — General / Alert Rules / AI Config / System Dashboard / Data Management; flags in `organization.settings` JSONB) — *(2026-09-23, FIX_TRACKER H3: General and AI Config are real; Alert Rules, System Dashboard and Data Management are "Coming soon" placeholders.)*
 - [x] Team workload view (`TeamPage.tsx`, `GET /team/workload`)
 - [~] Performance: targeted indexes (orgId+status, versionId+isSubChunk, pgvector IVFFlat) + Redis caching for cost caps & agent session memory — no systematic query-plan pass yet
 

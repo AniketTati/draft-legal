@@ -15,16 +15,17 @@ node scripts/evals/run.mjs --tier t1 --baseline          # accept the current st
 | | Needs | Cost | Runs | Size (2026-08-16) |
 |---|---|---|---|---|
 | **t1** | nothing | $0 | blocking, every PR (incl. forks) | 5 checks · 58 assertions |
-| **t2** | Postgres, API, replay fixtures | $0 | blocking, every PR | 13 checks · 172 assertions |
+| **t2** | Postgres, API, replay fixtures | $0 | **not yet in CI** — run locally (`ci.yml` runs t1 only; adding t2 is a TODO there) | 13 checks · 172 assertions |
 | **t3** | all of the above + a model key | real money | nightly on `main`, never a PR | 11 checks · 235 assertions |
 
 t1 and t2 need **no API key**, which is what makes them safe to block fork PRs
-on — this repo is public, and forks cannot read secrets.
+on — this repo is public, and forks cannot read secrets. Today only t1 blocks
+PRs; t2 needs CI services first (see the `agent-evals` job in `ci.yml`).
 
 A t2 check may stub the model rather than replay it. `l15-empty-turn` drives
 `run_agent_chat_stream` with a stub LLM and `needs: ['venv']` only — no
-database, no API, no key — which is how model-response HANDLING gets tested on
-every PR while the model itself stays out of the loop.
+database, no API, no key — which is how model-response HANDLING can be tested
+without the model in the loop — once t2 runs in CI, on every PR.
 
 **The nightly t3 workflow is not enabled**, and would fail on first dispatch:
 `.github/workflows/nightly-evals.yml` has no `services:`, no install and no

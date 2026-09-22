@@ -41,9 +41,9 @@ The market's two leaders prove the thesis: **Harvey** has the intelligence (anal
 
 | | |
 |---|---|
-| 🤖 **Agent-first** | Seven specialist agents (review, draft, redline, approve, portfolio, ask, assist) on a LangGraph orchestrator — grounded in *your* contracts and cited so you can verify every answer. |
-| 📑 **Extract + cite** | Drop in any contract; every clause, date, and dollar is extracted, risk-scored, and cited to the source page. |
-| 📊 **Portfolio intelligence** | Hybrid retrieval (pgvector + Elasticsearch + RRF fusion) lets the agent reason across your *entire* contract portfolio — pricing benchmarks, exposure, what auto-renews. |
+| 🤖 **Agent-first** | A chat assistant with ~30 tools over *your* contracts — search, cite, compare, draft, redline, route approvals — every write proposed on a confirm card first, and most undoable. Eight specialist agents (review, draft, redline, approval summary, playbook review, assist, ask, portfolio) run as background jobs and endpoints; the ask and portfolio agents have no UI yet. |
+| 📑 **Extract + cite** | Drop in any contract; clauses, dates, and values are extracted, risk-scored, and cited to the clause and section they came from (jump-to-page is planned). |
+| 📊 **Portfolio intelligence** | Hybrid retrieval (pgvector + Elasticsearch + RRF fusion) lets the agent search across your whole portfolio — exposure, counterparties, what auto-renews and when notice is due — and say when an answer is a sample rather than the full set. |
 | ✍️ **Redline & negotiate** | Ask for counter-proposals; get conservative / moderate / aggressive options with exact replacement language, apply in a click. |
 | ✅ **Full lifecycle** | Approval workflows, in-platform e-signature, and post-signature obligation tracking — "on rails." |
 | 🔑 **Bring your own model** | Anthropic, OpenAI, or Google Gemini — configure your provider and key. No vendor lock-in. |
