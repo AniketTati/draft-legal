@@ -33,6 +33,7 @@ import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
 import { planDraft } from '../lib/draft-plan.js'
+import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope } from '../lib/agent-scope.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
@@ -4495,6 +4496,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     await advanceWorkflow(body.instanceId, prisma)
 
     const updated = await prisma.approvalInstance.findUnique({ where: { id: body.instanceId } })
+    fireWebhook(body.orgId, 'approval.decided', {
+      instanceId: body.instanceId, contractId: instance.contractId, stepId: body.stepId, decision: body.decision,
+      instanceStatus: updated?.status ?? null, decidedBy: body.userId, via: 'agent',
+    })
     return reply.send({
       instanceId:     body.instanceId,
       instanceStatus: updated?.status,

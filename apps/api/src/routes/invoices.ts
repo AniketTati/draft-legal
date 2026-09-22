@@ -248,6 +248,11 @@ export async function invoiceRoutes(app: FastifyInstance) {
       },
     })
 
+    // H2 — advertised to webhook subscribers, never emitted until now.
+    fireWebhook(orgId, 'invoice.created', {
+      invoiceId: created.id, contractId: created.contractId, vendorName: created.vendorName,
+      amount: Number(created.amount), currency: created.currency, status: created.status,
+    })
     return reply.status(201).send({ invoice: created, matchReason: match?.reason ?? null })
   })
 

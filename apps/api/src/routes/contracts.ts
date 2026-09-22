@@ -1120,6 +1120,12 @@ export async function contractRoutes(app: FastifyInstance) {
       }).catch(() => {})
     }
 
+    // H2 — advertised to subscribers since P10A, never emitted until now.
+    fireWebhook(effectiveOrgId, 'contract.updated', {
+      contractId: id, title: updated.title, status: updated.status,
+      changes: Object.keys(body), source: userId === 'system' ? 'system' : 'user',
+    })
+
     await createAuditEvent({
       orgId: effectiveOrgId,
       userId: userId === 'system' ? undefined : userId,
@@ -1656,6 +1662,13 @@ export async function contractRoutes(app: FastifyInstance) {
       resourceType: 'contract', resourceId: created.id,
       metadata: { relationshipType, parentContractId: parent.id, source: 'amendment_flow' },
       ipAddress: req.ip,
+    })
+    // H2 — `amendment.created` was advertised but never emitted. This route
+    // creates every related document (amendment, SOW, order form, renewal,
+    // exhibit); the event names the relationship so subscribers can filter.
+    fireWebhook(orgId, 'amendment.created', {
+      contractId: created.id, parentContractId: parent.id, relationshipType,
+      title: created.title, type: created.type,
     })
 
     return reply.status(201).send({

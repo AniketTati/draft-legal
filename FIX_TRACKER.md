@@ -358,11 +358,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## H2 — Half the advertised webhook events never fire
 
-- **Status:** TODO
+- **Status:** DONE
 - **Severity:** Medium
 - **Evidence:** subscribers can choose 16 events; 8 never fire — `contract.updated`, `contract.expired`, `signature.voided`, `approval.decided`, `obligation.extracted`, `obligation.overdue`, `invoice.created`, `amendment.created`. The matching Slack/Teams cards never fire either.
 - **Acceptance criteria:** either each event is emitted at its real trigger point (preferred where the trigger already exists in code) or it is removed from the subscribable list; the list a user sees matches what can actually arrive; a test asserts the advertised set equals the emitted set.
 - **Worklog:**
+  - **Plan (confirmed; recorded after implementation — I wrote this entry late, the analysis came first):** `WEBHOOK_EVENTS` (`integrations.ts`) lists 16 events; `fireWebhook` literals exist for 8. For each missing event I looked for its real trigger: `contract.updated` → `PATCH /contracts/:id`; `approval.decided` → `POST /approvals/:id/decide` and the agent's `/tools/approval_decide`; `signature.voided` → signer decline and sender void (`signatures.ts`); `obligation.extracted` → `lib/obligation-extract.ts` after `createMany`; `obligation.overdue` → `scanObligations` at its existing once-per-obligation OBLIGATION_OVERDUE audit; `invoice.created` → `POST /invoices`; `amendment.created` → `POST /contracts/:id/amendments`. `contract.expired` has **no** trigger: nothing moves a contract to EXPIRED (`VALID_TRANSITIONS` has no edge into it; the only automatic EXPIRED is on signature requests), so it is removed from the subscribable list rather than inventing a status job. Payloads use the fields the Slack/Teams formatters already expect (`decision`, `contractId`, `daysOverdue`, `description`, `dueDate`, `reason`), so those cards now render too.
+  - **Changed:** emitters added in `routes/contracts.ts` (PATCH → `contract.updated` with `changes` and `source: user|system`; amendments route → `amendment.created` with `relationshipType`), `routes/approvals.ts` + `routes/internal-ai.ts` (`approval.decided`, with `instanceStatus`, `decidedBy`, `via: 'agent'`), `routes/signatures.ts` (`signature.voided` ×2), `lib/obligation-extract.ts` (`obligation.extracted` with count), `lib/obligation-scanner.ts` (`obligation.overdue`, once per obligation), `routes/invoices.ts` (`invoice.created`). `integrations.ts`: `contract.expired` removed from `WEBHOOK_EVENTS` with the reason. The web list reads `/admin/integrations/events`, so it updates automatically.
+  - **Verified:** `lib/webhook-events-coverage.test.ts` (unit) asserts **the advertised set equals the emitted set**, from source. It fails with the emitters removed and passes now. `routes/webhook-emit.integration.test.ts` (5) drives the real routes and the scanner with deliveries captured at the queue: `contract.updated`, `amendment.created`, `invoice.created`, `approval.decided` (APPROVED) and `obligation.overdue` (exactly once across two scans). **All 5 fail without the emitters.** Full suite: typecheck, lint (0 errors), api unit 199/199, api integration 109/109.
+  - **Notes:** existing webhooks that subscribed to `contract.expired` keep it in their stored list; it never fired before and still won't. `teams-formatter.ts` keeps its unused `contract.expired` case for when an expiry transition exists. `signature.voided` and `obligation.extracted` are covered by the source-level set test only, since a behavioural test would need a signing flow or an LLM extraction.
+
 
 ## H3 — README, CHANGELOG and BUILD_TRACKER describe a different product
 
@@ -418,4 +423,5 @@ C12 — VERIFY-PENDING — drafting plans from the user's stated terms (no hard-
 C13 — DONE — lost parse jobs (unparsed upload, PENDING >30 min, no queued job) surface as FAILED with a retry path; backlogs and PENDING-by-default contracts untouched — 5bd2482
 V1 — VERIFY-PENDING — playbook review rendered on the contract rail in document order, findings link to clauses, explained empty states; needs a visual check — b4d4da1
 V2 — VERIFY-PENDING — list tools carry coverage (N of M / sample); contract_search date+value filters; renewals upcoming-first with true counts; rule A13; needs the live probe — 9dc95ed
-H1 — DONE — marketing claims made true or marked planned; broken email capture removed; contact submissions now notify a configured inbox — (sha: H1)
+H1 — DONE — marketing claims made true or marked planned; broken email capture removed; contact submissions now notify a configured inbox — 576474c
+H2 — DONE — the 7 never-fired webhook events now emit at their real triggers; contract.expired (no trigger exists) removed from the list; advertised == emitted test — (sha: H2)

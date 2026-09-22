@@ -15,6 +15,7 @@ import { applyPiiPolicy } from './pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from './costCap.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { fireWebhook } from './webhook-events.js'
 
 export interface ExtractParams {
   orgId:      string
@@ -144,6 +145,8 @@ export async function extractObligationsForContract({
         sectionRef:  o.sectionRef ? String(o.sectionRef) : null,
       })),
     })
+    // H2 — advertised to webhook subscribers, never emitted until now.
+    fireWebhook(orgId, 'obligation.extracted', { contractId, count: Math.min(incoming.length, 100) })
   }
 
   // Update metadata with summary + extraction timestamp.

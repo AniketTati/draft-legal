@@ -23,6 +23,7 @@ import { queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 import { renewalNotice } from './renewal-notice.js'
+import { fireWebhook } from './webhook-events.js'
 
 export interface ScanOptions {
   /** Only walk this one org. Omit to scan all orgs. */
@@ -186,6 +187,11 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
               daysOverdue: -daysOut,
               dueDate: o.dueDate?.toISOString().slice(0, 10),
             },
+          })
+          // H2 — once per obligation, like the audit event it rides on.
+          fireWebhook(o.contract.orgId, 'obligation.overdue', {
+            contractId: o.contract.id, obligationId: o.id, description: o.description,
+            dueDate: o.dueDate?.toISOString().slice(0, 10) ?? null, daysOverdue: -daysOut,
           })
         }
       } catch (err) {

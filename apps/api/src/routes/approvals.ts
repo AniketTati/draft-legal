@@ -20,6 +20,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { advanceWorkflow } from '../lib/workflow-engine.js'
+import { fireWebhook } from '../lib/webhook-events.js'
 import { queueNotification, notificationQueue } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
 
@@ -395,6 +396,11 @@ export async function approvalRoutes(app: FastifyInstance) {
     await advanceWorkflow(instanceId, prisma)
 
     const updatedInstance = await prisma.approvalInstance.findUnique({ where: { id: instanceId } })
+    // H2 — advertised to subscribers since P10A, never emitted until now.
+    fireWebhook(orgId, 'approval.decided', {
+      instanceId, contractId: instance.contractId, stepId, decision,
+      instanceStatus: updatedInstance?.status ?? null, decidedBy: userId,
+    })
     return reply.send({
       instanceId,
       instanceStatus:     updatedInstance?.status,

@@ -49,7 +49,8 @@ export const WEBHOOK_EVENTS = [
   'contract.uploaded',
   'contract.updated',
   'contract.executed',
-  'contract.expired',
+  // 'contract.expired' removed (H2): nothing in the product moves a contract
+  // to EXPIRED, so a subscriber would wait for an event that never comes.
   'signature.sent',
   'signature.completed',
   'signature.voided',

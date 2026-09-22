@@ -609,6 +609,11 @@ export async function signatureRoutes(app: FastifyInstance) {
         resourceId: sr.contractId,
         metadata: { signatureRequestId: sr.id, declinedBy: signer.email, reason: body.reason },
       })
+      // H2 — a decline voids the request; subscribers were promised this event.
+      fireWebhook(sr.orgId, 'signature.voided', {
+        contractId: sr.contractId, signatureRequestId: sr.id,
+        reason: `${signer.name} declined${body.reason ? `: ${body.reason}` : ''}`,
+      })
 
       return reply.send({ ok: true })
     },
@@ -680,6 +685,7 @@ export async function signatureRoutes(app: FastifyInstance) {
         resourceId: id,
         metadata: { signatureRequestId: srId },
       })
+      fireWebhook(orgId, 'signature.voided', { contractId: id, signatureRequestId: srId, reason: 'Voided by sender' })
 
       return reply.send({ ok: true })
     },
