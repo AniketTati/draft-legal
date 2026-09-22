@@ -107,9 +107,13 @@ async def run_portfolio_query(question: str, org_id: str) -> dict[str, Any]:
     filters["limit"] = 50  # fetch up to 50 for portfolio queries
 
     # Step 2: Fetch contracts from API
+    # All three internal-service headers (see routes/approval.py): without
+    # x-org-id the API resolves the caller's org to 'system', and the org-scoped
+    # search matches nothing (FIX_TRACKER X15, same defect as C8).
     headers = {
         "x-internal-service": "agents",
         "x-internal-secret": settings.internal_service_secret,
+        "x-org-id": org_id,
     }
     contracts: list[dict] = []
     try:

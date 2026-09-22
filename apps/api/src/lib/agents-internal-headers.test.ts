@@ -18,6 +18,7 @@ const AGENTS = join(process.cwd(), '..', 'agents', 'app')
 const ORG_SCOPED_CALLERS = [
   'routes/redline.py',
   'routes/approval.py',
+  'agents/portfolio_agent.py',   // X15 — searched as org 'system' and matched nothing
 ]
 
 describe('agents service → API internal headers', () => {
