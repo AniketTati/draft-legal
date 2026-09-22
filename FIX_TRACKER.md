@@ -793,7 +793,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `PATCH /contracts/:id` accepts any `matterId` (`schemas.ts:92`, `contracts.ts`). `GET /matters/:id` then lists the contract without an org filter, and the list's count includes it. `/:id/amendments` copies the foreign `matterId` onto new amendments.
     - `POST` / `PATCH /matters` accept another org's `counterpartyId` or `ownerId` (`matters.ts:37,43,170,203`). The matter view then returns that org's counterparty name and website, and the user's name, email and avatar.
     - Check each id against the caller's org, and filter the matter's includes by org. (Found in X20 review; both confirmed.)
-- **X26 — Binder re-split deletes whatever `metadata._splitInto` names (Low).** `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
+- **X26 — Binder re-split deletes whatever `metadata._splitInto` names (Low). — DONE.**
+  - **Plan:** `_`-prefixed metadata keys hold server state: analysis reports and the binder split's `_splitInto`. Users never write them; the web doesn't, and only the agents service (as `system`) does, for its own reports. `PATCH /contracts/:id` will refuse `_` keys from anyone else (400). Test: `routes/metadata-reserved.integration.test.ts`.
+  - **What changed:** `PATCH /contracts/:id` refuses (400) metadata keys starting with `_` from anyone but the internal agents service. Ordinary keys merge as before (C4).
+  - **Verification:**
+    - `routes/metadata-reserved.integration.test.ts` has 3 cases: a user's `_splitInto` refused, ordinary keys saved, and the agents service still writes `_redlineStatus`. The first fails pre-fix.
+    - C4's `contract-metadata` test had written `_redlineStatus` as an ADMIN user, standing in for the redline failure path. It now uses the agents service headers, which is that path's real caller; its merge assertion is unchanged.
+  - Original note: `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
+
 ---
 
 ## Run log
@@ -838,4 +845,5 @@ X16 — VERIFY-PENDING — long binders sampled at likely agreement boundaries w
 X12 — DONE — xmldom override narrowed to mammoth's range (^0.8.13 → 0.8.15); DOCX extraction works again; lockfile change flagged for review — 35a217f
 X13 — DONE — DOCX/XLSX real inflated size bounded (100MB) at upload and before mammoth; zip bombs refused without expanding — bb55aaa
 X25 — DONE — matter links (contract matterId, matter counterparty/owner) must be same-org; matter views org-filtered; repair migration — b661002
-X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be set by hand via REST or the agent; one shared transition table — (sha: X24)
+X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be set by hand via REST or the agent; one shared transition table — b4484a6
+X26 — DONE — `_` contract metadata (analysis reports, _splitInto) writable only by the agents service — (sha: X26)

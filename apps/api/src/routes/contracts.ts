@@ -1099,6 +1099,15 @@ export async function contractRoutes(app: FastifyInstance) {
     // so re-analysis used to erase every report it did not itself produce.
     // A null value deletes its key (JSON merge patch, top level).
     const data: Record<string, unknown> = { ...body }
+    if (body.metadata && req.user.sub !== 'system') {
+      // X26 — `_` keys are server state (analysis reports, the binder split's
+      // _splitInto). A user who wrote _splitInto made the next re-split
+      // soft-delete whatever it named. Only the agents service writes them.
+      const reserved = Object.keys(body.metadata).filter(k => k.startsWith('_'))
+      if (reserved.length) {
+        return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
+      }
+    }
     if (body.metadata) {
       const merged: Record<string, unknown> = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) }
       for (const [k, v] of Object.entries(body.metadata)) {

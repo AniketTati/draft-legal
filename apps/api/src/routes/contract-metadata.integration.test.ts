@@ -73,8 +73,9 @@ describe('PATCH /contracts/:id merges metadata', () => {
   })
 
   it('a status-only metadata write (redline failure path) no longer wipes the blob', async () => {
+    // That path is the agents service (redline.py); `_` keys are server-only (X26).
     const res = await app.inject({
-      method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: auth(org, ['ADMIN'], owner),
+      method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: agentHeaders(),
       payload: { metadata: { _redlineStatus: 'FAILED', _redlineError: 'no second version' } },
     })
     expect(res.statusCode).toBe(200)
