@@ -6,7 +6,8 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import htmldiff from 'node-htmldiff'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { renderHtmlToPdf, renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { RenderRefusedError } from '../lib/render-html.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
@@ -1875,35 +1876,19 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'html is required' })
     }
 
-    const GOTENBERG_URL = process.env.GOTENBERG_URL ?? 'http://localhost:3001'
-
     if (format === 'pdf') {
-      // Wrap bare HTML in a minimal document if needed
-      const fullHtml = html.trimStart().startsWith('<!DOCTYPE') ? html : `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  body { font-family: Georgia, serif; font-size: 12pt; line-height: 1.6; margin: 2.5cm; color: #1a1a1a; }
-  h1 { font-size: 18pt; } h2 { font-size: 14pt; } h3 { font-size: 12pt; }
-  table { border-collapse: collapse; width: 100%; }
-  td, th { border: 1px solid #ccc; padding: 6px 10px; }
-</style>
-</head><body>${html}</body></html>`
-
-      const formData = new FormData()
-      formData.append('files', new Blob([fullHtml], { type: 'text/html' }), 'index.html')
-
-      const upstream = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
-        method: 'POST',
-        body: formData,
-      }).catch(() => null)
-
-      if (!upstream?.ok) {
-        const errText = upstream ? await upstream.text() : 'Gotenberg unavailable'
-        app.log.error({ errText }, 'Gotenberg PDF conversion failed')
+      // X11 — the request body is arbitrary HTML, and this rendered it as
+      // given: Gotenberg fetched what it named from inside the network and
+      // printed the response into the PDF returned here. It now goes through
+      // the one sanitising renderer (this fetch also skipped the Cloud Run
+      // auth header and defaulted to the API's own port).
+      let pdfBuffer: Buffer
+      try { pdfBuffer = await renderHtmlToPdf(html) }
+      catch (err) {
+        if (err instanceof RenderRefusedError) return reply.status(422).send({ detail: err.message })
+        app.log.error({ err }, 'Gotenberg PDF conversion failed')
         return reply.status(502).send({ detail: 'PDF generation failed' })
       }
-
-      const pdfBuffer = Buffer.from(await upstream.arrayBuffer())
       reply.header('Content-Type', 'application/pdf')
       reply.header('Content-Disposition', `attachment; filename="${filename}.pdf"`)
       return reply.send(pdfBuffer)

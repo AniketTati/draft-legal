@@ -191,7 +191,7 @@ deploy_gotenberg() {
     --min-instances 0 --max-instances 1 \
     --memory 512Mi --cpu 1 \
     --port 3000 \
-    --args "gotenberg,--api-port=3000" \
+    --args "gotenberg,--api-port=3000,--chromium-disable-javascript=true,--chromium-allow-list=^file:///tmp/.*" \
     --allow-unauthenticated
   # Wave 4 hardening READY BUT DEFERRED for the first rollout: Gotenberg has no
   # built-in auth, so it should be made private with only the API's SA able to

@@ -99,7 +99,10 @@ services:
   gotenberg:
     <<: *restart
     image: gotenberg/gotenberg:8
-    command: ['gotenberg', '--api-port=3000']
+    # X11 — no JavaScript and no network: a render may read only its own
+    # index.html. The API also sanitises the HTML (lib/render-html.ts); this is
+    # the backstop if something slips through. Inline data: images still render.
+    command: ['gotenberg', '--api-port=3000', '--chromium-disable-javascript=true', '--chromium-allow-list=^file:///tmp/.*']
     # Private — only api/worker reach it on the internal network.
 
   # One-shot: apply pending Prisma migrations before the API/worker start.

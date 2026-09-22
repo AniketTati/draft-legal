@@ -500,7 +500,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Test: `routes/agent-tool-permissions.integration.test.ts`, with real DB roles as in the S2 test.
   - Original note: `org_memory` / `playbook_check` return playbook positions (walkaway language) to roles without `view:playbook`; `approval_list scope:'all'` returns the org approval queue (incl. `aiSummary`) to roles without `view:workflow`. (Found in S2 review.)
 - **X10 — Write tools ignore permission scope.** `checkToolPermission` (`agent-threads.ts:63-89`) checks grant only, so a custom role with own-scope `edit:contract` can `contract_update`/`approval_route`/`comment_add`/`redline_apply` any org contract. No default role affected. (Found in S2 review.)
-- **X11 — Text→HTML conversion does not escape, and Gotenberg renders it server-side (High).** — IN-PROGRESS.
+- **X11 — Text→HTML conversion does not escape, and Gotenberg renders it server-side (High). — DONE.**
   - **Plan:**
     - Reproduced, and worse than the note says. The local Gotenberg fetched every internal URL in the HTML: `<img>`, `<iframe>`, `<link>`, `<object>`, CSS `url()`/`@import`, SVG `<image>`, `<meta http-equiv=refresh>`, and a script's `fetch()`. An iframe or a refresh printed the internal page's text into the PDF ("INTERNAL SECRET PAGE" came back out of `pdftotext`). `POST /contracts/export` renders any HTML in its body and returns the PDF, so every role with `view:contract` has a full-read SSRF. The `html-version` save does the same through the canonical PDF. The extraction builders are one source of such HTML; the editor, the export body and AI drafts are others.
     - Root cause: nothing between user HTML and the renderer. Every render must be made unable to load anything.
@@ -519,6 +519,31 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - `routes/render-ssrf.integration.test.ts`, gated on a live Gotenberg like the ES tests.
       - An escaping unit test for `document.ts`.
       - A tripwire on `extract.py`.
+  - **What changed:**
+    - New `lib/render-html.ts`, `renderableHtml()`. parse5 parses the HTML through a tree adapter that stops past 128 levels of nesting or 200k elements (input capped at 5M characters). It then:
+      - drops elements that load, embed or navigate, and comments;
+      - unwraps elements with mangled names (a NUL in the tag);
+      - drops event handlers, and URL attributes except inline `data:` images and `<a>` links;
+      - neutralises CSS `url()`, `@import` and image functions, and drops CSS containing escapes;
+      - rebuilds the document with the CSP `<meta>` first in `<head>`.
+      - Refused input throws `RenderRefusedError`, which `/export` turns into a 422 with the reason.
+    - `lib/gotenberg.ts`: `renderHtmlToPdf()` is the only way HTML reaches Gotenberg. It backs `renderHtmlToPdfAndStore` (html-version, sealing) and `/contracts/export`, whose own fetch is gone; that fetch had also skipped the Cloud Run auth header and defaulted to the API's port.
+    - Text is escaped where HTML is built: `lib/document.ts` (TXT, pdf-parse fallback) and `apps/agents/app/routes/extract.py` (span text, headings, OCR lines). The Python section-tree reader decodes it back.
+    - Gotenberg runs with `--chromium-disable-javascript=true --chromium-allow-list=^file:///tmp/.*` in `docker-compose.yml`, `docker-compose.selfhost.yml` and `scripts/deploy.sh`. A throwaway container showed inline images still render and even raw hostile HTML fetches nothing.
+  - **Verification:**
+    - `routes/render-ssrf.integration.test.ts`, which uses a probe server and skips without a live Gotenberg:
+      - Before the fix, `/export`'s renderer fetched `/img`, `/script`, `/css`, `/iframe` and `/refresh` from the probe, and an iframe or refresh printed "INTERNAL SECRET PAGE" into the PDF.
+      - After the fix, nothing is fetched from `/export` or the canonical render, and 50,000 nested `<div>`s get a 422 in milliseconds.
+    - Unit tests (all fail pre-fix):
+      - `lib/render-html.test.ts` (8 cases: hostile elements and attributes, legitimate content kept, CSP first, the depth guard, mangled tags, CSS);
+      - `lib/document-escape.test.ts` and the `lib/extract-escaping.test.ts` tripwire.
+    - Python behaviour checked locally with FastAPI stubbed: span HTML is escaped, and the section tree reads the text back unchanged.
+    - Suite: typecheck 0, lint 0 errors, api unit 226/226, api integration 163/163.
+    - A fresh subagent reviewed this adversarially against the live Gotenberg and found no SSRF bypass: parser differentials, foreign content, CSS tricks and entity-encoded schemes were all blocked, and legitimate contracts render. It found a DoS: `renderableHtml` overflowed the stack at about 2,000 nested elements, and deep nesting blocked the event loop for 44s. That is fixed by the bounded parse above. Its other notes, mangled tag names and CSS image functions, are fixed too.
+  - **Deploy:**
+    - Recreate Gotenberg so the new flags apply (`docker compose up -d gotenberg`, or `deploy.sh gotenberg`). The local dev container was left as it was during this run.
+    - Production Gotenberg is still public on Cloud Run (`--allow-unauthenticated`). Making it private is the hardening `deploy.sh` already documents as deferred.
+  - **Left as is:** a CSP can't block a `<meta http-equiv=refresh>` navigation. That vector is closed by the sanitiser dropping every `<meta>`, with the Gotenberg allow-list as the backstop.
   - Original note: `lib/document.ts` builds `<pre>${text}</pre>` (TXT) and `<p>${block}</p>` (PDF) unescaped, and `apps/agents/app/routes/extract.py:282-287` does the same for headings. So `<img src=x onerror=…>` in an uploaded TXT lands verbatim in `htmlContent`. The web app sanitizes (DOMPurify/TipTap), but Gotenberg renders `htmlContent` with JavaScript enabled (`seal-contract.ts:96` for file-less versions, `contracts.ts:774` `/:id/html-version`). That is SSRF from the render container; in self-host, Elasticsearch (security disabled) sits on the same network. Escape in the builders; consider disabling JS / network in Gotenberg renders. (Found in S3 review.)
 - **X12 — DOCX extraction is broken app-wide (High).** `mammoth@1.12.0` + `@xmldom/xmldom@0.9.10` (root override `>=0.8.13` resolves to 0.9.x): every `extractDocx` throws `DOMParser.parseFromString: the provided mimeType "undefined" is not valid.` Reproduced here with a DOCX generated by the app's own `generatePlainDocx`. Every DOCX upload fails parsing, and `/templates/upload` always 422s. The fix is a dependency constraint (cap the override below 0.9, or move mammoth to a release compatible with xmldom 0.9), so it needs a lockfile change. (Found in S3 review; verified.)
 - **X13 — DOCX zip bomb.** A 714KB DOCX passes the content check and inflates to about 960MB in JSZip before erroring: a memory DoS on the parse worker, reachable from the external portal. It is currently masked by X12. Cap the total uncompressed size (central-directory sizes) before handing the file to mammoth. (Found in S3 review.)
@@ -614,4 +639,5 @@ X19 — DONE — invoice contract links must be a live contract of the caller's 
 X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — 42bbfe2
 X18 — DONE — signer tokens only to callers who can send for signature (plus a signer's own row); tokens masked in logs — (sha: X18)
 X5 — DONE — piiRedactionMode needs configure:organization, a valid value and an audit row committed with the change — c41eb70
-X4 — DONE — organization.settings writers merge/remove/append only their own keys in SQL; no more lost updates — (sha: X4)
+X4 — DONE — organization.settings writers merge/remove/append only their own keys in SQL; no more lost updates — 7f2de2c
+X11 — DONE — every Gotenberg render goes through one sanitiser (bounded parse, CSP, no loads/navigation); extracted text escaped; Gotenberg JS/network off in compose + deploy — (sha: X11)

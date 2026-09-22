@@ -93,6 +93,10 @@ services:
   gotenberg:
     image: gotenberg/gotenberg:8
     container_name: clm_gotenberg
+    # X11 — no JavaScript and no network: a render may read only its own
+    # index.html. The API also sanitises the HTML (lib/render-html.ts); this is
+    # the backstop if something slips through. Inline data: images still render.
+    command: ['gotenberg', '--chromium-disable-javascript=true', '--chromium-allow-list=^file:///tmp/.*']
     ports:
       - '3002:3000'
     healthcheck:

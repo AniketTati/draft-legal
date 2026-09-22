@@ -15,6 +15,9 @@ import logging
 import os
 import re
 import statistics
+# X11 — PDF text is data, not markup. Built into HTML unescaped, a PDF whose
+# text reads `<iframe src=…>` was stored as live HTML in htmlContent.
+from html import escape as _escape_html, unescape as _unescape_html
 from fastapi import APIRouter, UploadFile, File, HTTPException, Header
 
 logger = logging.getLogger("extract")
@@ -109,7 +112,8 @@ def _ocr_pdf(doc) -> tuple[str, str, int]:
             page_plain = " ".join(page_lines)
             plain_parts.append(page_plain)
             html_parts.append(
-                f"<!-- page {page_num + 1} --><p>" + "</p>\n<p>".join(page_lines) + "</p>"
+                f"<!-- page {page_num + 1} --><p>"
+                + "</p>\n<p>".join(_escape_html(l, quote=False) for l in page_lines) + "</p>"
             )
     return "\n".join(html_parts), "\n\n".join(plain_parts), pages_ocrd
 
@@ -139,7 +143,7 @@ def _join_spans(line: dict) -> tuple[str, str, float]:
                 plain_parts.append(" ")
                 html_parts.append(" ")
         plain_parts.append(raw)
-        t = raw
+        t = _escape_html(raw, quote=False)
         flags = span["flags"]
         if flags & 2:   t = f"<em>{t}</em>"
         if flags & 16:  t = f"<strong>{t}</strong>"
@@ -248,6 +252,7 @@ def _pdf_to_html(content: bytes) -> tuple[str, str, list[dict]]:
         plain = " ".join(para_plain_lines)
         inner = " ".join(para_html_lines)
         plain_parts.append(plain)
+        heading_html = _escape_html(plain, quote=False)
 
         is_caps    = _is_caps_heading(plain, first_line_size, body_size)
         # P2.2 — treat explicit "Section 9.2" / "Article IX" prefixes as
@@ -279,12 +284,12 @@ def _pdf_to_html(content: bytes) -> tuple[str, str, list[dict]]:
             ref_str = m.group(1) if m else ""
             depth = ref_str.count(".")
             heading_level = min(6, 2 + depth)
-            html_parts.append(f"<h{heading_level}>{plain}</h{heading_level}>")
+            html_parts.append(f"<h{heading_level}>{heading_html}</h{heading_level}>")
             emitted = True
-        elif first_line_size >= body_size * 1.5:  html_parts.append(f"<h1>{plain}</h1>"); emitted = True
-        elif first_line_size >= body_size * 1.2:  html_parts.append(f"<h2>{plain}</h2>"); emitted = True
-        elif first_line_size >= body_size * 1.05: html_parts.append(f"<h3>{plain}</h3>"); emitted = True
-        elif is_caps:                              html_parts.append(f"<h2>{plain}</h2>"); emitted = True
+        elif first_line_size >= body_size * 1.5:  html_parts.append(f"<h1>{heading_html}</h1>"); emitted = True
+        elif first_line_size >= body_size * 1.2:  html_parts.append(f"<h2>{heading_html}</h2>"); emitted = True
+        elif first_line_size >= body_size * 1.05: html_parts.append(f"<h3>{heading_html}</h3>"); emitted = True
+        elif is_caps:                              html_parts.append(f"<h2>{heading_html}</h2>"); emitted = True
         elif indent_level >= 1:
             if not in_list:
                 html_parts.append("<ul>")
@@ -443,7 +448,8 @@ _HEADING_OR_BODY = re.compile(
 
 
 def _strip_tags(s: str) -> str:
-    return re.sub(r"<[^>]+>", "", s or "").strip()
+    # The HTML is escaped (X11), so decode entities back to the text.
+    return _unescape_html(re.sub(r"<[^>]+>", "", s or "")).strip()
 
 
 def _build_section_tree(html: str, anchors: list[dict] | None = None) -> list[dict]:

@@ -55,6 +55,15 @@ export type ExtractResult = {
   }
 }
 
+/**
+ * X11 — extracted text is data, not markup. Built into HTML unescaped, an
+ * uploaded `<img src=x onerror=…>` or `<iframe src=…>` was stored as live
+ * HTML in htmlContent. (& < > only: the text never lands in an attribute.)
+ */
+export function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 export async function extractDocument(
   buffer: Buffer,
   mimeType: string,
@@ -76,7 +85,7 @@ export async function extractDocument(
 
   if (is('text/plain', '.txt')) {
     const text = buffer.toString('utf-8')
-    return { plainText: text, htmlContent: `<pre>${text}</pre>`, mimeType: 'text/plain' }
+    return { plainText: text, htmlContent: `<pre>${escapeText(text)}</pre>`, mimeType: 'text/plain' }
   }
 
   throw new Error(`Unsupported file type: ${mimeType} (${filename})`)
@@ -146,7 +155,7 @@ async function extractPdf(buffer: Buffer): Promise<ExtractResult> {
     .split(/\n{2,}|\f/)
     .map(block => block.replace(/\n/g, ' ').trim())
     .filter(block => block.length > 2)
-    .map(block => `<p>${block}</p>`)
+    .map(block => `<p>${escapeText(block)}</p>`)
     .join('\n')
   return { plainText, htmlContent, mimeType: 'application/pdf' }
 }
