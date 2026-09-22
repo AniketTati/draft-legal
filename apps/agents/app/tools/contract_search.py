@@ -64,7 +64,7 @@ class ContractSearchArgs(BaseModel):
     )
 
 
-def build_contract_search(org_id: str) -> StructuredTool:
+def build_contract_search(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         query: Optional[str] = None,
@@ -83,7 +83,7 @@ def build_contract_search(org_id: str) -> StructuredTool:
         }
         # Zod's .optional() rejects explicit null — only send keys that are
         # actually set so the Node endpoint's schema validates cleanly.
-        payload: dict = {"orgId": org_id, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "limit": limit}
         if query             is not None: payload["query"]            = query
         if status            is not None: payload["status"]           = status
         if type              is not None: payload["type"]             = type

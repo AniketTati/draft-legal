@@ -22,6 +22,7 @@
  *   ordering when no Voyage key is configured.
  */
 
+import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 
 // ─── Provider routing ───────────────────────────────────────────────────────
@@ -345,9 +346,11 @@ export async function searchClauses(
   orgId: string,
   limit = 20,
   contractId?: string, // scope to a single contract for Q&A
+  ownerId?: string,    // own-scope callers: filter BEFORE top-k, not after
 ): Promise<ClauseMatch[]> {
   const vec = await embedText(queryText)
   const vectorLiteral = `[${vec.join(',')}]`
+  const ownerFilter = ownerId ? Prisma.sql`AND c."ownerId" = ${ownerId}` : Prisma.empty
 
   // Raw SQL: pgvector cosine similarity, join to contracts for org scoping
   const rows = contractId
@@ -363,6 +366,7 @@ export async function searchClauses(
         JOIN   contracts c ON c.id = cv."contractId"
         WHERE  c."orgId" = ${orgId} AND c.id = ${contractId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
+               ${ownerFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
@@ -378,6 +382,7 @@ export async function searchClauses(
         JOIN   contracts c ON c.id = cv."contractId"
         WHERE  c."orgId" = ${orgId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
+               ${ownerFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `

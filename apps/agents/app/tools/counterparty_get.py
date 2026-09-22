@@ -19,11 +19,11 @@ class CounterpartyGetArgs(BaseModel):
     )
 
 
-def build_counterparty_get(org_id: str) -> StructuredTool:
+def build_counterparty_get(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(name: str | None = None, id: str | None = None) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/counterparty_get"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload: dict = {"orgId": org_id}
+        payload: dict = {"orgId": org_id, "userId": user_id}
         if name: payload["name"] = name
         if id:   payload["id"]   = id
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

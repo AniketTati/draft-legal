@@ -13,7 +13,7 @@
  *   - Cache resolution per (orgId, tier) for ~30s in Redis
  *   - Audit-log every resolution call
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
@@ -32,6 +32,7 @@ import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
+import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope } from '../lib/agent-scope.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -245,6 +246,7 @@ const ResolveSchema = z.object({
 // so any tool call from Python is scoped to a single tenant.
 const ContractGetSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   // How much of the plaintext to return. LLM context is precious — the
   // default keeps us well under a default tier's context window even for
@@ -254,6 +256,7 @@ const ContractGetSchema = z.object({
 
 const ContractSearchSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:            z.string().optional(),           // text search in title/counterparty
   status:           z.string().optional(),
   type:             z.string().optional(),
@@ -269,6 +272,7 @@ const ContractSearchSchema = z.object({
 
 const ContractSummarizeSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
 })
 
@@ -283,6 +287,7 @@ const ContractSummarizeSchema = z.object({
 // judge-mode for very long contracts.
 const PlaybookCheckSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   // How many clauses to examine. The default stays small because an agent
   // turn can't absorb more, but the ceiling has to admit a whole contract:
@@ -307,6 +312,7 @@ const PlaybookCheckSchema = z.object({
 // pills in the rail — click → the contract opens at that section.
 const ContractCiteSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   query:      z.string().min(1),
   limit:      z.number().int().min(1).max(10).default(5),
@@ -318,6 +324,7 @@ const ContractCiteSchema = z.object({
 // trigger) or automatically after post-signature status changes.
 const ObligationsListSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().optional(),
   dueWithin:   z.number().int().min(1).max(365).optional(),
   type:        z.string().optional(),
@@ -332,6 +339,7 @@ const ObligationsListSchema = z.object({
 // authenticated POST /contracts/:id/renewal-advice endpoint.
 const RenewalAdviceSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().optional(),
   leadDays:    z.number().int().min(1).max(365).default(90),
   limit:       z.number().int().min(1).max(50).default(20),
@@ -348,6 +356,7 @@ const RenewalAdviceSchema = z.object({
 // accounts" from a single tool call.
 const OrgMemorySchema = z.object({
   orgId:        z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   topic:        z.string().min(1).max(200),
   clauseType:   z.string().optional(),
   contractType: z.string().optional(),
@@ -369,6 +378,7 @@ const ApprovalListSchema = z.object({
 
 const CounterpartyGetSchema = z.object({
   orgId:   z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   // EITHER an id OR a name (fuzzy). Caller picks what they have.
   id:      z.string().optional(),
   name:    z.string().optional(),
@@ -381,6 +391,7 @@ const CounterpartyGetSchema = z.object({
 // contract count or by total contract value.
 const CounterpartyListSchema = z.object({
   orgId:     z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:     z.string().optional(),
   // Rank counterparties by:
   //   'contracts'  — number of contracts (most prolific first)
@@ -394,6 +405,7 @@ const CounterpartyListSchema = z.object({
 
 const RequestListSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   status:      z.string().optional(),
   assignedToId: z.string().optional(),
   priority:    z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional(),
@@ -453,6 +465,7 @@ const ContractDraftFromIntentSchema = z.object({
 // Each issue carries {kind, severity, message, excerpt, page?, ref?}.
 const ContractValidateSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   maxIssues:  z.number().int().min(1).max(200).default(50),
 })
@@ -469,6 +482,7 @@ const ContractValidateSchema = z.object({
 // instead of sending the agent on an O(N) contract_get hunt.
 const CounterpartyMemorySchema = z.object({
   orgId:             z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   counterpartyName:  z.string().min(1),
   clauseType:        z.string().optional(), // e.g. 'limitation_of_liability'
   limit:             z.number().int().min(1).max(30).default(10),
@@ -483,6 +497,7 @@ const CounterpartyMemorySchema = z.object({
 // liability?" class of question.
 const PortfolioSearchSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:            z.string().min(1).max(500),
   topK:             z.number().int().min(1).max(30).default(10),
   // Optional filters — pass through to ES. Keeps portfolio_search
@@ -524,6 +539,7 @@ const ApprovalDecideSchema = z.object({
 
 const ClauseSearchSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   query:      z.string().min(1),
   limit:      z.number().int().min(1).max(20).default(5),
@@ -613,6 +629,7 @@ const RedlineApplyBatchSchema = z.object({
 
 const RedlineProposeBatchSchema = z.object({
   orgId:        z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:   z.string().min(1),
   clauseIds:    z.array(z.string().min(1)).min(1).max(200),
   aggression:   z.enum(['least', 'moderate', 'aggressive']).default('moderate'),
@@ -621,6 +638,7 @@ const RedlineProposeBatchSchema = z.object({
 
 const RedlineProposeSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().min(1),
   // Target a clause. One of clauseId | clauseType must be provided.
   clauseId:    z.string().optional(),
@@ -684,6 +702,20 @@ const ContractUpdateSchema = z.object({
 })
 
 export async function internalAiRoutes(app: FastifyInstance) {
+  // S2 — the caller's view scope, resolved from their roles (never from the
+  // body). Sends 403 and returns null when they may not view `resource`.
+  async function scopeOr403(
+    reply: FastifyReply, orgId: string, userId: string | null | undefined,
+    resource: 'contract' | 'request' = 'contract',
+  ): Promise<CallerScope | null> {
+    const scope = await resolveCallerScope(orgId, userId, resource)
+    if (scope.kind === 'none') {
+      reply.status(403).send({ detail: `The user in this conversation does not have view:${resource} permission` })
+      return null
+    }
+    return scope
+  }
+
   // ── x-internal-secret guard for every route in this plugin ─────────────────
   app.addHook('preHandler', async (req, reply) => {
     const secret = req.headers['x-internal-secret']
@@ -749,9 +781,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, jurisdiction: true,
@@ -837,8 +871,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
     if (body.status)           where.status           = body.status
     if (body.type)             where.type             = body.type
     if (body.counterpartyName) where.counterpartyName = { contains: body.counterpartyName, mode: 'insensitive' }
@@ -904,7 +940,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     let fallbackResults: typeof contracts = []
     if (contracts.length === 0 && rawQuery && !isWildcard) {
       try {
-        const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4)
+        const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4, undefined, scopeOwnerId(scope))
         const seen = new Set<string>()
         const orderedIds: string[] = []
         for (const hit of clauseHits) {
@@ -921,6 +957,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
             orgId:     body.orgId,
             deletedAt: null,
             id:        { in: orderedIds },
+            ...contractScopeWhere(scope),
           }
           if (body.status)           semanticWhere.status           = body.status
           if (body.type)             semanticWhere.type             = body.type
@@ -989,9 +1026,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -1122,9 +1161,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -1320,6 +1361,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // Match on counterpartyName OR via Counterparty.name — fuzzy ILIKE.
     // An exact name is ideal; substring match covers minor variations
@@ -1328,6 +1371,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: {
         orgId: body.orgId,
         deletedAt: null,
+        ...contractScopeWhere(scope),
         OR: [
           { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } },
           { counterparty: { name: { contains: body.counterpartyName, mode: 'insensitive' } } },
@@ -1521,6 +1565,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // Dense — pgvector clause similarity. Caps at 2× topK so RRF has
     // room to rerank. Wrapped in try so an embedding failure (missing
@@ -1531,7 +1577,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     let dense: DenseHit[] = []
     try {
-      dense = await searchClauses(body.query, body.orgId, body.topK * 2)
+      dense = await searchClauses(body.query, body.orgId, body.topK * 2, undefined, scopeOwnerId(scope))
     } catch (err) {
       app.log.warn({ err }, '[portfolio_search] searchClauses failed, falling back to BM25 only')
     }
@@ -1546,6 +1592,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
       if (body.contractType)     filters.type            = body.contractType
       if (body.status)           filters.status          = body.status
       if (body.counterpartyName) filters.counterpartyName = body.counterpartyName
+      // ES docs carry no ownerId, so an own-scope caller's contract ids are
+      // pushed in as a filter — before top-k, so results aren't thinned.
+      if (scope.kind === 'own') {
+        const owned = await prisma.contract.findMany({
+          where: { orgId: body.orgId, deletedAt: null, ownerId: scope.userId },
+          select: { id: true },
+          orderBy: { updatedAt: 'desc' },
+          take: 10_000,
+        })
+        filters.ids = owned.map(c => c.id)
+      }
       const esRes = await advancedSearch(body.orgId, filters as never, body.topK * 2)
       bm25 = esRes.hits
     } catch (err) {
@@ -1610,6 +1667,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: { in: contractIds },
         orgId: body.orgId,
         deletedAt: null,
+        ...contractScopeWhere(scope),
         ...(body.contractType     ? { type:             body.contractType }     : {}),
         ...(body.status           ? { status:           body.status }           : {}),
         ...(body.counterpartyName ? { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } } : {}),
@@ -1725,9 +1783,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, jurisdiction: true,
@@ -1805,9 +1865,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, currentVersionId: true },
     })
     if (!contract) {
@@ -1923,9 +1985,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -2281,6 +2345,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    if (scope.kind === 'own') {
+      const visible = await prisma.contract.count({
+        where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
+      })
+      if (!visible) return reply.status(404).send({ detail: 'Contract not found in this org' })
+    }
     // Shared with the user-facing POST /contracts/:id/clauses/:clauseId/suggest
     // so the chat agent and the review drawer produce identical proposals.
     const result = await proposeClauseAlternatives({
@@ -2306,6 +2378,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     try { body = RedlineProposeBatchSchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    if (scope.kind === 'own') {
+      const visible = await prisma.contract.count({
+        where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
+      })
+      if (!visible) return reply.status(404).send({ detail: 'Contract not found in this org' })
     }
     const result = await proposeClauseBatch({
       orgId:        body.orgId,
@@ -3205,15 +3285,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // P8 Step 1 — read from the Obligation table, not contract.metadata.
     const where: Record<string, unknown> = { orgId: body.orgId }
+    if (scope.kind === 'own') where.contract = { ownerId: scope.userId }
     if (body.contractId) where.contractId = body.contractId
     if (body.type)       where.type = body.type
 
     // Pull contracts up-front so we can join titles + flag contracts
     // that haven't been extracted yet (the empty-state diagnostic).
-    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
     if (body.contractId) contractWhere.id = body.contractId
     const contracts = await prisma.contract.findMany({
       where: contractWhere as never,
@@ -3309,8 +3392,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
     if (body.contractId) {
       where.id = body.contractId
     } else {
@@ -3415,6 +3500,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // Pick the category that best matches the topic — normalise both
     // sides (docs/28 C.2.1 match rule).
@@ -3483,6 +3570,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
             contract: {
               orgId: body.orgId,
               deletedAt: null,
+              ...contractScopeWhere(scope),
               ...(body.contractType ? { type: body.contractType } : {}),
               status: { in: ['EXECUTED', 'APPROVED', 'PENDING_SIGNATURE'] },
             },
@@ -3578,8 +3666,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const stepWhere: Record<string, unknown> = { orgId: body.orgId }
+    if (scope.kind === 'own') stepWhere.instance = { contract: { ownerId: scope.userId } }
     if (body.scope === 'my-queue') {
       stepWhere.approverId = body.userId
       stepWhere.status = body.status ?? 'PENDING'
@@ -3642,6 +3733,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     if (!body.id && !body.name) {
       return reply.status(400).send({ detail: 'Either id or name is required' })
     }
@@ -3667,7 +3760,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const items = await Promise.all(cps.map(async cp => {
       const contractCount = await prisma.contract.count({
-        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null },
+        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       })
       return {
         id:            cp.id,
@@ -3697,6 +3790,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.query?.trim()) {
@@ -3721,7 +3816,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Stats per counterparty: contractCount + sumValue.
     const stats = await prisma.contract.groupBy({
       by: ['counterpartyId'],
-      where: { orgId: body.orgId, deletedAt: null, counterpartyId: { in: cps.map(c => c.id) } },
+      where: { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), counterpartyId: { in: cps.map(c => c.id) } },
       _count: { _all: true },
       _sum:   { value: true },
     })
@@ -3763,8 +3858,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'request')
+    if (!scope) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    if (scope.kind === 'own') where.requestedById = scope.userId
     if (body.status)       where.status       = body.status
     if (body.assignedToId) where.assignedToId = body.assignedToId
     if (body.priority)     where.priority     = body.priority
@@ -4071,6 +4169,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // pass; when none exists it tells the user where to run one.
   const ComplianceGetSchema = z.object({
     orgId:      z.string().min(1),
+    userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
     contractId: z.string().min(1),
   })
   app.post('/tools/compliance_get', async (req, reply) => {
@@ -4079,8 +4178,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, metadata: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -4104,6 +4205,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // 3× parallel portfolio_search prose synthesis.
   const PortfolioCompareSchema = z.object({
     orgId:        z.string(),
+    userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
     contractIds:  z.array(z.string()).min(2).max(10),
     topics:       z.array(z.string().min(2).max(80)).min(1).max(10),
     excerptChars: z.number().int().min(50).max(800).default(220),
@@ -4114,8 +4216,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     const contracts = await prisma.contract.findMany({
-      where: { id: { in: body.contractIds }, orgId: body.orgId, deletedAt: null },
+      where: { id: { in: body.contractIds }, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, value: true, currency: true,

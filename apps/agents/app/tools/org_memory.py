@@ -32,11 +32,11 @@ class OrgMemoryArgs(BaseModel):
     limit: int = Field(8, ge=1, le=20)
 
 
-def build_org_memory(org_id: str) -> StructuredTool:
+def build_org_memory(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(topic: str, contract_type=None, clause_type=None, limit: int = 8) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/org_memory"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload: dict = {"orgId": org_id, "topic": topic, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "topic": topic, "limit": limit}
         if contract_type: payload["contractType"] = contract_type
         if clause_type:   payload["clauseType"]   = clause_type
         async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:

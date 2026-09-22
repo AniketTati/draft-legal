@@ -40,7 +40,7 @@ class PlaybookCheckArgs(BaseModel):
     )
 
 
-def build_playbook_check(org_id: str) -> StructuredTool:
+def build_playbook_check(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(contract_id: str, max_clauses: int = 10) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/playbook_check"
@@ -51,6 +51,7 @@ def build_playbook_check(org_id: str) -> StructuredTool:
         }
         payload = {
             "orgId": org_id,
+            "userId": user_id,  # S2 — Node resolves the caller's view scope from this
             "contractId": contract_id,
             "maxClauses": max_clauses,
         }

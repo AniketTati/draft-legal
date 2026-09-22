@@ -74,7 +74,7 @@ class PortfolioSearchArgs(BaseModel):
     )
 
 
-def build_portfolio_search(org_id: str) -> StructuredTool:
+def build_portfolio_search(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         query: str,
@@ -90,7 +90,7 @@ def build_portfolio_search(org_id: str) -> StructuredTool:
             "content-type":      "application/json",
         }
         payload: dict = {
-            "orgId": org_id, "query": query, "topK": top_k,
+            "orgId": org_id, "userId": user_id, "query": query, "topK": top_k,
         }
         if contract_type:     payload["contractType"]    = contract_type
         if status:            payload["status"]          = status

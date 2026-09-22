@@ -59,7 +59,7 @@ class ContractGetArgs(BaseModel):
     )
 
 
-def build_contract_get(org_id: str) -> StructuredTool:
+def build_contract_get(org_id: str, user_id: str | None = None) -> StructuredTool:
     """Return a StructuredTool bound to this org.
 
     The returned tool's `invoke()` hits Node's /internal/ai/tools/contract_get
@@ -75,6 +75,7 @@ def build_contract_get(org_id: str) -> StructuredTool:
         }
         payload = {
             "orgId":      org_id,
+            "userId":     user_id,  # S2 — Node resolves the caller's view scope from this
             "contractId": contract_id,
             "maxChars":   max_chars,
         }

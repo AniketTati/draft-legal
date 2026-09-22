@@ -60,7 +60,7 @@ class RedlineProposeArgs(BaseModel):
     )
 
 
-def build_redline_propose(org_id: str) -> StructuredTool:
+def build_redline_propose(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         contract_id: str,
@@ -83,7 +83,7 @@ def build_redline_propose(org_id: str) -> StructuredTool:
         # RedlineProposeSchema reject essentially every call the tool's own
         # description told the model to make. Same convention as
         # contract_search.py, which carries the same comment.
-        payload: dict = {"orgId": org_id, "contractId": contract_id}
+        payload: dict = {"orgId": org_id, "userId": user_id, "contractId": contract_id}
         if clause_type  is not None: payload["clauseType"]   = clause_type
         if clause_id    is not None: payload["clauseId"]     = clause_id
         if instructions is not None: payload["instructions"] = instructions

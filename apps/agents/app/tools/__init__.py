@@ -77,31 +77,33 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
           custom_field_list) are wired. Writes land in separate
     routes via the ActionPreview surface, not through this list.
 
-    user_id is optional — when passed, approval_list uses it to filter
-    the my-queue scope by the current user.
+    user_id is the chatting user (from the JWT, via agents.ts). Every read
+    tool forwards it so Node can resolve that user's view scope server-side
+    (S2: an own-scope SALES_REP must not get org-wide contract data), and
+    approval_list uses it to filter the my-queue scope.
     """
     return [
-        build_contract_get(org_id),
-        build_contract_search(org_id),
-        build_contract_summarize(org_id),
-        build_clause_search(org_id),
-        build_playbook_check(org_id),
-        build_redline_propose(org_id),
-        build_contract_cite(org_id),
-        build_portfolio_search(org_id),
-        build_portfolio_compare(org_id),
-        build_counterparty_memory(org_id),
-        build_contract_validate(org_id),
+        build_contract_get(org_id, user_id),
+        build_contract_search(org_id, user_id),
+        build_contract_summarize(org_id, user_id),
+        build_clause_search(org_id, user_id),
+        build_playbook_check(org_id, user_id),
+        build_redline_propose(org_id, user_id),
+        build_contract_cite(org_id, user_id),
+        build_portfolio_search(org_id, user_id),
+        build_portfolio_compare(org_id, user_id),
+        build_counterparty_memory(org_id, user_id),
+        build_contract_validate(org_id, user_id),
         build_approval_list(org_id, user_id),
-        build_counterparty_get(org_id),
-        build_counterparty_list(org_id),
-        build_request_list(org_id),
+        build_counterparty_get(org_id, user_id),
+        build_counterparty_list(org_id, user_id),
+        build_request_list(org_id, user_id),
         build_custom_field_list(org_id),
-        build_org_memory(org_id),
-        build_obligations_list(org_id),
-        build_renewal_advice(org_id),
+        build_org_memory(org_id, user_id),
+        build_obligations_list(org_id, user_id),
+        build_renewal_advice(org_id, user_id),
         build_matter_list(org_id, user_id),
-        build_compliance_get(org_id),
+        build_compliance_get(org_id, user_id),
         # L9 — the three verbs the loops needed and did not have.
         # user_search is the name->id path assign_owner / delegation depend on.
         build_user_search(org_id),

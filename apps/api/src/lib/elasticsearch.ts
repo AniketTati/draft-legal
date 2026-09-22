@@ -150,6 +150,8 @@ export interface SearchFilters {
   expiryDateTo?: string
   counterpartyId?: string
   counterpartyName?: string
+  /** Restrict to these contract ids (own-scope callers; docs carry no ownerId). */
+  ids?: string[]
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -204,6 +206,8 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
     if (filters.expiryDateTo)   range.lte = filters.expiryDateTo
     filter.push({ range: { expiryDate: range } })
   }
+
+  if (filters.ids) filter.push({ ids: { values: filters.ids } })
 
   if (filters.clauseFlags) {
     for (const [flag, val] of Object.entries(filters.clauseFlags)) {

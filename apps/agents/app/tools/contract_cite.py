@@ -48,7 +48,7 @@ class ContractCiteArgs(BaseModel):
     )
 
 
-def build_contract_cite(org_id: str) -> StructuredTool:
+def build_contract_cite(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(contract_id: str, query: str, limit: int = 5) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_cite"
@@ -59,6 +59,7 @@ def build_contract_cite(org_id: str) -> StructuredTool:
         }
         payload = {
             "orgId":       org_id,
+            "userId":      user_id,  # S2 — Node resolves the caller's view scope from this
             "contractId":  contract_id,
             "query":       query,
             "limit":       limit,
