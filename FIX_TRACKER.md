@@ -755,7 +755,19 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
   - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
   - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
-- **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium).** `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
+- **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium). — DONE.**
+  - **Plan:**
+    - Confirmed: `PATCH /contracts/:id` and the agent's `set_status` share a transition table (two copies) that allows `PENDING_APPROVAL → APPROVED/REJECTED` and moves into `PENDING_APPROVAL` by hand. The web offers none of these (A.3 removed them as a workflow bypass). Only `/submit-approval` and `approval_route` enter PENDING_APPROVAL, and they also open the approval instance; only a decision or the workflow's auto-approve rule sets APPROVED / REJECTED.
+    - Fix: one `lib/contract-status.ts` table without those targets, used by both paths. An attempt gets a 409 that points to submitting for approval.
+    - Test: `routes/contract-status-approval.integration.test.ts` (REST and agent).
+  - **What changed:**
+    - `lib/contract-status.ts` is one manual-transition table for `PATCH /contracts/:id` and the agent's `set_status` (previously two copies). It has no transitions into PENDING_APPROVAL, APPROVED or REJECTED; `/submit-approval` / `approval_route` and the approval decision own those.
+    - A refused move answers 409 with "…is set by the approval workflow… submit the contract for approval instead".
+    - The workflow's own paths are untouched: submission, decisions, auto-approve, and the undo of `approval_route`.
+  - **Verification:**
+    - `routes/contract-status-approval.integration.test.ts` has 4 cases: REST APPROVED/REJECTED refused, REST into PENDING_APPROVAL refused, agent APPROVED refused, and ordinary moves still work. Against the pre-fix code, 3 fail.
+    - Existing tests and verify scripts use only transitions that remain (DRAFT → PENDING_REVIEW).
+  - Original note: `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
 - **X25 — Matters take other orgs' ids (Medium). — DONE.**
   - **Plan:**
     - Fix:
@@ -825,4 +837,5 @@ X20 — DONE — upload parent must be a live, visible same-org contract (text f
 X16 — VERIFY-PENDING — long binders sampled at likely agreement boundaries with absolute-offset markers instead of the first 10k chars; needs a live LLM run — 7b7a0ea
 X12 — DONE — xmldom override narrowed to mammoth's range (^0.8.13 → 0.8.15); DOCX extraction works again; lockfile change flagged for review — 35a217f
 X13 — DONE — DOCX/XLSX real inflated size bounded (100MB) at upload and before mammoth; zip bombs refused without expanding — bb55aaa
-X25 — DONE — matter links (contract matterId, matter counterparty/owner) must be same-org; matter views org-filtered; repair migration — (sha: X25)
+X25 — DONE — matter links (contract matterId, matter counterparty/owner) must be same-org; matter views org-filtered; repair migration — b661002
+X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be set by hand via REST or the agent; one shared transition table — (sha: X24)

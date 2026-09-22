@@ -28,6 +28,7 @@ import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
+import { manualStatusRefusal } from '../lib/contract-status.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
@@ -1083,22 +1084,10 @@ export async function contractRoutes(app: FastifyInstance) {
 
     // Validate status transitions
     if (body.status && body.status !== existing.status) {
-      const VALID_TRANSITIONS: Record<string, string[]> = {
-        DRAFT:              ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-        PENDING_REVIEW:     ['DRAFT', 'UNDER_NEGOTIATION', 'PENDING_APPROVAL'],
-        UNDER_NEGOTIATION:  ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-        PENDING_APPROVAL:   ['APPROVED', 'REJECTED'],
-        APPROVED:           ['EXECUTED', 'PENDING_SIGNATURE'],
-        EXECUTED:           ['ARCHIVED'],
-        EXPIRED:            ['ARCHIVED'],
-        REJECTED:           ['DRAFT'],
-      }
-      const allowed = VALID_TRANSITIONS[existing.status] ?? []
-      if (!allowed.includes(body.status)) {
-        return reply.status(409).send({
-          detail: `Cannot transition from ${existing.status} to ${body.status}`,
-        })
-      }
+      // X24 — one table with the agent's set_status; approval statuses are the
+      // workflow's to set.
+      const refusal = manualStatusRefusal(existing.status, body.status)
+      if (refusal) return reply.status(409).send({ detail: refusal })
     }
 
     // Use the contract's real orgId (internal calls come in with orgId='system')

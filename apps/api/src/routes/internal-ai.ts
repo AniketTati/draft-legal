@@ -35,6 +35,7 @@ import { findTopic } from '../lib/clause-topic.js'
 import { planDraft } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
+import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal } from '../lib/contract-status.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -2621,29 +2622,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found in this org' })
 
-    // Valid status transitions — mirror the REST PATCH handler's table so
-    // the agent can't skip through states the UI would reject.
-    const VALID_TRANSITIONS: Record<string, string[]> = {
-      DRAFT:             ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-      PENDING_REVIEW:    ['DRAFT', 'UNDER_NEGOTIATION', 'PENDING_APPROVAL'],
-      UNDER_NEGOTIATION: ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-      PENDING_APPROVAL:  ['APPROVED', 'REJECTED'],
-      APPROVED:          ['EXECUTED', 'PENDING_SIGNATURE'],
-      EXECUTED:          ['ARCHIVED'],
-      EXPIRED:           ['ARCHIVED'],
-      REJECTED:          ['DRAFT'],
-    }
-
     // Each action is its own switch branch so reversibility + the undo
     // snapshot can be computed exactly where the mutation happens.
     if (body.action === 'set_status') {
       const nextStatus = String(body.payload.status ?? '')
-      const allowed = VALID_TRANSITIONS[existing.status] ?? []
-      if (!allowed.includes(nextStatus)) {
-        return reply.status(409).send({
-          detail: `Cannot transition from ${existing.status} to ${nextStatus}`,
-          allowed,
-        })
+      // X24 — the same manual table as REST; approval statuses are the workflow's.
+      const refusal = manualStatusRefusal(existing.status, nextStatus)
+      if (refusal) {
+        return reply.status(409).send({ detail: refusal, allowed: MANUAL_STATUS_TRANSITIONS[existing.status] ?? [] })
       }
       await prisma.contract.update({
         where: { id: existing.id },
