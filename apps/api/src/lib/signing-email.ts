@@ -36,8 +36,13 @@ export function sendSigningEmail(args: SendSigningEmailArgs): void {
   const expiresStr = args.expiresAt
     ? ` · expires ${args.expiresAt.toISOString().slice(0, 10)}`
     : ''
+  // X18 — the link IS the signer's credential. Print it whole only in
+  // development, where the console is the delivery channel.
+  const shownUrl = process.env.NODE_ENV === 'development'
+    ? args.signingUrl
+    : args.signingUrl.replace(/\/sign\/[^/?#]+/, '/sign/[REDACTED]')
   console.info(
-    `[signing] ✉  ${args.to}  →  ${args.signingUrl}` +
+    `[signing] ✉  ${args.to}  →  ${shownUrl}` +
     `  (${args.contractType} "${args.contractTitle}", signer "${args.signerName}"${expiresStr})`,
   )
 

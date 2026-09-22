@@ -448,7 +448,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Local run of `memory.py` against a fake Redis: the owner sees the history; the same session id from another user, or the same user in another org, gets `[]`.
     - Tripwire `lib/agents-session-binding.test.ts` (4 cases) checks the key shape, the required owner, that every Redis read and write goes through the bound key, and that every orchestrator call passes the owner. All four fail on the pre-fix Python.
     - `routes/agent-chat-identity.integration.test.ts` checks the forwarded `user_id` / `org_id` are the JWT's even when the body names someone else. The API already did this; it is now pinned.
-    - The api unit suite passes (223/223, run on a tree that also held other stretch work in progress). The X8 integration test passes.
+    - The api unit suite passes (221/221, run on a tree that also held other stretch work in progress). The X8 integration test passes.
     - A fresh subagent reviewed this adversarially. Nothing got through: the identity can't be influenced, and no other store keys conversation content by the client id alone. It found that the tripwire covered only the Python half, now fixed as above, and the feedback-route issue filed as X22.
   - **Left out:**
     - `:` isn't escaped in the key. Org and user ids are cuids, and the client controls only the last segment, so no collision is reachable.
@@ -493,7 +493,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Original note: `apps/agents/app/agents/portfolio_agent.py:110` sends `x-internal-secret` + `x-internal-service` but no `x-org-id` to `POST /api/v1/search/advanced`, so `requireAuth` resolves the org to `'system'` and the ES query matches nothing. That is the same defect as C8, in the `/agent/portfolio` path (`routes/agent.py`). Add `x-org-id: org_id` and extend `lib/agents-internal-headers.test.ts` to cover it. (Found in C8.)
 - **X16 — Binder detection sees only the first 10,000 characters (Low).** `apps/agents/app/routes/detect_binder.py:22` truncates the text, so agreements that start later in a long binder are never detected. Send head + evenly spaced windows (or page-boundary heading candidates) instead of widening the prompt linearly. (Deferred from C10.)
 - **X17 — Diligence-room contracts still count on org dashboards (Medium-Low).** `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
-- **X18 — Signing tokens go to anyone who can view the contract (High). — IN-PROGRESS.**
+- **X18 — Signing tokens go to anyone who can view the contract (High). — DONE.**
   - **Plan:**
     - Confirmed: `GET /contracts/:id/signature-requests` includes whole signer rows, so the response carries `token`. No other route returns tokens: the org-wide list selects fields without it, `/sign/:token` shows the other signers without theirs, compliance export and sealing don't return them, and no agent tool reads them.
     - Fix: in that route, only a caller holding `sign:contract` gets tokens (org scope, or own scope on a contract it owns). Everyone else gets the signer rows without `token`.
@@ -501,6 +501,22 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Acceptance: a VIEWER sees signers and their status but no token; LEGAL_OPS (can send for signature) still gets the link.
     - Blast radius: one read route plus a UI conditional. Sending, reminding and signing are unchanged.
     - Test: `routes/signing-tokens.integration.test.ts`.
+  - **What changed:**
+    - `GET /contracts/:id/signature-requests` returns signer tokens only to a caller holding `sign:contract`: org scope, or own scope on a contract it owns. Everyone else gets the signer rows without `token`, except their own row (matched by linked user or email, ignoring case), so an internal signer can still open their signing page.
+    - Web: `SignatureStatus` shows "Copy link" only when the API sent the token.
+    - Logs:
+      - The signing-email console line prints the whole link only in development, where the console is the delivery channel.
+      - The production request logger masks `/sign/:token` and `/portal/:token` (new `lib/log-redact.ts`).
+  - **Verification:**
+    - `routes/signing-tokens.integration.test.ts` has 6 cases: a VIEWER, an internal signer's own link, a sender, own-scope sign on an owned contract and on someone else's, a `contracts:read` API key, and the email log line. Against the pre-fix code, 5 fail; the sender case is the positive control.
+    - `lib/log-redact.test.ts` (unit).
+    - Suite: typecheck 0, lint 0 errors, web 14/14.
+    - A fresh subagent reviewed this adversarially with 9 live probes. It found no other route, worker, webhook, audit row, notification, export, agent tool, portal or ES document that carries a token. Its findings on log exposure, internal signers and test gaps are fixed above.
+  - **Deploy step:** tokens that viewers or `contracts:read` keys could already read stay valid until their request completes or expires (up to 180 days). To close that, re-issue the tokens of pending signers and re-send the emails; otherwise accept that risk explicitly.
+  - **Depends on X10:** a custom role with own-scope edit and sign could make itself owner of any contract through the agent's `contract_update` (`assign_owner`) and then read its tokens. No default role can. Fixed in X10.
+  - **Left as is:**
+    - The seed scripts create predictable demo tokens (`prisma/seed.ts`). This only matters for a shared, seeded demo database.
+    - Remind and Void still show for viewers and answer 403, as before.
   - Original note: `GET /contracts/:id/signature-requests` (`signatures.ts`, `include: { signers: true }`) returns each signer's `token`. The token is the only credential `POST /sign/:token/sign` needs, so a VIEWER (or any org-scope role, or a `contracts:read` API key) can sign as the counterparty. The sender does need the link (`SignatureStatus.tsx` "copy link"), so return tokens only to callers holding `sign:contract`. (Found in X7 review; confirmed with a VIEWER.)
 - **X19 — `POST /invoices` links a contract from another org (Medium). — DONE.**
   - **Plan:**
@@ -557,4 +573,5 @@ H3 — DONE — README/CHANGELOG/BUILD_TRACKER/evals README corrected to match t
 X15 — DONE — portfolio_agent sends x-org-id; header tripwire extended — 16082b1
 X7 — DONE — own scope enforced across REST: by-id guard on every contract/obligation/invoice/room/request route, lists + aggregates filtered, signature GETs gated; two adversarial passes — ba78c65
 X19 — DONE — invoice contract links must be a live contract of the caller's org (owned, for own scope); auto-match scoped the same way; reconcile bounded; repair migration for pre-fix cross-org links — 6c01291
-X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — (sha: X8)
+X8 — DONE — agent chat history keyed by (org, user, session) from the verified caller; probes updated; API-side identity pinned by a test — 42bbfe2
+X18 — DONE — signer tokens only to callers who can send for signature (plus a signer's own row); tokens masked in logs — (sha: X18)

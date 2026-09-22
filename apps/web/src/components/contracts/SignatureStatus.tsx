@@ -26,7 +26,9 @@ interface SignerData {
   email: string
   role: string | null
   signOrder: number
-  token: string
+  // X18 — present only for callers who can send for signature: the token is
+  // the signer's whole credential, so viewers don't get it.
+  token?: string
   status: 'PENDING' | 'SIGNED' | 'DECLINED'
   signedAt: string | null
   declinedAt: string | null
@@ -301,12 +303,13 @@ export function SignatureStatus({
                       )}
                     </div>
 
-                    {/* Row 3: copy-link action — only for pending signers */}
-                    {signer.status === 'PENDING' && sr.status === 'PENDING' && (
+                    {/* Row 3: copy-link action — only for pending signers, and only
+                        when the API sent the link (callers who can send for signature) */}
+                    {signer.status === 'PENDING' && sr.status === 'PENDING' && signer.token && (
                       <div className="mt-1.5 ml-9">
                         <button
                           type="button"
-                          onClick={() => copyLink(signer.token)}
+                          onClick={() => signer.token && copyLink(signer.token)}
                           className="text-dense text-ink-700 hover:text-ink-950 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-paper-200 hover:border-paper-300 bg-card whitespace-nowrap"
                           title="Copy signing link"
                         >

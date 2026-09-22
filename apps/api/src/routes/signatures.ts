@@ -32,14 +32,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { sendSigningEmailForSigner } from '../lib/signing-email.js'
 import { queueSigningReminder, queueSealSignedPdf } from '../lib/queue.js'
 import { extractObligationsForContract, CostCapExceededError } from '../lib/obligation-extract.js'
 import { fireWebhook } from '../lib/webhook-events.js'
-import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
+import { guardOwnScopeContractRoutes, ownsContract } from '../lib/own-scope-guard.js'
 
 const SignersSchema = z.object({
   signers: z.array(z.object({
@@ -311,7 +311,23 @@ export async function signatureRoutes(app: FastifyInstance) {
         orderBy: { createdAt: 'desc' },
         include: { signers: true, events: { orderBy: { createdAt: 'desc' }, take: 20 } },
       })
-      return reply.send({ data: requests })
+      // X18 — a signer's token is the whole credential for /sign/:token, so
+      // anyone who could view the contract could sign as the counterparty.
+      // Only a caller who may send for signature (and so re-share the link)
+      // gets it.
+      const signScope = await permissionScopeFor(req, 'sign', 'contract')
+      const mayShareLinks = !!signScope && (signScope !== 'own' || await ownsContract(req, id))
+      if (mayShareLinks) return reply.send({ data: requests })
+      // An internal signer still gets their OWN link — it's their credential.
+      const me = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } })
+      const isMe = (s: { userId: string | null; email: string }) =>
+        s.userId === req.user.sub || (!!me?.email && s.email.toLowerCase() === me.email.toLowerCase())
+      return reply.send({
+        data: requests.map(r => ({
+          ...r,
+          signers: r.signers.map(({ token, ...signer }) => (isMe(signer) ? { ...signer, token } : signer)),
+        })),
+      })
     },
   )
 
