@@ -341,16 +341,64 @@ export interface ClauseMatch {
   similarity: number
 }
 
+/**
+ * The version each contract's clauses should be read from (C11): the current
+ * version if it has clauses, else the latest version that does. Contracts
+ * with no extracted clauses at all yield nothing.
+ */
+function effectiveVersionsSql(orgId: string, contractId?: string) {
+  return Prisma.sql`
+    SELECT DISTINCT ON (v."contractId") v.id
+    FROM   contract_versions v
+    JOIN   contracts c2 ON c2.id = v."contractId"
+    WHERE  c2."orgId" = ${orgId}
+           ${contractId ? Prisma.sql`AND c2.id = ${contractId}` : Prisma.empty}
+           AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
+    ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
+}
+
+/** Effective clause version ids for these contracts (see effectiveVersionsSql). */
+export async function effectiveClauseVersionIds(orgId: string, contractIds: string[]): Promise<string[]> {
+  if (contractIds.length === 0) return []
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT DISTINCT ON (v."contractId") v.id
+    FROM   contract_versions v
+    JOIN   contracts c2 ON c2.id = v."contractId"
+    WHERE  c2."orgId" = ${orgId} AND c2.id = ANY(${contractIds})
+           AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
+    ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
+  return rows.map(r => r.id)
+}
+
 export async function searchClauses(
   queryText: string,
   orgId: string,
   limit = 20,
   contractId?: string, // scope to a single contract for Q&A
   ownerId?: string,    // own-scope callers: filter BEFORE top-k, not after
+  opts: {
+    /** Include superseded versions' clauses (default: the current version only). */
+    allVersions?: boolean
+    /** Search one diligence room's documents (they are excluded otherwise). */
+    diligenceRoomId?: string
+  } = {},
 ): Promise<ClauseMatch[]> {
   const vec = await embedText(queryText)
   const vectorLiteral = `[${vec.join(',')}]`
   const ownerFilter = ownerId ? Prisma.sql`AND c."ownerId" = ${ownerId}` : Prisma.empty
+  // C11 — one version per contract: its current version, or — when that has
+  // no extracted clauses yet (sealing, redline_apply and editor saves create
+  // clause-less versions) — the latest version that does (the B.5.6 rule in
+  // GET /contracts/:id/clauses). Superseded text is never cited as the terms.
+  // Computed once per query (not per candidate row) so it stays cheap.
+  const versionJoin = opts.allVersions ? Prisma.empty : Prisma.sql`
+        JOIN   (${effectiveVersionsSql(orgId, contractId)}) ev ON ev.id = cv.id`
+  // C11 — diligence-room documents are a target's contracts, not the org's:
+  // out of ordinary search unless a room is named, or one contract is asked
+  // about by id (room-scoped access).
+  const diligenceFilter = opts.diligenceRoomId
+    ? Prisma.sql`AND c."diligenceRoomId" = ${opts.diligenceRoomId}`
+    : contractId ? Prisma.empty : Prisma.sql`AND c."diligenceRoomId" IS NULL`
 
   // Raw SQL: pgvector cosine similarity, join to contracts for org scoping
   const rows = contractId
@@ -364,9 +412,10 @@ export async function searchClauses(
         FROM   contract_clauses cc
         JOIN   contract_versions cv ON cv.id = cc."versionId"
         JOIN   contracts c ON c.id = cv."contractId"
+        ${versionJoin}
         WHERE  c."orgId" = ${orgId} AND c.id = ${contractId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
-               ${ownerFilter}
+               ${ownerFilter} ${diligenceFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
@@ -380,9 +429,10 @@ export async function searchClauses(
         FROM   contract_clauses cc
         JOIN   contract_versions cv ON cv.id = cc."versionId"
         JOIN   contracts c ON c.id = cv."contractId"
+        ${versionJoin}
         WHERE  c."orgId" = ${orgId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
-               ${ownerFilter}
+               ${ownerFilter} ${diligenceFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `

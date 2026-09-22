@@ -67,7 +67,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null, parentContractId: null } })
+  await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null, parentContractId: null, diligenceRoomId: null } })
+  await prisma.diligenceRoom.deleteMany({ where: { orgId: org } })
   await cleanupAll()
   await closeApp()
 })
@@ -139,6 +140,16 @@ describe('binder split', () => {
     expect(err).toBeInstanceOf(UnrecoverableError)
     expect(err.message).toBe(SPLIT_REQUIRES_PDF)
     expect(await liveChildren(id)).toHaveLength(0)
+  })
+
+  it('a binder in a diligence room splits into documents that stay in the room (C11)', async () => {
+    const roomId = (await prisma.diligenceRoom.create({ data: { orgId: org, name: 'Project Heron', createdById: owner } })).id
+    const id = await binder('Room binder', await threePagePdf(), 'application/pdf')
+    await prisma.contract.update({ where: { id }, data: { diligenceRoomId: roomId } })
+    await splitBinder({ contractId: id, orgId: org, userId: owner, splits: TWO })
+    const children = await prisma.contract.findMany({ where: { parentContractId: id, deletedAt: null }, select: { diligenceRoomId: true } })
+    expect(children).toHaveLength(2)
+    expect(children.every(c => c.diligenceRoomId === roomId)).toBe(true)
   })
 
   it('children live under the binder\'s split prefix', async () => {

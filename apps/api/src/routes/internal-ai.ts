@@ -19,7 +19,7 @@ import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
 import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { generateDocument } from '../lib/template-engine.js'
-import { searchClauses } from '../lib/embeddings.js'
+import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
@@ -874,7 +874,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const scope = await scopeOr403(reply, body.orgId, body.userId)
     if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, diligenceRoomId: null, ...contractScopeWhere(scope) }
     if (body.status)           where.status           = body.status
     if (body.type)             where.type             = body.type
     if (body.counterpartyName) where.counterpartyName = { contains: body.counterpartyName, mode: 'insensitive' }
@@ -957,7 +957,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
             orgId:     body.orgId,
             deletedAt: null,
             id:        { in: orderedIds },
-            ...contractScopeWhere(scope),
+            ...contractScopeWhere(scope), diligenceRoomId: null,
           }
           if (body.status)           semanticWhere.status           = body.status
           if (body.type)             semanticWhere.type             = body.type
@@ -1371,7 +1371,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: {
         orgId: body.orgId,
         deletedAt: null,
-        ...contractScopeWhere(scope),
+        ...contractScopeWhere(scope), diligenceRoomId: null,
         OR: [
           { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } },
           { counterparty: { name: { contains: body.counterpartyName, mode: 'insensitive' } } },
@@ -1667,7 +1667,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: { in: contractIds },
         orgId: body.orgId,
         deletedAt: null,
-        ...contractScopeWhere(scope),
+        ...contractScopeWhere(scope), diligenceRoomId: null,
         ...(body.contractType     ? { type:             body.contractType }     : {}),
         ...(body.status           ? { status:           body.status }           : {}),
         ...(body.counterpartyName ? { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } } : {}),
@@ -3296,7 +3296,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     // Pull contracts up-front so we can join titles + flag contracts
     // that haven't been extracted yet (the empty-state diagnostic).
-    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
+    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), ...(body.contractId ? {} : { diligenceRoomId: null }) }
     if (body.contractId) contractWhere.id = body.contractId
     const contracts = await prisma.contract.findMany({
       where: contractWhere as never,
@@ -3395,7 +3395,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const scope = await scopeOr403(reply, body.orgId, body.userId)
     if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), ...(body.contractId ? {} : { diligenceRoomId: null }) }
     if (body.contractId) {
       where.id = body.contractId
     } else {
@@ -3562,19 +3562,28 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const pastDeals: Array<Record<string, unknown>> = []
     if (clauseTypeFilter) {
+      // C11 — excerpts from each contract's CURRENT version only (a clause a
+      // later version replaced is not how that deal landed), and never from
+      // diligence-room documents, which are a target's contracts, not ours.
+      const deals = await prisma.contract.findMany({
+        where: {
+          orgId: body.orgId,
+          deletedAt: null,
+          diligenceRoomId: null,
+          ...contractScopeWhere(scope),
+          ...(body.contractType ? { type: body.contractType } : {}),
+          status: { in: ['EXECUTED', 'APPROVED', 'PENDING_SIGNATURE'] },
+        },
+        select: { id: true },
+        orderBy: { updatedAt: 'desc' },
+        take: 5_000,
+      })
+      const dealVersionIds = await effectiveClauseVersionIds(body.orgId, deals.map(d => d.id))
       const clauses = await prisma.contractClause.findMany({
         where: {
           clauseType: clauseTypeFilter,
           isSubChunk: false,
-          version: {
-            contract: {
-              orgId: body.orgId,
-              deletedAt: null,
-              ...contractScopeWhere(scope),
-              ...(body.contractType ? { type: body.contractType } : {}),
-              status: { in: ['EXECUTED', 'APPROVED', 'PENDING_SIGNATURE'] },
-            },
-          },
+          versionId: { in: dealVersionIds },
         },
         orderBy: { id: 'desc' },
         take: body.limit,
@@ -3760,7 +3769,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const items = await Promise.all(cps.map(async cp => {
       const contractCount = await prisma.contract.count({
-        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
+        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), diligenceRoomId: null },
       })
       return {
         id:            cp.id,
@@ -3816,7 +3825,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Stats per counterparty: contractCount + sumValue.
     const stats = await prisma.contract.groupBy({
       by: ['counterpartyId'],
-      where: { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), counterpartyId: { in: cps.map(c => c.id) } },
+      where: { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), diligenceRoomId: null, counterpartyId: { in: cps.map(c => c.id) } },
       _count: { _all: true },
       _sum:   { value: true },
     })

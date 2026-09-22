@@ -68,6 +68,7 @@ export async function slackRoutes(app: FastifyInstance) {
     const where = {
       orgId: auth.orgId,
       deletedAt: null,
+      diligenceRoomId: null, // C11 — a diligence room's documents aren't the org's contracts
       OR: [
         { title:            { contains: query, mode: 'insensitive' as const } },
         { counterpartyName: { contains: query, mode: 'insensitive' as const } },

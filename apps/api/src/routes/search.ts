@@ -69,14 +69,16 @@ export async function searchRoutes(app: FastifyInstance) {
     if (esResults.length > 0) {
       const ids = esResults.map(r => r.id!)
       const contracts = await prisma.contract.findMany({
-        where: { id: { in: ids }, orgId, deletedAt: null },
+        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null },
         include: { counterparty: { select: { id: true, name: true } } },
       })
       const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
       const ordered = ids.map(id => byId[id]).filter(Boolean)
       return reply.send({
         data: ordered,
-        highlights: Object.fromEntries(esResults.map(r => [r.id, r.highlights])),
+        // Only for rows returned — an ES doc the DB filter dropped (e.g. a
+        // diligence document indexed before C11) must not leak its fragments.
+        highlights: Object.fromEntries(esResults.filter(r => byId[r.id!]).map(r => [r.id, r.highlights])),
         total: ordered.length,
         source: 'elasticsearch',
       })
@@ -87,6 +89,7 @@ export async function searchRoutes(app: FastifyInstance) {
       where: {
         orgId,
         deletedAt: null,
+        diligenceRoomId: null,
         OR: [
           { title: { contains: body.q, mode: 'insensitive' } },
           { counterpartyName: { contains: body.q, mode: 'insensitive' } },
@@ -119,7 +122,7 @@ export async function searchRoutes(app: FastifyInstance) {
         if (mode === 'semantic') {
           const contractIds = [...new Set(clauseMatches.map(m => m.contractId))]
           const contracts = await prisma.contract.findMany({
-            where: { id: { in: contractIds }, orgId, deletedAt: null },
+            where: { id: { in: contractIds }, orgId, deletedAt: null, diligenceRoomId: null },
             include: { counterparty: { select: { id: true, name: true } } },
           })
           const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
@@ -152,14 +155,14 @@ export async function searchRoutes(app: FastifyInstance) {
         const sortedIds = fused.slice(0, limit).map(f => f.id)
 
         const contracts = await prisma.contract.findMany({
-          where: { id: { in: sortedIds }, orgId, deletedAt: null },
+          where: { id: { in: sortedIds }, orgId, deletedAt: null, diligenceRoomId: null },
           include: { counterparty: { select: { id: true, name: true } } },
         })
         const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
         return reply.send({
           data: sortedIds.map(id => byId[id]).filter(Boolean),
-          clauseMatches: clauseMatches.filter(m => sortedIds.includes(m.contractId)),
-          rrfScores,
+          clauseMatches: clauseMatches.filter(m => byId[m.contractId]),
+          rrfScores: Object.fromEntries(Object.entries(rrfScores).filter(([id]) => byId[id])),
           total: sortedIds.length,
           source: 'hybrid_rrf',
         })
@@ -169,13 +172,13 @@ export async function searchRoutes(app: FastifyInstance) {
       const esResult = await advancedSearch(orgId, { q, ...filters }, limit)
       const ids = esResult.hits.map(h => h.id!)
       const contracts = await prisma.contract.findMany({
-        where: { id: { in: ids }, orgId, deletedAt: null },
+        where: { id: { in: ids }, orgId, deletedAt: null, diligenceRoomId: null },
         include: { counterparty: { select: { id: true, name: true } } },
       })
       const byId = Object.fromEntries(contracts.map(c => [c.id, c]))
       return reply.send({
         data: ids.map(id => byId[id]).filter(Boolean),
-        highlights: Object.fromEntries(esResult.hits.map(h => [h.id, h.highlights])),
+        highlights: Object.fromEntries(esResult.hits.filter(h => byId[h.id!]).map(h => [h.id, h.highlights])),
         total: esResult.total,
         source: 'elasticsearch',
       })

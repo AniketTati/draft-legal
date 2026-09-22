@@ -22,3 +22,16 @@ describe('buildESQuery ids filter', () => {
     expect(JSON.stringify(q)).not.toContain('"ids"')
   })
 })
+
+describe('buildESQuery diligence scoping (C11)', () => {
+  it('excludes diligence-room documents from ordinary search', () => {
+    const q = buildESQuery('org-1', { q: 'indemnity' })
+    expect(q.bool.must_not).toContainEqual({ exists: { field: 'diligenceRoomId' } })
+  })
+
+  it('a room-scoped search filters to that room instead', () => {
+    const q = buildESQuery('org-1', { q: 'indemnity', diligenceRoomId: 'room-1' })
+    expect(q.bool.filter).toContainEqual({ term: { diligenceRoomId: 'room-1' } })
+    expect(q.bool.must_not).toBeUndefined()
+  })
+})

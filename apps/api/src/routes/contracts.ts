@@ -1560,7 +1560,7 @@ export async function contractRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyId: true, counterpartyName: true,
-        currency: true, matterId: true,
+        currency: true, matterId: true, diligenceRoomId: true,
       },
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
@@ -1608,6 +1608,8 @@ export async function contractRoutes(app: FastifyInstance) {
         effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
         expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
         matterId:         parent.matterId ?? undefined,
+        // C11 — an amendment to a diligence-room document stays in that room.
+        diligenceRoomId:  parent.diligenceRoomId ?? undefined,
         metadata:         body.description ? { amendmentDescription: body.description } : {},
         versions: {
           create: {

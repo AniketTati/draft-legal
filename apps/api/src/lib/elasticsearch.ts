@@ -79,6 +79,7 @@ export async function ensureContractIndex() {
         keyTerms:         { type: 'object', dynamic: true },
         clauseFlags:      { type: 'object', dynamic: true },
         metadata:         { type: 'object', dynamic: true },
+        diligenceRoomId:  { type: 'keyword' },
         },
       },
     },
@@ -111,23 +112,29 @@ export interface ContractDoc {
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
 
 /**
- * Clause flags live on the contract's version (the Review agent writes them),
- * not on the contract. The current version's, else the latest one's.
+ * Fields every search doc needs but most callers can't supply: clause flags
+ * live on the contract's version (the Review agent writes them) — the current
+ * version's, else the latest one's — and diligenceRoomId decides whether the
+ * doc belongs in ordinary search at all (C11).
  */
-async function clauseFlagsFor(contractId: string): Promise<Record<string, boolean> | undefined> {
+async function docExtrasFor(contractId: string): Promise<{ clauseFlags?: Record<string, boolean>; diligenceRoomId?: string }> {
   const c = await prisma.contract.findUnique({
     where:  { id: contractId },
     select: {
       currentVersionId: true,
+      diligenceRoomId: true,
       versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { id: true, clauseFlags: true } },
     },
   })
-  if (!c) return undefined
+  if (!c) return {}
   const version = c.currentVersionId && c.currentVersionId !== c.versions[0]?.id
     ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { clauseFlags: true } })
     : c.versions[0]
   const flags = version?.clauseFlags
-  return flags && typeof flags === 'object' && !Array.isArray(flags) ? flags as Record<string, boolean> : undefined
+  return {
+    ...(flags && typeof flags === 'object' && !Array.isArray(flags) ? { clauseFlags: flags as Record<string, boolean> } : {}),
+    ...(c.diligenceRoomId ? { diligenceRoomId: c.diligenceRoomId } : {}),
+  }
 }
 
 export async function indexContract(id: string, doc: ContractDoc) {
@@ -150,13 +157,21 @@ export async function indexContract(id: string, doc: ContractDoc) {
   // C7 — no caller passed clauseFlags, so every doc lacked them and the
   // clause-flag facets/filters counted 0. Fill them from the version unless
   // the caller supplied them, so every index path (and the backfill) carries them.
-  const clauseFlags = doc.clauseFlags ?? await clauseFlagsFor(id).catch(() => undefined)
+  //
+  // C11 — likewise diligenceRoomId: only diligence.ts passed it, so a later
+  // re-index dropped it and the doc leaked back into ordinary search.
+  // Fail closed: if this lookup fails, don't write a doc that might be
+  // missing diligenceRoomId (it would surface in ordinary search).
+  const extras = await docExtrasFor(id)
+  const clauseFlags = doc.clauseFlags ?? extras.clauseFlags
+  const diligenceRoomId = doc.diligenceRoomId ?? extras.diligenceRoomId
   await es.index({
     index: CONTRACT_INDEX,
     id,
     body: {
       ...doc,
       ...(clauseFlags ? { clauseFlags } : {}),
+      ...(diligenceRoomId ? { diligenceRoomId } : {}),
       keyTerms: scalarize(doc.keyTerms),
       metadata: scalarize(doc.metadata),
     },
@@ -217,6 +232,8 @@ export interface SearchFilters {
   counterpartyName?: string
   /** Restrict to these contract ids (own-scope callers; docs carry no ownerId). */
   ids?: string[]
+  /** Search one diligence room's documents (excluded from ordinary search otherwise). */
+  diligenceRoomId?: string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -274,6 +291,11 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
 
   if (filters.ids) filter.push({ ids: { values: filters.ids } })
 
+  // C11 — diligence-room documents stay out of ordinary search.
+  const mustNot: any[] = []
+  if (filters.diligenceRoomId) filter.push({ term: { diligenceRoomId: filters.diligenceRoomId } })
+  else mustNot.push({ exists: { field: 'diligenceRoomId' } })
+
   if (filters.clauseFlags) {
     for (const [flag, val] of Object.entries(filters.clauseFlags)) {
       filter.push({ term: { [`clauseFlags.${flag}`]: val } })
@@ -284,6 +306,7 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
     bool: {
       ...(must.length ? { must } : { must: [{ match_all: {} }] }),
       filter,
+      ...(mustNot.length ? { must_not: mustNot } : {}),
     },
   }
 }

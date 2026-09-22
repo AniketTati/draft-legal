@@ -68,6 +68,12 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
 
   console.info('[parse-worker] split-binder start contractId=%s splits=%d', contractId, splits.length)
 
+  // C11 — a binder uploaded to a diligence room splits into the target's
+  // agreements; they stay in that room rather than leaking into the org's
+  // own contracts, search and agent answers.
+  const parentRow = await prisma.contract.findUnique({ where: { id: contractId }, select: { diligenceRoomId: true } })
+  const diligenceRoomId = parentRow?.diligenceRoomId ?? null
+
   // Previous children: replace them, unless one has moved on (then refuse).
   const previous = await previousSplitChildren(contractId, orgId)
   const blocker = resplitBlocker(previous)
@@ -143,6 +149,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
         analysisStatus:   'PENDING',
         parentContractId: contractId,
         relationshipType: 'exhibit_only',
+        diligenceRoomId,
         versions: {
           create: {
             versionNumber: 1,
@@ -177,6 +184,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
       plainText:      '',
       tags:           child.tags,
       createdAt:      child.createdAt.toISOString(),
+      ...(diligenceRoomId ? { diligenceRoomId } : {}),
     }).catch(err => console.warn('[parse-worker] ES index on binder child failed childId=%s: %s', child.id, err?.message ?? err))
 
     queueParseDocument({
