@@ -2841,6 +2841,7 @@ export function ContractDetailPage() {
                 <RedlinePanel
                   analysis={redlineMeta}
                   isAnalyzing={isAnalyzingRedlines}
+                  failure={redlineStatus === 'FAILED' ? String(customMeta._redlineError ?? 'The analysis did not complete.') : null}
                   versions={versions.map((v: any) => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt }))}
                   onRequestAnalysis={(v1Id, v2Id) => {
                     setDiffV1Id(v1Id)

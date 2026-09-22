@@ -19,6 +19,20 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _internal_headers(org_id: str) -> dict:
+    """All three internal-service headers (see approval.py / clm-debug-multilayer).
+
+    Without x-org-id, requireAuth resolves the caller's org to 'system', and
+    the org-scoped diff route 404s the contract — which is how every
+    Negotiate-tab analysis failed before (C8).
+    """
+    return {
+        "x-internal-service": "agents",
+        "x-internal-secret": settings.internal_service_secret,
+        "x-org-id": org_id,
+    }
+
+
 class RedlineRequest(BaseModel):
     contractId:    str
     v1Id:          str
@@ -38,10 +52,7 @@ async def _process_redline(
 ) -> None:
     logger.info("[redline] START contractId=%s v1=%s v2=%s", contract_id, v1_id, v2_id)
 
-    headers = {
-        "x-internal-service": "agents",
-        "x-internal-secret": settings.internal_service_secret,
-    }
+    headers = _internal_headers(org_id)
     api_url = settings.api_url
 
     async with httpx.AsyncClient(timeout=60) as client:
@@ -60,23 +71,33 @@ async def _process_redline(
             await _set_failed(client, api_url, contract_id, headers, str(e))
             return
 
-        if not diff_html.strip():
-            logger.warning("[redline] Empty diff HTML for contractId=%s — nothing to analyze", contract_id)
-            await _set_failed(client, api_url, contract_id, headers, "Empty diff")
+        if not diff_html.strip() or ("<ins" not in diff_html and "<del" not in diff_html):
+            logger.warning("[redline] No changes between versions for contractId=%s — nothing to analyze", contract_id)
+            await _set_failed(client, api_url, contract_id, headers,
+                              "The two versions have no differences, so there is nothing to analyze.")
             return
 
-        # 2. Fetch playbook positions for scoring context
+        # 2. Fetch playbook positions for scoring context. Non-fatal, but never
+        # silent: an analysis scored without the playbook says so (C8 — this
+        # used to call a route that doesn't exist and score against nothing).
         playbook_positions: list[dict] = []
+        playbook_note: str | None = None
         try:
+            pb_params = {"contractType": contract_type} if contract_type else {}
             pb_res = await client.get(
-                f"{api_url}/api/v1/playbook",
-                params={"orgId": org_id},
+                f"{api_url}/api/v1/playbook/positions",
+                params=pb_params,
                 headers=headers,
             )
             if pb_res.is_success:
-                pb_data = pb_res.json()
-                playbook_positions = pb_data.get("data", [])
+                playbook_positions = pb_res.json().get("data", [])
+                if not playbook_positions:
+                    playbook_note = "No playbook positions apply to this contract type, so changes were scored on general market practice."
+            else:
+                playbook_note = f"The playbook could not be loaded ({pb_res.status_code}), so changes were scored without it."
+                logger.warning("[redline] playbook fetch returned %s: %s", pb_res.status_code, pb_res.text[:200])
         except Exception as e:
+            playbook_note = "The playbook could not be loaded, so changes were scored without it."
             logger.warning("[redline] Could not fetch playbook (non-fatal): %s", e)
 
         # 3. Run redline pipeline
@@ -90,6 +111,15 @@ async def _process_redline(
         except Exception as e:
             logger.error("[redline] Pipeline failed: %s", e)
             await _set_failed(client, api_url, contract_id, headers, str(e))
+            return
+
+        # A step can fail inside the pipeline and still return a result: no
+        # changes plus an error. That used to be written as a DONE analysis
+        # with nothing in it — an empty success. Fail it with the reason.
+        if result.get("error") and not result.get("changes"):
+            logger.error("[redline] Pipeline error with no changes: %s", result["error"])
+            await _set_failed(client, api_url, contract_id, headers,
+                              f"The analysis could not be completed: {result['error']}")
             return
 
         logger.info("[redline] DONE contractId=%s action=%s gate=%s confidence=%.2f changes=%d",
@@ -122,12 +152,18 @@ async def _process_redline(
             "recommendedAction": result["recommendedAction"],
             "requiresHumanGate": result["requiresHumanGate"],
             "confidence":       result["confidence"],
+            "playbookPositionCount": len(playbook_positions),
+            **({"playbookNote": playbook_note} if playbook_note else {}),
+            # Partial result: some changes were extracted but a later step
+            # (scoring / summary) failed.
+            **({"warning": f"Part of the analysis failed: {result['error']}"} if result.get("error") else {}),
         }
 
         updated_meta = {
             **existing_meta,
             "_redlineAnalysis": analysis,
             "_redlineStatus":   "DONE",
+            "_redlineError":    None,   # clear a previous failure (the API deletes null keys)
             "_redlineHistory":  [analysis, *history],
         }
 

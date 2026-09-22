@@ -34,6 +34,10 @@ interface RedlineAnalysis {
   recommendedAction: 'accept_all' | 'counter' | 'reject'
   requiresHumanGate: boolean
   confidence: number
+  /** Set when the changes were scored without (or with an empty) playbook. */
+  playbookNote?: string
+  /** Set when a later step failed after some changes were extracted. */
+  warning?: string
 }
 
 interface Version {
@@ -45,6 +49,8 @@ interface Version {
 interface RedlinePanelProps {
   analysis?: RedlineAnalysis | null
   isAnalyzing: boolean
+  /** Why the last analysis failed (metadata._redlineError), when it did. */
+  failure?: string | null
   versions: Version[]
   onRequestAnalysis: (v1Id: string, v2Id: string) => void
 }
@@ -183,7 +189,7 @@ function ChangeCard({ change }: { change: RedlineChange }) {
 }
 
 export function RedlinePanel({
-  analysis, isAnalyzing, versions, onRequestAnalysis,
+  analysis, isAnalyzing, failure, versions, onRequestAnalysis,
 }: RedlinePanelProps) {
   const [v1Id, setV1Id] = useState(versions[1]?.id ?? '')
   const [v2Id, setV2Id] = useState(versions[0]?.id ?? '')
@@ -244,6 +250,24 @@ export function RedlinePanel({
           }
         </Button>
       </div>
+
+      {/* A failed run says why, instead of leaving an empty (or stale) panel. */}
+      {failure && !isAnalyzing && (
+        <div className="bg-risk-50 border border-risk-200 rounded-card p-4 flex items-start gap-3" data-testid="redline-failure">
+          <AlertTriangle className="size-4 text-risk-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-body font-semibold text-risk-700">Redline analysis failed</p>
+            <p className="text-dense text-risk-700 mt-0.5">{failure}</p>
+          </div>
+        </div>
+      )}
+
+      {analysis && (analysis.playbookNote || analysis.warning) && (
+        <div className="bg-attention-50 border border-attention-200 rounded-card px-4 py-3 space-y-1" data-testid="redline-notes">
+          {analysis.warning && <p className="text-dense text-attention-700">{analysis.warning}</p>}
+          {analysis.playbookNote && <p className="text-dense text-attention-700">{analysis.playbookNote}</p>}
+        </div>
+      )}
 
       {/* Human gate banner */}
       {analysis?.requiresHumanGate && (
