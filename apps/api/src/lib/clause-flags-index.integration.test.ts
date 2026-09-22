@@ -3,7 +3,8 @@
  * clause-flag facets count 0 and its filters are hidden.
  *
  * Runs against the real ES (docker compose). Documents are keyed to a
- * throwaway org and deleted afterwards.
+ * throwaway org and deleted afterwards. CI's integration job runs no
+ * Elasticsearch, so the suite is skipped (not failed) when ES is unreachable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
@@ -11,6 +12,8 @@ import { es, CONTRACT_INDEX, indexContract, deleteContractFromIndex, ensureContr
 
 let app: TestApp
 let org: string, owner: string, flagged: string, bare: string, versionId: string
+
+const ES_UP = await es.ping().then(() => true, () => false)
 
 const agentHeaders = () => ({
   'x-internal-service': 'agents',
@@ -28,28 +31,28 @@ async function esDoc(id: string, until: (src: Record<string, unknown>) => boolea
   return null
 }
 
-beforeAll(async () => {
-  app = await getApp()
-  await ensureContractIndex()
-  org = await makeOrg('Clause Flag Org')
-  owner = await makeUser(org)
-  flagged = await makeContract(org, owner, { title: 'Flagged MSA', status: 'EXECUTED' })
-  bare = await makeContract(org, owner, { title: 'Bare NDA', status: 'EXECUTED' })
-  const v = await prisma.contractVersion.create({
-    data: { contractId: flagged, versionNumber: 1, plainText: 'force majeure applies', createdById: owner },
+describe.skipIf(!ES_UP)('clause flags in the search index', () => {
+  beforeAll(async () => {
+    app = await getApp()
+    await ensureContractIndex()
+    org = await makeOrg('Clause Flag Org')
+    owner = await makeUser(org)
+    flagged = await makeContract(org, owner, { title: 'Flagged MSA', status: 'EXECUTED' })
+    bare = await makeContract(org, owner, { title: 'Bare NDA', status: 'EXECUTED' })
+    const v = await prisma.contractVersion.create({
+      data: { contractId: flagged, versionNumber: 1, plainText: 'force majeure applies', createdById: owner },
+    })
+    versionId = v.id
+    await prisma.contract.update({ where: { id: flagged }, data: { currentVersionId: v.id } })
   })
-  versionId = v.id
-  await prisma.contract.update({ where: { id: flagged }, data: { currentVersionId: v.id } })
-})
 
-afterAll(async () => {
-  for (const id of [flagged, bare]) await deleteContractFromIndex(id).catch(() => {})
-  await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null } })
-  await cleanupAll()
-  await closeApp()
-})
+  afterAll(async () => {
+    for (const id of [flagged, bare]) await deleteContractFromIndex(id).catch(() => {})
+    await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null } })
+    await cleanupAll()
+    await closeApp()
+  })
 
-describe('clause flags in the search index', () => {
   it('the Review agent storing flags re-indexes the contract with them', async () => {
     const res = await app.inject({
       method: 'POST', url: `/api/v1/contracts/${flagged}/versions/${versionId}/clauses`, headers: agentHeaders(),
