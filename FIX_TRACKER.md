@@ -638,7 +638,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Original note: `inbound-email.ts:92` sets `limits.files`, so a sixth file part throws `FilesLimitError` (413) and the `continue` at `:96` is dead code: emails with many inline images are rejected. The 25MB check runs after the attachment is chosen, so an oversized first document 413s instead of trying the next. (Found in S3 review.)
 - **X15 — `portfolio_agent.py` queries as org `system` (Medium). — DONE.** Added `x-org-id: org_id` to the portfolio agent's `/api/v1/search/advanced` call and put the file in the `lib/agents-internal-headers.test.ts` tripwire (fails without the header, passes with it). The portfolio agent has no web UI (H3), so no live check applies.
   - Original note: `apps/agents/app/agents/portfolio_agent.py:110` sends `x-internal-secret` + `x-internal-service` but no `x-org-id` to `POST /api/v1/search/advanced`, so `requireAuth` resolves the org to `'system'` and the ES query matches nothing. That is the same defect as C8, in the `/agent/portfolio` path (`routes/agent.py`). Add `x-org-id: org_id` and extend `lib/agents-internal-headers.test.ts` to cover it. (Found in C8.)
-- **X16 — Binder detection sees only the first 10,000 characters (Low). — IN-PROGRESS.**
+- **X16 — Binder detection sees only the first 10,000 characters (Low). — VERIFY-PENDING.**
   - **Plan:**
     - Confirmed: `detect_binder.py` sends `plainText[:10_000]`. An agreement that starts later in a long binder is never seen, so the binder is analysed as one document.
     - Fix: for long text, send the first 6,000 characters, then up to 8 excerpts (1,200 characters each) around likely agreement boundaries. Candidates are ALL-CAPS titles ending in AGREEMENT / ADDENDUM / AMENDMENT / ORDER FORM / STATEMENT OF WORK / EXHIBIT / SCHEDULE / LICENSE, and "IN WITNESS WHEREOF". Evenly spaced excerpts fill any remaining slots.
@@ -647,6 +647,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - A TS tripwire (no Python runner in CI).
       - A local check of the sampler on a synthetic 200k-character binder.
     - Live LLM behaviour can't be verified here, so it will end VERIFY-PENDING.
+  - **What changed** (`apps/agents/app/routes/detect_binder.py`):
+    - `_sample()` sends texts up to 10k characters whole. Longer texts become the first 6k characters plus up to 8 excerpts of 1.2k.
+    - The excerpts sit around likely agreement boundaries: ALL-CAPS agreement titles and "IN WITNESS WHEREOF", topped up with evenly spaced windows. Each is prefixed `[[EXCERPT starting at character N of M (about P% …)]]`, and the prompt says `charStart` must be the offset in the full document.
+  - **Verification:**
+    - Locally, with FastAPI stubbed, on a synthetic 194k-character binder with the second agreement at 146k: the 16k sample contains the MSA title (excerpt at 146,271) and the preceding signature block (143,826). Short text is unchanged.
+    - Tripwire `lib/detect-binder-sampling.test.ts` (3 cases) fails pre-fix and passes after.
+  - **Still to verify:** a live run with an LLM key on a real long binder, checking that the second agreement is detected and that `charStart` and the resulting page ranges land on it. This environment has no platform LLM key.
   - Original note: `apps/agents/app/routes/detect_binder.py:22` truncates the text, so agreements that start later in a long binder are never detected. Send head + evenly spaced windows (or page-boundary heading candidates) instead of widening the prompt linearly. (Deferred from C10.)
 - **X17 — Diligence-room contracts still count on org dashboards (Medium-Low).** `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
 - **X18 — Signing tokens go to anyone who can view the contract (High). — DONE.**
@@ -766,4 +773,5 @@ X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidate
 X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — 6412597
 X10 — DONE — agent write tools respect own scope on apply and undo (incl. created records); replies can't be filed under another contract's comment — f5964ec
 X6 (follow-up) — DONE — pre-X6 Slack configs rank as unverified by age (not last); non-string team ids refused; backfill script for existing bot tokens — 69d23eb
-X20 — DONE — upload parent must be a live, visible same-org contract (text field only); family view org-filtered, deleted parent hidden; repair migration — (sha: X20)
+X20 — DONE — upload parent must be a live, visible same-org contract (text field only); family view org-filtered, deleted parent hidden; repair migration — d00884c
+X16 — VERIFY-PENDING — long binders sampled at likely agreement boundaries with absolute-offset markers instead of the first 10k chars; needs a live LLM run — (sha: X16)

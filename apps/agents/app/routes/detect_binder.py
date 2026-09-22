@@ -2,13 +2,16 @@
 POST /detect-binder — called by agent.worker.ts after parse-document completes.
 Determines if a PDF contains multiple distinct agreements (a "binder").
 
-Uses Haiku for speed/cost — only needs first 10K chars to identify agreement headers.
+Uses a fast model. X16 — a long binder is sampled: its beginning plus excerpts
+around likely agreement boundaries, each marked with its character offset, so
+an agreement that starts deep in the file is still seen.
 Returns: { isBinder, confidence, documents: [{title, docType, charStart, pageHint}] }
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import List, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -19,7 +22,51 @@ from ..router import resolve_llm
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-MAX_CHARS = 10_000
+MAX_CHARS = 10_000          # texts up to this length are sent whole
+HEAD_CHARS = 6_000          # otherwise: the beginning…
+EXCERPT_CHARS = 1_200       # …plus excerpts of this size…
+MAX_EXCERPTS = 8            # …at most this many
+
+# Where a new agreement likely begins: an ALL-CAPS title ending in an agreement
+# word, or the signature block that closes the previous one. plainText from the
+# PDF extractor has no line breaks, so match phrases, not lines.
+_BOUNDARY = re.compile(
+    r"\b(?:[A-Z][A-Z&,'\-]+ ){0,6}(?:AGREEMENT|ADDENDUM|AMENDMENT|ORDER FORM|STATEMENT OF WORK|"
+    r"EXHIBIT|SCHEDULE|LICENSE|MEMORANDUM OF UNDERSTANDING)\b|IN WITNESS WHEREOF"
+)
+
+
+def _sample(text: str) -> str:
+    """The text the classifier sees. Short texts go whole. Long ones: the head,
+    then excerpts at likely agreement boundaries (topped up with evenly spaced
+    ones), each prefixed with its absolute offset so charStart stays true to
+    the full document."""
+    n = len(text)
+    if n <= MAX_CHARS:
+        return text
+    starts: list[int] = []
+    for m in _BOUNDARY.finditer(text, HEAD_CHARS):
+        start = max(HEAD_CHARS, m.start() - 200)
+        if not starts or start - starts[-1] >= EXCERPT_CHARS:
+            starts.append(start)
+    if len(starts) > MAX_EXCERPTS:   # spread the picks across the document
+        step = len(starts) / MAX_EXCERPTS
+        starts = [starts[int(i * step)] for i in range(MAX_EXCERPTS)]
+    span = n - HEAD_CHARS
+    for i in range(1, MAX_EXCERPTS + 1):   # top up with evenly spaced windows
+        if len(starts) >= MAX_EXCERPTS:
+            break
+        pos = HEAD_CHARS + (span * i) // (MAX_EXCERPTS + 1)
+        if all(abs(pos - s) >= EXCERPT_CHARS for s in starts):
+            starts.append(pos)
+    parts = [text[:HEAD_CHARS]]
+    for start in sorted(starts):
+        pct = round(100 * start / n)
+        parts.append(
+            f"\n\n[[EXCERPT starting at character {start} of {n} (about {pct}% through the document)]]\n"
+            + text[start:start + EXCERPT_CHARS]
+        )
+    return "".join(parts)
 
 _PROMPT = """\
 You are a legal document classifier. Analyze the following text (beginning of a document) and determine whether it is:
@@ -51,6 +98,11 @@ Rules:
 - charStart for the first document should be 0 (or close to it).
 - Do NOT include any explanation outside the JSON object.
 
+- Long documents arrive as their beginning followed by excerpts. Each excerpt starts
+  with a marker "[[EXCERPT starting at character N of M ...]]". An agreement's charStart
+  must be its offset in the FULL document: for text inside an excerpt, count from that
+  excerpt's N. Use the marker's percentage to estimate pageHint.
+
 Document text:
 """
 
@@ -75,8 +127,8 @@ class DetectBinderResponse(BaseModel):
 
 @router.post("/detect-binder", response_model=DetectBinderResponse)
 async def detect_binder(req: DetectBinderRequest) -> DetectBinderResponse:
-    text_sample = req.plainText[:MAX_CHARS]
-    logger.info("[detect-binder] chars_sampled=%d", len(text_sample))
+    text_sample = _sample(req.plainText)
+    logger.info("[detect-binder] chars=%d chars_sampled=%d", len(req.plainText), len(text_sample))
 
     try:
         raw = await _call_llm(text_sample, req.orgId)
