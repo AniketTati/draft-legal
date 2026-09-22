@@ -164,11 +164,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C4 — Re-analysis wipes the contract's stored reports
 
-- **Status:** TODO
+- **Status:** DONE
 - **Severity:** High (silent data loss)
 - **Evidence:** re-analysis replaces the whole `metadata` blob (`apps/agents/app/routes/review.py:237-238` → `apps/api/src/routes/contracts.ts:1086`), erasing the compliance report, renewal advice and binder-split markers.
 - **Acceptance criteria:** re-extraction merges into `metadata` instead of replacing it, preserving every `_`-prefixed report; a test proves a compliance report survives a re-analyze; the reports still refresh when their own job re-runs.
 - **Worklog:**
+  - **Plan (confirmed defect):** `review.py` sends `{"metadata": metadata_update}` (only the extraction's keys) to `PATCH /contracts/:id`, which passes `body.metadata` straight to `prisma.contract.update`. JSON columns are replaced, so `_compliance`, `_playbookReview`, `_renewal…`, `_binderDetected`/`_splitInto`, `_obligations` and the redline reports are erased. The same wipe happens in `redline.py`'s failure path, which PATCHes `{"metadata": {"_redlineStatus": "FAILED", …}}`. Approach: fix the route, the layer every caller shares. `PATCH /contracts/:id` merges `metadata` into the stored object, with `null` deleting a key (JSON-merge-patch at the top level). The web never sends `metadata`; `redline.py` success already sends a merged object, which stays idempotent. So that the extraction's **own** reports still refresh, `review.py` sends `_typeFields`/`_aiFindings` as `None` when a re-run produces none (clears stale values). Other reports are untouched and refresh when their own job writes them. Test: `routes/contract-metadata.integration.test.ts` — an internal-service PATCH (the agents' headers) of an extraction-shaped metadata keeps `_compliance`, `_playbookReview`, binder markers and custom values; a `null` key is deleted; a `_redlineStatus`-only PATCH no longer wipes the blob.
+  - **Plan review:** merge semantics are the only reading consistent with how every caller uses this route today; no caller relies on replace-to-delete, and `null` preserves an explicit delete. Public API clients that PATCH `metadata` now get merge semantics, which is safer (no silent data loss) — noted as a behaviour change. No tenancy or permission change: same route, same guard.
+  - **Changed:** `apps/api/src/routes/contracts.ts` `PATCH /:id` shallow-merges `body.metadata` into the stored object, and a `null` value deletes its key. `apps/agents/app/routes/review.py`: on a run that produced output, sends `_typeFields`/`_aiFindings` as `None` when it didn't produce them, so the extraction's own stale outputs clear. A failed run leaves the previous ones alone.
+  - **Verified:** new `routes/contract-metadata.integration.test.ts` (4) uses the agents service's exact headers (`x-internal-service: agents`, `x-internal-secret`, `x-org-id`) and an extraction-shaped body. **3 defect cases fail before the fix**: `_compliance`, `_playbookReview`, binder markers and a custom value were erased; `null` couldn't delete; the redline failure path wiped the blob. All 4 pass after. Full suite: typecheck, lint (0 errors), api unit 171/171, api integration 47/47. `review.py` compiles; the Python service itself was not run (deps not installed), so the `None`-clearing is verified only by reading the code against the API's tested `null` semantics.
+  - **Behaviour change:** API clients that PATCH `metadata` now get merge semantics (send `null` to delete) instead of replacement.
+  - **Follow-up (not fixed, pre-existing):** the metadata writers that bypass this route (compliance, playbook review, binder split, which use `prisma.contract.update` with read-modify-write) can still race each other. An atomic `jsonb ||` update would close it. Low; noted, not in scope.
+
 
 ## C5 — The review queue is unreachable, and its corrections don't stick
 
@@ -317,4 +324,5 @@ S2 — VERIFY-PENDING — agent read tools resolve the caller's view scope serve
 S3 — DONE — every upload path validates bytes via lib/file-type.ts; detected type stored; presigned downloads serve only allowlisted types — 4b91cbc
 C1 — VERIFY-PENDING — create-key dialog sends chosen scopes + expiry; server refuses scope-less keys; needs a visual check of the dialog — cc1965b
 C2 — DONE — no-target escalation keeps the step with its approver + notifies admins; exact step-order matching; escalated visible; repair migration — 45861da
-C3 — VERIFY-PENDING — /agent stops pinning gpt-4.1-mini; readout + persisted turn use the resolved model; needs a live turn — (sha: C3)
+C3 — VERIFY-PENDING — /agent stops pinning gpt-4.1-mini; readout + persisted turn use the resolved model; needs a live turn — 9234726
+C4 — DONE — PATCH /contracts/:id merges metadata (null deletes); re-analysis keeps _-reports; extraction clears only its own stale keys — (sha: C4)

@@ -234,6 +234,14 @@ async def _process_and_update(
 
     if open_ended:
         metadata_update["_aiFindings"] = open_ended
+    # The API merges metadata (C4), so other jobs' reports (_compliance,
+    # _playbookReview, binder markers, …) survive a re-analysis. This run's
+    # own outputs must still refresh: send None (= delete) for any it did not
+    # produce this time, so a stale value from the last run can't linger —
+    # but only when this run produced output; a failed run keeps the last one.
+    if not (has_error and not has_output):
+        metadata_update.setdefault("_typeFields", None)
+        metadata_update.setdefault("_aiFindings", None)
     if metadata_update:
         contract_payload["metadata"] = metadata_update
 

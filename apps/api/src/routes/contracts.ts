@@ -1069,7 +1069,22 @@ export async function contractRoutes(app: FastifyInstance) {
     // Use the contract's real orgId (internal calls come in with orgId='system')
     const effectiveOrgId = existing.orgId
 
-    const updated = await prisma.contract.update({ where: { id }, data: body as Prisma.ContractUncheckedUpdateInput })
+    // C4 — metadata is MERGED into what is stored, never replaced. Several
+    // writers own different keys (extraction, compliance, playbook review,
+    // binder split, redline); a JSON column update replaces the whole object,
+    // so re-analysis used to erase every report it did not itself produce.
+    // A null value deletes its key (JSON merge patch, top level).
+    const data: Record<string, unknown> = { ...body }
+    if (body.metadata) {
+      const merged: Record<string, unknown> = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) }
+      for (const [k, v] of Object.entries(body.metadata)) {
+        if (v === null) delete merged[k]
+        else merged[k] = v
+      }
+      data.metadata = merged
+    }
+
+    const updated = await prisma.contract.update({ where: { id }, data: data as Prisma.ContractUncheckedUpdateInput })
 
     // Re-index if searchable fields changed. indexContract is a full-document
     // overwrite (elasticsearch.ts), so we must carry the existing full text and
