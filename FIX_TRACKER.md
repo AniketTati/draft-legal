@@ -756,10 +756,31 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
   - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
 - **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium).** `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
-- **X25 — Matters take other orgs' ids (Medium).**
-  - `PATCH /contracts/:id` accepts any `matterId` (`schemas.ts:92`, `contracts.ts`). `GET /matters/:id` then lists the contract without an org filter, and the list's count includes it. `/:id/amendments` copies the foreign `matterId` onto new amendments.
-  - `POST` / `PATCH /matters` accept another org's `counterpartyId` or `ownerId` (`matters.ts:37,43,170,203`). The matter view then returns that org's counterparty name and website, and the user's name, email and avatar.
-  - Check each id against the caller's org, and filter the matter's includes by org. (Found in X20 review; both confirmed.)
+- **X25 — Matters take other orgs' ids (Medium). — DONE.**
+  - **Plan:**
+    - Fix:
+      - `PATCH /contracts/:id` accepts a `matterId` only for a live matter of the contract's own org.
+      - `POST` / `PATCH /matters` accept `counterpartyId` / `ownerId` only when they belong to the caller's org.
+      - The matter detail's contracts, requests and threads, and the list's counts, are filtered by org.
+      - A repair migration clears cross-org links already stored (contracts, requests and threads to matters; matter counterparties). A foreign owner falls back to the matter's creator.
+    - Test: `routes/matter-org-links.integration.test.ts`.
+  - **What changed:**
+    - `PATCH /contracts/:id`: a `matterId` must be a live matter of the contract's own org. This also covers internal `system` calls.
+    - `POST` / `PATCH /matters`: `counterpartyId` / `ownerId` must be this org's (404 otherwise).
+    - `GET /matters/:id`: contracts, requests and threads are filtered by org, and a foreign owner or counterparty stored earlier is shown as null. The list's counts are org-filtered too.
+    - Migration `20260923030000_repair_cross_org_matter_links` clears cross-org matter links on contracts, requests and threads and on matter counterparties, and resets a foreign owner to the creator.
+  - **Verification:**
+    - `routes/matter-org-links.integration.test.ts` (4 cases):
+      - a contract into another org's matter;
+      - foreign counterparty or owner on create and patch;
+      - same-org positives;
+      - pre-fix rows hidden from the detail and count, then cleared by the migration SQL.
+    - Against the pre-fix routes, 3 fail; the positives pass.
+    - A fresh subagent reviews the commit adversarially. Any findings land as a follow-up.
+  - Original note:
+    - `PATCH /contracts/:id` accepts any `matterId` (`schemas.ts:92`, `contracts.ts`). `GET /matters/:id` then lists the contract without an org filter, and the list's count includes it. `/:id/amendments` copies the foreign `matterId` onto new amendments.
+    - `POST` / `PATCH /matters` accept another org's `counterpartyId` or `ownerId` (`matters.ts:37,43,170,203`). The matter view then returns that org's counterparty name and website, and the user's name, email and avatar.
+    - Check each id against the caller's org, and filter the matter's includes by org. (Found in X20 review; both confirmed.)
 - **X26 — Binder re-split deletes whatever `metadata._splitInto` names (Low).** `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
 ---
 
@@ -802,5 +823,6 @@ X10 — DONE — agent write tools respect own scope on apply and undo (incl. cr
 X6 (follow-up) — DONE — pre-X6 Slack configs rank as unverified by age (not last); non-string team ids refused; backfill script for existing bot tokens — 69d23eb
 X20 — DONE — upload parent must be a live, visible same-org contract (text field only); family view org-filtered, deleted parent hidden; repair migration — d00884c
 X16 — VERIFY-PENDING — long binders sampled at likely agreement boundaries with absolute-offset markers instead of the first 10k chars; needs a live LLM run — 7b7a0ea
-X12 — DONE — xmldom override narrowed to mammoth's range (^0.8.13 → 0.8.15); DOCX extraction works again; lockfile change flagged for review — (sha: X12)
-X13 — DONE — DOCX/XLSX real inflated size bounded (100MB) at upload and before mammoth; zip bombs refused without expanding — (sha: X13)
+X12 — DONE — xmldom override narrowed to mammoth's range (^0.8.13 → 0.8.15); DOCX extraction works again; lockfile change flagged for review — 35a217f
+X13 — DONE — DOCX/XLSX real inflated size bounded (100MB) at upload and before mammoth; zip bombs refused without expanding — bb55aaa
+X25 — DONE — matter links (contract matterId, matter counterparty/owner) must be same-org; matter views org-filtered; repair migration — (sha: X25)

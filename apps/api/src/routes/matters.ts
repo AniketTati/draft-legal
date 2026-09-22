@@ -43,6 +43,24 @@ const UpdateMatterSchema = CreateMatterSchema.partial().extend({
   ownerId: z.string().optional(),
 })
 
+/**
+ * X25 — ids a matter points at must be this org's: another org's counterparty
+ * or user id was stored as given, and the matter view then showed that org's
+ * counterparty and that user's name, email and avatar. Returns the reason
+ * when one isn't.
+ */
+async function foreignReference(orgId: string, ids: { counterpartyId?: string | null; ownerId?: string | null }): Promise<string | null> {
+  if (ids.counterpartyId) {
+    const found = await prisma.counterparty.count({ where: { id: ids.counterpartyId, orgId, deletedAt: null } })
+    if (!found) return 'Counterparty not found'
+  }
+  if (ids.ownerId) {
+    const found = await prisma.user.count({ where: { id: ids.ownerId, orgId, deletedAt: null } })
+    if (!found) return 'Owner not found'
+  }
+  return null
+}
+
 export async function matterRoutes(app: FastifyInstance) {
 
   // ── GET /api/v1/matters ────────────────────────────────────────────────
@@ -74,9 +92,10 @@ export async function matterRoutes(app: FastifyInstance) {
         counterparty: { select: { id: true, name: true } },
         _count: {
           select: {
-            contracts: own ? { where: { ownerId: req.user.sub } } : true,
-            requests:  requestScope === 'own' ? { where: { requestedById: req.user.sub } } : requestScope ? true : { where: { id: { in: [] as string[] } } },
-            threads:   own ? { where: { userId: req.user.sub } } : true,
+            // Only this org's rows (X25), and for own scope only the caller's (X7).
+            contracts: { where: { orgId, ...(own ? { ownerId: req.user.sub } : {}) } },
+            requests:  { where: { orgId, ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }) } },
+            threads:   { where: { orgId, ...(own ? { userId: req.user.sub } : {}) } },
           },
         },
       },
@@ -113,12 +132,12 @@ export async function matterRoutes(app: FastifyInstance) {
     const matter = await prisma.matter.findFirst({
       where: { id, orgId, deletedAt: null },
       include: {
-        owner: { select: { id: true, name: true, email: true, avatarUrl: true } },
-        counterparty: { select: { id: true, name: true, website: true } },
+        owner: { select: { id: true, name: true, email: true, avatarUrl: true, orgId: true } },
+        counterparty: { select: { id: true, name: true, website: true, orgId: true } },
         // X7 — an own-scope caller sees only their own contracts in the matter,
         // and only their own chat threads (a thread id is a way into its content).
         contracts: {
-          where: { deletedAt: null, ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}) },
+          where: { deletedAt: null, orgId, ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, type: true, status: true,
@@ -130,6 +149,7 @@ export async function matterRoutes(app: FastifyInstance) {
         requests: {
           where: {
             deletedAt: null,
+            orgId,
             ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }),
           },
           orderBy: { createdAt: 'desc' },
@@ -140,7 +160,7 @@ export async function matterRoutes(app: FastifyInstance) {
           },
         },
         threads: {
-          where: { archivedAt: null, ...(req.permissionScope === 'own' ? { userId: req.user.sub } : {}) },
+          where: { archivedAt: null, orgId, ...(req.permissionScope === 'own' ? { userId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, scopeType: true, scopeId: true,
@@ -150,7 +170,14 @@ export async function matterRoutes(app: FastifyInstance) {
       },
     })
     if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
-    return reply.send(matter)
+    // X25 — a reference stored before the org check (until the repair
+    // migration runs) must not show another org's user or counterparty.
+    const { owner, counterparty, ...rest } = matter
+    return reply.send({
+      ...rest,
+      owner:        owner && owner.orgId === orgId ? { id: owner.id, name: owner.name, email: owner.email, avatarUrl: owner.avatarUrl } : null,
+      counterparty: counterparty && counterparty.orgId === orgId ? { id: counterparty.id, name: counterparty.name, website: counterparty.website } : null,
+    })
   })
 
   // ── POST /api/v1/matters ───────────────────────────────────────────────
@@ -161,6 +188,8 @@ export async function matterRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid body', issues: (err as { issues?: unknown }).issues })
     }
+    const foreign = await foreignReference(orgId, { counterpartyId: body.counterpartyId })
+    if (foreign) return reply.status(404).send({ detail: foreign })
     const matter = await prisma.matter.create({
       data: {
         orgId,
@@ -191,6 +220,8 @@ export async function matterRoutes(app: FastifyInstance) {
       select: { id: true, status: true },
     })
     if (!existing) return reply.status(404).send({ detail: 'Matter not found' })
+    const foreign = await foreignReference(orgId, { counterpartyId: patch.counterpartyId, ownerId: patch.ownerId })
+    if (foreign) return reply.status(404).send({ detail: foreign })
 
     // If transitioning to CLOSED / ARCHIVED, stamp closedAt.
     const closedAt = (patch.status === 'CLOSED' || patch.status === 'ARCHIVED') && existing.status === 'OPEN'

@@ -1073,6 +1073,14 @@ export async function contractRoutes(app: FastifyInstance) {
     const existing = await prisma.contract.findFirst({ where })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
 
+    // X25 — a matter link must name a live matter of the contract's own org.
+    // It was stored unchecked, and the other org's matter view listed this
+    // contract (and new amendments inherited the foreign matter).
+    if (body.matterId) {
+      const matter = await prisma.matter.count({ where: { id: body.matterId, orgId: existing.orgId, deletedAt: null } })
+      if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
+    }
+
     // Validate status transitions
     if (body.status && body.status !== existing.status) {
       const VALID_TRANSITIONS: Record<string, string[]> = {
