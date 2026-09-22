@@ -1094,6 +1094,19 @@ export function AgentHomePage() {
           toolCallId: body.toolCallId,
           appliedAt: Date.now(),
         })
+        // C12 — a draft is created on Apply (not mid-stream), so its Doc
+        // artifact comes from the apply result rather than a tool result.
+        const artifact = artifactFromToolResult({ name: toolName, result: body.result })
+        if (artifact) {
+          setArtifacts(prev => {
+            const existing = artifact.dedupeKey ? prev.findIndex(a => a.dedupeKey === artifact.dedupeKey) : -1
+            if (existing < 0) return [...prev, artifact]
+            const next = prev.slice()
+            next[existing] = artifact
+            return next
+          })
+          setOpenArtifactId(artifact.id)
+        }
       } else {
         const errDetail = typeof body?.error === 'object'
           ? (body.error?.detail ?? JSON.stringify(body.error).slice(0, 200))

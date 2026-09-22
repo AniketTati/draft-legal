@@ -325,9 +325,9 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
       html,
       // Audit 2026-06-10: dropped the `save_draft` / `send_for_review`
       // pseudo-tool buttons — no backend handler exists (the onAction
-      // callback only logged). contract_create_from_template already
-      // persists the draft server-side, so "Open in Contracts" is the
-      // honest action. Re-add real actions when U.6.x wires them.
+      // callback only logged). This artifact is built from the Apply result
+      // (C12), when the draft has been created server-side, so "Open in
+      // Contracts" is the honest action. Re-add real actions when U.6.x wires them.
       actions: typeof r.contractId === 'string'
         ? [{ id: 'open', label: 'Open in Contracts', variant: 'primary', href: `/contracts/${r.contractId}` }]
         : [],

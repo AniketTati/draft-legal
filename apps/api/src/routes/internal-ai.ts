@@ -20,7 +20,7 @@ import { prisma } from '../lib/prisma.js'
 import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
-import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
+import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
@@ -32,6 +32,7 @@ import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
+import { planDraft } from '../lib/draft-plan.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope } from '../lib/agent-scope.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
@@ -442,15 +443,20 @@ const MatterListSchema = z.object({
 const ContractDraftFromIntentSchema = z.object({
   orgId:            z.string().min(1),
   userId:           z.string().min(1),
-  // Free-form description of what to draft. The Python pipeline parses
-  // this for type + counterparty + intent.
+  // Free-form description of what to draft (used to infer the type when no
+  // contractType / templateId is given).
   userMessage:      z.string().min(1).max(2000),
-  // Optional structured hints — passed through as `context`. The Python
-  // pipeline uses these as defaults when the message is ambiguous.
   contractType:     z.string().optional(),   // 'NDA' | 'MSA' | 'SOW' | 'VENDOR_AGREEMENT' | …
+  templateId:       z.string().optional(),   // from template_list — wins over type inference
   counterpartyName: z.string().optional(),
-  // Title for the new Contract row. If omitted, derived from message + cp.
+  // Title for the new Contract row. If omitted, derived from counterparty + type.
   title:            z.string().optional(),
+  // C12 — the user's stated terms. Unstated terms fall back to the template's
+  // own declared defaults, else stay blank; nothing is hard-coded.
+  governingLaw:     z.string().max(200).optional(),
+  term:             z.string().max(200).optional(),
+  effectiveDate:    z.string().max(100).optional(),
+  terms:            z.record(z.string().max(2000)).optional(),
 })
 
 // P3.4 — contract_validate. Fast lexical + structural checks the
@@ -662,6 +668,9 @@ const ContractCreateFromTemplateSchema = z.object({
   variables:        z.record(z.unknown()).default({}),
   title:            z.string().max(200).optional(),
   counterpartyName: z.string().max(200).optional(),
+  // C12 — the type the drafting plan chose (an untyped template can be
+  // picked for, say, an NDA); falls back to the template's own type.
+  contractType:     z.string().max(50).optional(),
 })
 
 // D.5.6 — approval_route write tool input. Inline workflow-driven path;
@@ -3174,7 +3183,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       (body.counterpartyName
         ? `${template.name} — ${body.counterpartyName}`
         : `Draft — ${template.name}`)
-    const contractType = template.contractType ?? 'OTHER'
+    const contractType = body.contractType ?? template.contractType ?? 'OTHER'
     const plainText = htmlToPlainText(generated.html)
 
     const created = await prisma.$transaction(async (tx) => {
@@ -3231,6 +3240,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
       createdAt:        created.contract.createdAt.toISOString(),
     }).catch(() => { /* swallow */ })
 
+    // An agent-created contract is a real contract: record who caused it,
+    // as the manual REST create does. (Moved here from /tools/contract_draft,
+    // which now only plans — C12.)
+    createAuditEvent({
+      orgId:        body.orgId,
+      userId:       body.userId,
+      action:       AuditAction.CONTRACT_CREATED,
+      resourceType: 'contract',
+      resourceId:   created.contract.id,
+      metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
+    }).catch(err => req.log.warn({ err }, '[contract_create_from_template] audit failed'))
+
     return reply.send({
       ok: true,
       reversible: true,
@@ -3238,6 +3259,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       versionId:  created.version.id,
       title:      created.contract.title,
       type:       created.contract.type,
+      // Doc artifact fields (artifact-from-tool.ts) — the draft opens in the
+      // right pane once the user applies the confirm card.
+      html:       generated.html,
+      subtitle:   body.counterpartyName ? `Draft ${contractType} for ${body.counterpartyName}` : `Draft ${contractType}`,
       sectionsIncluded:   generated.sectionsIncluded,
       sectionsExcluded:   generated.sectionsExcluded,
       unfilledVariables:  generated.unfilledVariables,
@@ -3271,6 +3296,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { id: existing.id },
       data:  { deletedAt: new Date() },
     })
+    // Keep an undone draft out of search too.
+    deleteContractFromIndex(existing.id).catch(() => { /* swallow */ })
     return reply.send({ ok: true, undone: true, contractId: existing.id })
   })
 
@@ -3952,187 +3979,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
   })
 
   // ── POST /internal/ai/tools/contract_draft ────────────────────────────────
-  // Intent-based drafting: takes a free-text user_message, picks the org's
-  // best-fit published template by contractType, renders via generateDocument
-  // (same engine as POST /templates/:id/generate), and persists a new
-  // Contract + ContractVersion in DRAFT status. Returns the artifact-shaped
-  // payload the AgentHomePage Doc artifact expects.
+  // C12 — a read-only PLANNER. Picks the template and fills it from the
+  // user's stated terms (lib/draft-plan.ts), returning the rendered preview
+  // and the exact args /tools/contract_create_from_template needs. It creates
+  // nothing: the chat tool shows the plan on a confirm card, and Apply goes
+  // through the apply RPC (permission-checked, recorded, undoable).
   //
-  // Distinct from /tools/contract_create_from_template (line ~2525) which
-  // requires an explicit templateId + pre-resolved variables. The agent
-  // rarely knows the templateId or the variable shape; this handler removes
-  // both gaps by doing template lookup + variable inference in one step.
-  //
-  // Implemented entirely in Node (no Python /draft hop) because the existing
-  // /api/v1/templates endpoint is auth-gated by user permission and the
-  // Python pipeline's x-internal-secret was being ignored — empty results,
-  // NO_TEMPLATE_MATCH every time. Direct Prisma access bypasses that mess.
+  // It used to persist the contract here, mid-stream, with no card, no undo,
+  // and California law / a 2-year term / today's date whatever was asked.
   app.post('/tools/contract_draft', async (req, reply) => {
     let body
     try { body = ContractDraftFromIntentSchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-
-    // Infer contract type from the explicit hint OR by sniffing the message.
-    const lowerMsg = body.userMessage.toLowerCase()
-    const inferredType =
-      body.contractType ??
-      (lowerMsg.includes(' nda') || lowerMsg.startsWith('nda') || lowerMsg.includes('non-disclosure') || lowerMsg.includes('confidential disclosure') ? 'NDA' :
-       lowerMsg.includes(' msa') || lowerMsg.includes('master service') ? 'MSA' :
-       lowerMsg.includes(' sow') || lowerMsg.includes('statement of work') ? 'SOW' :
-       lowerMsg.includes('vendor') ? 'VENDOR_AGREEMENT' :
-       lowerMsg.includes('license') ? 'LICENSE' :
-       lowerMsg.includes('employment') || lowerMsg.includes('offer letter') ? 'EMPLOYMENT' :
-       lowerMsg.includes(' dpa') || lowerMsg.includes('data processing') ? 'DATA_PROCESSING' :
-       null)
-
-    if (!inferredType) {
-      return reply.status(422).send({
-        error: 'CONTRACT_TYPE_AMBIGUOUS',
-        detail: 'Could not determine contract type from the message. Pass contract_type explicitly (NDA | MSA | SOW | VENDOR_AGREEMENT | LICENSE | EMPLOYMENT | DATA_PROCESSING).',
-      })
+    const plan = await planDraft(body)
+    if (!plan.ok) {
+      return reply.status(plan.status).send({ error: plan.error, detail: plan.detail, ...(plan.templates ? { templates: plan.templates } : {}) })
     }
-
-    // Find the best-fit published template for this org + type. Prefer the
-    // most-recently-updated published one if multiple exist.
-    const template = await prisma.template.findFirst({
-      where: {
-        orgId: body.orgId, deletedAt: null,
-        contractType: inferredType,
-        isPublished: true,
-      },
-      include: { sections: { orderBy: { sortOrder: 'asc' } } },
-      orderBy: { updatedAt: 'desc' },
-    })
-    if (!template) {
-      return reply.status(422).send({
-        error: 'NO_TEMPLATE_MATCH',
-        detail: `Your org doesn't have a published ${inferredType} template. Create one in Templates first, or I can quote draft text inline.`,
-      })
-    }
-
-    // Resolve clause library references the template's sections point at.
-    // Mirrors what /tools/contract_create_from_template does and what
-    // POST /templates/:id/generate does for preview.
-    const allClauseRefs = template.sections.flatMap(s =>
-      Array.isArray(s.clauseRefs) ? (s.clauseRefs as string[]) : [],
-    )
-    const clauseItems = allClauseRefs.length
-      ? await prisma.clauseLibraryItem.findMany({
-          where: { id: { in: allClauseRefs }, orgId: body.orgId, deletedAt: null },
-        })
-      : []
-    const clauseMap = new Map(clauseItems.map(c => [c.id, c]))
-
-    // Build a sensible default variable map. The agent can iterate later
-    // by editing the contract directly. Variable keys we recognize:
-    const today = new Date().toISOString().slice(0, 10)
-    const orgName = (await prisma.organization.findUnique({
-      where: { id: body.orgId }, select: { name: true },
-    }))?.name ?? 'Our Organization'
-    const variables: Record<string, string> = {
-      counterparty_name: body.counterpartyName ?? '[Counterparty Name]',
-      counterpartyName:  body.counterpartyName ?? '[Counterparty Name]',
-      counterparty:      body.counterpartyName ?? '[Counterparty Name]',
-      our_company:       orgName,
-      our_org_name:      orgName,
-      effective_date:    today,
-      effectiveDate:     today,
-      date:              today,
-      governing_law:     'California',
-      governingLaw:      'California',
-      term_years:        '2',
-      term:              '2 years',
-    }
-
-    const generated = generateDocument({
-      template,
-      variables,
-      clauseMap,
-    })
-
-    // Title fallback: counterparty + type if both known, else template name.
-    const computedTitle = body.title?.trim()
-      || (body.counterpartyName ? `${body.counterpartyName} — ${inferredType}` : `Draft — ${template.name}`)
-
-    const plainText = generated.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-    const created = await prisma.$transaction(async (tx) => {
-      const contract = await tx.contract.create({
-        data: {
-          orgId:            body.orgId,
-          title:            computedTitle,
-          type:             inferredType,
-          status:           'DRAFT',
-          counterpartyName: body.counterpartyName ?? null,
-          ownerId:          body.userId,
-          createdBy:        body.userId,
-          analysisStatus:   'DONE',
-          tags:             ['agent-draft'],
-        },
-      })
-      const version = await tx.contractVersion.create({
-        data: {
-          contractId:    contract.id,
-          versionNumber: 1,
-          htmlContent:   generated.html,
-          plainText,
-          changeNote:    `AI-drafted from template "${template.name}"`,
-          createdById:   body.userId,
-        },
-      })
-      await tx.contract.update({
-        where: { id: contract.id },
-        data:  { currentVersionId: version.id },
-      })
-      await tx.template.update({
-        where: { id: template.id },
-        data:  { usageCount: { increment: 1 } },
-      })
-      return { contract, version }
-    })
-
-    // Index the new draft in ES so it's findable via portfolio_search /
-    // contract_search immediately. Fire-and-forget.
-    indexContract(created.contract.id, {
-      orgId:            body.orgId,
-      title:            created.contract.title,
-      type:             created.contract.type,
-      status:           created.contract.status,
-      counterpartyName: created.contract.counterpartyName ?? undefined,
-      plainText,
-      tags:             created.contract.tags,
-      createdAt:        created.contract.createdAt.toISOString(),
-    }).catch(() => { /* swallow */ })
-
-    // An agent-drafted contract is a real contract. This path creates one
-    // mid-stream with no ActionPreview, so `checkToolPermission` — the only
-    // layer that sees the caller's role — never runs, and until now nothing
-    // recorded that it happened either: a contract appeared in the org with no
-    // trace of who caused it. The manual REST create has always audited.
-    createAuditEvent({
-      orgId:        body.orgId,
-      userId:       body.userId,
-      action:       AuditAction.CONTRACT_CREATED,
-      resourceType: 'contract',
-      resourceId:   created.contract.id,
-      metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
-    }).catch(err => req.log.warn({ err }, '[contract_draft] audit failed'))
-
-    return reply.send({
-      // Fields consumed by artifact-from-tool.ts (Doc artifact)
-      title:    created.contract.title,
-      subtitle: body.counterpartyName ? `Draft ${inferredType} for ${body.counterpartyName}` : `Draft ${inferredType}`,
-      html:     generated.html,
-      contractId: created.contract.id,
-      // Metadata for the agent's natural-language summary
-      contractType:     inferredType,
-      counterpartyName: created.contract.counterpartyName,
-      templateName:     template.name,
-      versionId:        created.version.id,
-      sectionsIncluded: generated.sectionsIncluded,
-      unfilledVariables: generated.unfilledVariables,
-    })
+    const { ok: _ok, ...rest } = plan
+    return reply.send({ ...rest, persisted: false })
   })
 
   // ── POST /internal/ai/tools/custom_field_list (P4.5) ───────────────────────

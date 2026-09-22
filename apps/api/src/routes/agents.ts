@@ -119,11 +119,10 @@ export async function agentRoutes(app: FastifyInstance) {
     // This lets an admin override a built-in slug (e.g. customise
     // `@review-nda`) without us having to fork the record.
     // Permission-derived tool denials, evaluated once per turn.
-    // `contract_create_from_template` executes inline rather than proposing an
-    // ActionPreview, so it never reaches checkToolPermission — the layer
-    // agent-threads.ts documents as the only one that can see the caller's
-    // role. Deny it up front for anyone who could not create a contract
-    // through the REST route.
+    // `contract_create_from_template` now proposes an ActionPreview like the
+    // other write tools (C12), so checkToolPermission runs on Apply. It is
+    // still withheld from anyone who could not create a contract through the
+    // REST route: a tool the caller can never apply is not worth offering.
     const callerPermissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, req.user.roles)
     const deniedTools: string[] = []
     if (!evaluatePermission(callerPermissions, 'create', 'contract').granted) {
@@ -190,13 +189,10 @@ export async function agentRoutes(app: FastifyInstance) {
         // falls back to the default system prompt + full read-tool catalog.
         skill_system_prompt: skillPromptOverride ?? null,
         skill_allowed_tools: skillAllowedTools ?? null,
-        // Tools this caller may not use. The agent's write tools normally stop
-        // at an ActionPreview, where checkToolPermission evaluates the caller's
-        // role — but contract drafting executes inline, so that layer never
-        // runs and a VIEWER could create contracts by asking, which
-        // POST /api/v1/contracts refuses outright. Withholding the tool is the
-        // honest fix: a tool the model was never given is one it cannot call
-        // and cannot claim to have called.
+        // Tools this caller may not use. The agent's write tools stop at an
+        // ActionPreview, where checkToolPermission evaluates the caller's role;
+        // withholding a tool the caller could never apply also keeps the model
+        // from offering (or claiming) it.
         denied_tools: deniedTools.length ? deniedTools : null,
         skill_slug: body.skillSlug ?? null,
         // P4.3 — structured entity mentions flow through to the
