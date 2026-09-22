@@ -18,7 +18,7 @@ import { buildCsv, parseCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { applyPiiPolicy } from '../lib/pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
-import { indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
+import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
@@ -834,6 +834,9 @@ export async function contractRoutes(app: FastifyInstance) {
         where: { id: versionId },
         data: { clauseFlags },
       })
+      // C7 — the flags arrive after the contract was indexed at parse time;
+      // re-index so the clause-flag filters and facets can see them.
+      reindexContract(id).catch(err => app.log.warn({ err }, 'ES re-index after clause flags failed'))
     }
 
     return reply.status(201).send({ stored: clauseSegments?.length ?? 0 })

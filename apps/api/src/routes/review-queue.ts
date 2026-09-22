@@ -37,8 +37,7 @@ import { z } from 'zod'
 // metadata) on verify/reject, so it must be RBAC-gated, not requireAuth-only.
 import { requirePermission } from '../middleware/permissions.js'
 import { prisma } from '../lib/prisma.js'
-import { indexContract } from '../lib/elasticsearch.js'
-import { normalizeRiskScore } from '@clm/types'
+import { reindexContract } from '../lib/elasticsearch.js'
 
 // Fields worth surfacing in the queue. Extraction produces keyTerms for
 // a lot of keys but not all are HITL-worthy (internal helpers). We keep
@@ -92,35 +91,6 @@ function parseCorrection(
   }
   const text = String(raw).trim()
   return { ok: true, column: text, keyTerm: text }
-}
-
-/**
- * Refresh the contract's search document after a column changed. indexContract
- * is a full-document overwrite, so carry every searchable field (as PATCH does).
- */
-async function reindex(contractId: string): Promise<void> {
-  const c = await prisma.contract.findUnique({ where: { id: contractId } })
-  if (!c) return
-  const version = c.currentVersionId
-    ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { plainText: true } })
-    : null
-  await indexContract(c.id, {
-    orgId: c.orgId,
-    title: c.title,
-    type: c.type,
-    status: c.status,
-    counterpartyName: c.counterpartyName ?? undefined,
-    jurisdiction: c.jurisdiction ?? undefined,
-    plainText: version?.plainText ?? '',
-    summary: c.summary ?? undefined,
-    tags: c.tags,
-    riskScore: normalizeRiskScore(c.riskScore) ?? undefined,
-    effectiveDate: c.effectiveDate?.toISOString(),
-    expiryDate: c.expiryDate?.toISOString(),
-    createdAt: c.createdAt.toISOString(),
-    keyTerms: c.keyTerms as Record<string, unknown>,
-    metadata: c.metadata as Record<string, unknown>,
-  })
 }
 
 /** Pull the human value for a given field off keyTerms / top-level columns. */
@@ -271,7 +241,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       data: updateData as never,
     })
     if (mapped && body.value !== undefined) {
-      reindex(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
+      reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
     }
     return reply.send({ ok: true, contractId, field: body.field, verifiedBy: userId })
   })
@@ -314,7 +284,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
         ...(mapped ? { [mapped.column]: null } : {}),
       },
     })
-    if (mapped) reindex(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
+    if (mapped) reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
     return reply.send({ ok: true, contractId, field: body.field, rejectedBy: userId })
   })
 }

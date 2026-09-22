@@ -6,6 +6,8 @@
 // indices.{exists,create}/aggs is identical for everything this codebase
 // uses, so the swap is import-only.
 import { Client } from '@opensearch-project/opensearch'
+import { normalizeRiskScore } from '@clm/types'
+import { prisma } from './prisma.js'
 
 export const es = new Client({
   node: process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200',
@@ -102,9 +104,31 @@ export interface ContractDoc {
   keyTerms?: Record<string, unknown>
   clauseFlags?: Record<string, boolean>
   metadata?: Record<string, unknown>
+  /** Set for diligence-room documents (diligence.ts). */
+  diligenceRoomId?: string
 }
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Clause flags live on the contract's version (the Review agent writes them),
+ * not on the contract. The current version's, else the latest one's.
+ */
+async function clauseFlagsFor(contractId: string): Promise<Record<string, boolean> | undefined> {
+  const c = await prisma.contract.findUnique({
+    where:  { id: contractId },
+    select: {
+      currentVersionId: true,
+      versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { id: true, clauseFlags: true } },
+    },
+  })
+  if (!c) return undefined
+  const version = c.currentVersionId && c.currentVersionId !== c.versions[0]?.id
+    ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { clauseFlags: true } })
+    : c.versions[0]
+  const flags = version?.clauseFlags
+  return flags && typeof flags === 'object' && !Array.isArray(flags) ? flags as Record<string, boolean> : undefined
+}
 
 export async function indexContract(id: string, doc: ContractDoc) {
   // The index's dynamic template maps keyTerms.* / metadata.* to keyword —
@@ -123,10 +147,51 @@ export async function indexContract(id: string, doc: ContractDoc) {
     }
     return out
   }
+  // C7 — no caller passed clauseFlags, so every doc lacked them and the
+  // clause-flag facets/filters counted 0. Fill them from the version unless
+  // the caller supplied them, so every index path (and the backfill) carries them.
+  const clauseFlags = doc.clauseFlags ?? await clauseFlagsFor(id).catch(() => undefined)
   await es.index({
     index: CONTRACT_INDEX,
     id,
-    body: { ...doc, keyTerms: scalarize(doc.keyTerms), metadata: scalarize(doc.metadata) },
+    body: {
+      ...doc,
+      ...(clauseFlags ? { clauseFlags } : {}),
+      keyTerms: scalarize(doc.keyTerms),
+      metadata: scalarize(doc.metadata),
+    },
+  })
+}
+
+/**
+ * Rebuild a contract's whole search document from Postgres and index it.
+ * indexContract is a full-document overwrite, so a partial doc would blank
+ * fields; use this when something other than a create or PATCH changed
+ * what is searchable (clause flags arriving, a review-queue correction).
+ */
+export async function reindexContract(contractId: string): Promise<void> {
+  const c = await prisma.contract.findUnique({ where: { id: contractId } })
+  if (!c || c.deletedAt) return
+  const version = c.currentVersionId
+    ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { plainText: true } })
+    : await prisma.contractVersion.findFirst({ where: { contractId }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
+  await indexContract(c.id, {
+    orgId: c.orgId,
+    title: c.title,
+    type: c.type,
+    status: c.status,
+    counterpartyName: c.counterpartyName ?? undefined,
+    jurisdiction: c.jurisdiction ?? undefined,
+    plainText: version?.plainText ?? '',
+    summary: c.summary ?? undefined,
+    tags: c.tags,
+    riskScore: normalizeRiskScore(c.riskScore) ?? undefined,
+    effectiveDate: c.effectiveDate?.toISOString(),
+    expiryDate: c.expiryDate?.toISOString(),
+    createdAt: c.createdAt.toISOString(),
+    keyTerms: c.keyTerms as Record<string, unknown>,
+    metadata: c.metadata as Record<string, unknown>,
+    ...(c.diligenceRoomId ? { diligenceRoomId: c.diligenceRoomId } : {}),
   })
 }
 
