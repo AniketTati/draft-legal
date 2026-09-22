@@ -40,7 +40,9 @@ export async function commentRoutes(app: FastifyInstance) {
       take: parseInt(limit, 10),
       include: {
         replies: {
-          where: { deletedAt: null },
+          // Only replies filed on this contract (X10 — a reply once pointed its
+          // parentId at another contract's comment).
+          where: { deletedAt: null, contractId, orgId },
           orderBy: { createdAt: 'asc' },
         },
       },

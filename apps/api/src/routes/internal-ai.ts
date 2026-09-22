@@ -2507,6 +2507,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
       if (!v) return reply.status(404).send({ detail: 'Version not found on this contract' })
     }
 
+    // X10 — a reply must answer a comment on this same contract, as REST
+    // requires. A bare parentId let a reply land in another contract's — or
+    // another org's — thread, where its owner couldn't even edit it.
+    if (body.parentId) {
+      const parent = await prisma.contractComment.findFirst({
+        where: { id: body.parentId, contractId: body.contractId, orgId: body.orgId, deletedAt: null },
+        select: { id: true },
+      })
+      if (!parent) return reply.status(404).send({ detail: 'Parent comment not found on this contract' })
+    }
+
     const comment = await prisma.contractComment.create({
       data: {
         orgId:      body.orgId,

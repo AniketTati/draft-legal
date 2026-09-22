@@ -540,13 +540,31 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The tool chip still shows green when a tool returns an error payload.
     - `redline_propose` returns clause text without PII redaction (added to X23).
   - Original note: `org_memory` / `playbook_check` return playbook positions (walkaway language) to roles without `view:playbook`; `approval_list scope:'all'` returns the org approval queue (incl. `aiSummary`) to roles without `view:workflow`. (Found in S2 review.)
-- **X10 — Write tools ignore permission scope. — IN-PROGRESS.**
+- **X10 — Write tools ignore permission scope. — DONE.**
   - **Plan:**
     - Confirmed: `checkToolPermission` (`agent-threads.ts`) checks that the permission is granted and ignores its scope. The internal tool endpoints authenticate the service, not the user.
     - The X18 review showed the consequence: a custom role with own-scope edit+sign can Apply `contract_update` / `assign_owner` on any contract, become its owner, and then read its signing tokens.
     - Fix: at `own` scope, the tools that act on an existing contract (`comment_add`, `contract_update`, `approval_route`, `redline_apply`) need `args.contractId` to be a contract the caller owns; else 404, as REST's own-scope guard answers. The same check runs on Undo, against the arguments stored on the ToolCall.
     - Unchanged: `contract_create_from_template` and `request_create` create the caller's own records, and `approval_decide` already only acts on the caller's own step.
     - Test: `routes/agent-write-scope.integration.test.ts`, with a custom own-scope editor.
+  - **What changed:**
+    - `agent-threads.ts` `checkToolPermission` takes the record a call acts on. At `own` scope:
+      - `comment_add` / `contract_update` / `approval_route` / `redline_apply` need `args.contractId` to be a contract the caller owns (404 otherwise).
+      - Undo re-checks the current owner of the record it acts on: the targeted contract, or for `contract_create_from_template` / `request_create` the contract or request the call created.
+    - `internal-ai.ts` `comment_add`: a `parentId` must be a comment on the same contract, as REST requires. Otherwise a reply could be filed into another contract's thread, even another org's, at any scope.
+    - `comments.ts`: the thread list only inlines replies filed on its own contract.
+  - **Verification:**
+    - `routes/agent-write-scope.integration.test.ts` has 6 cases:
+      - `assign_owner` to itself on another rep's contract;
+      - commenting there;
+      - own edit plus undo after reassignment;
+      - a misfiled reply, with a pre-fix misfiled row not showing;
+      - undo of a drafted contract after reassignment;
+      - an org-scope positive.
+    - Against the pre-fix code, 5 fail; the org-scope case is the control.
+    - A fresh subagent reviewed this adversarially. Its two findings (the `parentId` cross-thread write, and undo of create tools) are fixed above. It confirmed that ids in `payload`, clause and version ids, workflow ids and undo ids can't redirect a call.
+  - **Found, filed separately:** X24.
+  - **Left as is:** `assign_owner` is the only way to reassign a contract anywhere; REST has none. It stays behind `edit:contract` and, at own scope, ownership.
   - Original note: `checkToolPermission` (`agent-threads.ts:63-89`) checks grant only, so a custom role with own-scope `edit:contract` can `contract_update`/`approval_route`/`comment_add`/`redline_apply` any org contract. No default role affected. (Found in S2 review.)
 - **X11 — Text→HTML conversion does not escape, and Gotenberg renders it server-side (High). — DONE.**
   - **Plan:**
@@ -688,6 +706,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
   - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
   - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
+- **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium).** `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
 ---
 
 ## Run log
@@ -724,4 +743,5 @@ X4 — DONE — organization.settings writers merge/remove/append only their own
 X11 — DONE — every Gotenberg render goes through one sanitiser (bounded parse, CSP, no loads/navigation); extracted text escaped; Gotenberg JS/network off in compose + deploy — 922352d
 X6 — DONE — Slack requests resolve to the org whose secret verifies them, verified (bot-token) claims first; malformed rows and non-urlencoded bodies can't break or bypass it — 6079b64
 X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidates, skips oversized ones instead of refusing the email — 4e7a90e
-X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — (sha: X9)
+X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — 6412597
+X10 — DONE — agent write tools respect own scope on apply and undo (incl. created records); replies can't be filed under another contract's comment — (sha: X10)
