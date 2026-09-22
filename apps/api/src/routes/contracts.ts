@@ -2125,15 +2125,51 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { metadata: true },
+      select: { metadata: true, type: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
-    const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview
+    const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview as
+      { findings?: Array<Record<string, unknown>> } | undefined
     if (!review) {
-      return reply.status(404).send({ detail: 'No playbook review has been run for this contract' })
+      // V1 — say WHY there is no review: the job skips contracts whose type
+      // has no playbook positions (same filter as handlePlaybookReview).
+      const positions = await prisma.playbookPosition.findMany({ where: { orgId }, select: { contractTypes: true } })
+      const playbookPositionCount = positions.filter(p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type)).length
+      return reply.status(404).send({
+        detail: playbookPositionCount === 0
+          ? `No playbook positions apply to ${contract.type} contracts, so this contract has not been reviewed against a playbook.`
+          : 'No playbook review has been run for this contract yet. It runs automatically after extraction.',
+        reason: playbookPositionCount === 0 ? 'no_positions' : 'not_run',
+        playbookPositionCount,
+        contractType: contract.type,
+      })
     }
-    return reply.send(review)
+
+    // V1 — findings in DOCUMENT order (the model returns them in its own
+    // order), each joined to its clause's position, section and excerpt so
+    // the rail can link to it.
+    const findings = Array.isArray(review.findings) ? review.findings : []
+    const clauseIds = findings.map(f => f.clauseId).filter((x): x is string => typeof x === 'string')
+    const clauses = clauseIds.length
+      ? await prisma.contractClause.findMany({
+          where:  { id: { in: clauseIds }, version: { contractId } },
+          select: { id: true, sortOrder: true, sectionRef: true, content: true },
+        })
+      : []
+    const byId = new Map(clauses.map(c => [c.id, c]))
+    const ordered = findings
+      .map(f => {
+        const c = typeof f.clauseId === 'string' ? byId.get(f.clauseId) : undefined
+        return {
+          ...f,
+          sortOrder:  c?.sortOrder ?? null,
+          sectionRef: c?.sectionRef ?? null,
+          excerpt:    c ? c.content.slice(0, 240) : null,
+        }
+      })
+      .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
+    return reply.send({ ...review, findings: ordered })
   })
 
   app.post('/:id/redline', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {

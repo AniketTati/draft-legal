@@ -33,6 +33,7 @@ import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
 import { ComplianceRailSection } from '@/components/contracts/ComplianceRailSection'
+import { PlaybookReviewRailSection } from '@/components/contracts/PlaybookReviewRailSection'
 import { PlaybookRedlineRailSection } from '@/components/contracts/PlaybookRedlineRailSection'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
@@ -411,6 +412,19 @@ export function ContractDetailPage() {
   // Seed effect + mutation live lower in the file, after clausesData is
   // declared (the query for contract-clauses uses `id` from useParams).
   const [focusedClauseId, setFocusedClauseId] = useState<string | null>(null)
+  // Scroll a clause's marker into view (the risk-markers extension labels
+  // spans with data-clause-id); fall back to the focused-review drawer.
+  // Shared by the approver DecisionStrip and the playbook review rail.
+  const jumpToClause = (clauseId: string) => {
+    const el = document.querySelector(`[data-clause-id="${clauseId}"]`) as HTMLElement | null
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('ring-2', 'ring-attention-600')
+      setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
+    } else {
+      setFocusedClauseId(clauseId)
+    }
+  }
   // P7.4.4 — Expand the REVIEW PROGRESS row into a checklist so users
   // can mark items reviewed without hunting for each red underline.
   const [reviewExpanded, setReviewExpanded] = useState(false)
@@ -1815,23 +1829,7 @@ export function ContractDetailPage() {
         <DecisionStrip
           awaitingMe={approvalData}
           riskScore={contract?.riskScore ?? null}
-          onJumpToClause={(clauseId) => {
-            // Scroll the underlined clause marker into view. If the risk
-            // markers extension has labelled a span with data-clause-id,
-            // this locates it. Falls back to opening the focused-review
-            // drawer on that clause.
-            const el = document.querySelector(
-              `[data-clause-id="${clauseId}"]`,
-            ) as HTMLElement | null
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              // Approver mode: the clause is the approver's turn, so attention.
-              el.classList.add('ring-2', 'ring-attention-600')
-              setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
-            } else {
-              setFocusedClauseId(clauseId)
-            }
-          }}
+          onJumpToClause={jumpToClause}
           onDecided={() => {
             qc.invalidateQueries({ queryKey: ['contract', id] })
             qc.invalidateQueries({ queryKey: ['contract-approval', id] })
@@ -3446,6 +3444,10 @@ export function ContractDetailPage() {
             error={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedlineError as string | null}
           />
         )}
+
+        {/* V1 — the playbook review that runs after extraction; each
+            finding links to its clause. */}
+        {id && <PlaybookReviewRailSection contractId={id} onJumpToClause={jumpToClause} />}
 
         {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
             checks with per-framework status, grounded quotes, and
