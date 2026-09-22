@@ -8,6 +8,7 @@
  * the parse pipeline. Every upload path runs `checkUpload` before storing
  * anything; the detected type replaces the declared one.
  */
+import { inflateRawSync } from 'node:zlib'
 
 export const MIME = {
   PDF:  'application/pdf',
@@ -72,6 +73,45 @@ function zipEntryNames(b: Buffer): string[] {
   return names
 }
 
+/**
+ * X13 — the bytes a zip's entries really inflate to, or null once past
+ * `limit` (or if the zip can't be read). The central directory's declared
+ * sizes can lie, so each entry is inflated with a hard output cap: a zip bomb
+ * is refused without ever being expanded. (A 714KB DOCX inflated to ~960MB
+ * inside mammoth's JSZip before this.)
+ */
+export function zipInflatedSize(b: Buffer, limit: number): number | null {
+  const floor = Math.max(0, b.length - 22 - 0xffff)
+  let eocd = -1
+  for (let i = b.length - 22; i >= floor; i--) {
+    if (b.readUInt32LE(i) === 0x06054b50) { eocd = i; break }
+  }
+  if (eocd < 0) return null
+  const count = b.readUInt16LE(eocd + 10)
+  let at = b.readUInt32LE(eocd + 16)
+  let total = 0
+  for (let n = 0; n < count; n++) {
+    if (at + 46 > b.length || b.readUInt32LE(at) !== 0x02014b50) return null
+    const method = b.readUInt16LE(at + 10)
+    const compressedSize = b.readUInt32LE(at + 20)
+    const local = b.readUInt32LE(at + 42)
+    if (local + 30 > b.length || b.readUInt32LE(local) !== 0x04034b50) return null
+    const dataAt = local + 30 + b.readUInt16LE(local + 26) + b.readUInt16LE(local + 28)
+    const data = b.subarray(dataAt, dataAt + compressedSize)
+    if (method === 0) total += data.length
+    else if (method === 8) {
+      try { total += inflateRawSync(data, { maxOutputLength: Math.max(1, limit - total + 1) }).length }
+      catch { return null }
+    } else return null
+    if (total > limit) return null
+    at += 46 + b.readUInt16LE(at + 28) + b.readUInt16LE(at + 30) + b.readUInt16LE(at + 32)
+  }
+  return total
+}
+
+/** Most an Office document may expand to when opened. */
+export const MAX_OFFICE_INFLATED_BYTES = 100 * 1024 * 1024
+
 const HEIF_BRANDS = new Set(['heic', 'heix', 'hevc', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1'])
 
 /** Identify a binary format by its signature. Null when there is none. */
@@ -110,7 +150,7 @@ const TEXT_DECLARED = new Set([MIME.TXT, '', 'application/octet-stream'])
 
 export type UploadCheck =
   | { ok: true; mimeType: string }
-  | { ok: false; status: 400 | 415; detail: string }
+  | { ok: false; status: 400 | 413 | 415; detail: string }
 
 /**
  * Validate an upload's bytes against a path's allowlist. On success returns
@@ -122,6 +162,13 @@ export function checkUpload(buf: Buffer, declared: string | undefined, allowed: 
   const detected = detectFileType(buf)
 
   if (detected) {
+    if ((detected === MIME.DOCX || detected === MIME.XLSX) && allowed.includes(detected)
+      && zipInflatedSize(buf, MAX_OFFICE_INFLATED_BYTES) === null) {
+      return {
+        ok: false, status: 413,
+        detail: `This ${LABELS[detected]} expands to more than ${MAX_OFFICE_INFLATED_BYTES / 1024 / 1024} MB when opened, or is damaged, so it can't be processed.`,
+      }
+    }
     if (allowed.includes(detected)) return { ok: true, mimeType: detected }
     // Legacy .doc is detectable, but the extraction pipeline has no OLE reader.
     // Refuse with the fix rather than failing analysis opaquely later.

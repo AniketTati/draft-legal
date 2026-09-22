@@ -1,5 +1,6 @@
 import { createRequire } from 'module'
 import mammoth from 'mammoth'
+import { zipInflatedSize, MAX_OFFICE_INFLATED_BYTES } from './file-type.js'
 
 const require = createRequire(import.meta.url)
 // pdf-parse v1 is CJS — require() returns the function directly
@@ -161,6 +162,11 @@ async function extractPdf(buffer: Buffer): Promise<ExtractResult> {
 }
 
 async function extractDocx(buffer: Buffer): Promise<ExtractResult> {
+  // X13 — refuse a zip bomb before mammoth expands it (files stored before
+  // the upload check existed, or reached some other way).
+  if (zipInflatedSize(buffer, MAX_OFFICE_INFLATED_BYTES) === null) {
+    throw new Error(`DOCX expands to more than ${MAX_OFFICE_INFLATED_BYTES / 1024 / 1024} MB when opened, or is damaged — not processed`)
+  }
   const result = await mammoth.convertToHtml({ buffer })
   const plainText = await mammoth.extractRawText({ buffer })
   return {
