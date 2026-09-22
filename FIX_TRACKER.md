@@ -116,11 +116,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C1 — API keys created in the UI have no scopes and fail every request
 
-- **Status:** TODO
+- **Status:** VERIFY-PENDING
 - **Severity:** High (advertised feature does not work at all)
 - **Evidence:** the create dialog sends only `{name}` (`apps/web/src/pages/AdminIntegrationsPage.tsx:300`). A key with no scopes maps to no permissions, so every permission-gated route returns 403. 11 scopes exist server-side.
 - **Acceptance criteria:** the dialog lets an admin choose scopes (and an optional expiry) and sends them; a key created through the UI can call a route its scopes allow and is refused where they do not; the one-time-reveal behaviour is unchanged.
 - **Worklog:**
+  - **Plan (confirmed defect):** `CreateApiKeyDialog` (`AdminIntegrationsPage.tsx:300`) posts `{ name }` only. The server stores `scopes: []`, `resolveApiScopePermissions([])` grants nothing, and every gated route 403s. The server side is otherwise correct: it validates scopes against `VALID_API_SCOPES` and supports `expiresInDays`. Approach: (1) API `GET /admin/integrations/api-key-scopes` returns `{ scopes: VALID_API_SCOPES }`, mirroring `GET /events` for webhooks, so the UI never drifts from the server vocabulary. (2) `CreateApiKeySchema.scopes` requires at least one scope, with a message that says why: an empty key is always a mistake and was the root of this bug. (3) Dialog: scope checkboxes (same pattern as the webhook event picker) and an expiry select (never / 30 / 90 / 365 days). Create stays disabled until at least one scope is chosen. The request body comes from a pure `buildCreateApiKeyBody()` in `apps/web/src/lib/api-keys.ts` (unit-tested, since web has no DOM test harness). (4) The keys table gains a Scopes column, so keys created before the fix (no scopes) are visible as such. One-time reveal untouched. Tests: `routes/api-keys.integration.test.ts` — a `contracts:read` key can `GET /contracts` and gets 403 on `PATCH /contracts/:id`; empty scopes → 400; the list never returns the key. Plus the web unit test and a browser check of the dialog if the dev stack runs.
+  - **Plan review:** right layer — the server model is sound; the defect is the client not sending scopes. Requiring ≥1 scope is a tightening of a public admin endpoint; no caller in the repo (scripts, tests, web) creates keys without scopes except the broken dialog. Permissions: the endpoint sits behind `configure:organization` like its siblings. No tenancy change.
+  - **Changed:** `apps/api/src/routes/integrations.ts`: new `GET /api-key-scopes`; `scopes` now requires at least one (empty or omitted → 400). `apps/web/src/lib/api-keys.ts`: `buildCreateApiKeyBody` and the expiry options. `AdminIntegrationsPage.tsx`: the dialog gains a scope picker (checkboxes, fetched from the server), an expiry select (never / 30 / 90 / 365 days), and Create is disabled until a name and at least one scope are chosen. The keys table gains a Scopes column that flags scope-less keys ("none — can't call any endpoint"). One-time reveal unchanged.
+  - **Verified:** `routes/api-keys.integration.test.ts` (4) fails 2/4 before the fix (no vocabulary endpoint; the scope-less key was accepted). The 2 that passed are the pre-existing server model: a `contracts:read` key reads (200) and is refused on PATCH (403). All 4 pass after. `apps/web/src/lib/api-keys.test.ts` (4) covers the request body, including scopes, expiry and refusal without scopes. Full suite: typecheck, lint (0 errors), api unit 171/171, web 10/10, api integration 38/38.
+  - **Why VERIFY-PENDING:** the dialog was not checked in a browser. There is no local `.env` for the dev API (only production `env.api.yaml`), and signing in would mean entering a password, which this run does not do. **Remaining check (≈1 min):** Admin → Integrations → New API key. The scope checkboxes list 11 scopes, the expiry select works, Create is disabled until a scope is ticked, the created key shows its scopes in the table, and the reveal modal still shows the full key once.
+  - **Follow-up:** existing scope-less keys created through the old dialog still exist. The new Scopes column makes them visible; admins should revoke and re-issue them.
+
 
 ## C2 — Approvals can be stranded, undercounted and hidden from oversight
 
@@ -293,4 +300,5 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.
 S1 — DONE — GET /organization redacts Slack secrets; PATCH can't overwrite server-managed keys; checklist stops echoing settings — cca7b19
 S2 — VERIFY-PENDING — agent read tools resolve the caller's view scope server-side and push it into Prisma, pgvector and ES; needs a live SALES_REP chat probe — 701b0b5
-S3 — DONE — every upload path validates bytes via lib/file-type.ts; detected type stored; presigned downloads serve only allowlisted types — (sha: S3)
+S3 — DONE — every upload path validates bytes via lib/file-type.ts; detected type stored; presigned downloads serve only allowlisted types — 4b91cbc
+C1 — VERIFY-PENDING — create-key dialog sends chosen scopes + expiry; server refuses scope-less keys; needs a visual check of the dialog — (sha: C1)

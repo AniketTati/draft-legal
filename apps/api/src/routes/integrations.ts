@@ -65,12 +65,15 @@ export const WEBHOOK_EVENTS = [
 
 const CreateApiKeySchema = z.object({
   name:       z.string().min(1).max(100),
-  // Wave 1.2 — scopes must be a subset of the known vocabulary. An empty/
-  // omitted list grants NO permissions (no more accidental org-admin key).
-  scopes:     z.array(z.string()).optional().refine(
-    (arr) => !arr || arr.every((s) => VALID_API_SCOPES.includes(s)),
-    { message: `scopes must be a subset of: ${VALID_API_SCOPES.join(', ')}` },
-  ),
+  // Wave 1.2 — scopes must be a subset of the known vocabulary. An empty
+  // list grants NO permissions, so such a key could call nothing (C1: the
+  // admin dialog used to create exactly that). Require at least one.
+  scopes:     z.array(z.string(), { required_error: 'Choose at least one scope — a key with no scopes cannot call any endpoint.' })
+    .min(1, 'Choose at least one scope — a key with no scopes cannot call any endpoint.')
+    .refine(
+      (arr) => arr.every((s) => VALID_API_SCOPES.includes(s)),
+      { message: `scopes must be a subset of: ${VALID_API_SCOPES.join(', ')}` },
+    ),
   expiresInDays: z.number().int().min(1).max(3650).optional(),
 })
 
@@ -105,6 +108,11 @@ export async function integrationsRoutes(app: FastifyInstance) {
     return reply.send({ events: WEBHOOK_EVENTS })
   })
 
+  // ── GET /api-key-scopes — the scope vocabulary for the create dialog ──
+  app.get('/api-key-scopes', { preHandler: requirePermission('configure', 'organization') }, async (_req, reply) => {
+    return reply.send({ scopes: VALID_API_SCOPES })
+  })
+
   // ── POST /api-keys — create (returns full key once) ───────────────────
   app.post('/api-keys', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
     let body
@@ -121,7 +129,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
         name:        body.name.trim(),
         keyHash:     hashApiKey(fullKey),
         prefix:      fullKey.slice(0, 12),
-        scopes:      body.scopes ?? [],
+        scopes:      body.scopes,
         expiresAt:   body.expiresInDays
           ? new Date(Date.now() + body.expiresInDays * 24 * 60 * 60 * 1000)
           : null,
