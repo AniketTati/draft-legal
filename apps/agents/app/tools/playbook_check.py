@@ -18,6 +18,7 @@ Returns:
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -57,6 +58,13 @@ def build_playbook_check(org_id: str, user_id: str | None = None) -> StructuredT
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
+        if r.status_code == 403:
+            # X9 — say why, so the model tells the user rather than guessing.
+            try:
+                detail = r.json().get("detail")
+            except ValueError:
+                detail = None
+            return json.dumps({"error": "permission_denied", "detail": detail or "The user does not have permission for this."})
         if r.status_code == 404:
             return '{"error":"contract_not_found","contract_id":"' + contract_id + '"}'
         if r.status_code >= 400:

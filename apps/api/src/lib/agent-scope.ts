@@ -31,10 +31,14 @@ export type CallerScope =
   | { kind: 'own'; userId: string }
   | { kind: 'none' }
 
+/** X9 — tools also read playbook, clause-library and workflow data. */
+export type ToolResource = 'contract' | 'request' | 'playbook' | 'clause' | 'workflow' | 'template'
+
 export async function resolveCallerScope(
   orgId: string,
   userId: string | null | undefined,
-  resource: 'contract' | 'request',
+  resource: ToolResource,
+  action: 'view' | 'edit' | 'configure' = 'view',
 ): Promise<CallerScope> {
   if (userId === undefined) return { kind: 'org' }
   if (!userId) return { kind: 'none' }
@@ -56,7 +60,7 @@ export async function resolveCallerScope(
     permissions = await getPermissionsForRoles(orgId, user.userRoles.map(ur => ur.role.name))
   }
 
-  const result = evaluatePermission(permissions, 'view', resource)
+  const result = evaluatePermission(permissions, action, resource)
   if (!result.granted) return { kind: 'none' }
   return result.scope === 'own' ? { kind: 'own', userId } : { kind: 'org' }
 }

@@ -509,7 +509,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `ChatRequest` still defaults `user_id` / `org_id` (only trusted callers reach it).
     - The agents service compares its secret with `!=` rather than `hmac.compare_digest`.
   - Original note: `agents.ts:179` forwards the client's `sessionId` unchecked; Python keys history as `session:{id}` (`memory.py:27`) and replays prior tool results, and `GET /matters/:id` exposes other users' thread ids — so a user can replay another user's (incl. org-scope, cross-org) tool output. Bind the session key to `orgId:userId`, and purge `session:*` after deploying S2 (pre-fix sessions hold org-wide results for 24h). (Found in S2 review.)
-- **X9 — Agent tools check `view:contract` where REST checks a different permission. — IN-PROGRESS.**
+- **X9 — Agent tools check `view:contract` where REST checks a different permission. — DONE.**
   - **Plan:**
     - Confirmed, and one more pair: `redline_propose` and `redline_propose_batch` check `view:contract`, where REST's `/contracts/:id/clauses/:clauseId/suggest` needs `edit:contract`. Their variants are built from the org's playbook positions, walkaway and fallback language included.
     - Fix: `resolveCallerScope` (S2) takes any resource and action. Each tool then checks what REST checks:
@@ -518,6 +518,27 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - `approval_list`: `view:workflow` for my-queue, `configure:workflow` for all (REST's `/approvals/all`).
       - `redline_propose(_batch)`: `edit:contract`, at that scope.
     - Test: `routes/agent-tool-permissions.integration.test.ts`, with real DB roles as in the S2 test.
+  - **What changed:**
+    - `lib/agent-scope.ts`: `resolveCallerScope(orgId, userId, resource, action)` covers `contract | request | playbook | clause | workflow | template`.
+    - `internal-ai.ts`, each tool now checks what REST checks:
+      - `playbook_check`: `view:playbook`.
+      - `org_memory`: positions need `view:playbook`, library items `view:clause`. What's withheld is named first in the response (so it survives memory truncation), and the category is withheld when both are.
+      - `approval_list`: `view:workflow` for my-queue, which now holds only the approver's current steps as REST's does; `configure:workflow` for all.
+      - `redline_propose(_batch)`: `edit:contract`.
+      - `template_list`: `view:template`.
+      - `matter_list`: `view:contract`, with counts narrowed like REST's `/matters`.
+    - `agents.ts`: REST `POST /agent/compare` needs `view:playbook`. It returned every playbook position, walkaway text included, to any `view:contract` role; the web never calls it. The chat proxy withholds the tools the caller can never use.
+    - Python: `template_list` and `matter_list` send `userId`. Five tools pass a 403's reason on to the model instead of a generic error.
+  - **Verification:**
+    - `routes/agent-tool-permissions.integration.test.ts` has 11 cases, with real DB roles and a custom own-scope reviewer that keeps S2's own-scope 404 for these tools.
+    - S2's `agent-scope` test now expects 403 for SALES_REP on `playbook_check` / `redline_propose` (refused by permission before ownership), with the ownership 404 moved to the new test.
+    - Tripwire `lib/agent-tool-identity.test.ts` (27 cases): every tool whose handler checks the caller must send `userId` from its Python builder, and the 403 pass-through must be there.
+    - Suite: typecheck 0, lint 0 errors, api unit 256/256, api integration 183/183.
+    - A fresh subagent reviewed this adversarially, going through every tool against its REST twin. It found `/agent/compare` (High), `template_list`, `matter_list`, `org_memory`'s category, my-queue's step gate, `withheld` ordering and the lost 403 reasons, all fixed above. It confirmed the write-tool permission map matches REST, and that service calls with no user still work.
+  - **Left out:**
+    - `contract_draft` (the planner) has no caller check. It is reachable only through `contract_create_from_template`, which is withheld without `create:contract`, and REST `/agent/draft` is itself as open.
+    - The tool chip still shows green when a tool returns an error payload.
+    - `redline_propose` returns clause text without PII redaction (added to X23).
   - Original note: `org_memory` / `playbook_check` return playbook positions (walkaway language) to roles without `view:playbook`; `approval_list scope:'all'` returns the org approval queue (incl. `aiSummary`) to roles without `view:workflow`. (Found in S2 review.)
 - **X10 — Write tools ignore permission scope. — IN-PROGRESS.**
   - **Plan:**
@@ -591,7 +612,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Original note: `inbound-email.ts:92` sets `limits.files`, so a sixth file part throws `FilesLimitError` (413) and the `continue` at `:96` is dead code: emails with many inline images are rejected. The 25MB check runs after the attachment is chosen, so an oversized first document 413s instead of trying the next. (Found in S3 review.)
 - **X15 — `portfolio_agent.py` queries as org `system` (Medium). — DONE.** Added `x-org-id: org_id` to the portfolio agent's `/api/v1/search/advanced` call and put the file in the `lib/agents-internal-headers.test.ts` tripwire (fails without the header, passes with it). The portfolio agent has no web UI (H3), so no live check applies.
   - Original note: `apps/agents/app/agents/portfolio_agent.py:110` sends `x-internal-secret` + `x-internal-service` but no `x-org-id` to `POST /api/v1/search/advanced`, so `requireAuth` resolves the org to `'system'` and the ES query matches nothing. That is the same defect as C8, in the `/agent/portfolio` path (`routes/agent.py`). Add `x-org-id: org_id` and extend `lib/agents-internal-headers.test.ts` to cover it. (Found in C8.)
-- **X16 — Binder detection sees only the first 10,000 characters (Low).** `apps/agents/app/routes/detect_binder.py:22` truncates the text, so agreements that start later in a long binder are never detected. Send head + evenly spaced windows (or page-boundary heading candidates) instead of widening the prompt linearly. (Deferred from C10.)
+- **X16 — Binder detection sees only the first 10,000 characters (Low). — IN-PROGRESS.**
+  - **Plan:**
+    - Confirmed: `detect_binder.py` sends `plainText[:10_000]`. An agreement that starts later in a long binder is never seen, so the binder is analysed as one document.
+    - Fix: for long text, send the first 6,000 characters, then up to 8 excerpts (1,200 characters each) around likely agreement boundaries. Candidates are ALL-CAPS titles ending in AGREEMENT / ADDENDUM / AMENDMENT / ORDER FORM / STATEMENT OF WORK / EXHIBIT / SCHEDULE / LICENSE, and "IN WITNESS WHEREOF". Evenly spaced excerpts fill any remaining slots.
+    - Each excerpt is prefixed with its absolute character offset. The prompt says so, so `charStart` refers to the whole document. The payload stays under about 16k characters.
+    - Tests:
+      - A TS tripwire (no Python runner in CI).
+      - A local check of the sampler on a synthetic 200k-character binder.
+    - Live LLM behaviour can't be verified here, so it will end VERIFY-PENDING.
+  - Original note: `apps/agents/app/routes/detect_binder.py:22` truncates the text, so agreements that start later in a long binder are never detected. Send head + evenly spaced windows (or page-boundary heading candidates) instead of widening the prompt linearly. (Deferred from C10.)
 - **X17 — Diligence-room contracts still count on org dashboards (Medium-Low).** `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
 - **X18 — Signing tokens go to anyone who can view the contract (High). — DONE.**
   - **Plan:**
@@ -657,6 +687,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
   - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
   - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
+  - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
 ---
 
 ## Run log
@@ -692,4 +723,5 @@ X5 — DONE — piiRedactionMode needs configure:organization, a valid value and
 X4 — DONE — organization.settings writers merge/remove/append only their own keys in SQL; no more lost updates — 7f2de2c
 X11 — DONE — every Gotenberg render goes through one sanitiser (bounded parse, CSP, no loads/navigation); extracted text escaped; Gotenberg JS/network off in compose + deploy — 922352d
 X6 — DONE — Slack requests resolve to the org whose secret verifies them, verified (bot-token) claims first; malformed rows and non-urlencoded bodies can't break or bypass it — 6079b64
-X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidates, skips oversized ones instead of refusing the email — (sha: X14)
+X14 — DONE — inbound email reads every part, buffers only PDF/DOCX candidates, skips oversized ones instead of refusing the email — 4e7a90e
+X9 — DONE — agent read tools (and REST /agent/compare) check the permission REST checks: playbook, clause, workflow, template, edit; 403 reasons reach the model — (sha: X9)

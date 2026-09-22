@@ -10,6 +10,7 @@ text and the pipeline picks the template itself.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -34,7 +35,7 @@ class TemplateListArgs(BaseModel):
     limit: int = Field(20, ge=1, le=50, description="Max templates to return.")
 
 
-def build_template_list(org_id: str) -> StructuredTool:
+def build_template_list(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         query: str | None = None,
@@ -48,13 +49,20 @@ def build_template_list(org_id: str) -> StructuredTool:
             "x-internal-service": "agents",
             "content-type": "application/json",
         }
-        payload: dict = {"orgId": org_id, "limit": limit, "publishedOnly": published_only}
+        payload: dict = {"orgId": org_id, "userId": user_id, "limit": limit, "publishedOnly": published_only}  # X9
         if query:
             payload["query"] = query
         if contract_type:
             payload["contractType"] = contract_type
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
+        if r.status_code == 403:
+            # X9 — say why, so the model tells the user rather than guessing.
+            try:
+                detail = r.json().get("detail")
+            except ValueError:
+                detail = None
+            return json.dumps({"error": "permission_denied", "detail": detail or "The user does not have permission for this."})
         if r.status_code >= 400:
             log.warning("[template_list] Node returned %s: %s", r.status_code, r.text[:200])
             return '{"error":"template_list_failed","status":' + str(r.status_code) + "}"

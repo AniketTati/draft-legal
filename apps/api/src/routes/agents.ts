@@ -128,6 +128,13 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!evaluatePermission(callerPermissions, 'create', 'contract').granted) {
       deniedTools.push('contract_create_from_template')
     }
+    // X9 — read tools that need more than view:contract refuse the caller
+    // server-side (internal-ai.ts); don't offer them either.
+    if (!evaluatePermission(callerPermissions, 'edit', 'contract').granted) {
+      deniedTools.push('redline_propose', 'redline_propose_batch')
+    }
+    if (!evaluatePermission(callerPermissions, 'view', 'playbook').granted) deniedTools.push('playbook_check')
+    if (!evaluatePermission(callerPermissions, 'view', 'workflow').granted) deniedTools.push('approval_list')
 
     let skillPromptOverride: string | undefined
     let skillAllowedTools: string[] | undefined
@@ -620,7 +627,9 @@ export async function agentRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/agent/compare — compare clause text to playbook positions
-  app.post('/compare', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+  // X9 — the answer is the org's playbook positions (walkaway language
+  // included); REST's twin /playbook/test needs view:playbook.
+  app.post('/compare', { preHandler: requirePermission('view', 'playbook') }, async (req, reply) => {
     const { orgId } = req.user
     const { clauseText, clauseCategoryId, contractType } = req.body as {
       clauseText: string

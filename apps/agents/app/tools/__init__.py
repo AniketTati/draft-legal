@@ -107,7 +107,7 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         # L9 — the three verbs the loops needed and did not have.
         # user_search is the name->id path assign_owner / delegation depend on.
         build_user_search(org_id),
-        build_template_list(org_id),
+        build_template_list(org_id, user_id),
         build_contract_create_from_template(org_id, user_id),
         # Write tools — return an awaiting-confirmation payload that the
         # orchestrator surfaces as an ActionPreview card.

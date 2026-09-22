@@ -34,7 +34,7 @@ import { normalisedKey } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
 import { planDraft } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
-import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope } from '../lib/agent-scope.js'
+import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -435,6 +435,7 @@ const CustomFieldListSchema = z.object({
 // pilot programs); making them queryable is table-stakes for our personas.
 const MatterListSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // X9 — caller identity (absent = service call)
   ownerId:          z.string().optional(),  // filter to matters owned by this user
   status:           z.enum(['OPEN', 'CLOSED', 'ARCHIVED']).optional(),
   counterpartyName: z.string().optional(),  // fuzzy substring on counterpartyName
@@ -533,6 +534,7 @@ const UserSearchSchema = z.object({
 
 const TemplateListSchema = z.object({
   orgId:         z.string().min(1),
+  userId:     z.string().nullable().optional(),   // X9 — caller identity (absent = service call)
   query:         z.string().max(200).optional(),
   contractType:  z.string().max(50).optional(),
   publishedOnly: z.boolean().default(false),
@@ -747,11 +749,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // body). Sends 403 and returns null when they may not view `resource`.
   async function scopeOr403(
     reply: FastifyReply, orgId: string, userId: string | null | undefined,
-    resource: 'contract' | 'request' = 'contract',
+    resource: ToolResource = 'contract', action: 'view' | 'edit' | 'configure' = 'view',
   ): Promise<CallerScope | null> {
-    const scope = await resolveCallerScope(orgId, userId, resource)
+    const scope = await resolveCallerScope(orgId, userId, resource, action)
     if (scope.kind === 'none') {
-      reply.status(403).send({ detail: `The user in this conversation does not have view:${resource} permission` })
+      reply.status(403).send({ detail: `The user in this conversation does not have ${action}:${resource} permission` })
       return null
     }
     return scope
@@ -2056,6 +2058,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const scope = await scopeOr403(reply, body.orgId, body.userId)
     if (!scope) return
+    // X9 — the answer is the org's playbook positions: REST needs view:playbook.
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'playbook')) return
 
     const contract = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
@@ -2414,7 +2418,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    // X9 — REST's /clauses/:clauseId/suggest needs edit:contract; the variants
+    // are built from the org's playbook positions, walkaway language included.
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'contract', 'edit')
     if (!scope) return
     if (scope.kind === 'own') {
       const visible = await prisma.contract.count({
@@ -2448,7 +2454,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    // X9 — REST's /clauses/:clauseId/suggest needs edit:contract; the variants
+    // are built from the org's playbook positions, walkaway language included.
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'contract', 'edit')
     if (!scope) return
     if (scope.kind === 'own') {
       const visible = await prisma.contract.count({
@@ -3604,6 +3612,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const scope = await scopeOr403(reply, body.orgId, body.userId)
     if (!scope) return
+    // X9 — each section follows its own permission, as in REST: positions need
+    // view:playbook, library items view:clause. What's withheld is named so
+    // the model says "not available to you", not "none exist".
+    const [playbookScope, clauseScope] = await Promise.all([
+      resolveCallerScope(body.orgId, body.userId, 'playbook'),
+      resolveCallerScope(body.orgId, body.userId, 'clause'),
+    ])
+    const withheld = [
+      ...(playbookScope.kind === 'none' ? ['playbook'] : []),
+      ...(clauseScope.kind === 'none' ? ['clauseLibrary'] : []),
+    ]
 
     // Pick the category that best matches the topic — normalise both
     // sides (docs/28 C.2.1 match rule).
@@ -3618,7 +3637,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     })
 
     // 1) Playbook positions for that category (type-filtered when set).
-    const playbook = matchCategory
+    const playbook = matchCategory && playbookScope.kind !== 'none'
       ? await prisma.playbookPosition.findMany({
           where: {
             orgId: body.orgId,
@@ -3637,7 +3656,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     // 2) Clause-library items tagged with the topic or under that
     //    category, approved-only by default.
-    const clauseLibrary = await prisma.clauseLibraryItem.findMany({
+    const clauseLibrary = clauseScope.kind === 'none' ? [] : await prisma.clauseLibraryItem.findMany({
       where: {
         orgId: body.orgId,
         deletedAt: null,
@@ -3746,10 +3765,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
 
     return reply.send({
+      // First, so it survives when a long result is cut for session memory.
+      ...(withheld.length ? { withheld, withheldReason: 'The user in this conversation lacks the permission to see these sections.' } : {}),
       topic:           body.topic,
       contractType:    body.contractType ?? null,
       clauseType:      clauseTypeFilter ?? null,
-      matchedCategory: matchCategory ?? null,
+      // A category belongs to the playbook / clause library; name it only to
+      // a caller who may see one of them.
+      matchedCategory: withheld.length === 2 ? null : (matchCategory ?? null),
       playbook:        playbook.map(p => ({
         positionType:  p.positionType,
         content:       p.content,
@@ -3779,21 +3802,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const scope = await scopeOr403(reply, body.orgId, body.userId)
     if (!scope) return
+    // X9 — as REST: the queue needs view:workflow (/approvals/my-queue), the
+    // org-wide list configure:workflow (/approvals/all).
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'workflow', body.scope === 'all' ? 'configure' : 'view')) return
 
     const stepWhere: Record<string, unknown> = { orgId: body.orgId }
-    if (scope.kind === 'own') stepWhere.instance = { contract: { ownerId: scope.userId } }
     if (body.scope === 'my-queue') {
+      // X9 — as REST's /approvals/my-queue: the caller's own steps, only the
+      // instance's current one (a later step isn't theirs to decide yet), on
+      // whichever contract — an approver sees what they are asked to approve.
       stepWhere.approverId = body.userId
       stepWhere.status = body.status ?? 'PENDING'
-    } else if (body.status) {
-      stepWhere.status = body.status
+    } else {
+      if (scope.kind === 'own') stepWhere.instance = { contract: { ownerId: scope.userId } }
+      if (body.status) stepWhere.status = body.status
     }
 
-    const steps = await prisma.approvalStep.findMany({
+    const found = await prisma.approvalStep.findMany({
       where: stepWhere as never,
       orderBy: { createdAt: 'asc' },
-      take: body.limit,
+      take: body.scope === 'my-queue' ? 500 : body.limit,
+      include: { instance: { select: { currentStepOrder: true } } },
     })
+    const steps = (body.scope === 'my-queue'
+      ? found.filter(st => st.stepOrder === st.instance.currentStepOrder)
+      : found
+    ).slice(0, body.limit)
     if (steps.length === 0) return reply.send({ items: [], total: 0 })
 
     const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId))]
@@ -4013,6 +4047,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
 
+    // X9 — as REST's /matters: view:contract, with counts covering only what
+    // the caller could open (own contracts / requests / threads for own scope).
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    const requestScope = await resolveCallerScope(body.orgId, body.userId, 'request')
+    const own = scope.kind === 'own' ? scope.userId : null
+
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.ownerId)          where.ownerId = body.ownerId
     if (body.status)           where.status  = body.status
@@ -4030,7 +4071,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: true, name: true, description: true, status: true,
         counterpartyName: true, ownerId: true, tags: true,
         createdAt: true, updatedAt: true,
-        _count: { select: { contracts: true, requests: true, threads: true } },
+        _count: { select: {
+          contracts: own ? { where: { ownerId: own } } : true,
+          requests:  requestScope.kind === 'own' ? { where: { requestedById: requestScope.userId } }
+            : requestScope.kind === 'org' ? true : { where: { id: { in: [] as string[] } } },
+          threads:   own ? { where: { userId: own } } : true,
+        } },
       },
       orderBy: { updatedAt: 'desc' },
       take: body.limit,
@@ -4324,6 +4370,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    // X9 — REST's GET /templates needs view:template (APPROVER and FINANCE lack it).
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'template')) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.contractType) where.contractType = body.contractType

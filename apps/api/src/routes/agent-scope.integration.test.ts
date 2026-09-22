@@ -99,7 +99,10 @@ afterAll(async () => {
 
 describe('own-scope caller (SALES_REP) through the agent tool routes', () => {
   it('cannot fetch, summarize, cite, validate or check another rep\'s contract', async () => {
-    for (const name of ['contract_get', 'contract_summarize', 'contract_cite', 'contract_validate', 'compliance_get', 'playbook_check']) {
+    // playbook_check is refused earlier now (X9: SALES_REP has no view:playbook);
+    // its own-scope 404 is checked with a permitted role in agent-tool-permissions.
+    expect((await tool('playbook_check', { userId: repA, contractId: theirsId })).statusCode).toBe(403)
+    for (const name of ['contract_get', 'contract_summarize', 'contract_cite', 'contract_validate', 'compliance_get']) {
       const res = await tool(name, { userId: repA, contractId: theirsId, query: 'confidentiality' })
       expect(res.statusCode, name).toBe(404)
       expect(res.body, name).not.toContain('Beta Secret Deal')
@@ -158,8 +161,10 @@ describe('own-scope caller (SALES_REP) through the agent tool routes', () => {
     expect(requests.statusCode).toBe(200)
     expect(requests.body).not.toContain('Beta renewal request')
 
+    // Refused earlier now (X9: SALES_REP has no edit:contract); the own-scope
+    // 404 for a caller who may edit is checked in agent-tool-permissions.
     const redline = await tool('redline_propose', { userId: repA, contractId: theirsId, clauseId: `it-cl-${theirsId}` })
-    expect(redline.statusCode).toBe(404)
+    expect(redline.statusCode).toBe(403)
   })
 })
 
