@@ -93,6 +93,10 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
     // never opened the right pane.
     const rawHits = (r.contracts ?? r.results ?? r.items ?? r.hits ?? []) as Array<Record<string, unknown>>
     if (!Array.isArray(rawHits) || rawHits.length === 0) return null
+    // V2 follow-up — portfolio_search's hits are clauses, so one contract can
+    // match several times: the table lists each contract once, and its count
+    // says when the tool returned only part of what matches.
+    const seen = new Set<string>()
     const items = rawHits.map(h => ({
       // portfolio_search shape — flatten for the table
       id:               (h.id ?? h.contractId) as string | undefined,
@@ -102,13 +106,15 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
       value:            h.value,
       currency:         h.currency,
       ...h, // keep original fields too (excerpt, sectionRef, score)
-    }))
+    })).filter(it => !it.id || (!seen.has(it.id) && !!seen.add(it.id)))
+    const coverage = r.coverage as { complete?: boolean; totalMatching?: number } | undefined
+    const of = coverage?.complete === false && typeof coverage.totalMatching === 'number' ? ` of ${coverage.totalMatching}` : ''
     const a: TableArtifact = {
       kind: 'table',
       id: nextId('art'),
       dedupeKey: stableKey(call.name, `count=${items.length}:first=${items[0]?.id ?? ''}`),
       title: 'Search results',
-      subtitle: `${items.length} matching contracts`,
+      subtitle: `${items.length}${of} matching contracts`,
       columns: [
         { key: 'title',            label: 'Contract',     align: 'left' },
         { key: 'counterpartyName', label: 'Counterparty', align: 'left' },

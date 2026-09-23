@@ -344,7 +344,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## V2 — Stop answers overstating their own completeness
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE (VERIFY-PENDING → DONE after the live check below)
 - **Severity:** High (this is the product's core promise)
 - **Evidence:** `portfolio_search` returns at most 30 fused hits with no total; `renewal_advice` truncates at 50 rows, sorted oldest first, with no total; `contract_search` has no date-range or value-range filter (`apps/api/src/routes/internal-ai.ts`, tool contracts around `:255-268`, `:484-493`, `:857-889`, `:3318-3365`). So "which contracts…" answers are samples presented as if complete.
 - **Acceptance criteria:**
@@ -360,6 +360,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Verified:** new `routes/coverage.integration.test.ts` (6). **All 6 fail on the pre-fix route**. After the fix: page coverage "Showing 5 of 12"; the next-90-days filter = exactly the 4 upcoming; value ≥ $1M = 7, and combined with the date range = 2; a malformed date → 400; renewals list the 3 soonest upcoming (not lapsed ones) with true counts 4 / 3 / 7; portfolio_search always carries coverage. `lib/agents-coverage-rule.test.ts` (2, source tripwire for A13) fails without the rule. The probe passes `node --check`. Python compiles. Full suite: typecheck, lint (0 errors), api unit 188/188, api integration 102/102.
   - **Why VERIFY-PENDING:** "the assistant states coverage in the answer" can only be observed with the agents service and an LLM. **Remaining check:** run `node scripts/agent-loops/v2-coverage.mjs` against the live stack on the demo org.
   - **Not attempted (per the task's note):** a full per-document scan for complete portfolio answers.
+  - **Live check (2026-09-23, signed in to the local stack):** the probe script signs in with the seed admin's password, so I asked its question in `/agent` under your session instead: "Which of our contracts mention limitation of liability? List them."
+    - The tool result carried `coverage: {returned: 7, totalMatching: 104, complete: false}` with its note.
+    - The answer said "Since 104 contracts match, this is not a complete list."
+    - **Found and fixed (follow-up):** the "Search results" artifact showed "10 matching contracts", one row per clause hit, so the same contract appeared up to four times. That contradicted the answer's 7 and the coverage block. The table now lists each contract once, and its count says "7 of 104 matching contracts" when the tool reports partial coverage. `components/agent/artifact-from-tool.test.ts` +2: the dedupe/partial case fails on the old code.
 
 
 ## H1 — Marketing site claims things the product does not do
@@ -2164,6 +2168,7 @@ C8, X15 (live check + follow-up) — DONE — the redline and portfolio prompts'
 X51 — DONE — the contract rail's History section links to Negotiate when there are two versions, so a contract without extracted clauses can reach its redline analysis — (sha: pending)
 X16 (live check + follow-up) — DONE — detection finds a late second agreement live, but the split used the model's page guesses and cut a 13-page binder at page 7; pages now come from each agreement's character offset; verified live (MSA 1–12, SOW 13), VERIFY-PENDING → DONE — (sha: pending)
 X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — (sha: pending)
+V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — (sha: pending)
 
 ---
 
