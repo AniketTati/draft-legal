@@ -22,7 +22,7 @@ import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
-import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactCuts, type CutText } from '../lib/pii-policy.js'
+import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -908,11 +908,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Summary string also goes through (LLMs cite the summary too).
     // X36 — values are found in the whole text, and the cut to maxChars
     // never splits one.
+    // X40 — and the summary's values are found against the text as well.
     const [redactedPlainText, redactedSummary] = await Promise.all([
       redactCuts(body.orgId, [{ text: fullText, cuts: [[0, body.maxChars]] }], { surface: 'contract_get.plainText', contractId: contract.id }),
       contract.summary
-        ? applyPiiPolicy(body.orgId, contract.summary, { surface: 'contract_get.summary', contractId: contract.id })
-        : Promise.resolve({ text: '', mode: 'off', counts: {}, total: 0 } as const),
+        ? redactCuts(body.orgId, [{ text: contract.summary, cuts: [[0, contract.summary.length]], valuesFrom: fullText }], { surface: 'contract_get.summary', contractId: contract.id })
+        : Promise.resolve({ pieces: [], mode: 'off', counts: {}, total: 0 } as const),
     ])
 
     return reply.send({
@@ -926,9 +927,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       currency:         contract.currency,
       effectiveDate:    contract.effectiveDate,
       expiryDate:       contract.expiryDate,
-      summary:          contract.summary ? redactedSummary.text : null,
+      summary:          contract.summary ? (redactedSummary.pieces[0]?.[0] ?? REDACTION_UNAVAILABLE) : null,
       // X27 — the key terms quote the contract too (parties, amounts, quotes).
-      keyTerms:         await redactJson(body.orgId, contract.keyTerms, { surface: 'contract_get.keyTerms', contractId: contract.id }),
+      // X40 — values found against the contract's text too.
+      keyTerms:         await redactJsonAgainst(body.orgId, contract.keyTerms, fullText, { surface: 'contract_get.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       version: {
@@ -1212,7 +1214,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Trim the text to 400 chars so the UI pill has something
       // scannable without blowing the message payload.
       const long = s.n.text.length > 400
-      quoteCuts.push({ text: s.n.text, cuts: [[0, long ? 397 : s.n.text.length]] })
+      quoteCuts.push({ text: s.n.text, cuts: [[0, long ? 397 : s.n.text.length]], valuesFrom: plainText })
       quoteTails.push(long ? '...' : '')
       citations.push({
         quote:        s.n.text,
@@ -1596,10 +1598,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
         if (d.excerpt) { excerptIdx.push(i); excerptTexts.push(d.excerpt) }
         if (d.summary) { summaryIdx.push(i); summaryTexts.push(d.summary) }
       })
+      // X40 — each deal's contract text (its current version), where a card
+      // number's "card" may be.
+      const versionOfContract = new Map(contracts.map(c => [c.id, c.currentVersionId]))
+      const documentOf = new Map((await prisma.contractVersion.findMany({
+        where: { id: { in: versionIds } }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const withDocument = (indices: number[], texts: string[], length: number): CutText[] =>
+        texts.map((text, k) => ({ text, cuts: [[0, length]], valuesFrom: documentOf.get(versionOfContract.get(deals[indices[k]]?.contractId ?? '') ?? '') }))
       const [redactedExcerpts, redactedSummaries] = await Promise.all([
         // X36 — values found in the whole clause or summary, then cut.
-        redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 400]] })), { surface: 'counterparty_memory.excerpt' }),
-        redactCutExcerpts(body.orgId, summaryTexts.map(text => ({ text, cuts: [[0, 280]] })), { surface: 'counterparty_memory.summary' }),
+        redactCutExcerpts(body.orgId, withDocument(excerptIdx, excerptTexts, 400), { surface: 'counterparty_memory.excerpt' }),
+        redactCutExcerpts(body.orgId, withDocument(summaryIdx, summaryTexts, 280), { surface: 'counterparty_memory.summary' }),
       ])
       excerptIdx.forEach((dealIndex, k) => {
         const d = deals[dealIndex]
@@ -1847,9 +1857,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // structured metadata (titles, counterparty, clauseType, sectionRef,
     // page/bbox, scores) are untouched, so ordering is unchanged.
     // X36 — values found in the whole clause, then cut.
+    // X40 — each clause's contract text too, where a card number's "card" may be.
+    const versionOfHit = (h: { clauseId: string | null }) => (h.clauseId ? clauseById.get(h.clauseId)?.versionId : undefined)
+    const documentOf = new Map((await prisma.contractVersion.findMany({
+      where:  { id: { in: [...new Set(hits.filter(h => h.excerpt).map(versionOfHit).filter((v): v is string => !!v))] } },
+      select: { id: true, plainText: true },
+    })).map(v => [v.id, v.plainText]))
     const redactedExcerpts = await redactCutExcerpts(
       body.orgId,
-      hits.map(h => (h.excerpt ? { text: h.excerpt, cuts: [[0, 500]] } : null)),
+      hits.map(h => (h.excerpt ? { text: h.excerpt, cuts: [[0, 500]], valuesFrom: documentOf.get(versionOfHit(h) ?? '') } : null)),
       { surface: 'portfolio_search.excerpt' },
     )
     hits.forEach((h, i) => {
@@ -1938,7 +1954,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // to 1,500 characters never splits one.
       const summaryText = contract.summary ?? ''
       const { pieces: [summaryPieces, snippetPieces] } = await redactCuts(body.orgId, [
-        { text: summaryText, cuts: [[0, summaryText.length]] },
+        { text: summaryText, cuts: [[0, summaryText.length]], valuesFrom: plainText },   // X40
         { text: plainText, cuts: [[0, 1_500]] },
       ], { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id })
       // Keep `summary: null` null — don't turn an absent summary into ''.
@@ -1963,7 +1979,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       currency:         contract.currency,
       summary:          summaryOut,
       // X27 — as contract_get.
-      keyTerms:         await redactJson(body.orgId, contract.keyTerms, { surface: 'contract_summarize.keyTerms', contractId: contract.id }),
+      keyTerms:         await redactJsonAgainst(body.orgId, contract.keyTerms, plainText, { surface: 'contract_summarize.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       plainTextSnippet: snippetOut,
@@ -2283,8 +2299,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(ck.excerpt)
         }
       })
-      // X36 — values found in the whole clause, then cut.
-      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 800]] })), {
+      // X36 — values found in the whole clause, then cut; X40 — and in the
+      // whole contract, where a card number's "card" may be.
+      const document = (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
+      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 800]], valuesFrom: document })), {
         surface: 'playbook_check.excerpt',
         contractId: contract.id,
       })
@@ -3452,6 +3470,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, effectiveDate: true, expiryDate: true,
+        currentVersionId: true,
       },
       take: body.contractId ? 1 : 500,
     })
@@ -3514,10 +3533,21 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // X27 — an obligation's description and source quote are contract text,
     // bound for the chat model like any other excerpt.
     const page = items.slice(0, body.limit)
-    const texts = await redactExcerpts(body.orgId, page.flatMap(i => [i.description as string | null, i.quote as string | null]), {
+    // X40 — values found against each obligation's contract text too, where
+    // a card number's "card" may be.
+    const versionOf = (item: Record<string, unknown>) => contractById.get(String(item.contractId ?? ''))?.currentVersionId ?? null
+    const documentOf = new Map((await prisma.contractVersion.findMany({
+      where: { id: { in: [...new Set(page.map(versionOf).filter((v): v is string => !!v))] } }, select: { id: true, plainText: true },
+    })).map(v => [v.id, v.plainText]))
+    const whole = (text: unknown, item: Record<string, unknown>): CutText | null =>
+      typeof text === 'string' && text ? { text, cuts: [[0, text.length]], valuesFrom: documentOf.get(versionOf(item) ?? '') } : null
+    const texts = await redactCutExcerpts(body.orgId, page.flatMap(i => [whole(i.description, i), whole(i.quote, i)]), {
       surface: 'obligations_list', contractId: body.contractId ?? undefined,
     })
-    page.forEach((item, k) => { item.description = texts[2 * k]; item.quote = texts[2 * k + 1] })
+    page.forEach((item, k) => {
+      item.description = texts[2 * k]?.[0] ?? (item.description ? REDACTION_UNAVAILABLE : item.description)
+      item.quote = texts[2 * k + 1]?.[0] ?? (item.quote ? REDACTION_UNAVAILABLE : item.quote)
+    })
 
     return reply.send({
       items: page,
@@ -3744,6 +3774,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       ?? (matchCategory ? matchCategory.name.replace(/\s+/g, '_').toLowerCase() : undefined)
 
     const pastDeals: Array<Record<string, unknown>> = []
+    const versionOfClause = new Map<string, string>()   // for each excerpt's contract text (X40)
     if (clauseTypeFilter) {
       // C11 — excerpts from each contract's CURRENT version only (a clause a
       // later version replaced is not how that deal landed), and never from
@@ -3771,7 +3802,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         orderBy: { id: 'desc' },
         take: body.limit,
         select: {
-          id: true, clauseType: true, content: true, sectionRef: true,
+          id: true, clauseType: true, content: true, sectionRef: true, versionId: true,
           riskRating: true,
           version: {
             select: {
@@ -3787,6 +3818,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         },
       })
       for (const cl of clauses) {
+        versionOfClause.set(cl.id, cl.versionId)
         pastDeals.push({
           clauseId:         cl.id,
           contractId:       cl.version?.contractId ?? null,
@@ -3818,7 +3850,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
         }
       })
       // X36 — values found in the whole clause, then cut.
-      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 500]] })), {
+      // X40 — each clause's contract text too, where a card number's "card" may be.
+      const documentOf = new Map((await prisma.contractVersion.findMany({
+        where: { id: { in: [...new Set(versionOfClause.values())] } }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map((text, k) => ({
+        text, cuts: [[0, 500]],
+        valuesFrom: documentOf.get(versionOfClause.get(String(pastDeals[excerptIdx[k]]?.clauseId ?? '')) ?? ''),
+      })), {
         surface: 'org_memory.excerpt',
       })
       excerptIdx.forEach((dealIndex, k) => {

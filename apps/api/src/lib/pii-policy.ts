@@ -431,6 +431,50 @@ export interface CutText {
   text: string
   /** The pieces, as [start, end) offsets into `text`. */
   cuts: Array<[number, number]>
+  /**
+   * X40 — a longer text to find values in as well: the document a clause or
+   * key term came from, where a card number's "card" may be.
+   */
+  valuesFrom?: string
+}
+
+/** Every value the policy covers in `text`, with its kind. */
+function valuesIn(text: string): Map<string, PiiKind> {
+  const kinds = new Map<string, PiiKind>()
+  redactPii(text, 'redact', { token: (kind, value) => { kinds.set(value, kind); return '' } })
+  return kinds
+}
+
+/** A regex alternation of `values`, longest first, each matched literally. */
+function alternation(values: Iterable<string>): string {
+  return [...values].sort((a, b) => b.length - a.length).map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+}
+
+const isDigit = (c: string | undefined): boolean => c !== undefined && c >= '0' && c <= '9'
+
+/**
+ * X40 — whether a value's occurrence at [start, end) is not part of a longer
+ * number: a digit at its edge can't touch another digit. So a passport number
+ * doesn't take a bite out of an account number, nor a date out of a longer
+ * one. Letters may touch: a value can follow its keyword ("passportA1234567").
+ * Checked in code rather than as lookarounds in the regex, which would cost
+ * V8 its fast literal matching.
+ */
+function standsAlone(text: string, start: number, end: number): boolean {
+  return !(isDigit(text[start]) && isDigit(text[start - 1])) && !(isDigit(text[end - 1]) && isDigit(text[end]))
+}
+
+// X40 — the kinds a pattern recognizes only with a keyword nearby (a card, an
+// IBAN, a passport number, a date of birth). The rest a piece's own scan
+// finds, so only these are worth bringing from its document.
+const CONTEXT_KINDS = new Set<PiiKind>(['CC', 'IBAN', 'PASSPORT', 'DOB'])
+
+/** X40 — values found in a document, and a regex that finds them standing alone in a piece of it. */
+export interface DocumentValues { kinds: Map<string, PiiKind>; rx: RegExp | null }
+
+export function documentValues(document: string): DocumentValues {
+  const kinds = new Map([...valuesIn(document)].filter(([, kind]) => CONTEXT_KINDS.has(kind)))
+  return { kinds, rx: kinds.size ? new RegExp(`(?=(${alternation(kinds.keys())}))`, 'g') : null }
 }
 
 /**
@@ -441,26 +485,40 @@ export interface CutText {
 export function cutAndRedact(
   source: CutText,
   placeholder: (kind: PiiKind, value: string) => string,
+  /** Values found in `source.valuesFrom`, when the caller has them already. */
+  found: DocumentValues | null = source.valuesFrom ? documentValues(source.valuesFrom) : null,
 ): { pieces: string[]; counts: Partial<Record<PiiKind, number>> } {
   const { text } = source
   const counts: Partial<Record<PiiKind, number>> = {}
   if (source.cuts.length === 0) return { pieces: [], counts }
-  const kinds = new Map<string, PiiKind>()
-  redactPii(text, 'redact', { token: (kind, value) => { kinds.set(value, kind); return '' } })
-  // Every occurrence of every value, overlapping ones included, in one scan
-  // (the lookahead matches, at each position, the longest value starting
-  // there), merged where they overlap: a merged run is replaced whole, so an
-  // overlap can't leave part of a value behind.
-  const runs: Array<{ start: number; end: number; kind: PiiKind }> = []
+  // Every occurrence of every value found in the text, overlapping ones
+  // included, in one scan (the lookahead matches, at each position, the
+  // longest value starting there)…
+  const hits: Array<{ start: number; end: number; kind: PiiKind }> = []
+  const kinds = valuesIn(text)
   if (kinds.size) {
-    const alternatives = [...kinds.keys()].sort((a, b) => b.length - a.length).map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    for (const m of text.matchAll(new RegExp(`(?=(${alternatives.join('|')}))`, 'g'))) {
+    for (const m of text.matchAll(new RegExp(`(?=(${alternation(kinds.keys())}))`, 'g'))) {
       const start = m.index ?? 0
       const end = start + m[1].length
-      const last = runs[runs.length - 1]
-      if (last && start < last.end) last.end = Math.max(last.end, end)
-      else runs.push({ start, end, kind: kinds.get(m[1])! })
+      if (standsAlone(text, start, end)) hits.push({ start, end, kind: kinds.get(m[1])! })
     }
+  }
+  // …and of each value from the document (X40).
+  if (found?.rx) {
+    for (const m of text.matchAll(found.rx)) {
+      const start = m.index ?? 0
+      const end = start + m[1].length
+      if (standsAlone(text, start, end)) hits.push({ start, end, kind: found.kinds.get(m[1])! })
+    }
+  }
+  // Merged where they overlap: a merged run is replaced whole, so an overlap
+  // can't leave part of a value behind.
+  hits.sort((a, b) => a.start - b.start || b.end - a.end)
+  const runs: Array<{ start: number; end: number; kind: PiiKind }> = []
+  for (const hit of hits) {
+    const last = runs[runs.length - 1]
+    if (last && hit.start < last.end) last.end = Math.max(last.end, hit.end)
+    else runs.push({ ...hit })
   }
   // The first run that ends after `p` (runs are sorted and disjoint).
   const firstEndingAfter = (p: number): number => {
@@ -511,9 +569,17 @@ export async function redactCuts(
   }
   const placeholder = orgToken(orgId, mode) ?? ((kind: PiiKind) => `[REDACTED:${kind}]`)
   const counts: Partial<Record<PiiKind, number>> = {}
+  // Each document is searched once, however many pieces come from it.
+  const byDocument = new Map<string, DocumentValues>()
+  const foundIn = (document: string | undefined): DocumentValues | null => {
+    if (!document) return null
+    let found = byDocument.get(document)
+    if (!found) byDocument.set(document, found = documentValues(document))
+    return found
+  }
   const out = sources.map(src => {
     if (!src) return null
-    const r = cutAndRedact(src, placeholder)
+    const r = cutAndRedact(src, placeholder, foundIn(src.valuesFrom))
     for (const [kind, n] of Object.entries(r.counts)) counts[kind as PiiKind] = (counts[kind as PiiKind] ?? 0) + (n ?? 0)
     return r.pieces
   })
@@ -531,4 +597,19 @@ export async function redactCuts(
     })
   }
   return { pieces: out, mode, counts, total }
+}
+
+/**
+ * X40 — the org's policy over a JSON value taken from a document (key
+ * terms): every string, with values also found in the document, so a card
+ * number whose "card" is elsewhere in the contract is caught. Checked one
+ * string at a time, a key term like `{ payment: '4111 1111 1111 1111' }`
+ * went out whole. One policy read, one audit row.
+ */
+export async function redactJsonAgainst<T>(orgId: string, value: T, document: string, opts: ApplyOptions): Promise<T> {
+  const list = strings(value)
+  if (list.length === 0) return value
+  const { pieces } = await redactCuts(orgId, list.map(text => ({ text, cuts: [[0, text.length]], valuesFrom: document })), opts)
+  let i = 0
+  return mapStrings(value, () => pieces[i++]?.[0] ?? '[text withheld: PII redaction unavailable]') as T
 }

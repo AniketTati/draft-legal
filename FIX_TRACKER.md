@@ -1581,13 +1581,55 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - the job throws for retry.
     - Against the pre-fix handler it fails: no `redirect` option, and the error was only "Non-2xx response: 307".
     - Suite: typecheck 0, lint 0 errors, api unit 315/315, integration 280/280 (48 files).
-- **X40 — Clause-level chat excerpts find values without the document's context (Low-Medium).** Found in the X36 review.
+- **X40 — Clause-level chat excerpts find values without the document's context (Low-Medium). — DONE.** Found in the X36 review.
   - Five chat tools look for values only within the clause or paragraph they excerpt, not the whole document:
     - `contract_cite` (the paragraph, though the handler has the plain text);
     - `counterparty_memory`, `portfolio_search`, `playbook_check` and `org_memory` (`clause.content`).
   - Card numbers and IBANs are only recognized near a payment word. So "…pays by corporate credit card. 4.2 Billing. Charges go to 4111 1111 1111 1111 monthly." sends the card raw when clause 4.2 is the source.
   - The same holds for `keyTerms` in `contract_get` and `contract_summarize`: each string is checked on its own.
   - `embeddings.ts` already finds values against the version's text (`valuesFrom`). Give `cutAndRedact` a separate text to find values in, and pass each clause's document. The multi-contract tools need the matched versions' text loaded.
+  - **Plan:** confirmed. The redactor recognizes a card or IBAN only when a payment or banking word appears in its input, and these excerpts were redacted with only their clause, paragraph or string as input:
+    - `contract_cite`: the paragraph, though its handler already has the version's text;
+    - `counterparty_memory`, `portfolio_search`, `playbook_check` and `org_memory`: `clause.content`;
+    - key terms in `contract_get` and `contract_summarize`: each string on its own.
+    - Fix: let the X36 helper find values in the document as well, and give each piece its document.
+  - **What changed:**
+    - `lib/pii-policy.ts`:
+      - `CutText.valuesFrom` (the document);
+      - `cutAndRedact` also replaces values found in the document that occur in the piece;
+      - `redactCuts` searches each distinct document once per call;
+      - new `redactJsonAgainst(orgId, value, document)` for key terms.
+    - `routes/internal-ai.ts`: each tool passes the piece's document:
+      - `contract_cite` passes the version text it already had;
+      - `playbook_check` makes one extra query for its version;
+      - `counterparty_memory`, `portfolio_search` and `org_memory` load the text of the versions their excerpts come from (the clause select gains `versionId`);
+      - `contract_get` and `contract_summarize` redact key terms with `redactJsonAgainst`.
+  - **Verification:**
+    - `lib/pii-cuts.test.ts`: the clause alone isn't a card, and with its document it is.
+    - `routes/chat-tool-cuts.integration.test.ts` has 4 new cases, each with a card that is a card only because the contract says "credit card" elsewhere:
+      - key terms and the summary in `contract_get` and `contract_summarize`;
+      - an `obligations_list` description and quote;
+      - a `contract_cite` paragraph;
+      - the clause excerpts of `counterparty_memory` (its summary too), `playbook_check` and `org_memory`.
+      - Against the pre-fix code all 4 fail, and the 5 X36 cases still pass.
+    - `portfolio_search` needs Elasticsearch, which the integration stack doesn't run. It uses the same helper, and its document lookup is by the hit clause's `versionId`.
+    - Suite: typecheck 0, lint 0 errors, api unit 319/319, integration 284/284 (48 files).
+  - **Adversarial review:** no tenancy or leak regression. Every new version load takes its ids from an org- and own-scope-filtered query in the same handler, and the text is used only to find values. It found these, fixed here:
+    - **Missing from the first version:** summaries in `contract_get` and `contract_summarize`, and `obligations_list`'s description and quote, still had no document. They now have one (`obligations_list` loads each obligation's contract's current version).
+    - **Slow:** each document value was checked against each piece, up to 23 s with a 20,000-IP annex.
+      - Only the kinds that need a keyword now come from the document: card, IBAN, passport, DOB. SSNs, IPs and the rest are found by the piece's own scan.
+      - Each document's values are compiled once, into one regex per document and call.
+      - A unit case runs 500 clauses against a document with 20,000 IPs and 1,000 dates of birth, well under its bound.
+    - **Values replaced inside longer numbers** (`9[REDACTED:PASSPORT]`, `1[REDACTED:DOB]`). A value's occurrence no longer counts where a digit at its edge touches another digit. Letters may touch, so a value right after its keyword still counts. This is checked in code rather than with regex lookarounds, which cost V8 its fast literal matching (tried: 3.4 s instead of 50 ms).
+      - This changes one X36 unit expectation: a 20-digit reference holding a card's digits is now left whole, as the detector itself reads it, instead of becoming one merged `[REDACTED:CC]`. The case still asserts no tail, and that the values themselves are redacted.
+    - **Smaller fixes:**
+      - `redactJsonAgainst` withholds rather than falling back to the raw string;
+      - `counterparty_memory` looks documents up by version, not contract.
+  - **Left as is:**
+    - With the whole contract as context, the keyword gate nearly always passes ("service credit", "bank"). About one in ten 13–19 digit reference numbers passes Luhn, so it will now be redacted in these excerpts, as `contract_get`'s text already was.
+    - A piece that holds only part of a value, such as a stored quote the review agent capped at 800 characters, still carries that fragment; it is not an exact match.
+    - Card numbers stored as JSON numbers in key terms are not strings, and are not looked at.
+    - Some documents are read twice per call (`counterparty_memory`'s two surfaces; `portfolio_search` loads versions for metadata and again for text), and texts are loaded even when the org's mode is off.
 - **X41 — The seeded demo admin has a public password, and the self-host guide seeds it (High).** Found in the X38 review.
   - `prisma/seed.ts` creates `admin@demo.com` and `legal@demo.com` with the password `password123`, which the seed prints and the README repeats.
   - `docs/operations/SELF-HOSTING.md` tells operators to run that seed to create their first org and admin, and says nothing about changing the password. So every self-host install that follows the guide has an admin login anyone can look up.
@@ -1670,4 +1712,5 @@ X35 — DONE — Bull Board, the chunk callback and inbound email need their sec
 X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — 4a41d23
 X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — d4805d3
 X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — c6ec141
-X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — (sha: pending)
+X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — 4802124
+X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — (sha: pending)

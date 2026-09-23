@@ -15,8 +15,8 @@ const CARD = '4111 1111 1111 1111'
 let app: TestApp
 let org: string, user: string
 
-async function contractWith(title: string, text: string): Promise<string> {
-  const id = await makeContract(org, user, { title })
+async function contractWith(title: string, text: string, status?: string): Promise<string> {
+  const id = await makeContract(org, user, { title, ...(status ? { status } : {}) })
   const v = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, createdById: user, plainText: text, htmlContent: `<p>${text}</p>` } })
   await prisma.contract.update({ where: { id }, data: { currentVersionId: v.id } })
   return id
@@ -40,6 +40,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.contractClause.deleteMany({ where: { id: { startsWith: 'it-x36-' } } })
+  await prisma.contractClause.deleteMany({ where: { id: { startsWith: 'it-x40-' } } })
+  await prisma.obligation.deleteMany({ where: { orgId: org } })
+  await prisma.playbookPosition.deleteMany({ where: { orgId: org } })
+  await prisma.clauseCategory.deleteMany({ where: { orgId: org } })
   await cleanupAll()
   await closeApp()
 })
@@ -97,5 +101,77 @@ describe('excerpts cut from a longer text', () => {
     const deal = out.deals.find((d: { contractId: string }) => d.contractId === id)
     expect(deal.excerpt.length).toBeGreaterThan(300)
     expect(deal.excerpt).not.toMatch(/\d/)
+  })
+})
+
+describe('X40 — values found against the whole contract, not just the clause', () => {
+  // The card number is only a card because the contract says "credit card",
+  // and not in the clause, paragraph or key term an excerpt is taken from.
+  const CLAUSE = `Charges go to ${CARD} monthly.`
+  const DOC = `Payment is by corporate credit card. ${'Terms apply. '.repeat(10)}Billing. ${CLAUSE}`
+  const LEAK = /4111|1111/
+
+  async function withClause(title: string, status?: string): Promise<string> {
+    const id = await contractWith(title, DOC, status)
+    const versionId = (await prisma.contract.findUniqueOrThrow({ where: { id } })).currentVersionId as string
+    await prisma.contractClause.create({ data: { id: `it-x40-${versionId}`, versionId, clauseType: 'payment', content: CLAUSE } })
+    return id
+  }
+
+  it('key terms and the summary in contract_get and contract_summarize', async () => {
+    const id = await contractWith('Key terms', DOC)
+    await prisma.contract.update({ where: { id }, data: { keyTerms: { payment: CARD, note: `Billed to ${CARD}.` }, summary: `Billed monthly to ${CARD}.` } })
+    for (const name of ['contract_get', 'contract_summarize']) {
+      const out = await tool(name, { contractId: id })
+      expect(JSON.stringify(out.keyTerms), name).toContain('[REDACTED:CC]')
+      expect(JSON.stringify(out.keyTerms), name).not.toMatch(LEAK)
+      expect(out.summary, name).toBe('Billed monthly to [REDACTED:CC].')
+    }
+  })
+
+  it('obligations_list: an obligation\'s description and quote', async () => {
+    const id = await contractWith('Obligations', DOC)
+    await prisma.obligation.create({ data: { orgId: org, contractId: id, type: 'payment', description: `Pay ${CARD} monthly.`, quote: CLAUSE } })
+    const out = await tool('obligations_list', { contractId: id })
+    expect(out.items).toHaveLength(1)
+    expect(`${out.items[0].description} ${out.items[0].quote}`).not.toMatch(LEAK)
+  })
+
+  it('contract_cite: a paragraph', async () => {
+    const id = await contractWith('Cite', DOC)
+    const versionId = (await prisma.contract.findUniqueOrThrow({ where: { id } })).currentVersionId as string
+    await prisma.contractVersion.update({
+      where: { id: versionId },
+      data: { metadata: { structure: { sections: [{ ref: '', title: 'Billing', level: 1, paragraphs: [{ text: CLAUSE }] }] } } },
+    })
+    const out = await tool('contract_cite', { contractId: id, query: 'charges go monthly' })
+    expect(out.citations.length).toBeGreaterThan(0)
+    for (const c of out.citations) expect(c.quote).not.toMatch(LEAK)
+  })
+
+  it('counterparty_memory, playbook_check and org_memory: a clause', async () => {
+    const id = await withClause('Clause excerpts', 'EXECUTED')
+    await prisma.contract.update({ where: { id }, data: { counterpartyName: 'X40 Card Counterparty', summary: `Billed monthly to ${CARD}.` } })
+    const category = await prisma.clauseCategory.create({ data: { orgId: org, name: 'Payment' } })
+    await prisma.playbookPosition.create({
+      data: {
+        orgId: org, clauseCategoryId: category.id, positionType: 'preferred', content: 'Billed monthly.', createdById: user,
+        rules: { must_have: [{ description: 'Monthly billing', check: 'contains', value: 'monthly', severity: 'low' }] },
+      },
+    })
+
+    const memory = await tool('counterparty_memory', { counterpartyName: 'X40 Card Counterparty', clauseType: 'payment' })
+    const deal = memory.deals.find((d: { contractId: string }) => d.contractId === id)
+    expect(`${deal.excerpt} ${deal.summary}`).not.toMatch(LEAK)
+
+    const check = await tool('playbook_check', { contractId: id })
+    const excerpts = check.checks.map((c: { excerpt: string }) => c.excerpt)
+    expect(excerpts.length).toBeGreaterThan(0)
+    for (const e of excerpts) expect(e).not.toMatch(LEAK)
+
+    const org_ = await tool('org_memory', { topic: 'payment', clauseType: 'payment' })
+    const past = org_.pastDeals.filter((d: { contractId: string }) => d.contractId === id)
+    expect(past.length).toBeGreaterThan(0)
+    for (const d of past) expect(d.excerpt).not.toMatch(LEAK)
   })
 })

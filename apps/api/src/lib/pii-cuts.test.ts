@@ -5,7 +5,7 @@
  * `cutAndRedact` finds the values in the whole text and never cuts one.
  */
 import { describe, it, expect } from 'vitest'
-import { cutAndRedact } from './pii-policy.js'
+import { cutAndRedact, documentValues } from './pii-policy.js'
 
 const ph = (kind: string) => `[REDACTED:${kind}]`
 
@@ -40,11 +40,15 @@ describe('cutAndRedact', () => {
 })
 
 describe('cutAndRedact, reviewed', () => {
-  it('replaces overlapping values as one run, leaving no tail', () => {
-    // A card and a passport number that overlap inside the reference.
+  it('leaves no tail where values overlap inside a longer number', () => {
+    // A card and a passport number whose digits overlap inside the reference.
+    // X40: a value is not matched as part of a longer number, so the 20-digit
+    // reference is left whole, as the detector itself reads it (before, it
+    // came out as `[REDACTED:CC]9999`); the values themselves are redacted.
     const text = 'Card: 4111111111111111. Passport No. 11119999. Ref 41111111111111119999 end'
     const at = text.indexOf('Ref')
-    expect(cutAndRedact({ text, cuts: [[at, text.length]] }, ph).pieces[0]).toMatch(/^Ref \[REDACTED:(CC|PASSPORT)\] end$/)
+    expect(cutAndRedact({ text, cuts: [[at, text.length]] }, ph).pieces[0]).toBe('Ref 41111111111111119999 end')
+    expect(cutAndRedact({ text, cuts: [[0, at]] }, ph).pieces[0]).toBe('Card: [REDACTED:CC]. Passport No. [REDACTED:PASSPORT]. ')
   })
 
   it('stays fast with thousands of values in a long text', () => {
@@ -56,5 +60,41 @@ describe('cutAndRedact, reviewed', () => {
     expect(Date.now() - started).toBeLessThan(2_000)
     expect(pieces.join('')).not.toMatch(/\d{3}-\d{2}-\d{4}/)
     expect(counts.SSN).toBeGreaterThan(0)
+  })
+})
+
+describe('cutAndRedact with the document a piece came from (X40)', () => {
+  it('finds a value by a keyword only the document has', () => {
+    const text = 'Charges go to 4111 1111 1111 1111 monthly.'
+    const valuesFrom = `Payment is by corporate credit card.\nBilling. ${text}`
+    expect(cutAndRedact({ text, cuts: [[0, text.length]] }, ph).pieces).toEqual([text])   // the clause alone: not a card
+    expect(cutAndRedact({ text, cuts: [[0, text.length]], valuesFrom }, ph).pieces).toEqual(['Charges go to [REDACTED:CC] monthly.'])
+  })
+})
+
+describe('cutAndRedact with a document, reviewed', () => {
+  it('replaces a document value only where it stands alone', () => {
+    const valuesFrom = 'Passport No. 12345678. Date of birth: 1/2/1980.'
+    const text = 'Account 912345678 and passport 12345678; on 11/2/1980, born 1/2/1980.'
+    expect(cutAndRedact({ text, cuts: [[0, text.length]], valuesFrom }, ph).pieces[0])
+      .toBe('Account 912345678 and passport [REDACTED:PASSPORT]; on 11/2/1980, born [REDACTED:DOB].')
+  })
+
+  it('brings only the kinds that need a keyword: section numbers read as IPs stay put', () => {
+    const valuesFrom = 'Wire to server 10.1.2.3 per Section 10.1.2.3.'
+    const text = 'See Section 10.1.2.3a.'
+    expect(cutAndRedact({ text, cuts: [[0, text.length]], valuesFrom }, ph).pieces).toEqual([text])
+  })
+
+  it('stays fast with a document full of values and many pieces', () => {
+    const ips = Array.from({ length: 20_000 }, (_, i) => `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`)
+    const dobs = Array.from({ length: 1_000 }, (_, i) => `Date of birth: ${1 + (i % 12)}/${1 + (i % 28)}/${1950 + (i % 50)}`)
+    const valuesFrom = `${ips.join(' ')} ${dobs.join('. ')} Paid by credit card.`
+    const found = documentValues(valuesFrom)
+    const clauses = Array.from({ length: 500 }, (_, i) => `Clause ${i}: the party born ${1 + (i % 12)}/${1 + (i % 28)}/${1950 + (i % 50)} pays monthly.`)
+    const started = Date.now()
+    const pieces = clauses.map(text => cutAndRedact({ text, cuts: [[0, text.length]] }, ph, found).pieces[0])
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(pieces.join('\n')).not.toMatch(/\d+\/\d+\/\d{4}/)
   })
 })
