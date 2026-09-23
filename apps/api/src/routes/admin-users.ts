@@ -190,6 +190,12 @@ export async function adminUserRoutes(app: FastifyInstance) {
       where: { id },
       data: { status: 'DEACTIVATED', refreshToken: null },
     })
+    // X43 — and their API keys: a key never checks who made it, so an admin's
+    // `admin`-scope key kept full access after they left.
+    const keys = await prisma.apiKey.updateMany({
+      where: { orgId, createdById: id, revokedAt: null },
+      data:  { revokedAt: new Date() },
+    })
 
     await createAuditEvent({
       orgId,
@@ -197,6 +203,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
       action: AuditAction.USER_DEACTIVATED,
       resourceType: 'user',
       resourceId: id,
+      metadata: { apiKeysRevoked: keys.count },
       ipAddress: req.ip,
     })
 

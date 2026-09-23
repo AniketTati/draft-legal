@@ -38,6 +38,8 @@ import { queueWebhookDelivery } from '../lib/queue.js'
 import { isTeamsUrl } from '../lib/teams-formatter.js'
 import { VALID_API_SCOPES } from '../lib/permissions.js'
 import { isUrlShapeAllowed } from '../lib/ssrf-guard.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { AuditAction } from '@clm/types'
 
 // Wave 1.5 — reject webhook URLs that target private/localhost/metadata hosts
 // (only enforced when the SSRF guard is active; self-host/dev pass through).
@@ -143,6 +145,12 @@ export async function integrationsRoutes(app: FastifyInstance) {
       },
     })
 
+    // X43 — a key is a standing credential: its creation is on the record.
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.API_KEY_CREATED, resourceType: 'api_key', resourceId: created.id,
+      metadata: { name: created.name, scopes: created.scopes, expiresAt: created.expiresAt }, ipAddress: req.ip,
+    })
+
     return reply.status(201).send({
       ...created,
       // Full key is shown ONCE — caller must save it. We never store it.
@@ -158,11 +166,15 @@ export async function integrationsRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, name: true, prefix: true, scopes: true,
-        lastUsedAt: true, expiresAt: true, revokedAt: true, createdAt: true,
+        lastUsedAt: true, expiresAt: true, revokedAt: true, createdAt: true, createdById: true,
       },
       take: 100,
     })
-    return reply.send({ data: keys })
+    // X43 — who made each key, so an admin can tell whose keys are whose.
+    const creators = new Map((await prisma.user.findMany({
+      where: { orgId, id: { in: [...new Set(keys.map(k => k.createdById))] } }, select: { id: true, name: true, email: true },
+    })).map(u => [u.id, u]))
+    return reply.send({ data: keys.map(({ createdById, ...k }) => ({ ...k, createdBy: creators.get(createdById) ?? null })) })
   })
 
   // ── DELETE /api-keys/:id — revoke ─────────────────────────────────────
@@ -174,6 +186,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
       data:  { revokedAt: new Date() },
     })
     if (updated.count === 0) return reply.status(404).send({ detail: 'API key not found' })
+    await createAuditEvent({ orgId, userId: req.user.sub, action: AuditAction.API_KEY_REVOKED, resourceType: 'api_key', resourceId: id, ipAddress: req.ip })
     return reply.status(204).send()
   })
 

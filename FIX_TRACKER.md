@@ -1739,7 +1739,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Against the pre-fix code the 3 reset cases fail.
     - The full integration suite passes (296).
   - **Left as is:** an open approval on a contract changed while PENDING_APPROVAL stays open until decided. The approver sees the current terms.
-- **X43 — `admin`-scope API keys outlive their creator, and keys aren't audited (Medium).** Found in the final-sweep review of C1.
+- **X43 — `admin`-scope API keys outlive their creator, and keys aren't audited (Medium). — DONE.** Found in the final-sweep review of C1.
   - Since C1 made UI keys work, the dialog offers `admin` (full access) with no expiry by default.
   - The key check never looks at who created the key, and deactivating a user doesn't touch their keys, so an admin's key keeps full org access after they leave.
   - Creating or revoking a key writes no audit event, and the list doesn't show who created each key.
@@ -1747,6 +1747,21 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - revoke a user's keys when they are deactivated;
     - audit key creation and revocation;
     - show the creator.
+  - **Plan:** confirmed.
+    - `auth.ts` never looks at a key's creator, and deactivation cleared only the refresh token.
+    - `POST` and `DELETE /api-keys` wrote no audit event.
+    - The list selected no creator.
+  - **What changed:**
+    - `routes/admin-users.ts`: deactivating a user revokes every key they made, and the audit event records how many.
+    - `routes/integrations.ts`: key creation and revocation write `API_KEY_CREATED` and `API_KEY_REVOKED` (new values in `@clm/types`; the action column is a string, so no migration). The list returns each key's `createdBy`.
+    - The web keys table shows a "Created by" column.
+  - **Verification (`api-keys.integration.test.ts`, 2 new cases):**
+    - create and revoke each write their audit event, and the list names the creator;
+    - a key made by a user who is then deactivated goes from 200 to 401.
+    - Against the pre-fix code both fail.
+  - **Left as is:**
+    - A creator demoted but still active keeps their keys, whose scopes don't shrink with their role. Checking each request against the creator's current permissions would be a design change.
+    - Existing users already deactivated before this change keep their keys: revoke them from the list.
 - **X44 — Routes that only check sign-in ignore API key scopes (Low).** Found in the final-sweep review of C1.
   - Any API key, scope-less legacy keys included, can read `GET /users` (every member's email, roles and status), `/team/workload`, `/organization`, `/admin/roles` and `/skills`: these routes check only `requireAuth`.
   - Fix: give each a permission check, or refuse API keys on routes that don't declare one.
@@ -1835,4 +1850,5 @@ X29 (follow-up) — DONE — open collab connections are re-checked every 15 s e
 X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — 67d9557
 X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — 3ed62a3
 X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — 54f2987
-X42 — DONE — changing an approved contract's type, value, currency or document returns it to DRAFT for approval again (REST edits, uploads, editor saves, clause applies) — (sha: pending)
+X42 — DONE — changing an approved contract's type, value, currency or document returns it to DRAFT for approval again (REST edits, uploads, editor saves, clause applies) — 10771af
+X43 — DONE — deactivating a user revokes their API keys; key creation and revocation are audited; the key list shows who made each key — (sha: pending)

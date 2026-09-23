@@ -34,6 +34,8 @@ interface ApiKey {
   expiresAt:  string | null
   revokedAt:  string | null
   createdAt:  string
+  /** X43 — who made the key (null when that user is gone). */
+  createdBy?: { id: string; name: string | null; email: string | null } | null
 }
 
 interface Webhook {
@@ -201,6 +203,7 @@ function ApiKeysSection() {
                 <th className="text-left px-4 py-2 font-semibold">Name</th>
                 <th className="text-left px-4 py-2 font-semibold">Prefix</th>
                 <th className="text-left px-4 py-2 font-semibold">Scopes</th>
+                <th className="text-left px-4 py-2 font-semibold">Created by</th>
                 <th className="text-left px-4 py-2 font-semibold">Last used</th>
                 <th className="text-left px-4 py-2 font-semibold">Status</th>
                 <th className="text-right px-4 py-2 font-semibold"></th>
@@ -215,6 +218,9 @@ function ApiKeysSection() {
                     {/* A key with no scopes can call nothing — keys made before scopes
                         could be chosen look like this and need re-issuing. */}
                     {k.scopes.length ? k.scopes.join(', ') : <span className="text-risk-700 font-sans">none — can’t call any endpoint</span>}
+                  </td>
+                  <td className="px-4 py-2 text-[11px] text-ink-700" data-testid={`api-key-creator-${k.id}`}>
+                    {k.createdBy ? (k.createdBy.name ?? k.createdBy.email ?? k.createdBy.id) : '—'}
                   </td>
                   <td className="px-4 py-2 text-[11px] tabular-nums text-ink-500">
                     {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : 'never'}

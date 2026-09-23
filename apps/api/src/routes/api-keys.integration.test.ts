@@ -64,3 +64,31 @@ describe('API key scopes', () => {
     for (const k of list.json().data) expect(k).not.toHaveProperty('key')
   })
 })
+
+describe('X43 — a key\'s lifecycle', () => {
+  it('creating and revoking a key are audited, and the list names who made it', async () => {
+    const res = await createKey({ name: 'Audited key', scopes: ['contracts:read'] })
+    expect(res.statusCode).toBe(201)
+    const id = res.json().id as string
+    expect(await prisma.auditEvent.count({ where: { orgId: org, action: 'API_KEY_CREATED', resourceId: id } })).toBe(1)
+    const list = await app.inject({ method: 'GET', url: '/api/v1/admin/integrations/api-keys', headers: auth(org, ['ADMIN'], admin) })
+    expect(list.json().data.find((k: { id: string }) => k.id === id).createdBy.id).toBe(admin)
+    const revoked = await app.inject({ method: 'DELETE', url: `/api/v1/admin/integrations/api-keys/${id}`, headers: auth(org, ['ADMIN'], admin) })
+    expect(revoked.statusCode).toBe(204)
+    expect(await prisma.auditEvent.count({ where: { orgId: org, action: 'API_KEY_REVOKED', resourceId: id } })).toBe(1)
+  })
+
+  it('deactivating a user revokes the keys they made', async () => {
+    const leaver = await makeUser(org)
+    const made = await app.inject({
+      method: 'POST', url: '/api/v1/admin/integrations/api-keys',
+      headers: auth(org, ['ADMIN'], leaver), payload: { name: 'Leaver key', scopes: ['contracts:read'] },
+    })
+    expect(made.statusCode).toBe(201)
+    const use = () => app.inject({ method: 'GET', url: '/api/v1/contracts', headers: { authorization: `Bearer ${made.json().key}` } })
+    expect((await use()).statusCode).toBe(200)
+    const off = await app.inject({ method: 'POST', url: `/api/v1/admin/users/${leaver}/deactivate`, headers: auth(org, ['ADMIN'], admin) })
+    expect(off.statusCode).toBe(200)
+    expect((await use()).statusCode).toBe(401)
+  })
+})
