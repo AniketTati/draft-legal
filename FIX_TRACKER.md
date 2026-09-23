@@ -1370,10 +1370,26 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Against the pre-fix code it fails (no `plainText`).
     - Suite: typecheck 0, lint 0 errors, api unit 297/297, integration 270/270.
   - **Why VERIFY-PENDING:** a live approval submission is needed to see the executive summary now reading the contract, and its stored text reading right.
-- **X34 — Audit events are lost under bursts of concurrent writes for one org (Low-Medium).** Found in the X27 follow-up.
+- **X34 — Audit events are lost under bursts of concurrent writes for one org (Low-Medium). — DONE.** Found in the X27 follow-up.
   - The integration suite logs `[pii-policy] failed to write audit event: … P2034`. `createAuditEvent` appends to the org's hash chain in a SERIALIZABLE transaction, with 5 attempts on a fixed 10–160 ms backoff and no jitter.
   - With six or more writers at once, as parallel chat tool calls produce, retries collide again and some writers run out of attempts. Fire-and-forget callers (PII redaction, tool calls) then drop the event with a console line. The chain stays valid but incomplete.
   - Serialize appends per org, or retry with jitter until a deadline.
+  - **Plan:** reproduced. 16 appends at once for one org lost 4 to 8 events on every run.
+    - A per-org lock was considered and rejected. The chain is verified in `createdAt` order, and `createdAt` is the transaction's start time. A writer that waited on a lock would take an earlier `createdAt` than the row it links to, and the chain would read as broken.
+    - SERIALIZABLE plus retry keeps that order, because a retried transaction starts afresh after the row that beat it. So keep it, and fix the retry: random sleeps (full jitter) so that colliding writers spread out, until a time budget is spent rather than for a fixed 5 attempts.
+  - **What changed (`lib/audit.ts`):**
+    - A retry now sleeps a random part of 10, 20, 40… ms, capped at 250 ms.
+    - It keeps retrying serialization failures for up to 5 s, then throws as before.
+    - The `within` callback (X5) was already required to be idempotent, since it re-runs on each retry.
+  - **Verification:**
+    - `lib/audit-burst.integration.test.ts`: 16 concurrent appends all land, and `verifyAuditChain` passes. It fails on the pre-fix code, 3 runs of 3, and passes 5 runs of 5 after the fix (about 0.4 s). A throwaway run with 64 writers landed them all in about 1.1 s.
+    - The full integration suite no longer logs a single lost audit write (`[pii-policy] failed to write audit event`), where it used to log several.
+    - Suite:
+      - typecheck 0;
+      - lint 0 errors;
+      - api unit 297/297;
+      - integration 271/271 (45 files).
+  - **Left as is:** under a burst, a request that awaits its audit write can now wait up to about 5 s instead of failing after 0.3 s.
 - **X35 — Two more internal-only checks are open outside production, or when the secret is unset (Low-Medium).** Found while planning X31.
   - Bull Board (`/admin/queues`, `app.ts`) is open whenever `NODE_ENV !== 'production'`. It shows job payloads and can retry or remove jobs.
   - `POST /contracts/:id/versions/:versionId/chunk` compares `secret !== INTERNAL_SERVICE_SECRET`. With the variable unset and no header, that is `undefined !== undefined`, so the request passes, for any org's contract.
@@ -1463,4 +1479,5 @@ X29 — DONE — collab connections refused after token expiry and re-checked ea
 X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — 91901bf
 X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — 8638d24
 X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — 3c28689
-X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — (sha: pending)
+X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — 5ea086e
+X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — (sha: pending)

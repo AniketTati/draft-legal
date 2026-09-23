@@ -102,14 +102,17 @@ export async function createAuditEvent(
   //
   // P2034 retry loop (2026-04-29 audit fix): under concurrent writes
   // Postgres throws P2034 / 40001 serialization failures; that's the
-  // expected behaviour at Serializable isolation. Catch and retry up
-  // to 5 times with exponential backoff (10ms / 20ms / 40ms / 80ms /
-  // 160ms) — total worst-case wait ~310ms, still well under any
-  // reasonable request budget. If we're STILL conflicting after 5
-  // tries we surface the error so callers can react (or rate-limit).
-  const MAX_ATTEMPTS = 5
-  let lastErr: unknown = null
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  // expected behaviour at Serializable isolation. Catch and retry.
+  //
+  // X34 — it used to retry 5 times on a fixed 10–160 ms backoff. Writers
+  // that collided slept the same time and collided again, so in a burst
+  // (parallel chat tool calls, each logging a PII redaction) some ran out
+  // of attempts and their event was lost. Now each retry sleeps a random
+  // part of the backoff, and retries continue until a time budget is
+  // spent. The retried transaction starts afresh, so its createdAt stays
+  // after the row it links to, which the chain's order depends on.
+  const deadline = Date.now() + RETRY_BUDGET_MS
+  for (let attempt = 0; ; attempt++) {
     try {
       await prisma.$transaction(async (tx) => {
         await opts.within?.(tx)
@@ -161,19 +164,22 @@ export async function createAuditEvent(
       })
       return // success
     } catch (err) {
-      lastErr = err
       const code = (err as { code?: string }).code
       // P2034 = "Transaction failed due to a write conflict or a deadlock"
       // 40001 = Postgres serialization_failure (reaches Prisma as P2034 too)
       const isRetryable = code === 'P2034' ||
         (err as { meta?: { code?: string } }).meta?.code === '40001'
-      if (!isRetryable || attempt === MAX_ATTEMPTS - 1) throw err
-      const backoffMs = 10 * Math.pow(2, attempt) // 10, 20, 40, 80, 160
+      if (!isRetryable || Date.now() >= deadline) throw err
+      // Full jitter: up to 10, 20, 40… ms, capped.
+      const backoffMs = Math.random() * Math.min(RETRY_CAP_MS, 10 * 2 ** attempt)
       await new Promise((resolve) => setTimeout(resolve, backoffMs))
     }
   }
-  throw lastErr
 }
+
+/** X34 — how long an append keeps retrying serialization failures, and the most one retry sleeps. */
+const RETRY_BUDGET_MS = 5_000
+const RETRY_CAP_MS = 250
 
 export interface ChainVerifyResult {
   ok: boolean
