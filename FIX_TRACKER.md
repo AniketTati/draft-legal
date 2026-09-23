@@ -1440,13 +1440,66 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - the self-signed signing certificate outside production;
       - auth rate limits, off under test;
       - the 10× global rate limit outside production.
-- **X36 — The older chat tools cut contract text before redacting it (Low-Medium).** Found in the X27 follow-up review.
+- **X36 — The older chat tools cut contract text before redacting it (Low-Medium). — DONE.** Found in the X27 follow-up review.
   - Several chat tools slice text to a window and then redact each window on its own:
     - `contract_get`, `contract_cite`, `counterparty_memory` (twice) and `portfolio_search`;
     - `contract_summarize`, `playbook_check` and `org_memory`;
     - `clause_search`, whose before, match and after windows are each redacted separately.
   - A value that crosses a cut matches no pattern, so a fragment (`123-45-6`, `4111 1111 1111`) goes to the chat model. A card number whose "card" falls outside the window goes out whole.
   - Redact the whole text (or find values against it), then cut without splitting a placeholder, as X27 does for the editor routes.
+  - **Plan:** confirmed, and wider than filed. Every excerpt the chat tools build is cut before it is redacted. These cut first N characters:
+    - `contract_get` (maxChars);
+    - `contract_summarize` (1,500);
+    - `contract_cite` (397 + "...");
+    - `counterparty_memory` (400; summary 280);
+    - `portfolio_search` (500);
+    - `playbook_check` (800);
+    - `org_memory` (500).
+  - These cut windows around a match:
+    - `clause_search` (before, match and after, each redacted on its own);
+    - `contract_validate` (three kinds of issue excerpts);
+    - `portfolio_compare` (one cell per topic and contract).
+  - A value across a cut went out as a fragment, and a card number whose keyword was outside the excerpt went out whole. `redactPii` judges the keyword against its whole input.
+  - Fix at one place: `cutAndRedact` in `pii-policy.ts`.
+    - It finds the values in the whole text and locates their occurrences.
+    - A cut point strictly inside one moves to its start, so a piece ends before the value or starts with all of it.
+    - Each piece is redacted by exact value with the policy's placeholder.
+  - **What changed:**
+    - `lib/pii-policy.ts`:
+      - `cutAndRedact` (pure);
+      - `redactCuts`, which does the policy read and writes one audit row, like `applyPiiPolicyBatch`, and returns mode and counts.
+    - `routes/internal-ai.ts`:
+      - `redactCutExcerpts`: fail-closed like `redactExcerpts` (retried as force-redact, then withheld);
+      - the ten tools above keep each excerpt's source text and offsets, and redact through it. The three that answered 503 on a redaction failure still do.
+      - Response shapes are unchanged. A piece can be a few characters shorter than before where a cut moved back to a value's start.
+    - `lib/pii-outbound.integration.test.ts`: the X23 fail-closed test's failure injection now also covers `redactCuts`, the redaction `contract_summarize` now uses. The assertion is unchanged: a 503 with no SSN in the body.
+  - **Verification:**
+    - `lib/pii-cuts.test.ts` has 4 cases for `cutAndRedact`:
+      - a cut inside a value moves to its start;
+      - adjacent windows split around a value stay adjacent;
+      - a card is found by a keyword outside the piece;
+      - counts, and text without values.
+    - `routes/chat-tool-cuts.integration.test.ts` has 5 cases:
+      - `contract_get`, with a maxChars cut inside an SSN and a card whose "credit card" comes after the cut;
+      - `contract_summarize`'s 1,500 cut;
+      - the window edges of `clause_search` and `portfolio_compare`;
+      - a `contract_validate` window starting inside an SSN;
+      - `counterparty_memory`'s 400 cut.
+      - The fixtures have no other digits, so each excerpt must have none. Against the pre-fix code all 5 fail.
+    - Suite: typecheck 0, lint 0 errors, api unit 305/305, integration 279/279 (47 files).
+  - **Adversarial review:** no cut split a detected value. It found these, all fixed in this commit:
+    - **Too slow with many values.** The first version scanned the whole text once per value: 5,000 SSNs in 2 MB took 6.4 s, on the request thread. Now one lookahead scan finds every occurrence, and a binary search snaps the cuts. A new unit case runs 5,000 SSNs in about 1 MB, with 50 cuts, in well under its 2 s bound (the file takes about 70 ms).
+    - **Overlapping values left a tail** (`[REDACTED:CC]9999`). Overlapping occurrences now merge into one run, replaced whole (unit case).
+    - **A card followed by another digit group was never recognized** (`4111 1111 1111 1111\t12/27`, a table row). It fails Luhn as a whole, and X27's any-space separator made tab-separated rows fail too. Now the detector tries the longest leading run of whole groups that passes (`pii-redactor.ts` `luhnHead`), with 2 unit cases.
+    - **Shape nits:**
+      - an empty `counterparty_memory` summary stays `null`;
+      - a withheld `contract_cite` quote gets no "...".
+    - **Filed as X40:** five tools cut clauses or paragraphs, and look for values only within that clause or paragraph, not the whole document:
+      - `contract_cite`, `counterparty_memory`, `portfolio_search`, `playbook_check` and `org_memory`;
+      - the same goes for `keyTerms` in `contract_get` and `contract_summarize`.
+  - **Left as is:**
+    - A `clause_search` match that falls inside a value comes back as an empty `match`, with the value redacted in `afterContext`.
+    - Redact mode now keeps a "DOB:" or "Passport No." label and replaces only the value, as tokens already did.
 - **X37 — IBANs written in groups are not recognized (Low-Medium).** Found in the X27 follow-up.
   - The IBAN pattern (`\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b`) only matches the unspaced form. Contracts usually print an IBAN in groups of four (`GB29 NWBK 6016 1331 9268 19`), which goes to every model surface as written.
   - Allow single spaces between the groups, keeping the banking-word anchor.
@@ -1458,6 +1511,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `workers/webhook.worker.ts` checks the webhook URL with `assertPublicUrl`, then calls `fetch` with the default `redirect: 'follow'`.
   - A public URL that answers 302 or 307 with `Location: http://169.254.169.254/…`, or an internal host, sends the delivery there. 307 and 308 keep the POST and its body. The stored status code then tells the org admin what the internal endpoint answered.
   - Fix: `redirect: 'manual'`, treating a redirect as a failed delivery. Or re-check each hop.
+- **X40 — Clause-level chat excerpts find values without the document's context (Low-Medium).** Found in the X36 review.
+  - Five chat tools look for values only within the clause or paragraph they excerpt, not the whole document:
+    - `contract_cite` (the paragraph, though the handler has the plain text);
+    - `counterparty_memory`, `portfolio_search`, `playbook_check` and `org_memory` (`clause.content`).
+  - Card numbers and IBANs are only recognized near a payment word. So "…pays by corporate credit card. 4.2 Billing. Charges go to 4111 1111 1111 1111 monthly." sends the card raw when clause 4.2 is the source.
+  - The same holds for `keyTerms` in `contract_get` and `contract_summarize`: each string is checked on its own.
+  - `embeddings.ts` already finds values against the version's text (`valuesFrom`). Give `cutAndRedact` a separate text to find values in, and pass each clause's document. The multi-contract tools need the matched versions' text loaded.
 
 
 ---
@@ -1528,4 +1588,5 @@ X31 — DONE — the approval summary PATCH needs the internal secret in every e
 X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — 3c28689
 X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — 5ea086e
 X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — 3d8fe95
-X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — (sha: pending)
+X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — 982c289
+X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — (sha: pending)

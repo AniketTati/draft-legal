@@ -18,6 +18,11 @@ vi.mock('./pii-policy.js', async importOriginal => {
       if (failRedaction.next) { failRedaction.next = false; throw new Error('redactor down') }
       return real.applyPiiPolicyBatch(...args)
     }),
+    // X36 — the tools that cut text redact through redactCuts.
+    redactCuts: vi.fn(async (...args: Parameters<typeof real.redactCuts>) => {
+      if (failRedaction.next) { failRedaction.next = false; throw new Error('redactor down') }
+      return real.redactCuts(...args)
+    }),
   }
 })
 

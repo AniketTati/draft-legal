@@ -22,7 +22,7 @@ import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
-import { applyPiiPolicy, applyPiiPolicyBatch, redactJson } from '../lib/pii-policy.js'
+import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactCuts, type CutText } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -98,6 +98,30 @@ async function redactExcerpts(
   }
   idx.forEach((position, k) => { out[position] = redacted[k] ?? REDACTION_UNAVAILABLE })
   return out
+}
+
+/**
+ * X36 — redactExcerpts for pieces cut from longer texts: the values are
+ * found in each whole text (a card whose "card" is outside the piece counts)
+ * and no cut splits one, where cutting first sent `123-45-6`. The same
+ * failure handling: retried as force-redact, then withheld.
+ */
+async function redactCutExcerpts(
+  orgId: string,
+  sources: Array<CutText | null>,
+  opts: { surface: string; contractId?: string; userId?: string },
+): Promise<Array<string[] | null>> {
+  try {
+    return (await redactCuts(orgId, sources, opts)).pieces
+  } catch (err) {
+    console.error(`[internal-ai] PII redaction failed for ${opts.surface}; retrying force-redact:`, err)
+    try {
+      return (await redactCuts(orgId, sources, { ...opts, override: 'redact' })).pieces
+    } catch (err2) {
+      console.error(`[internal-ai] force-redact failed for ${opts.surface}; withholding text:`, err2)
+      return sources.map(src => src && src.cuts.map(() => REDACTION_UNAVAILABLE))
+    }
+  }
 }
 
 // ── P1.2 — Structured playbook rules (docs/28 C.2.1) ────────────────────
@@ -874,7 +898,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const fullText      = version?.plainText ?? ''
     const truncated     = fullText.length > body.maxChars
-    const truncatedText = truncated ? fullText.slice(0, body.maxChars) : fullText
 
     // P21 production audit (2026-04-29). Apply PII redaction at the
     // boundary BEFORE the agents service ships the text to OpenAI /
@@ -883,8 +906,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // settings.piiRedactionMode = 'off'. The redactor catches SSN,
     // ITIN, CC, passport, IBAN, phone, email, DOB, IP, API key.
     // Summary string also goes through (LLMs cite the summary too).
+    // X36 — values are found in the whole text, and the cut to maxChars
+    // never splits one.
     const [redactedPlainText, redactedSummary] = await Promise.all([
-      applyPiiPolicy(body.orgId, truncatedText, { surface: 'contract_get.plainText', contractId: contract.id }),
+      redactCuts(body.orgId, [{ text: fullText, cuts: [[0, body.maxChars]] }], { surface: 'contract_get.plainText', contractId: contract.id }),
       contract.summary
         ? applyPiiPolicy(body.orgId, contract.summary, { surface: 'contract_get.summary', contractId: contract.id })
         : Promise.resolve({ text: '', mode: 'off', counts: {}, total: 0 } as const),
@@ -910,7 +935,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         number:    version?.versionNumber ?? null,
         createdAt: version?.createdAt ?? null,
       },
-      plainText:        redactedPlainText.text,
+      plainText:        redactedPlainText.pieces[0]?.[0] ?? '',
       plainTextLength:  fullText.length,
       truncated,
       updatedAt:        contract.updatedAt,
@@ -1177,6 +1202,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Keep only non-trivial matches; skip duplicates by (ref, title).
     const seen = new Set<string>()
     const citations: Array<Record<string, unknown>> = []
+    const quoteCuts: CutText[] = []   // each quote's paragraph and trim, for redaction (X36)
+    const quoteTails: string[] = []
     for (const s of scored) {
       if (s.score < 0.1) break
       const key = `${s.n.ref}::${s.n.title}`
@@ -1184,9 +1211,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       seen.add(key)
       // Trim the text to 400 chars so the UI pill has something
       // scannable without blowing the message payload.
-      const snippet = s.n.text.length > 400 ? s.n.text.slice(0, 397) + '...' : s.n.text
+      const long = s.n.text.length > 400
+      quoteCuts.push({ text: s.n.text, cuts: [[0, long ? 397 : s.n.text.length]] })
+      quoteTails.push(long ? '...' : '')
       citations.push({
-        quote:        snippet,
+        quote:        s.n.text,
         page:         s.n.page,
         bbox:         s.n.bbox,
         sectionRef:   s.n.ref || null,
@@ -1202,14 +1231,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // answer is one user action and gets one audit row. Ordering and every
     // other field (page, bbox, sectionRef, sectionTitle, score, exact) are
     // structural anchors the citation UI depends on and stay untouched.
-    const redactedQuotes = await redactExcerpts(
-      body.orgId,
-      citations.map(c => (typeof c.quote === 'string' ? c.quote : null)),
-      { surface: 'contract_cite.quote', contractId: contract.id },
-    )
+    // X36 — values found in the whole paragraph, and the trim never splits one.
+    const redactedQuotes = await redactCutExcerpts(body.orgId, quoteCuts, { surface: 'contract_cite.quote', contractId: contract.id })
     citations.forEach((c, i) => {
-      const q = redactedQuotes[i]
-      if (typeof q === 'string') c.quote = q
+      const q = redactedQuotes[i]?.[0] ?? REDACTION_UNAVAILABLE
+      c.quote = q === REDACTION_UNAVAILABLE ? q : q + quoteTails[i]
     })
 
     return reply.send({
@@ -1270,6 +1296,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
 
     const issues: Array<Record<string, unknown>> = []
+    const excerptCuts: Array<[number, number]> = []   // each issue's excerpt as offsets into text, for redaction (X36)
 
     // ── Pass 1: extract defined terms ──────────────────────────────
     // Common contract patterns:
@@ -1300,7 +1327,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const lower = (text.match(new RegExp(`\\b${term.toLowerCase()}\\b`, 'g')) ?? []).length
       if (exact >= 1 && lower >= 1) {
         const firstLower = text.indexOf(term.toLowerCase())
-        const excerpt = text.slice(Math.max(0, firstLower - 40), firstLower + 80)
+        const cut: [number, number] = [Math.max(0, firstLower - 40), firstLower + 80]
+        const excerpt = text.slice(...cut)
+        excerptCuts.push(cut)
         issues.push({
           kind:     'defined_term_drift',
           severity: 'medium',
@@ -1324,11 +1353,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
       for (const m of text.matchAll(pat)) {
         if (issues.length >= body.maxIssues) break
         const idx = m.index ?? 0
+        const cut: [number, number] = [Math.max(0, idx - 30), idx + (m[0]?.length ?? 0) + 40]
+        excerptCuts.push(cut)
         issues.push({
           kind:     'unresolved_crossref',
           severity: 'high',
           message:  `Placeholder reference "${m[0]}" was never filled in.`,
-          excerpt:  text.slice(Math.max(0, idx - 30), idx + (m[0]?.length ?? 0) + 40),
+          excerpt:  text.slice(...cut),
           match:    m[0],
         })
       }
@@ -1351,11 +1382,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
         if (!ref) continue
         if (!refsInDoc.has(ref)) {
           const idx = m.index ?? 0
+          const cut: [number, number] = [Math.max(0, idx - 40), idx + (m[0]?.length ?? 0) + 40]
+          excerptCuts.push(cut)
           issues.push({
             kind:     'dangling_section_ref',
             severity: 'medium',
             message:  `Reference to "Section ${ref}" but no such section exists in the document.`,
-            excerpt:  text.slice(Math.max(0, idx - 40), idx + (m[0]?.length ?? 0) + 40),
+            excerpt:  text.slice(...cut),
             ref,
           })
         }
@@ -1386,23 +1419,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // plus occurrence counts — no free document text.
     const visibleIssues = issues.slice(0, body.maxIssues)
     try {
-      const excerptIdx: number[] = []
-      const excerpts: string[] = []
-      visibleIssues.forEach((issue, i) => {
-        if (typeof issue.excerpt === 'string') {
-          excerptIdx.push(i)
-          excerpts.push(issue.excerpt)
-        }
-      })
-      if (excerpts.length > 0) {
-        const redacted = await applyPiiPolicyBatch(body.orgId, excerpts, {
+      // X36 — values found in the whole text, and no window splits one.
+      if (visibleIssues.length > 0) {
+        const { pieces: [windows] } = await redactCuts(body.orgId, [{ text, cuts: excerptCuts.slice(0, visibleIssues.length) }], {
           surface: 'contract_validate.excerpt',
           contractId: contract.id,
         })
-        excerptIdx.forEach((issueIndex, k) => {
-          const issue = visibleIssues[issueIndex]
-          if (issue) issue.excerpt = redacted.texts[k] ?? issue.excerpt
-        })
+        visibleIssues.forEach((issue, i) => { issue.excerpt = windows?.[i] ?? REDACTION_UNAVAILABLE })
       }
     } catch (err) {
       // X23 — fail closed: if the org's PII policy can't be applied, the text
@@ -1529,7 +1552,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       let riskRating: string | null = null
       if (body.clauseType && versionClauses.length > 0) {
         const cl = versionClauses[0]
-        excerpt = cl.content.slice(0, 400)
+        excerpt = cl.content   // cut to 400 characters when redacted (X36)
         sectionRef = cl.sectionRef
         riskRating = cl.riskRating
       }
@@ -1544,7 +1567,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         effectiveDate:    c.effectiveDate,
         expiryDate:       c.expiryDate,
         riskScore:        c.riskScore,
-        summary:          c.summary ? c.summary.slice(0, 280) : null,
+        summary:          c.summary || null,   // cut to 280 characters when redacted (X36)
         excerpt,
         sectionRef,
         riskRating,
@@ -1574,16 +1597,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
         if (d.summary) { summaryIdx.push(i); summaryTexts.push(d.summary) }
       })
       const [redactedExcerpts, redactedSummaries] = await Promise.all([
-        redactExcerpts(body.orgId, excerptTexts, { surface: 'counterparty_memory.excerpt' }),
-        redactExcerpts(body.orgId, summaryTexts, { surface: 'counterparty_memory.summary' }),
+        // X36 — values found in the whole clause or summary, then cut.
+        redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 400]] })), { surface: 'counterparty_memory.excerpt' }),
+        redactCutExcerpts(body.orgId, summaryTexts.map(text => ({ text, cuts: [[0, 280]] })), { surface: 'counterparty_memory.summary' }),
       ])
       excerptIdx.forEach((dealIndex, k) => {
         const d = deals[dealIndex]
-        if (d) d.excerpt = redactedExcerpts[k] ?? d.excerpt
+        if (d) d.excerpt = redactedExcerpts[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
       summaryIdx.forEach((dealIndex, k) => {
         const d = deals[dealIndex]
-        if (d) d.summary = redactedSummaries[k] ?? d.summary
+        if (d) d.summary = redactedSummaries[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -1806,7 +1830,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         clauseId:      r.clauseId ?? null,
         clauseType:    clause?.clauseType ?? null,
         sectionRef:    clause?.sectionRef ?? null,
-        excerpt:       clause ? clause.content.slice(0, 500) : null,
+        excerpt:       clause ? clause.content : null,   // cut to 500 characters when redacted (X36)
         page:          navHit?.page ?? null,
         bbox:          navHit?.bbox ?? null,
         fusedScore:    Number(r.score.toFixed(4)),
@@ -1822,14 +1846,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // would be worse than leaving it request-scoped. Ranking inputs and the
     // structured metadata (titles, counterparty, clauseType, sectionRef,
     // page/bbox, scores) are untouched, so ordering is unchanged.
-    const redactedExcerpts = await redactExcerpts(
+    // X36 — values found in the whole clause, then cut.
+    const redactedExcerpts = await redactCutExcerpts(
       body.orgId,
-      hits.map(h => h.excerpt),
+      hits.map(h => (h.excerpt ? { text: h.excerpt, cuts: [[0, 500]] } : null)),
       { surface: 'portfolio_search.excerpt' },
     )
     hits.forEach((h, i) => {
-      const e = redactedExcerpts[i]
-      if (typeof e === 'string') h.excerpt = e
+      if (h.excerpt) h.excerpt = redactedExcerpts[i]?.[0] ?? REDACTION_UNAVAILABLE
     })
 
     // V2 — hits are the top-K by relevance, not everything that matches. The
@@ -1899,7 +1923,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           select: { plainText: true },
         })
       : null
-    const snippet = (version?.plainText ?? '').slice(0, 1_500)
+    const plainText = version?.plainText ?? ''
 
     // P21 PII boundary. Both document-derived blobs this tool returns —
     // the AI summary (written from contract text) and the plainText
@@ -1910,14 +1934,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     let summaryOut: string | null
     let snippetOut: string
     try {
-      const redacted = await applyPiiPolicyBatch(
-        body.orgId,
-        [contract.summary ?? '', snippet],
-        { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id },
-      )
+      // X36 — the snippet's values are found in the whole text, and its cut
+      // to 1,500 characters never splits one.
+      const summaryText = contract.summary ?? ''
+      const { pieces: [summaryPieces, snippetPieces] } = await redactCuts(body.orgId, [
+        { text: summaryText, cuts: [[0, summaryText.length]] },
+        { text: plainText, cuts: [[0, 1_500]] },
+      ], { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id })
       // Keep `summary: null` null — don't turn an absent summary into ''.
-      summaryOut = contract.summary != null ? (redacted.texts[0] ?? contract.summary) : null
-      snippetOut = redacted.texts[1] ?? snippet
+      summaryOut = contract.summary != null ? (summaryPieces?.[0] ?? REDACTION_UNAVAILABLE) : null
+      snippetOut = snippetPieces?.[0] ?? REDACTION_UNAVAILABLE
     } catch (err) {
       // X23 — fail closed: unredacted text must not reach the model.
       console.error('[contract_summarize] PII redaction failed:', err)
@@ -1998,6 +2024,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       sectionHint: string | null
     }> = []
 
+    const windowCuts: Array<[number, number]> = []   // before, match, after of each match, for redaction (X36)
     let cursor = 0
     while (matches.length < body.limit) {
       // Alias-aware, same reason as portfolio_compare: a query of "liability
@@ -2021,6 +2048,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
 
       matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint })
+      windowCuts.push([start, idx], [idx, idx + mLen], [idx + mLen, end])
       cursor = idx + mLen
     }
 
@@ -2029,19 +2057,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // matches into ONE batch (3N strings, one policy read, one audit row) and
     // map back by index, so ordering and shape are unchanged. `index` and
     // `sectionHint` are positional/structural metadata and stay raw.
-    const flatWindows: string[] = []
-    for (const m of matches) flatWindows.push(m.beforeContext, m.match, m.afterContext)
-    const redactedWindows = await redactExcerpts(body.orgId, flatWindows, {
+    // X36 — values found in the whole text, and no window edge splits one
+    // (each was redacted on its own, so a value across an edge went out in
+    // pieces).
+    const [windows] = await redactCutExcerpts(body.orgId, [{ text, cuts: windowCuts }], {
       surface: 'clause_search.excerpt',
       contractId: contract.id,
     })
     matches.forEach((m, i) => {
-      const before = redactedWindows[i * 3]
-      const mid    = redactedWindows[i * 3 + 1]
-      const after  = redactedWindows[i * 3 + 2]
-      if (typeof before === 'string') m.beforeContext = before
-      if (typeof mid    === 'string') m.match         = mid
-      if (typeof after  === 'string') m.afterContext  = after
+      m.beforeContext = windows?.[i * 3] ?? REDACTION_UNAVAILABLE
+      m.match         = windows?.[i * 3 + 1] ?? REDACTION_UNAVAILABLE
+      m.afterContext  = windows?.[i * 3 + 2] ?? REDACTION_UNAVAILABLE
     })
 
     return reply.send({
@@ -2203,7 +2229,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         clauseId:    cl.id,
         clauseType:  cl.clauseType,
         sectionRef:  cl.sectionRef,
-        excerpt:     cl.content.slice(0, 800),
+        excerpt:     cl.content,   // cut to 800 characters when redacted (X36)
         riskRating:  cl.riskRating,
         reviewState: cl.reviewState,
         category:    { id: category.id, name: category.name },
@@ -2257,13 +2283,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(ck.excerpt)
         }
       })
-      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+      // X36 — values found in the whole clause, then cut.
+      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 800]] })), {
         surface: 'playbook_check.excerpt',
         contractId: contract.id,
       })
       excerptIdx.forEach((checkIndex, k) => {
         const ck = checks[checkIndex]
-        if (ck) ck.excerpt = redacted[k] ?? ck.excerpt
+        if (ck) ck.excerpt = redacted[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -3769,7 +3796,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           effectiveDate:    cl.version?.contract?.effectiveDate ?? null,
           sectionRef:       cl.sectionRef,
           riskRating:       cl.riskRating,
-          excerpt:          cl.content.slice(0, 500),
+          excerpt:          cl.content,   // cut to 500 characters when redacted (X36)
         })
       }
 
@@ -3790,12 +3817,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(d.excerpt)
         }
       })
-      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+      // X36 — values found in the whole clause, then cut.
+      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 500]] })), {
         surface: 'org_memory.excerpt',
       })
       excerptIdx.forEach((dealIndex, k) => {
         const d = pastDeals[dealIndex]
-        if (d) d.excerpt = redacted[k] ?? d.excerpt
+        if (d) d.excerpt = redacted[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -4271,17 +4299,25 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }) : []
     const textByContract = new Map(versions.map(v => [v.contractId, v.plainText ?? '']))
     const half = Math.floor(body.excerptChars / 2)
+    // X36 — each contract's text with its cells' windows, and each cell's
+    // window in matrix order, so the excerpts are redacted against the whole
+    // text rather than one by one.
+    const cutsOf = new Map<string, CutText>()
+    const windowOf: Array<[string, number] | null> = []
     const matrix = body.topics.map(topic => {
       const perContract = contracts.map(c => {
         const text = textByContract.get(c.id) ?? ''
-        if (!text) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
+        if (!text) { windowOf.push(null); return { contractId: c.id, sectionRef: null, excerpt: '', found: false } }
         // Alias-aware: a contract says "Limitation of Liability", never
         // "liability cap". A literal match reported every clause as absent.
         const hit = findTopic(text, topic)
-        if (!hit) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
+        if (!hit) { windowOf.push(null); return { contractId: c.id, sectionRef: null, excerpt: '', found: false } }
         const idx = hit.index
         const start = Math.max(0, idx - half)
         const end   = Math.min(text.length, idx + hit.matchedPhrase.length + half)
+        const own = cutsOf.get(c.id) ?? { text, cuts: [] }
+        cutsOf.set(c.id, own)
+        windowOf.push([c.id, own.cuts.push([start, end]) - 1])
         const excerpt = text.slice(start, end)
         const back = text.slice(Math.max(0, idx - 500), idx)
         const sec = back.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
@@ -4300,16 +4336,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // the contracts[] metadata block stay raw on purpose.
     let redactedMatrix: typeof matrix
     try {
-      const flat = matrix.flatMap(row => row.perContract.map(cell => cell.excerpt))
-      const { texts } = await applyPiiPolicyBatch(body.orgId, flat, {
+      const ids = [...cutsOf.keys()]
+      const { pieces } = await redactCuts(body.orgId, ids.map(id => cutsOf.get(id) ?? null), {
         surface: 'portfolio_compare.excerpt',
       })
+      const piecesOf = new Map(ids.map((id, k) => [id, pieces[k]]))
       let i = 0
       redactedMatrix = matrix.map(row => ({
         ...row,
         perContract: row.perContract.map(cell => {
-          const text = texts[i++]
-          return { ...cell, excerpt: text ?? cell.excerpt }
+          const w = windowOf[i++]
+          return w ? { ...cell, excerpt: piecesOf.get(w[0])?.[w[1]] ?? REDACTION_UNAVAILABLE } : cell
         }),
       }))
     } catch (err) {

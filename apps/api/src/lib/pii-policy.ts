@@ -417,3 +417,118 @@ export function valueAcross(before: string, after: string): boolean {
   const b = after.slice(0, 200)
   return redactPii(a + b, 'redact').total > redactPii(a, 'redact').total + redactPii(b, 'redact').total
 }
+
+// ─── X36 — pieces cut from longer texts ─────────────────────────────────────
+//
+// The chat tools send excerpts: the first N characters of a contract, a
+// window around a match, a clause's opening. They cut first and redacted each
+// excerpt on its own, so a value across a cut went out as a fragment no
+// pattern matches (`123-45-6`), and a card number whose "card" was outside
+// the excerpt went out whole.
+
+export interface CutText {
+  /** The whole text the pieces are cut from. */
+  text: string
+  /** The pieces, as [start, end) offsets into `text`. */
+  cuts: Array<[number, number]>
+}
+
+/**
+ * The pieces of `source`, with every value the policy covers found in the
+ * whole text and replaced by `placeholder`. A cut that falls inside a value
+ * moves to the value's start, so no piece carries part of one.
+ */
+export function cutAndRedact(
+  source: CutText,
+  placeholder: (kind: PiiKind, value: string) => string,
+): { pieces: string[]; counts: Partial<Record<PiiKind, number>> } {
+  const { text } = source
+  const counts: Partial<Record<PiiKind, number>> = {}
+  if (source.cuts.length === 0) return { pieces: [], counts }
+  const kinds = new Map<string, PiiKind>()
+  redactPii(text, 'redact', { token: (kind, value) => { kinds.set(value, kind); return '' } })
+  // Every occurrence of every value, overlapping ones included, in one scan
+  // (the lookahead matches, at each position, the longest value starting
+  // there), merged where they overlap: a merged run is replaced whole, so an
+  // overlap can't leave part of a value behind.
+  const runs: Array<{ start: number; end: number; kind: PiiKind }> = []
+  if (kinds.size) {
+    const alternatives = [...kinds.keys()].sort((a, b) => b.length - a.length).map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    for (const m of text.matchAll(new RegExp(`(?=(${alternatives.join('|')}))`, 'g'))) {
+      const start = m.index ?? 0
+      const end = start + m[1].length
+      const last = runs[runs.length - 1]
+      if (last && start < last.end) last.end = Math.max(last.end, end)
+      else runs.push({ start, end, kind: kinds.get(m[1])! })
+    }
+  }
+  // The first run that ends after `p` (runs are sorted and disjoint).
+  const firstEndingAfter = (p: number): number => {
+    let lo = 0
+    let hi = runs.length
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (runs[mid].end <= p) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+  // A cut strictly inside a run moves to the run's start.
+  const snap = (p: number): number => {
+    const q = Math.max(0, Math.min(text.length, p))
+    const run = runs[firstEndingAfter(q)]
+    return run && run.start < q ? run.start : q
+  }
+  const pieces = source.cuts.map(([a, b]) => {
+    const from = snap(a)
+    const to = snap(b)
+    let out = ''
+    let at = from
+    for (let i = firstEndingAfter(from); i < runs.length && runs[i].start < to; i++) {
+      const run = runs[i]
+      out += text.slice(at, run.start) + placeholder(run.kind, text.slice(run.start, run.end))
+      counts[run.kind] = (counts[run.kind] ?? 0) + 1
+      at = run.end
+    }
+    return to > from ? out + text.slice(at, to) : ''
+  })
+  return { pieces, counts }
+}
+
+/**
+ * X36 — the org's policy over pieces cut from longer texts (see
+ * `cutAndRedact`), under one policy read and one audit row. `null` sources
+ * come back `null`, so callers keep their positions.
+ */
+export async function redactCuts(
+  orgId: string,
+  sources: Array<CutText | null>,
+  opts: ApplyOptions,
+): Promise<{ pieces: Array<string[] | null>; mode: PiiMode; counts: Partial<Record<PiiKind, number>>; total: number }> {
+  const mode: PiiMode = opts.override ?? await getOrgPiiMode(orgId)
+  if (mode === 'off') {
+    return { pieces: sources.map(src => src && src.cuts.map(([a, b]) => src.text.slice(Math.max(0, a), b))), mode, counts: {}, total: 0 }
+  }
+  const placeholder = orgToken(orgId, mode) ?? ((kind: PiiKind) => `[REDACTED:${kind}]`)
+  const counts: Partial<Record<PiiKind, number>> = {}
+  const out = sources.map(src => {
+    if (!src) return null
+    const r = cutAndRedact(src, placeholder)
+    for (const [kind, n] of Object.entries(r.counts)) counts[kind as PiiKind] = (counts[kind as PiiKind] ?? 0) + (n ?? 0)
+    return r.pieces
+  })
+  const total = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0)
+  if (total > 0) {
+    createAuditEvent({
+      orgId,
+      userId: opts.userId,
+      action: AuditAction.PII_REDACTED,
+      resourceType: opts.contractId ? 'contract' : 'request',
+      resourceId: opts.contractId ?? 'system',
+      metadata: { surface: opts.surface, mode, counts, total, excerpts: out.reduce((n, p) => n + (p?.length ?? 0), 0) },
+    }).catch((err: unknown) => {
+      console.error('[pii-policy] failed to write audit event:', err)
+    })
+  }
+  return { pieces: out, mode, counts, total }
+}

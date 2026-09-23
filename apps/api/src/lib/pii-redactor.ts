@@ -64,6 +64,22 @@ export interface RedactionResult {
   total: number
 }
 
+/**
+ * X36 — the longest leading run of whole digit groups (13 digits or more)
+ * that passes Luhn, for a match that fails it as a whole because another
+ * group follows the card ("4111 1111 1111 1111 12/27").
+ */
+function luhnHead(matched: string): string | null {
+  const ends = [...matched.matchAll(/\d+/g)].map(m => (m.index ?? 0) + m[0].length)
+  for (let k = ends.length - 2; k >= 0; k--) {
+    const head = matched.slice(0, ends[k])
+    const digits = head.replace(/\D/g, '')
+    if (digits.length < 13) break
+    if (luhnValid(digits)) return head
+  }
+  return null
+}
+
 // Luhn check for credit-card validation. Eliminates the bulk of
 // false positives (random 16-digit numbers happen in legal text:
 // agreement IDs, file ids, etc.).
@@ -221,12 +237,22 @@ export function redactPii(
     text = text.replace(rx, (...args) => {
       // The args layout differs depending on capturing groups; the
       // matched substring is always args[0].
-      const matched = args[0] as string
+      const whole = args[0] as string
+      // What is replaced, and what follows it unchanged.
+      let matched = whole
+      let rest = ''
       // Run optional validator (e.g. Luhn for CC).
       if (validate) {
-        const m = matched.match(new RegExp(rx.source))
-        if (!m) return matched
-        if (!validate(m as RegExpExecArray)) return matched
+        const m = whole.match(new RegExp(rx.source))
+        if (!m) return whole
+        if (!validate(m as RegExpExecArray)) {
+          // X36 — a card number followed by another digit group ("…1111
+          // 12/27", a table's next column) fails the check as a whole.
+          const head = kind === 'CC' ? luhnHead(whole) : null
+          if (!head) return whole
+          matched = head
+          rest = whole.slice(head.length)
+        }
       }
       counts[kind] = (counts[kind] ?? 0) + 1
       if (options.token) {
@@ -234,12 +260,12 @@ export function redactPii(
         // value becomes the token, so the keyword stays in the text and can't
         // travel with the token to where the model puts it.
         const value = (kind === 'DOB' || kind === 'PASSPORT') && typeof args[1] === 'string' ? args[1] : matched
-        return matched.slice(0, matched.length - value.length) + options.token(kind, value)
+        return matched.slice(0, matched.length - value.length) + options.token(kind, value) + rest
       }
       if (mode === 'tokenize') {
-        return `[PII:${kind}:${pseudonym(matched)}]`
+        return `[PII:${kind}:${pseudonym(matched)}]` + rest
       }
-      return `[REDACTED:${kind}]`
+      return `[REDACTED:${kind}]` + rest
     })
   }
 

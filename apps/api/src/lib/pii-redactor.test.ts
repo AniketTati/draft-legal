@@ -69,6 +69,12 @@ describe('redactPii', () => {
         expect(r.text, JSON.stringify(sp)).toBe('Card: [REDACTED:CC] expires 12/27')
       }
     })
+    it('X36 — still finds a card followed by another group of digits', () => {
+      expect(redactPii('Card on file: J. Doe\t4111 1111 1111 1111\t12/27', 'redact').text).toBe('Card on file: J. Doe\t[REDACTED:CC]\t12/27')
+      expect(redactPii('Card 4111 1111 1111 1111 12 27 on file', 'redact').text).toBe('Card [REDACTED:CC] 12 27 on file')
+      // …and still leaves a number that passes Luhn in no whole-group prefix.
+      expect(redactPii('Card ref 1234 5678 9012 3456 78', 'redact').counts.CC ?? 0).toBe(0)
+    })
     it('X27 — does not join digit groups across lines', () => {
       const r = redactPii('Card on file.\n4111\n1111\n1111\n1111', 'redact')
       expect(r.counts.CC ?? 0).toBe(0)
