@@ -17,7 +17,9 @@ let app: TestApp
 let org: string, owner: string, approver: string, contract: string
 
 const events = (name: string) => delivered.filter(d => d.event === name)
-const settle = () => new Promise(r => setTimeout(r, 50))
+// Webhooks are fired without awaiting; retry the assertion until the write
+// lands (a fixed 50 ms wait flaked when the machine was busy).
+const eventually = (check: () => void) => vi.waitFor(check, { timeout: 5_000, interval: 25 })
 
 beforeAll(async () => {
   app = await getApp()
@@ -45,8 +47,7 @@ describe('events that used to be advertised but never fired', () => {
   it('contract.updated on PATCH', async () => {
     const res = await app.inject({ method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: auth(org, ['ADMIN'], owner), payload: { title: 'Hooked MSA v2' } })
     expect(res.statusCode).toBe(200)
-    await settle()
-    expect(events('contract.updated').at(-1)?.payload).toMatchObject({ contractId: contract, title: 'Hooked MSA v2', changes: ['title'] })
+    await eventually(() => expect(events('contract.updated').at(-1)?.payload).toMatchObject({ contractId: contract, title: 'Hooked MSA v2', changes: ['title'] }))
   })
 
   it('amendment.created when a related document is created', async () => {
@@ -55,8 +56,7 @@ describe('events that used to be advertised but never fired', () => {
       payload: { relationshipType: 'amendment', title: 'Amendment 1' },
     })
     expect(res.statusCode).toBe(201)
-    await settle()
-    expect(events('amendment.created').at(-1)?.payload).toMatchObject({ parentContractId: contract, relationshipType: 'amendment' })
+    await eventually(() => expect(events('amendment.created').at(-1)?.payload).toMatchObject({ parentContractId: contract, relationshipType: 'amendment' }))
   })
 
   it('invoice.created when an invoice is logged', async () => {
@@ -65,8 +65,7 @@ describe('events that used to be advertised but never fired', () => {
       payload: { vendorName: 'Acme', amount: 1200, currency: 'usd', invoiceDate: '2026-09-01' },
     })
     expect(res.statusCode).toBe(201)
-    await settle()
-    expect(events('invoice.created').at(-1)?.payload).toMatchObject({ vendorName: 'Acme', amount: 1200, currency: 'USD' })
+    await eventually(() => expect(events('invoice.created').at(-1)?.payload).toMatchObject({ vendorName: 'Acme', amount: 1200, currency: 'USD' }))
   })
 
   it('approval.decided when an approver decides', async () => {
@@ -81,8 +80,7 @@ describe('events that used to be advertised but never fired', () => {
       payload: { stepId: steps[0].id, decision: 'APPROVED' },
     })
     expect(res.statusCode).toBe(200)
-    await settle()
-    expect(events('approval.decided').at(-1)?.payload).toMatchObject({ contractId: c, decision: 'APPROVED', instanceStatus: 'APPROVED' })
+    await eventually(() => expect(events('approval.decided').at(-1)?.payload).toMatchObject({ contractId: c, decision: 'APPROVED', instanceStatus: 'APPROVED' }))
   })
 
   it('obligation.overdue once, the first time an obligation is seen overdue', async () => {
@@ -92,8 +90,10 @@ describe('events that used to be advertised but never fired', () => {
     })
     await scanObligations({ orgId: org })
     await scanObligations({ orgId: org })
-    await settle()
-    const overdue = events('obligation.overdue').filter(e => e.payload.contractId === executed)
+    const overdueEvents = () => events('obligation.overdue').filter(e => e.payload.contractId === executed)
+    await eventually(() => expect(overdueEvents().length).toBeGreaterThan(0))
+    await new Promise(r => setTimeout(r, 200))   // room for a duplicate from the second scan to show up
+    const overdue = overdueEvents()
     expect(overdue).toHaveLength(1)
     expect(overdue[0].payload).toMatchObject({ description: 'Pay the quarterly fee', daysOverdue: 3 })
   })
