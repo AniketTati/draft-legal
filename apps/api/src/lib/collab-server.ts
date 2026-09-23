@@ -24,6 +24,38 @@ const PORT = Number(process.env.COLLAB_PORT ?? 3030)
 
 let server: Server | null = null
 
+/** What a connection was admitted with; re-checked while it stays open (X29). */
+export interface CollabContext {
+  user:       { id: string; orgId: string }
+  roles:      string[]
+  contractId: string
+  /** The access token's expiry (seconds since epoch). */
+  exp:        number
+  readOnly:   boolean
+  checkedAt:  number
+}
+
+/** How often an open connection's rights are re-checked against the database. */
+const RECHECK_MS = 60_000
+
+/** view / edit rights on the contract as REST decides them, or null when it can't be opened. */
+async function collabRights(user: { id: string; orgId: string }, roles: string[], contractId: string): Promise<{ edit: boolean } | null> {
+  const [c, member] = await Promise.all([
+    // Tenant check: the contract must live in the user's org.
+    prisma.contract.findFirst({ where: { id: contractId, orgId: user.orgId, deletedAt: null }, select: { ownerId: true } }),
+    // X29 — a deactivated or deleted user's token stays valid until it
+    // expires; their document connection shouldn't.
+    prisma.user.count({ where: { id: user.id, orgId: user.orgId, deletedAt: null, status: { not: 'DEACTIVATED' } } }),
+  ])
+  if (!c || !member) return null
+  const permissions = await getPermissionsForRoles(user.orgId, roles)
+  const reaches = (action: string) => {
+    const r = evaluatePermission(permissions, action, 'contract')
+    return r.granted && (r.scope !== 'own' || c.ownerId === user.id)
+  }
+  return reaches('view') ? { edit: reaches('edit') } : null
+}
+
 /**
  * Who may join a contract's live document. X21 — the org check alone let any
  * member join any contract's document, own-scope roles included; now it is
@@ -34,7 +66,7 @@ export async function authenticateCollab({ token, documentName, connectionConfig
   token: string
   documentName: string
   connectionConfig: { readOnly: boolean }
-}): Promise<{ user: { id: string; orgId: string } }> {
+}): Promise<CollabContext> {
   if (!token) throw new Error('Missing token')
   let payload
   try { payload = verifyToken(token) }
@@ -46,22 +78,34 @@ export async function authenticateCollab({ token, documentName, connectionConfig
     : null
   if (!contractId) throw new Error('Bad document name')
 
-  // Tenant check: the contract must live in the user's org.
-  const c = await prisma.contract.findFirst({
-    where: { id: contractId, orgId: payload.orgId, deletedAt: null },
-    select: { id: true, ownerId: true },
-  })
-  if (!c) throw new Error('Contract not found in your org')
+  const user = { id: payload.sub, orgId: payload.orgId }
+  const rights = await collabRights(user, payload.roles ?? [], contractId)
+  if (!rights) throw new Error('Contract not found in your org')
+  if (!rights.edit) connectionConfig.readOnly = true
 
-  const permissions = await getPermissionsForRoles(payload.orgId, payload.roles ?? [])
-  const reaches = (action: string) => {
-    const r = evaluatePermission(permissions, action, 'contract')
-    return r.granted && (r.scope !== 'own' || c.ownerId === payload.sub)
+  return {
+    user, roles: payload.roles ?? [], contractId,
+    exp: (payload as { exp?: number }).exp ?? 0,
+    readOnly: connectionConfig.readOnly, checkedAt: Date.now(),
   }
-  if (!reaches('view')) throw new Error('Contract not found in your org')
-  if (!reaches('edit')) connectionConfig.readOnly = true
+}
 
-  return { user: { id: payload.sub, orgId: payload.orgId } }
+/**
+ * X29 — before each message on an open connection. Admission was checked once
+ * per socket, and a socket outlives the token it opened with: after the token
+ * expired, the user was deactivated, the contract was deleted or reassigned,
+ * or edit rights were taken away, the connection kept its rights. The token's
+ * expiry is checked on every message and the rest at most once a minute; a
+ * change closes the connection, and the client's reconnect is judged afresh.
+ */
+export async function checkCollabMessage(context: CollabContext, now = Date.now()): Promise<void> {
+  const closed = (reason: string) => Object.assign(new Error(reason), { code: 4403, reason })
+  if (!context.exp || context.exp * 1000 <= now) throw closed('Session expired')
+  if (now - context.checkedAt < RECHECK_MS) return
+  const rights = await collabRights(context.user, context.roles, context.contractId)
+  if (!rights) throw closed('Access revoked')
+  if (!context.readOnly && !rights.edit) throw closed('Edit access revoked')
+  context.checkedAt = now
 }
 
 export function startCollabServer(): Server {
@@ -89,6 +133,9 @@ export function startCollabServer(): Server {
     },
 
     onAuthenticate: authenticateCollab,
+    async beforeHandleMessage({ context }) {
+      await checkCollabMessage(context as CollabContext)
+    },
   })
 
   server.listen()

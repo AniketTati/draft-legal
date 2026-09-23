@@ -1173,13 +1173,24 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - the env rules;
     - on a Fastify instance with the resulting setting, a client that sends `X-Forwarded-For: 6.6.6.6` behind a proxy appending its real `203.0.113.9` is seen as `203.0.113.9`, where the old setting saw the proxy's own address.
   - **Why VERIFY-PENDING:** the hop count must be confirmed on a deployed revision (request an endpoint and compare the audit IP with the client's), since an external load balancer adds a hop.
-- **X29 — The collaboration server checks permissions once per socket (Low, latent).** Found in the X21 review.
-  - `authenticateCollab` runs only in `onAuthenticate`. An open connection keeps its rights after token expiry, role or ownership changes, deactivation or deletion.
-  - `readOnly` blocks document writes but not awareness or stateless broadcasts.
-  - Before the editor binds to the shared document:
-    - keep `exp` and `sub` in the connection context and close on expiry (`beforeHandleMessage`);
-    - re-check rights periodically and on role or ownership changes;
-    - drop existing `collab_states` rows, which any org member could write before X21.
+- **X29 — The collaboration server checks permissions once per socket (Low, latent). — DONE.** Found in the X21 review.
+  - **Plan:** confirmed. `authenticateCollab` ran only in Hocuspocus' `onAuthenticate`, so an open socket kept its rights after its token expired, the user was deactivated, or the contract was deleted or reassigned. A throw from `beforeHandleMessage` closes the connection (Hocuspocus v4), so check there.
+  - **What changed (`lib/collab-server.ts`):**
+    - `authenticateCollab` returns a context with the user, roles, contract, the token's `exp`, whether the connection is read-only, and when it was checked. Admission now also requires the user to be a live, non-deactivated member.
+    - `checkCollabMessage`, called from `beforeHandleMessage`:
+      - it refuses every message once the token has expired;
+      - at most once a minute, it re-checks the same rights as admission (user live, contract live in the org, own-scope ownership, edit for a writable connection);
+      - a change closes the connection with 4403, and the client's reconnect is judged afresh.
+  - **Verification:**
+    - A new case in `routes/own-scope-followups.integration.test.ts`:
+      - an admitted own-scope editor's connection is refused after its token's expiry;
+      - once the contract is reassigned it is still fine within the minute, then refused;
+      - it is refused while the user is deactivated, and allowed again once they're reactivated.
+    - Against the pre-fix code it fails. The file has 12/12. Typecheck 0, lint 0 errors.
+  - **Left as is (for when the editor binds to the shared document):**
+    - Read-only connections can still send awareness (presence) and stateless messages, both unused today.
+    - `collab_states` rows written before X21 (when any org member could write) should be cleared before binding.
+
 
 ---
 
@@ -1243,3 +1254,4 @@ X3 (follow-up) — DONE — verify batched + one per org + honest truncation; la
 X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming restore across chunks), chat key terms, and the text the agents service reads for redline/approval summaries now follow the org's PII policy; X31 filed; needs a live redline/approval run — (sha: X27)
 X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run, TRUST_PROXY_HOPS to override); needs a deployed check of the hop count — (sha: X30)
 X28 — DONE — a later sequential signer can't view the contract or void the request before earlier signers have signed (same check as signing) — (sha: X28)
+X29 — DONE — collab connections refused after token expiry and re-checked each minute (user live, contract live, ownership, edit); a change closes the socket — (sha: X29)

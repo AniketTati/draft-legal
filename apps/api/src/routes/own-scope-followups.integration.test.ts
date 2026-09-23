@@ -22,7 +22,7 @@ vi.mock('../lib/elasticsearch.js', async importOriginal => ({
 }))
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, makeWorkflow, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
-import { authenticateCollab } from '../lib/collab-server.js'
+import { authenticateCollab, checkCollabMessage } from '../lib/collab-server.js'
 
 let app: TestApp
 let org: string, rep: string, rep2: string, legal: string, viewer: string, editor: string
@@ -210,5 +210,27 @@ describe('the collaboration server', () => {
     expect(await join(legal, ['LEGAL_OPS'], theirs)).toEqual({ readOnly: false })
     expect(await join(viewer, ['VIEWER'], theirs)).toEqual({ readOnly: true })
     expect(await join(rep, ['SALES_REP'], mine)).toEqual({ readOnly: true })   // SALES_REP has no edit:contract
+  })
+
+  it('an open connection loses its rights with its token, its user or its contract (X29)', async () => {
+    const ctx = await authenticateCollab({ token: tokenOf(editor, ['OWN_EDITOR']), documentName: `contract:${editorsOwn}`, connectionConfig: { readOnly: false } })
+    await expect(checkCollabMessage({ ...ctx })).resolves.toBeUndefined()
+    await expect(checkCollabMessage({ ...ctx }, (ctx.exp + 1) * 1000)).rejects.toThrow('Session expired')
+
+    await prisma.contract.update({ where: { id: editorsOwn }, data: { ownerId: rep2 } })
+    try {
+      await expect(checkCollabMessage({ ...ctx }, ctx.checkedAt + 30_000)).resolves.toBeUndefined()   // not re-checked yet
+      await expect(checkCollabMessage({ ...ctx }, ctx.checkedAt + 61_000)).rejects.toThrow('Access revoked')
+    } finally {
+      await prisma.contract.update({ where: { id: editorsOwn }, data: { ownerId: editor } })
+    }
+
+    await prisma.user.update({ where: { id: editor }, data: { status: 'DEACTIVATED' } })
+    try {
+      await expect(checkCollabMessage({ ...ctx }, ctx.checkedAt + 61_000)).rejects.toThrow('Access revoked')
+    } finally {
+      await prisma.user.update({ where: { id: editor }, data: { status: 'ACTIVE' } })
+    }
+    await expect(checkCollabMessage({ ...ctx }, ctx.checkedAt + 61_000)).resolves.toBeUndefined()
   })
 })
