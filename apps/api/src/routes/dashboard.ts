@@ -206,7 +206,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       // X21 — narrowed like the rest of the strip: an own-scope caller counts
       // the approvals on their own contracts only.
       prisma.approvalInstance.count({
-        where: { orgId, ...(narrowContracts ? { contract: { is: { ownerId: userId } } } : {}), status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
+        where: { orgId, ...(narrowContracts ? { contract: { is: { ownerId: userId, deletedAt: null } } } : {}), status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       }),
       // P7.1.1 — Negotiations I own (Maya's primary JTBD). Returns full
       // rows (not just count) because the dashboard renders inline cards

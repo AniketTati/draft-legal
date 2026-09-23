@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
@@ -247,6 +247,13 @@ export async function requestRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
 
+    // X21 — converting creates a contract (and queues an AI draft), so it
+    // needs create:contract too: a key or role with only request rights could
+    // create contracts here that POST /contracts refuses it.
+    if (!await permissionScopeFor(req, 'create', 'contract')) {
+      return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail: 'Missing permission: create:contract' })
+    }
+
     const request = await prisma.contractRequest.findFirst({
       where: { id, orgId, deletedAt: null },
     })
@@ -292,6 +299,7 @@ export async function requestRoutes(app: FastifyInstance) {
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
         ownerId:          requester?.id ?? userId,
+        createdBy:        userId,
         ...(draftContext && { metadata: { _draftContext: draftContext } }),
       },
     })

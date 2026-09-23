@@ -93,6 +93,9 @@ export function TeamPage() {
     () => team.reduce((max, m) => Math.max(max, m.activeContracts ?? 0), 0),
     [team]
   )
+  // A bar compares a book with the team's busiest. With counts hidden from
+  // the caller (own scope) there is no team to compare with: no bars.
+  const countsHidden = team.some(m => m.activeContracts == null)
 
   const handleSetOoo = (userId: string) => {
     setSelectedUserId(userId)
@@ -217,8 +220,8 @@ export function TeamPage() {
                 </span>
               </div>
 
-              {/* Workload bar — only where the count is visible to the caller. */}
-              {member.activeContracts != null && <div>
+              {/* Workload bar — only when every count is visible to the caller. */}
+              {!countsHidden && member.activeContracts != null && <div>
                 <div className="flex items-center justify-between text-[11px] text-ink-500 mb-1">
                   {/* Say what the bar is measured against, or a full bar means
                       nothing. */}

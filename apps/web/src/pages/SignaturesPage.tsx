@@ -290,13 +290,21 @@ export function SignaturesPage() {
                   return (
                     <tr key={it.id} className="hover:bg-paper-50 align-top" data-testid={`signature-row-${it.id}`}>
                       <td className="px-5 py-2.5">
-                        <Link
-                          to={`/contracts/${it.contract?.id ?? ''}`}
-                          className="font-medium text-ink-950 truncate block hover:underline underline-offset-2 decoration-paper-300"
-                          title={it.contract?.title}
-                        >
-                          {it.contract?.title ?? '(deleted contract)'}
-                        </Link>
+                        {it.canOpenContract !== false ? (
+                          <Link
+                            to={`/contracts/${it.contract?.id ?? ''}`}
+                            className="font-medium text-ink-950 truncate block hover:underline underline-offset-2 decoration-paper-300"
+                            title={it.contract?.title}
+                          >
+                            {it.contract?.title ?? '(deleted contract)'}
+                          </Link>
+                        ) : (
+                          // A signer who can't open the contract: the title is
+                          // not a way in (it would 404); the Sign link is.
+                          <span className="font-medium text-ink-950 truncate block" title={it.contract?.title}>
+                            {it.contract?.title ?? '(deleted contract)'}
+                          </span>
+                        )}
                         <div className="text-[11px] text-ink-500 mt-0.5 truncate">
                           <span className="uppercase tracking-[0.08em]">{it.contract?.type?.replace(/_/g, ' ') ?? ''}</span>
                           {it.contract?.counterpartyName && <span> · {it.contract.counterpartyName}</span>}

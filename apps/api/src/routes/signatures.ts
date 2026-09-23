@@ -70,6 +70,22 @@ function newToken(): string {
   return crypto.randomBytes(32).toString('hex')
 }
 
+/**
+ * X21 — whether a signer row is the caller. A linked user id decides when
+ * there is one (send-for-signature checks it against the signer's email);
+ * otherwise the address, ignoring case. Both lists that hand a signer their
+ * own link use this, so a row can never be "mine" for two people.
+ */
+function isSigner(s: { userId: string | null; email: string }, userId: string, email: string | null | undefined): boolean {
+  if (s.userId) return s.userId === userId
+  return !!email && s.email.toLowerCase() === email.toLowerCase()
+}
+
+/** A value for Prisma's insensitive `equals`, which it runs as ILIKE: `_` and `%` must match only themselves. */
+function likeLiteral(v: string): string {
+  return v.replace(/[\\%_]/g, '\\$&')
+}
+
 export async function signatureRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
   guardOwnScopeContractRoutes(app, /\/contracts\/:id(\/|$)/)
@@ -93,6 +109,21 @@ export async function signatureRoutes(app: FastifyInstance) {
       }
       if (contract.status === 'EXECUTED') {
         return reply.status(409).send({ detail: 'Contract already executed' })
+      }
+
+      // X21 — a signer linked to a user must be that user: an active member of
+      // this org whose address is the signer's. The list's Sign link trusts the
+      // link, so a row naming one person's email and another's id handed the
+      // same signing token to both.
+      const linked = [...new Set(body.signers.map(s => s.userId).filter((u): u is string => !!u))]
+      if (linked.length) {
+        const members = await prisma.user.findMany({
+          where: { id: { in: linked }, orgId, deletedAt: null, status: 'ACTIVE' },
+          select: { id: true, email: true },
+        })
+        const emailOf = new Map(members.map(m => [m.id, m.email.toLowerCase()]))
+        const bad = body.signers.find(s => s.userId && emailOf.get(s.userId) !== s.email.toLowerCase())
+        if (bad) return reply.status(400).send({ detail: `Signer ${bad.email} is linked to a user who is not an active member with that email` })
       }
 
       const expiresAt = new Date(Date.now() + body.expiresInDays * 86_400_000)
@@ -255,7 +286,7 @@ export async function signatureRoutes(app: FastifyInstance) {
           { contractId: { in: owned.map(c => c.id) } },
           { signers: { some: { OR: [
             { userId: req.user.sub },
-            ...(me?.email ? [{ email: { equals: me.email, mode: 'insensitive' } }] : []),
+            ...(me?.email ? [{ email: { equals: likeLiteral(me.email), mode: 'insensitive' } }] : []),
           ] } } },
         ]
       }
@@ -278,9 +309,8 @@ export async function signatureRoutes(app: FastifyInstance) {
       // page's "Open" link 404'd for them. Say which rows the caller can open,
       // and give a pending signer the way to their own signing page.
       const ownedIds = new Set(owned.map(c => c.id))
-      const myEmail = me?.email?.toLowerCase()
-      const isMe = (s: { userId: string | null; email: string }) =>
-        s.userId === req.user.sub || (!!myEmail && s.email.toLowerCase() === myEmail)
+      const isMe = (s: { userId: string | null; email: string }) => isSigner(s, req.user.sub, me?.email)
+      const now = new Date()
       // Hydrate contract title + type via a single batch query.
       const contractIds = [...new Set(items.map(i => i.contractId))]
       const contracts = contractIds.length === 0 ? [] : await prisma.contract.findMany({
@@ -302,8 +332,13 @@ export async function signatureRoutes(app: FastifyInstance) {
         signers: it.signers.map(({ token: _token, userId: _userId, ...s }) => s),
         contract: contractById.get(it.contractId) ?? null,
         canOpenContract: !own || ownedIds.has(it.contractId),
+        // Only while it's the caller's turn: an open request, not past its
+        // expiry, and for sequential signing the group now being asked.
         mySignPath: (() => {
-          const mine = it.status === 'PENDING' ? it.signers.find(s => s.status === 'PENDING' && isMe(s)) : undefined
+          if (it.status !== 'PENDING' || (it.expiresAt && it.expiresAt <= now)) return null
+          const pending = it.signers.filter(s => s.status === 'PENDING')
+          const turn = Math.min(...pending.map(s => s.signOrder))
+          const mine = pending.find(s => isMe(s) && (it.signOrder !== 'SEQUENTIAL' || s.signOrder === turn))
           return mine ? `/sign/${mine.token}` : null
         })(),
       }))
@@ -334,8 +369,7 @@ export async function signatureRoutes(app: FastifyInstance) {
       if (mayShareLinks) return reply.send({ data: requests })
       // An internal signer still gets their OWN link — it's their credential.
       const me = await prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } })
-      const isMe = (s: { userId: string | null; email: string }) =>
-        s.userId === req.user.sub || (!!me?.email && s.email.toLowerCase() === me.email.toLowerCase())
+      const isMe = (s: { userId: string | null; email: string }) => isSigner(s, req.user.sub, me?.email)
       return reply.send({
         data: requests.map(r => ({
           ...r,

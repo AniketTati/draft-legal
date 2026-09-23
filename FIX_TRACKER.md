@@ -769,6 +769,32 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is:**
     - Contracts converted before this keep the converter as owner. Reassigning them is a business decision, not a migration.
     - The editor does not yet bind to the collaboration document, so the collab check can't be exercised live.
+  - **Follow-up (review findings):**
+    - A fresh subagent reviewed the commit adversarially and confirmed each finding against the test DB. Fixed:
+      - **Sign link.**
+        - A signer row's `userId` was never checked, so a row naming one person's address and another's id handed the same signing token to both.
+        - `send-for-signature` now requires a linked user to be an active member whose address is the signer's.
+        - Both lists that give a signer their own link match on the linked id when there is one, else on the address.
+      - **Turn.** The link was given before a sequential signer's turn and after expiry; now it is only while their group is being asked and the request is live.
+      - **Convert.** It was gated on `edit:request` only. An API key with just request scope could create contracts (and queue AI drafts) that `POST /contracts` refuses it. Before X21 the key id failed the owner foreign key, so this was newly reachable. It now needs `create:contract` too, and records the converter as `createdBy`.
+      - **Email wildcard.** The own-scope signature list matched the caller's email with Prisma's insensitive `equals`, which runs as ILIKE, so `_` was a wildcard (`j_doe@` saw `j.doe@`'s requests; from X7). The value is now escaped.
+      - **Web.**
+        - The title on a signature row no longer links to a contract the caller can't open.
+        - Team workload bars are hidden when counts are, since there is no peak to compare with.
+      - **Dashboard.** The own-scope approval count skips deleted contracts.
+    - Tests: `own-scope-followups.integration.test.ts` now has 11 cases, adding:
+      - a mislinked signer refused at send;
+      - a mixed row only the linked user's;
+      - sequential turn and expiry;
+      - `_` doesn't match `.`, while the exact address in any case does;
+      - convert without `create:contract` refused, with the request untouched.
+    - Against the pre-follow-up code, the 5 new cases fail.
+    - Behaviour that comes with the requester owning a converted contract, noted for review:
+      - obligation reminders go to the requester;
+      - the contract leaves the converter's "my drafts" / "negotiations";
+      - custom own-scope roles get edit/sign rights over contracts legal drafted for them;
+      - a converter with own-scope view lands on a 404 after Accept.
+    - Filed from the review: X28 (the signer portal lets a later sequential signer view and decline early) and X29 (the collab session is checked once per socket).
   - Original note: Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
 - **X22 — Agent feedback trusts a client-supplied trace or session id (Low). — DONE.**
@@ -941,6 +967,17 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - The editor assist routes in `agents.ts` (assist_stream, classify_clause, complete, assist, compare) and `playbook.ts` `/compare` send the user's selected contract text raw.
   - `contract_get` and `contract_summarize` return `keyTerms` unredacted.
   - Apply the policy on each, with round-trip tokens where the output is stored (see X23's helpers).
+- **X28 — The signer portal lets a later sequential signer act before their turn (Low).** Found in the X21 review.
+  - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
+  - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
+  - Gate view and decline the way sign is gated.
+- **X29 — The collaboration server checks permissions once per socket (Low, latent).** Found in the X21 review.
+  - `authenticateCollab` runs only in `onAuthenticate`. An open connection keeps its rights after token expiry, role or ownership changes, deactivation or deletion.
+  - `readOnly` blocks document writes but not awareness or stateless broadcasts.
+  - Before the editor binds to the shared document:
+    - keep `exp` and `sub` in the connection context and close on expiry (`beforeHandleMessage`);
+    - re-check rights periodically and on role or ownership changes;
+    - drop existing `collab_states` rows, which any org member could write before X21.
 
 ---
 
@@ -993,3 +1030,4 @@ X21 — DONE — own-scope follow-ups: dashboard org approvals + team workload c
 X23 — VERIFY-PENDING — the org's PII policy now covers background jobs, embeddings and redline proposals via contract-scoped round-trip tokens restored wherever output is stored; unresolved tokens refused on apply; tokenize keyed; 3 tools fail closed; needs a live upload + chat redline — (sha: X23)
 X25 (follow-up) — DONE — matters list hides foreign names; matter_list counts org/delete-filtered like REST; amendments inherit only a same-org matter; empty ids are validation errors; migration owner fallback needs a same-org creator — (sha: X25-fu)
 X22 (follow-up) — DONE — a named trace resolves only within the caller's own session list (no fetch by id, no timing tell); userId must be a string — (sha: X22-fu)
+X21 (follow-up) — DONE — Sign link bound to one verified signer, only on their turn and before expiry; convert needs create:contract; `_` no longer a wildcard in signer email matching; web title/bars; X28, X29 filed — (sha: X21-fu)

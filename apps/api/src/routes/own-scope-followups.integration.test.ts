@@ -41,6 +41,11 @@ beforeAll(async () => {
     { action: 'view', resource: 'contract', scope: 'own' },
     { action: 'edit', resource: 'contract', scope: 'own' },
   ] } })
+  // May work requests, but not create contracts.
+  await prisma.role.create({ data: { orgId: org, name: 'REQUEST_EDITOR', permissions: [
+    { action: 'view', resource: 'request', scope: 'org' },
+    { action: 'edit', resource: 'request', scope: 'org' },
+  ] } })
   editorsOwn = await makeContract(org, editor, { title: 'Editor contract' })
   mine = await makeContract(org, rep, { title: 'Rep contract', status: 'IN_NEGOTIATION' })
   theirs = await makeContract(org, rep2, { title: 'Other rep contract', status: 'IN_NEGOTIATION' })
@@ -112,7 +117,70 @@ describe('the Signatures page', () => {
   })
 })
 
+describe('the Sign link goes to exactly one person, on their turn', () => {
+  const versionOf = async (id: string) => (await prisma.contract.findUniqueOrThrow({ where: { id } })).currentVersionId!
+  const emailOf = async (id: string) => (await prisma.user.findUniqueOrThrow({ where: { id } })).email
+  const rowFor = async (user: string, srId: string) => ((await app.inject({ method: 'GET', url: '/api/v1/signature-requests', headers: as(user) })).json().data as Array<{ id: string; mySignPath: string | null }>)
+    .find(r => r.id === srId)
+
+  it('a signer can only be linked to the member whose address it is', async () => {
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/contracts/${theirs}/send-for-signature`, headers: as(legal, ['LEGAL_OPS']),
+      payload: { signers: [{ name: 'Counterparty CEO', email: 'ceo@counterparty.test', userId: rep }] },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('a row linked to one user and addressed to another is only the linked user\'s', async () => {
+    const sr = await prisma.signatureRequest.create({
+      data: { orgId: org, contractId: theirs, versionId: await versionOf(theirs), createdById: rep2,
+        signers: { create: [{ email: await emailOf(rep), userId: rep2, name: 'Mixed', token: `it-x21-mixed-${Date.now()}` }] } },
+    })
+    expect((await rowFor(rep, sr.id))?.mySignPath ?? null).toBeNull()
+  })
+
+  it('sequential signing: no link before the caller\'s group is being asked, none after expiry', async () => {
+    const sr = await prisma.signatureRequest.create({
+      data: { orgId: org, contractId: theirs, versionId: await versionOf(theirs), createdById: rep2, signOrder: 'SEQUENTIAL',
+        signers: { create: [
+          { email: 'first@counterparty.test', name: 'First', signOrder: 1, token: `it-x21-seq1-${Date.now()}` },
+          { email: await emailOf(rep), name: 'Rep', signOrder: 2, token: `it-x21-seq2-${Date.now()}` },
+        ] } },
+    })
+    expect((await rowFor(rep, sr.id))?.mySignPath).toBeNull()
+    await prisma.signer.updateMany({ where: { signatureRequestId: sr.id, signOrder: 1 }, data: { status: 'SIGNED', signedAt: new Date() } })
+    expect((await rowFor(rep, sr.id))?.mySignPath).toMatch(/^\/sign\/it-x21-seq2-/)
+    await prisma.signatureRequest.update({ where: { id: sr.id }, data: { expiresAt: new Date(Date.now() - 60_000) } })
+    expect((await rowFor(rep, sr.id))?.mySignPath).toBeNull()
+  })
+
+  it('an underscore in the caller\'s address matches only an underscore', async () => {
+    const tag = Date.now().toString(36)
+    const underscored = (await prisma.user.create({ data: { orgId: org, email: `it_x21_${tag}@test.local`, passwordHash: 'x', name: 'Underscore' } })).id
+    const lookalike = await prisma.signatureRequest.create({
+      data: { orgId: org, contractId: theirs, versionId: await versionOf(theirs), createdById: rep2,
+        signers: { create: [{ email: `itXx21X${tag}@test.local`, name: 'Lookalike', token: `it-x21-look-${tag}` }] } },
+    })
+    const exact = await prisma.signatureRequest.create({
+      data: { orgId: org, contractId: theirs, versionId: await versionOf(theirs), createdById: rep2,
+        signers: { create: [{ email: `IT_X21_${tag}@TEST.LOCAL`, name: 'Exact', token: `it-x21-exact-${tag}` }] } },
+    })
+    const ids = ((await app.inject({ method: 'GET', url: '/api/v1/signature-requests', headers: as(underscored) })).json().data as Array<{ id: string }>).map(r => r.id)
+    expect(ids).not.toContain(lookalike.id)
+    expect(ids).toContain(exact.id)   // the address itself, in any case, still matches
+  })
+})
+
 describe('request conversion', () => {
+  it('needs create:contract as well as request rights', async () => {
+    const request = await prisma.contractRequest.create({
+      data: { orgId: org, title: 'Keyed NDA', type: 'NDA', requestedById: rep, description: 'x' },
+    })
+    const res = await app.inject({ method: 'POST', url: `/api/v1/requests/${request.id}/convert`, headers: as(legal, ['REQUEST_EDITOR']) })
+    expect(res.statusCode).toBe(403)
+    expect((await prisma.contractRequest.findUniqueOrThrow({ where: { id: request.id } })).status).toBe('SUBMITTED')
+  })
+
   it('the contract belongs to whoever asked for it', async () => {
     const request = await prisma.contractRequest.create({
       data: { orgId: org, title: 'New NDA', type: 'NDA', requestedById: rep, description: 'Please draft an NDA' },
