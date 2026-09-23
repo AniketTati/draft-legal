@@ -4096,11 +4096,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: true, name: true, description: true, status: true,
         counterpartyName: true, ownerId: true, tags: true,
         createdAt: true, updatedAt: true,
+        // X25 — only this org's live rows, as REST's /matters counts them (a
+        // link stored before the fix could name another org's).
         _count: { select: {
-          contracts: own ? { where: { ownerId: own } } : true,
-          requests:  requestScope.kind === 'own' ? { where: { requestedById: requestScope.userId } }
-            : requestScope.kind === 'org' ? true : { where: { id: { in: [] as string[] } } },
-          threads:   own ? { where: { userId: own } } : true,
+          contracts: { where: { orgId: body.orgId, deletedAt: null, ...(own ? { ownerId: own } : {}) } },
+          requests:  { where: { orgId: body.orgId, deletedAt: null, ...(requestScope.kind === 'own' ? { requestedById: requestScope.userId }
+            : requestScope.kind === 'org' ? {} : { id: { in: [] as string[] } }) } },
+          threads:   { where: { orgId: body.orgId, ...(own ? { userId: own } : {}) } },
         } },
       },
       orderBy: { updatedAt: 'desc' },

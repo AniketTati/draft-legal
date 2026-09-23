@@ -56,6 +56,19 @@ describe('matter links must stay inside the org', () => {
     }
   })
 
+  it('an empty id is refused, not a database error', async () => {
+    const cases: Array<[string, string, Record<string, unknown>]> = [
+      ['PATCH', `/api/v1/contracts/${contractB}`, { matterId: '' }],
+      ['POST', '/api/v1/matters', { name: 'Empty cp', counterpartyId: '' }],
+      ['PATCH', `/api/v1/matters/${matterB}`, { ownerId: '' }],
+    ]
+    for (const [method, url, payload] of cases) {
+      const res = await app.inject({ method: method as 'PATCH', url, headers: as(orgB, userB), payload })
+      // A validation refusal (the contract PATCH's schema errors are 422s), not a 500.
+      expect([400, 422], `${method} ${url}`).toContain(res.statusCode)
+    }
+  })
+
   it('same-org links still work', async () => {
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/contracts/${contractB}`, headers: as(orgB, userB), payload: { matterId: matterB } })).statusCode).toBe(200)
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/matters/${matterB}`, headers: as(orgB, userB), payload: { counterpartyId: cpB } })).statusCode).toBe(200)
@@ -79,6 +92,30 @@ describe('links stored before the fix', () => {
     expect(viewB.counterparty).toBeNull()
     expect(viewB.owner).toBeNull()
     expect(JSON.stringify(viewB)).not.toContain('ORG A COUNTERPARTY')
+    // The list names neither, either.
+    const rowB = (await app.inject({ method: 'GET', url: '/api/v1/matters', headers: as(orgB, userB) })).json().items
+      .find((m: { id: string }) => m.id === matterB)
+    expect(rowB.counterpartyName).toBeNull()
+    expect(rowB.ownerName).toBeNull()
+
+    // The agent's matter list counts only org A's rows, as REST does.
+    const tool = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/matter_list',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: orgA },
+    })
+    expect(tool.json().items.find((m: { id: string }) => m.id === matterA).contractCount).toBe(1)
+
+    // An amendment of org B's contract doesn't inherit the foreign matter.
+    const amendment = await app.inject({ method: 'POST', url: `/api/v1/contracts/${contractB}/amendments`, headers: as(orgB, userB), payload: {} })
+    expect(amendment.statusCode).toBe(201)
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id: amendment.json().id } })).matterId).toBeNull()
+
+    // Owners the migration can't fall back on: a creator of another org, or
+    // one that no longer exists. They are left for the views to hide rather
+    // than failing the migration.
+    const orphanOwners = await Promise.all([userA, 'it-x25-ghost-user'].map(createdById =>
+      prisma.matter.create({ data: { orgId: orgB, name: `Orphan ${createdById}`, ownerId: userA, createdById } })))
 
     const sql = readFileSync(join(process.cwd(), 'prisma', 'migrations', '20260923030000_repair_cross_org_matter_links', 'migration.sql'), 'utf8')
     for (const stmt of sql.split(/;\s*$/m).map(s => s.replace(/^\s*--.*$/gm, '').trim()).filter(Boolean)) {
@@ -89,5 +126,8 @@ describe('links stored before the fix', () => {
     const repaired = await prisma.matter.findUniqueOrThrow({ where: { id: matterB } })
     expect(repaired.counterpartyId).toBeNull()
     expect(repaired.ownerId).toBe(userB)
+    for (const m of orphanOwners) {
+      expect((await prisma.matter.findUniqueOrThrow({ where: { id: m.id } })).ownerId).toBe(userA)
+    }
   })
 })

@@ -34,13 +34,13 @@ const CreateMatterSchema = z.object({
   name:             z.string().min(1).max(200),
   description:      z.string().max(5_000).optional(),
   status:           z.enum(MATTER_STATUSES).default('OPEN'),
-  counterpartyId:   z.string().optional(),
+  counterpartyId:   z.string().min(1).optional(),
   counterpartyName: z.string().max(200).optional(),
   tags:             z.array(z.string().max(40)).max(20).default([]),
 })
 
 const UpdateMatterSchema = CreateMatterSchema.partial().extend({
-  ownerId: z.string().optional(),
+  ownerId: z.string().min(1).optional(),
 })
 
 /**
@@ -88,13 +88,14 @@ export async function matterRoutes(app: FastifyInstance) {
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
       take: q.limit,
       include: {
-        owner: { select: { id: true, name: true, email: true } },
-        counterparty: { select: { id: true, name: true } },
+        owner: { select: { id: true, name: true, email: true, orgId: true } },
+        counterparty: { select: { id: true, name: true, orgId: true } },
         _count: {
           select: {
-            // Only this org's rows (X25), and for own scope only the caller's (X7).
-            contracts: { where: { orgId, ...(own ? { ownerId: req.user.sub } : {}) } },
-            requests:  { where: { orgId, ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }) } },
+            // Only this org's live rows (X25, as GET /:id counts them), and for
+            // own scope only the caller's (X7).
+            contracts: { where: { orgId, deletedAt: null, ...(own ? { ownerId: req.user.sub } : {}) } },
+            requests:  { where: { orgId, deletedAt: null, ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }) } },
             threads:   { where: { orgId, ...(own ? { userId: req.user.sub } : {}) } },
           },
         },
@@ -107,9 +108,11 @@ export async function matterRoutes(app: FastifyInstance) {
         description:      m.description,
         status:           m.status,
         counterpartyId:   m.counterpartyId,
-        counterpartyName: m.counterpartyName ?? m.counterparty?.name ?? null,
+        // X25 — a link stored before the fix can name another org's
+        // counterparty or user; their names aren't this org's to see.
+        counterpartyName: m.counterpartyName ?? (m.counterparty?.orgId === orgId ? m.counterparty.name : null),
         ownerId:          m.ownerId,
-        ownerName:        m.owner?.name ?? null,
+        ownerName:        m.owner?.orgId === orgId ? m.owner.name : null,
         tags:             m.tags,
         contractCount:    m._count.contracts,
         requestCount:     m._count.requests,

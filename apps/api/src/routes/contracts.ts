@@ -1638,6 +1638,11 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: `relationshipType must be one of ${ALLOWED.join(', ')}` })
     }
 
+    // X25 — inherit the parent's matter only if it is a live matter of this
+    // org: a link stored before the fix could name another org's.
+    const matterId = parent.matterId && await prisma.matter.count({ where: { id: parent.matterId, orgId, deletedAt: null } })
+      ? parent.matterId : null
+
     const title = (body.title?.trim()) || `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`
     // Default type by relationship: amendments inherit parent type;
     // SOWs/order-forms get their own type so users can set it later.
@@ -1674,7 +1679,7 @@ export async function contractRoutes(app: FastifyInstance) {
         value:            value != null && !isNaN(value) ? value : null,
         effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
         expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
-        matterId:         parent.matterId ?? undefined,
+        matterId:         matterId ?? undefined,
         // C11 — an amendment to a diligence-room document stays in that room.
         diligenceRoomId:  parent.diligenceRoomId ?? undefined,
         metadata:         body.description ? { amendmentDescription: body.description } : {},

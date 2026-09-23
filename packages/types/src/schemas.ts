@@ -89,7 +89,7 @@ export const UpdateContractSchema = CreateContractSchema.partial().extend({
   analysisStatus:   z.string().optional(),
   analysisError:    z.string().nullable().optional(),
   // P4.2 — optional matter link; null unlinks.
-  matterId:         z.string().nullable().optional(),
+  matterId:         z.string().min(1).nullable().optional(),
 })
 
 export const ContractFilterSchema = z.object({

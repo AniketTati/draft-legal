@@ -22,8 +22,10 @@ SET    "counterpartyId" = NULL
 FROM   "counterparties" AS cp
 WHERE  m."counterpartyId" = cp."id" AND cp."orgId" <> m."orgId";
 
--- A matter must have an owner: a foreign one falls back to its creator.
+-- A matter must have an owner: a foreign one falls back to its creator, when
+-- the creator is a user of the matter's org (the views hide any other).
 UPDATE "matters" AS m
 SET    "ownerId" = m."createdById"
-FROM   "users" AS u
-WHERE  m."ownerId" = u."id" AND u."orgId" <> m."orgId";
+FROM   "users" AS u, "users" AS creator
+WHERE  m."ownerId" = u."id" AND u."orgId" <> m."orgId"
+  AND  creator."id" = m."createdById" AND creator."orgId" = m."orgId";

@@ -906,7 +906,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - same-org positives;
       - pre-fix rows hidden from the detail and count, then cleared by the migration SQL.
     - Against the pre-fix routes, 3 fail; the positives pass.
-    - A fresh subagent reviews the commit adversarially. Any findings land as a follow-up.
+    - A fresh subagent reviewed the commit adversarially. It confirmed that every new cross-org link is refused. Its findings landed as a follow-up commit.
+  - **Follow-up (review findings):**
+    - The matters list still named a foreign counterparty and owner stored before the fix (only the detail view hid them). It now shows null for both, as the detail does.
+    - The agent's `matter_list` counts weren't org- or delete-filtered (2/1/1 against REST's 1/0/0). They now match REST. REST's list counts also skip deleted contracts and requests now, as its detail view does.
+    - An amendment copied its parent's matter unchecked, creating a new cross-org row after the fix. It now inherits only a live matter of its own org.
+    - An empty `matterId` / `counterpartyId` / `ownerId` skipped the checks and hit the foreign key with a 500. It is now a validation error (`.min(1)`).
+    - The migration's owner fallback now uses the creator only when the creator belongs to the matter's org. A foreign or deleted creator (only possible via seed data or SQL) would have kept a foreign owner, or failed the migration on the foreign key.
+    - Test: `matter-org-links.integration.test.ts` now has 5 cases (list names, `matter_list` counts, amendment, empty ids, orphan owners). Against the pre-follow-up code, 2 fail at their first assertion: a 500 on the empty id, and the foreign counterparty's name in the list.
   - Original note:
     - `PATCH /contracts/:id` accepts any `matterId` (`schemas.ts:92`, `contracts.ts`). `GET /matters/:id` then lists the contract without an org filter, and the list's count includes it. `/:id/amendments` copies the foreign `matterId` onto new amendments.
     - `POST` / `PATCH /matters` accept another org's `counterpartyId` or `ownerId` (`matters.ts:37,43,170,203`). The matter view then returns that org's counterparty name and website, and the user's name, email and avatar.
@@ -976,3 +983,4 @@ X26 — DONE — `_` contract metadata (analysis reports, _splitInto) writable o
 X22 — DONE — agent feedback scores only the caller's own Langfuse traces (named trace or session lookup); others answer trace_not_found like missing ones — (sha: X22)
 X21 — DONE — own-scope follow-ups: dashboard org approvals + team workload counts narrowed (hidden, not zeroed); signers without the contract get their signing link; converted requests owned by the requester; collab server checks view/edit like REST — (sha: X21)
 X23 — VERIFY-PENDING — the org's PII policy now covers background jobs, embeddings and redline proposals via contract-scoped round-trip tokens restored wherever output is stored; unresolved tokens refused on apply; tokenize keyed; 3 tools fail closed; needs a live upload + chat redline — (sha: X23)
+X25 (follow-up) — DONE — matters list hides foreign names; matter_list counts org/delete-filtered like REST; amendments inherit only a same-org matter; empty ids are validation errors; migration owner fallback needs a same-org creator — (sha: X25-fu)
