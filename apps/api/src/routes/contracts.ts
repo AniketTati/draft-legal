@@ -30,7 +30,7 @@ import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
-import { manualStatusRefusal } from '../lib/contract-status.js'
+import { manualStatusRefusal, setByWorkflow } from '../lib/contract-status.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
@@ -230,6 +230,12 @@ export async function contractRoutes(app: FastifyInstance) {
       const type = ALLOWED_TYPES.has(rawType) ? rawType : 'OTHER'
       const rawStatus = get('status').toUpperCase() || 'DRAFT'
       const status = ALLOWED_STATUS.has(rawStatus) ? rawStatus : 'DRAFT'
+      // X24 follow-up — approval statuses are the approval workflow's to set,
+      // on import as by hand: a row marked APPROVED had no approval behind it.
+      if (setByWorkflow(status)) {
+        results.push({ row: rowNo, ok: false, title, error: `${status} is set by the approval workflow, not by import. Import the row as DRAFT (or EXECUTED if it is signed) and submit it for approval.` })
+        continue
+      }
       const valueStr = get('value')
       const value = valueStr && !isNaN(Number(valueStr)) ? Number(valueStr) : undefined
       const eff = get('effectivedate') || get('effective_date') || get('effective date')

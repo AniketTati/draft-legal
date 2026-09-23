@@ -1076,6 +1076,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `routes/contract-status-approval.integration.test.ts` has 4 cases: REST APPROVED/REJECTED refused, REST into PENDING_APPROVAL refused, agent APPROVED refused, and ordinary moves still work. Against the pre-fix code, 3 fail.
     - Existing tests and verify scripts use only transitions that remain (DRAFT → PENDING_REVIEW).
   - Original note: `PATCH /contracts/:id` (`contracts.ts`, status change) and the agent's `contract_update` `set_status` let any role with `edit:contract` move a contract from `PENDING_APPROVAL` (or anywhere) to `APPROVED`. That bypasses the approval workflow: no approver, no decision recorded. Restrict transitions into `APPROVED` to the workflow engine (or to `approve:workflow`), and keep manual transitions to the ones a workflow doesn't own. (Found in X10 review.)
+  - **Follow-up (final-sweep review, DONE):** REST and the agent's `set_status` hold, case variants included. The review found three other ways an approval status was set by hand:
+    - **The CSV import (High).** It upper-cased the `status` column and accepted APPROVED and PENDING_APPROVAL with only create permission. A row `Acme MSA,approved` became an approved contract with no approval, feeding precedent search and past-deal memory. A PENDING_APPROVAL row could never leave that status. Now such a row is refused with a message saying to import it as DRAFT (or EXECUTED if signed) and submit it; the other rows import. The dialog shows the per-row error.
+    - **The agent's status undo** wrote back the saved status with no check. After a portal upload, a resubmission and a rejection, an undo within the window put APPROVED back. The action now records the status it set (`snapshot.after`), and the undo applies only while the contract still has it (409 otherwise). Older snapshots fall back to the manual transition table, which refuses restoring an approval status.
+    - **Late approval decisions** overwrote the contract's status: a contract signed while its approval stayed open was set back to APPROVED, or to DRAFT on a rejection. The engine now sets APPROVED or DRAFT only while the contract is still PENDING_APPROVAL; the instance is still decided.
+    - **Verification (`contract-status-approval.integration.test.ts`, 3 new cases):**
+      - the import refuses the approved and pending rows and imports the executed one;
+      - an exact undo works, an undo after the status moved on gets 409, and an old snapshot can't restore APPROVED;
+      - an approve and a reject on a contract signed meanwhile leave it EXECUTED and decide the instance.
+      - Against the pre-fix code all 3 fail.
+    - **Filed as X42** (not introduced by X24): an approval isn't tied to what was approved. Type, value and document can change after approval while the contract stays APPROVED.
 - **X25 — Matters take other orgs' ids (Medium). — DONE.**
   - **Plan:**
     - Fix:
@@ -1681,6 +1691,24 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The seed compiles against the project's types. A throwaway config that includes `prisma/` shows two type errors in its role-permission code (lines 129/136 before this change), which predate it; the project typecheck covers only `src`, and tsx runs the seed without typechecking.
     - Suite: typecheck 0, lint 0 errors, api unit 322/322, integration 284/284.
   - **Deploy check:** sign in to production with `admin@demo.com` / `password123`. If that works, change the password now: re-running the seed doesn't.
+- **X42 — An approval isn't tied to what was approved (High).** Found in the final-sweep review of X24.
+  - Auto-approval checks type and value only at submission, and an APPROVED contract's type, value or document can change afterwards (PATCH `/contracts/:id`, version uploads) while it stays APPROVED. Moving APPROVED to EXECUTED by hand is allowed.
+  - The org's rule is "NDAs up to $10k auto-approve", so a $2M MSA retyped as an NDA worth 1 and submitted is approved at once. It can then be set back to MSA at $2M, with the real document uploaded.
+  - Fix: a change to the terms that approval judged (type, value, currency, a new document version) takes an APPROVED or PENDING_APPROVAL contract back to DRAFT, closing its open approval.
+- **X43 — `admin`-scope API keys outlive their creator, and keys aren't audited (Medium).** Found in the final-sweep review of C1.
+  - Since C1 made UI keys work, the dialog offers `admin` (full access) with no expiry by default.
+  - The key check never looks at who created the key, and deactivating a user doesn't touch their keys, so an admin's key keeps full org access after they leave.
+  - Creating or revoking a key writes no audit event, and the list doesn't show who created each key.
+  - Fix:
+    - revoke a user's keys when they are deactivated;
+    - audit key creation and revocation;
+    - show the creator.
+- **X44 — Routes that only check sign-in ignore API key scopes (Low).** Found in the final-sweep review of C1.
+  - Any API key, scope-less legacy keys included, can read `GET /users` (every member's email, roles and status), `/team/workload`, `/organization`, `/admin/roles` and `/skills`: these routes check only `requireAuth`.
+  - Fix: give each a permission check, or refuse API keys on routes that don't declare one.
+- **X45 — `contracts:write` API keys can't create contracts (Low, functional).** Found in the final-sweep review of C1.
+  - `POST /contracts` stores the caller's id as the owner. For a key that is `apikey:<id>`, not a user, so the insert fails with a 500.
+  - Fix: own the contract as the key's creator.
 
 
 ---
@@ -1759,4 +1787,5 @@ X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manua
 X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — 85bf0d9
 X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — d0f4d79
 X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — 8d5419d
-X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — (sha: pending)
+X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — 49bed5b
+X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — (sha: pending)

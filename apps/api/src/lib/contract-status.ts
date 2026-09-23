@@ -22,6 +22,11 @@ export const MANUAL_STATUS_TRANSITIONS: Record<string, string[]> = {
 
 const WORKFLOW_STATUSES = new Set(['PENDING_APPROVAL', 'APPROVED', 'REJECTED'])
 
+/** Whether only the approval workflow sets `status` (X24). */
+export function setByWorkflow(status: string): boolean {
+  return WORKFLOW_STATUSES.has(status)
+}
+
 /** Why a manual change from `from` to `to` isn't allowed, or null when it is. */
 export function manualStatusRefusal(from: string, to: string): string | null {
   if ((MANUAL_STATUS_TRANSITIONS[from] ?? []).includes(to)) return null

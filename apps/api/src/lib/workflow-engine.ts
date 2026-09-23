@@ -174,9 +174,12 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
         where: { id: instanceId },
         data:  { status: 'REJECTED', decidedAt: new Date() },
       }),
-      // Revert contract to DRAFT so submitter can edit and resubmit
-      prisma.contract.update({
-        where: { id: instance.contractId },
+      // Revert contract to DRAFT so submitter can edit and resubmit — if it
+      // is still waiting on this approval. X24 follow-up: a contract sent for
+      // signature, or moved on by a counterparty's upload, meanwhile keeps
+      // its status; a late decision used to overwrite even EXECUTED.
+      prisma.contract.updateMany({
+        where: { id: instance.contractId, status: 'PENDING_APPROVAL' },
         data:  { status: 'DRAFT' },
       }),
     ])
@@ -228,8 +231,9 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
         where: { id: instanceId },
         data:  { status: 'APPROVED', decidedAt: new Date() },
       }),
-      prisma.contract.update({
-        where: { id: instance.contractId },
+      // Only while it is still waiting on this approval (X24 follow-up).
+      prisma.contract.updateMany({
+        where: { id: instance.contractId, status: 'PENDING_APPROVAL' },
         data:  { status: 'APPROVED' },
       }),
     ])

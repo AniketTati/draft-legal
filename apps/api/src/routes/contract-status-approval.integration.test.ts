@@ -6,7 +6,8 @@
  * approver and no recorded decision. The web UI offered none of these (A.3).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { randomBytes } from 'node:crypto'
+import { getApp, closeApp, makeOrg, makeUser, makeContract, makeWorkflow, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
 let org: string, user: string
@@ -18,6 +19,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await prisma.approvalStep.deleteMany({ where: { orgId: org } })
+  await prisma.approvalInstance.deleteMany({ where: { orgId: org } })
   await cleanupAll()
   await closeApp()
 })
@@ -59,5 +62,72 @@ describe('approval statuses can\'t be set by hand', () => {
     expect((await patch(approved, 'EXECUTED')).statusCode).toBe(200)
     const review = await makeContract(org, user, { status: 'PENDING_REVIEW' })
     expect((await tool(review, 'UNDER_NEGOTIATION')).statusCode).toBe(200)
+  })
+})
+
+describe('X24 follow-up — the other ways an approval status was set', () => {
+  it('the CSV import refuses approval statuses row by row, and imports the rest', async () => {
+    const boundary = `----it${randomBytes(8).toString('hex')}`
+    const csv = 'title,status\nX24 Legacy Approved,approved\nX24 Legacy Pending,PENDING_APPROVAL\nX24 Legacy Signed,executed\n'
+    const payload = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="c.csv"\r\nContent-Type: text/csv\r\n\r\n${csv}\r\n--${boundary}--\r\n`)
+    const res = await app.inject({
+      method: 'POST', url: '/api/v1/contracts/bulk-import',
+      headers: { ...auth(org, ['LEGAL_OPS'], user), 'content-type': `multipart/form-data; boundary=${boundary}` }, payload,
+    })
+    expect(res.statusCode).toBe(200)
+    const { results } = res.json() as { results: Array<{ row: number; ok: boolean; error?: string }> }
+    expect(results.map(r => r.ok)).toEqual([false, false, true])
+    expect(results[0].error).toMatch(/approval workflow/)
+    expect(await prisma.contract.count({ where: { orgId: org, title: { in: ['X24 Legacy Approved', 'X24 Legacy Pending'] } } })).toBe(0)
+    expect(await prisma.contract.count({ where: { orgId: org, title: 'X24 Legacy Signed', status: 'EXECUTED' } })).toBe(1)
+  })
+
+  it('the agent\'s status undo puts back only what it changed', async () => {
+    const undo = (contractId: string, snapshot: Record<string, unknown>) => app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_update/undo',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, contractId, action: 'set_status', snapshot },
+    })
+    // An exact undo works.
+    const a = await makeContract(org, user, { status: 'PENDING_REVIEW' })
+    const set = await tool(a, 'UNDER_NEGOTIATION')
+    expect(set.statusCode).toBe(200)
+    expect((await undo(a, set.json().snapshot)).statusCode).toBe(200)
+    expect(await statusOf(a)).toBe('PENDING_REVIEW')
+
+    // Once the status has moved on, the undo does nothing.
+    const b = await makeContract(org, user, { status: 'PENDING_REVIEW' })
+    const snapshot = (await tool(b, 'UNDER_NEGOTIATION')).json().snapshot
+    await prisma.contract.update({ where: { id: b }, data: { status: 'DRAFT' } })
+    expect((await undo(b, snapshot)).statusCode).toBe(409)
+    expect(await statusOf(b)).toBe('DRAFT')
+
+    // An older snapshot (no `after`) can't restore an approval status by hand.
+    const c = await makeContract(org, user, { status: 'PENDING_SIGNATURE' })
+    expect((await undo(c, { status: 'APPROVED' })).statusCode).toBe(409)
+    expect(await statusOf(c)).toBe('PENDING_SIGNATURE')
+  })
+
+  it('a late approval decision doesn\'t overwrite a contract that has moved on', async () => {
+    const approver = await makeUser(org)
+    const workflowDefinitionId = await makeWorkflow(org, user, approver)
+    for (const decision of ['APPROVED', 'REJECTED']) {
+      const contract = await makeContract(org, user, { title: `X24 late ${decision}`, status: 'DRAFT' })
+      const submitted = await app.inject({
+        method: 'POST', url: `/api/v1/contracts/${contract}/submit-approval`,
+        headers: auth(org, ['ADMIN'], user), payload: { workflowDefinitionId },
+      })
+      expect(submitted.statusCode).toBe(201)
+      const { instanceId, steps } = submitted.json() as { instanceId: string; steps: Array<{ id: string }> }
+      // Signed meanwhile, the approval still open.
+      await prisma.contract.update({ where: { id: contract }, data: { status: 'EXECUTED' } })
+      const decided = await app.inject({
+        method: 'POST', url: `/api/v1/approvals/${instanceId}/decide`,
+        headers: auth(org, ['ADMIN'], approver), payload: { stepId: steps[0].id, decision, comment: 'Late decision' },
+      })
+      expect(decided.statusCode, decision).toBe(200)
+      expect(await statusOf(contract), decision).toBe('EXECUTED')
+      expect((await prisma.approvalInstance.findUniqueOrThrow({ where: { id: instanceId } })).status, decision).toBe(decision)
+    }
   })
 })

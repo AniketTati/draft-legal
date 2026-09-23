@@ -2715,7 +2715,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         reversible: true,
         action: 'set_status',
         contractId: existing.id,
-        snapshot: { status: existing.status }, // for undo
+        snapshot: { status: existing.status, after: nextStatus }, // for undo
         diff: [{ field: 'status', before: existing.status, after: nextStatus }],
       })
     }
@@ -2847,14 +2847,25 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const existing = await prisma.contract.findFirst({
       where: { id: body.data.contractId, orgId: body.data.orgId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, status: true },
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
 
     const data: Record<string, unknown> = {}
     if (body.data.action === 'set_status') {
-      data.status = String(body.data.snapshot.status ?? '')
-      if (!data.status) return reply.status(400).send({ detail: 'snapshot.status missing' })
+      const previous = String(body.data.snapshot.status ?? '')
+      if (!previous) return reply.status(400).send({ detail: 'snapshot.status missing' })
+      // X24 follow-up — only an exact undo: the contract must still have the
+      // status the action set. Restored over later changes, an undo could put
+      // APPROVED back on a contract renegotiated and rejected since. (A
+      // snapshot from before `after` was recorded falls back to the manual
+      // transition table.)
+      const after = body.data.snapshot.after
+      const stale = typeof after === 'string' ? existing.status !== after : manualStatusRefusal(existing.status, previous) !== null
+      if (stale) {
+        return reply.status(409).send({ detail: `The contract's status has changed since (it is now ${existing.status}), so nothing was undone.` })
+      }
+      data.status = previous
     } else if (body.data.action === 'assign_owner') {
       data.ownerId = body.data.snapshot.ownerId == null ? null : String(body.data.snapshot.ownerId)
     } else if (body.data.action === 'add_tag' || body.data.action === 'remove_tag') {
