@@ -65,19 +65,33 @@ export interface RedactionResult {
 }
 
 /**
- * X36 — the longest leading run of whole digit groups (13 digits or more)
- * that passes Luhn, for a match that fails it as a whole because another
- * group follows the card ("4111 1111 1111 1111 12/27").
+ * X36 — the longest leading run of whole groups that passes the kind's
+ * check, for a match that fails it as a whole because another group follows
+ * the value: a card's next column ("4111 1111 1111 1111 12/27"), or the word
+ * after a grouped IBAN (X37, "BE68 5390 0754 7034 BANK").
  */
-function luhnHead(matched: string): string | null {
-  const ends = [...matched.matchAll(/\d+/g)].map(m => (m.index ?? 0) + m[0].length)
+function validHead(kind: PiiKind, matched: string): string | null {
+  const group = kind === 'CC' ? /\d+/g : kind === 'IBAN' ? /[A-Z0-9]+/g : null
+  if (!group) return null
+  const ends = [...matched.matchAll(group)].map(m => (m.index ?? 0) + m[0].length)
   for (let k = ends.length - 2; k >= 0; k--) {
     const head = matched.slice(0, ends[k])
-    const digits = head.replace(/\D/g, '')
-    if (digits.length < 13) break
-    if (luhnValid(digits)) return head
+    const chars = head.replace(/[^A-Z0-9]/g, '')
+    if (chars.length < (kind === 'CC' ? 13 : 12)) break
+    if (kind === 'CC' ? luhnValid(chars) : ibanValid(chars)) return head
   }
   return null
+}
+
+/** X37 — the IBAN check: the first four characters moved to the end, letters as 10–35, mod 97 is 1. */
+function ibanValid(value: string): boolean {
+  const s = value.replace(/ /g, '')
+  let rem = 0
+  for (const c of s.slice(4) + s.slice(0, 4)) {
+    const v = c >= 'A' && c <= 'Z' ? String(c.charCodeAt(0) - 55) : c
+    for (const d of v) rem = (rem * 10 + (d.charCodeAt(0) - 48)) % 97
+  }
+  return rem === 1
 }
 
 // Luhn check for credit-card validation. Eliminates the bulk of
@@ -131,9 +145,16 @@ const PATTERNS: Array<{
   //
   // Same problem in a different shape: this pattern happily eats an uppercase
   // document reference like "AB1234567890123456". Anchor it to banking words.
+  //
+  // X37 — also as printed in contracts, in groups of four ("GB29 NWBK 6016
+  // 1331 9268 19"); each space is optional, so the unspaced form still
+  // matches. 12 to 35 characters without spaces.
   {
     kind: 'IBAN',
-    rx: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g,
+    rx: /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b/g,
+    // Allowing spaces also admits all-caps text ("US10 YEAR NOTE"); every
+    // real IBAN carries a mod-97 check, as a card carries Luhn.
+    validate: (m) => ibanValid(m[0]),
     requiresContext: /\b(?:iban|swift|bic|bank|wire|remit|account\s*(?:no|number|#))\b/i,
   },
   // SSN — NNN-NN-NNNN. Excludes obvious invalids (000-, 666-, 9XX-).
@@ -248,7 +269,7 @@ export function redactPii(
         if (!validate(m as RegExpExecArray)) {
           // X36 — a card number followed by another digit group ("…1111
           // 12/27", a table's next column) fails the check as a whole.
-          const head = kind === 'CC' ? luhnHead(whole) : null
+          const head = validHead(kind, whole)
           if (!head) return whole
           matched = head
           rest = whole.slice(head.length)

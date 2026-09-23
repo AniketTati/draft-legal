@@ -147,6 +147,18 @@ describe('redactPii', () => {
       const r = redactPii('Wire to IBAN GB29NWBK60161331926819 at Barclays.', 'redact')
       expect(r.text).toContain('[REDACTED:IBAN]')
     })
+    it('X37 — redacts an IBAN printed in groups of four, as contracts print them', () => {
+      expect(redactPii('Wire to IBAN GB29 NWBK 6016 1331 9268 19 at Barclays.', 'redact').text).toBe('Wire to IBAN [REDACTED:IBAN] at Barclays.')
+      expect(redactPii('Bank account DE89 3704 0044 0532 0130 00, BIC COBADEFFXXX.', 'redact').text).toBe('Bank account [REDACTED:IBAN], BIC COBADEFFXXX.')
+      // The shortest (Norway, 15 characters).
+      expect(redactPii('IBAN: NO93 8601 1117 947.', 'redact').text).toBe('IBAN: [REDACTED:IBAN].')
+      // A word after the last full group is not part of it.
+      expect(redactPii('Wire to BE68 5390 0754 7034 BANK in Brussels.', 'redact').text).toBe('Wire to [REDACTED:IBAN] BANK in Brussels.')
+    })
+    it('X37 — leaves all-caps text that only looks like one (the IBAN check fails)', () => {
+      const t = 'The bank reviews US10 YEAR NOTE yields monthly.'
+      expect(redactPii(t, 'redact').text).toBe(t)
+    })
     it('leaves section numbers and money amounts alone', () => {
       const t = 'See Sections 5.2, 9.1 and Exhibit A for the cap of $1,500,000.'
       expect(redactPii(t, 'redact').text).toBe(t)

@@ -1500,9 +1500,29 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is:**
     - A `clause_search` match that falls inside a value comes back as an empty `match`, with the value redacted in `afterContext`.
     - Redact mode now keeps a "DOB:" or "Passport No." label and replaces only the value, as tokens already did.
-- **X37 — IBANs written in groups are not recognized (Low-Medium).** Found in the X27 follow-up.
+- **X37 — IBANs written in groups are not recognized (Low-Medium). — DONE.** Found in the X27 follow-up.
   - The IBAN pattern (`\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b`) only matches the unspaced form. Contracts usually print an IBAN in groups of four (`GB29 NWBK 6016 1331 9268 19`), which goes to every model surface as written.
   - Allow single spaces between the groups, keeping the banking-word anchor.
+  - **Plan:** confirmed. `GB29 NWBK 6016 1331 9268 19` next to "IBAN" came back unredacted.
+    - Let each group of four be preceded by an optional single space, so the unspaced form still matches, and keep the banking-word anchor.
+    - Allowing spaces also admits all-caps text that looks like an IBAN once a document mentions a bank ("US10 YEAR NOTE"). So also check the IBAN's own mod-97 checksum, as cards are checked with Luhn.
+    - A word right after the last full group ("… 7034 BANK") fails the check as part of the match. So the X36 fallback that drops trailing groups now serves IBANs too.
+  - **What changed (`lib/pii-redactor.ts`):**
+    - The IBAN pattern: `[A-Z]{2}\d{2}`, then 2–7 groups of four, each optionally after a space, then an optional last group of 1–3.
+    - The `ibanValid` checksum.
+    - X36's `luhnHead` generalized to `validHead` (card: Luhn; IBAN: mod 97).
+  - **Verification (`lib/pii-redactor.test.ts`, 2 cases):**
+    - The UK, German and Norwegian examples in groups, the last the shortest at 15 characters, are redacted.
+    - A Belgian IBAN followed by "BANK" is redacted without the word.
+    - "US10 YEAR NOTE" next to "bank" is left alone.
+    - The grouped cases fail against the pre-fix pattern.
+    - The existing unspaced IBAN, German IBAN and invoice-code cases still pass. Every IBAN in the test fixtures is a checksum-valid example.
+    - Suite:
+      - typecheck 0;
+      - lint 0 errors;
+      - api unit 307/307;
+      - integration 279/279.
+  - **Left as is:** an IBAN-shaped string that fails its checksum (a typo, a made-up number) is no longer redacted, like a card that fails Luhn.
 - **X38 — Placeholder secrets pass the production boot check (High).** Found in the X31 review.
   - `lib/secrets.ts` `assertSecretsConfigured` checks only `JWT_SECRET` and `PORTAL_JWT_SECRET`. `looksInsecure` recognizes only a `change-me` prefix, while `.env.selfhost.example` ships `CHANGE_ME_…` values of 37–44 characters, which pass.
   - `INTERNAL_SERVICE_SECRET` is never checked, so a production API starts with the example value from either env file. Anyone who has read the repo then passes the internal routes' check and `requireAuth`'s internal bypass, which is ADMIN in any org they name. With the self-host JWT placeholders, they can forge tokens too.
@@ -1589,4 +1609,5 @@ X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) ru
 X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — 5ea086e
 X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — 3d8fe95
 X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — 982c289
-X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — (sha: pending)
+X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — 4a41d23
+X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — (sha: pending)
