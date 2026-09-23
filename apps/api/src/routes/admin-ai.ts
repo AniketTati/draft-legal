@@ -30,6 +30,7 @@ import { encrypt, keyPrefix } from '../lib/encryption.js'
 import { __internal } from '../lib/aiRouter.js'
 import { getCostCapStatus, invalidateCapConfig } from '../lib/costCap.js'
 import { createAuditEvent } from '../lib/audit.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { AuditAction } from '@clm/types'
 
 // D.0.6 — ipAddress + userAgent extractor so every audit row is stamped
@@ -194,6 +195,14 @@ export async function adminAiRoutes(app: FastifyInstance) {
       where: { orgId_provider: { orgId, provider } },
       select: { keyPrefix: true },
     })
+    // X45 — a new row names its creator, a user: for an admin-scope API key,
+    // the one who made it. A rotation keeps the row's creator.
+    let createdById = userId
+    if (!priorRow) {
+      const acting = await actingUserId(req.user)
+      if (!acting) return reply.status(422).send(NO_ACTING_USER)
+      createdById = acting
+    }
 
     const row = await prisma.orgAiKey.upsert({
       where: { orgId_provider: { orgId, provider } },
@@ -202,7 +211,7 @@ export async function adminAiRoutes(app: FastifyInstance) {
         provider,
         encryptedKey,
         keyPrefix: prefix,
-        createdById: userId,
+        createdById,
         isActive: true,
       },
       update: {

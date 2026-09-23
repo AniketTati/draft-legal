@@ -1797,9 +1797,67 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Against the pre-fix code the org-data case fails (`/users`: 200 where 403 was expected). Without the review fixes the person-routes case (`/users/me` 404 for an admin key) and the chat case both fail.
     - Suite (X44 alone): db:generate ok, typecheck 0, lint 0 errors, api unit 326/326, integration 301/301 (48 files).
   - **Deploy note:** an integration that reads any of these routes with a key needs the `admin` scope now, and no key can use a person's routes. There is no narrower scope for reading the member list; add a `users:read` scope if a customer needs one.
-- **X45 — `contracts:write` API keys can't create contracts (Low, functional).** Found in the final-sweep review of C1.
+- **X45 — `contracts:write` API keys can't create contracts (Low, functional). — DONE.** Found in the final-sweep review of C1.
   - `POST /contracts` stores the caller's id as the owner. For a key that is `apikey:<id>`, not a user, so the insert fails with a 500.
   - Fix: own the contract as the key's creator.
+  - **Plan:** confirmed (the insert fails on `contracts_ownerId_fkey`, 500).
+    - **Widened at review to the whole class.** Wherever a key's `apikey:<id>` lands in a column that is a foreign key to `User`, the write fails.
+    - **Every contract create path a `create:contract` key reaches:**
+      - `POST /contracts`, `/upload`, `/bulk-import`, `/:id/amendments`;
+      - `/diligence/:id/upload`;
+      - a binder split (the worker owns the children as the job's user);
+      - `/agent/draft` with `saveAs.title`, whose try/catch swallowed the failure and answered 200 with no contract;
+      - request conversion, where the owner falls back from the requester to the converter.
+    - **Also:**
+      - `POST /matters` (`Matter.ownerId`);
+      - obligation completion, directly or by reconciling its invoice (`Obligation.completedById`, needs only `edit:contract`);
+      - an admin key setting the org's AI key (`OrgAiKey.createdById`);
+      - the skill-invocation telemetry row in `/agent/chat`, dropped silently.
+    - `AgentThread` is closed to keys by X44.
+    - Plain-string attribution columns keep the key; it's who acted: version `createdById`, `Contract.createdBy`, `Matter.createdById`, invoice `reconciledById`, request `requestedById`, and audit events.
+  - **What changed:**
+    - `lib/acting-user.ts` `actingUserId()`:
+      - a user or the agents service is itself;
+      - a key acts as the user who made it, or, for a key made through keys, the user at the root, through unrevoked keys;
+      - that user must be in the key's org, not deleted or deactivated, and still able to manage the org's API keys (`configure:organization`). Anyone who can do that can make a key that reads and edits every contract, so owning what the key creates gives them nothing new.
+      - Otherwise the route answers 422 `{ error: 'NO_ACTING_USER', detail }`, before any upload, write or paid agent call.
+    - Owners (foreign keys) for a key's writes:
+      - the key's maker for contract creates (`POST /contracts`, upload, CSV import, amendments, diligence upload, `/agent/draft`), matters, a request conversion's fallback owner, a new org AI key row (a rotation keeps the row's creator and needs no one), and the skill-invocation row (skipped when there is no one);
+      - a split: the binder's owner, as the automatic split does. The job carries `ownerId`, and a job queued by a key before this change falls back to the binder's owner instead of failing after retiring the previous children;
+      - obligation completion, direct or by reconciling its invoice: no user (`completedById` is nullable), so a key needs no maker to complete one.
+    - Attribution names the key: CSV-import rows now set `createdBy`; split children's `createdBy` and version `createdById`; audit events as before.
+    - Permissions are unchanged: the key's scopes still decide what it may do; this decides only whose name goes in an owner column.
+  - **Adversarial review (fresh subagent):** no High findings.
+    - Confirmed:
+      - no cross-org owner (both lookups are scoped to the key's org);
+      - no other `User` foreign-key write a key reaches (threads are closed by X44; skill creation checks roles);
+      - no change for users or the agents service;
+      - every 422 comes before storage writes and the agent call.
+    - Fixed:
+      - *Medium:* a maker demoted to an own-scope role but still active would own the key's contracts and see them, with their invoices and reminders. Now they must still hold `configure:organization`.
+      - *Low:* completions, CSV rows and split children credited the maker rather than the key. Now handled as above.
+      - *Low:* a 422 was raised where no user is written (invoice reconcile, AI-key rotation). Removed.
+      - *Low:* a key's split took the children from an own-scope binder owner, and old queued jobs would fail after retiring the previous children. Fixed as above.
+      - *Info:* the 422 now carries a machine-readable `error` code. Keys made through keys resolve to the root user.
+    - Moved to X46: keys whose maker is gone (deactivated before X43, or made through a key) still authenticate for everything else.
+  - **Verification:**
+    - `routes/api-key-create.integration.test.ts` (9 cases):
+      - every create path above owns the contract as the key's maker, and the audit and `createdBy` name the key;
+      - a key made through a key acts as its root user;
+      - a split queues the binder's owner and the key as creator, while a user's split is unchanged;
+      - converting keeps a human requester as owner, and a key's own request goes to its maker;
+      - a matter is the maker's; a key's completion and reconcile record no user, even for a key without a maker, while a user's completion is theirs;
+      - the AI key and skill invocation name the maker, and a key without one still chats, unrecorded;
+      - keys whose maker was deactivated, demoted, deleted or is in another org get the 422, with nothing stored, no S3 write on upload or diligence upload, and no draft requested.
+      - Against the pre-fix code all 9 fail.
+    - `lib/binder-split.integration.test.ts` (2 new cases, real worker and pdf-lib): a job's `ownerId` is honoured with the key as creator, and an old key job goes to the binder's owner. Both fail against the pre-fix worker.
+    - Suite: db:generate ok, typecheck 0, lint 0 errors, integration 310 passed (49 files).
+      - `render-ssrf`'s 2 Gotenberg cases skipped under the full run's load: the 2-second health probe timed out. Run alone they pass.
+      - api unit 325/326: `diff.test.ts`'s event-loop case hit vitest's 5-second default under load. It passes alone, 3/3. Both are timing problems in tests from earlier in this run (X11, X32), fixed in their own commit next.
+- **X46 — An API key can mint API keys that outlive the user behind it (Medium).** Found while fixing X45.
+  - Key management (`/admin/integrations/api-keys`: create, list, revoke) checks `configure:organization`. An `admin`-scope key has that, so a key can create keys, and the new key records `createdById: apikey:<id>`.
+  - X43 revokes a deactivated user's keys by `createdById = <user>`, so keys minted through their keys survive it. A leaked admin key can also mint replacements that outlive its own revocation.
+  - Fix: key management for signed-in users only, refusing every API key. Deactivation also revokes the keys minted by the keys it revokes, so chains made before the fix are caught.
 
 
 ---
@@ -1884,4 +1942,5 @@ X26 (follow-up) — DONE — review.py writes only the org's own custom fields; 
 X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — 54f2987
 X42 — DONE — changing an approved contract's type, value, currency or document returns it to DRAFT for approval again (REST edits, uploads, editor saves, clause applies) — 10771af
 X43 — DONE — deactivating a user revokes their API keys; key creation and revocation are audited; the key list shows who made each key — 8f76574
-X44 — DONE — the 15 routes that checked only sign-in now refuse API keys: the org's shared data (member list, settings, roles, skills, dashboard, workload, models) without the admin scope, a person's own things (profile, notifications, threads) always; agent chat withholds the member search from them; adversarial review — (sha: pending)
+X44 — DONE — the 15 routes that checked only sign-in now refuse API keys: the org's shared data (member list, settings, roles, skills, dashboard, workload, models) without the admin scope, a person's own things (profile, notifications, threads) always; agent chat withholds the member search from them; adversarial review — e733768
+X45 — DONE — a key's writes that need a user act as the key's maker while they can still manage API keys (contract creates on every path, matters, request conversion, org AI keys, skill telemetry); a key's split keeps the binder's owner; a key's obligation completions name no one; otherwise 422 NO_ACTING_USER before anything is stored; adversarial review — (sha: pending)

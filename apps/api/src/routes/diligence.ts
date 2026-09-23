@@ -30,6 +30,7 @@ import { queueParseDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, CONTRACT_DOCUMENT_TYPES } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 
 const CreateRoomSchema = z.object({
   name:        z.string().min(1).max(200),
@@ -184,6 +185,9 @@ export async function diligenceRoutes(app: FastifyInstance) {
       select: { id: true },
     })
     if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
+    // X45 — an API key's uploads belong to the user who made the key.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
     const files: { buffer: Buffer; mimeType: string; filename: string }[] = []
@@ -236,7 +240,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
 
       const contract = await prisma.contract.create({
         data: {
-          orgId, ownerId: userId,
+          orgId, ownerId,
           title:   cleanTitle || f.filename,
           type:    'OTHER',
           status:  'DRAFT',

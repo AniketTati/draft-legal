@@ -158,4 +158,26 @@ describe('binder split', () => {
     const keys = [...store.keys()].filter(k => k.startsWith(splitPrefix(org, id)))
     expect(keys).toHaveLength(2)
   })
+
+  // X45 — a child's owner is a user; an API key (`apikey:<id>`) is none, and
+  // the insert failed on the owner's foreign key.
+  const children = (parentId: string) => prisma.contract.findMany({
+    where: { parentContractId: parentId, deletedAt: null },
+    select: { ownerId: true, createdBy: true, versions: { select: { createdById: true } } },
+  })
+
+  it('a key\'s split: the job names the owner, and the key is the children\'s creator', async () => {
+    const id = await binder('Binder K', await threePagePdf(), 'application/pdf')
+    const colleague = await makeUser(org)
+    await splitBinder({ contractId: id, orgId: org, userId: 'apikey:k1', ownerId: colleague, splits: TWO })
+    const kids = await children(id)
+    expect(kids).toHaveLength(2)
+    for (const k of kids) expect(k).toEqual({ ownerId: colleague, createdBy: 'apikey:k1', versions: [{ createdById: 'apikey:k1' }] })
+  })
+
+  it('a job a key queued before that (no owner) goes to the binder\'s owner instead of failing', async () => {
+    const id = await binder('Binder L', await threePagePdf(), 'application/pdf')
+    await splitBinder({ contractId: id, orgId: org, userId: 'apikey:legacy', splits: TWO })
+    expect((await children(id)).map(k => k.ownerId)).toEqual([owner, owner])
+  })
 })

@@ -21,6 +21,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { prisma } from '../lib/prisma.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 
 // Wave 1.7 — matters group contracts; there is no dedicated MATTER permission
 // resource, so matter operations are gated on the corresponding CONTRACT
@@ -193,6 +194,9 @@ export async function matterRoutes(app: FastifyInstance) {
     }
     const foreign = await foreignReference(orgId, { counterpartyId: body.counterpartyId })
     if (foreign) return reply.status(404).send({ detail: foreign })
+    // X45 — a matter's owner is a user: for an API key, the one who made it.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
     const matter = await prisma.matter.create({
       data: {
         orgId,
@@ -202,7 +206,7 @@ export async function matterRoutes(app: FastifyInstance) {
         counterpartyId:   body.counterpartyId,
         counterpartyName: body.counterpartyName,
         tags:             body.tags,
-        ownerId:          userId,
+        ownerId,
         createdById:      userId,
       },
     })

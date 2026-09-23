@@ -70,7 +70,8 @@ export interface ClassifyDocumentJob {
 export interface SplitBinderJob {
   contractId: string
   orgId:      string
-  userId:     string
+  userId:     string    // who asked: the children's creator
+  ownerId?:   string    // X45 — their owner, when that isn't `userId` (a key's split)
   splits:     Array<{ pageStart: number; pageEnd: number; title?: string; type?: string }>
 }
 

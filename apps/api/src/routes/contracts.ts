@@ -30,6 +30,7 @@ import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
@@ -181,7 +182,10 @@ export async function contractRoutes(app: FastifyInstance) {
   // Each row creates a Contract row with ownerId = current user.
   // Returns a summary with per-row success/failure for the UI to render.
   app.post('/bulk-import', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
-    const { sub: userId, orgId } = req.user
+    const { orgId } = req.user
+    // X45 — an API key's rows belong to the user who made the key.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
     let csv = ''
@@ -250,7 +254,7 @@ export async function contractRoutes(app: FastifyInstance) {
         const jur = get('jurisdiction') || null
         const created = await prisma.contract.create({
           data: {
-            orgId, ownerId: userId,
+            orgId, ownerId, createdBy: req.user.sub,   // X45 — for a key, the key; the owner is its maker
             title, type, status,
             counterpartyName: cp,
             value: value as never,
@@ -368,13 +372,16 @@ export async function contractRoutes(app: FastifyInstance) {
   // ── Create (manual, no file) ─────────────────────────────────────────────
   app.post('/', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const body = CreateContractSchema.parse(req.body)
-    const { sub: ownerId, orgId } = req.user
+    const { orgId } = req.user
     // X26 follow-up — as for PATCH: `_` metadata keys are server state (a
     // forged _compliance or _playbookReview showed on the rail as real).
     const reserved = req.user.sub === 'system' ? [] : Object.keys(body.metadata ?? {}).filter(k => k.startsWith('_'))
     if (reserved.length) {
       return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
     }
+    // X45 — an API key's contract belongs to the user who made the key.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     // P27 audit (2026-05-02). Blank-create has no file → no parse
     // pipeline → no worker will ever advance analysisStatus past
@@ -410,7 +417,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await createAuditEvent({
       orgId,
-      userId: ownerId,
+      userId: req.user.sub,
       action: AuditAction.CONTRACT_CREATED,
       resourceType: 'contract',
       resourceId: contract.id,
@@ -427,6 +434,9 @@ export async function contractRoutes(app: FastifyInstance) {
   // ── Upload (multipart PDF/DOCX → S3 → extract → index) ──────────────────
   app.post('/upload', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const { sub: userId, orgId } = req.user
+    // X45 — an API key's upload belongs to the user who made the key.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
     let fileBuffer: Buffer | null = null
@@ -509,7 +519,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const contract = await prisma.contract.create({
       data: {
         orgId,
-        ownerId: userId,
+        ownerId,
         title: title || cleanFilename || filename.replace(/\.[^.]+$/, ''),
         type,
         status: 'DRAFT',
@@ -1749,6 +1759,9 @@ export async function contractRoutes(app: FastifyInstance) {
       },
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
+    // X45 — an API key's amendment belongs to the user who made the key.
+    const ownerId = await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const relationshipType = (body.relationshipType ?? 'amendment').toLowerCase()
     const ALLOWED = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit_only']
@@ -1784,7 +1797,7 @@ export async function contractRoutes(app: FastifyInstance) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     const created = await prisma.contract.create({
       data: {
-        orgId, ownerId: userId,
+        orgId, ownerId,
         title,
         type,
         status: 'DRAFT',
@@ -2014,8 +2027,12 @@ export async function contractRoutes(app: FastifyInstance) {
     if (blocker) return reply.status(409).send({ detail: blocker })
 
     // Queue the split job — worker handles S3 download, slicing, child creation
-    // (and replaces any children from a previous split).
-    queueSplitBinder({ contractId: id, orgId, userId, splits })
+    // (and replaces any children from a previous split). X45 — a child's owner
+    // is a user, and a key is none: a split a key asks for leaves the children
+    // with the binder's owner, as the automatic split does, and records the
+    // key as their creator.
+    const byKey = req.user.sub.startsWith('apikey:')
+    queueSplitBinder({ contractId: id, orgId, userId, splits, ...(byKey ? { ownerId: contract.ownerId } : {}) })
 
     await createAuditEvent({
       orgId, userId,

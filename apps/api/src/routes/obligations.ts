@@ -265,6 +265,9 @@ export async function obligationRoutes(app: FastifyInstance) {
     if (existing.status === 'COMPLETED') {
       return reply.status(409).send({ detail: 'Already completed' })
     }
+    // X45 — who completed it is a user, and a key is none: a key's completion
+    // records no one here (its audit event names the key).
+    const completedById = req.user.sub.startsWith('apikey:') ? null : userId
 
     let note = ''
     let fileBuffer: Buffer | null = null
@@ -317,7 +320,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       data: {
         status: 'COMPLETED',
         completedAt,
-        completedById:   userId,
+        completedById,
         completionNote:  note || null,
         evidenceS3Key:   evidenceS3Key,
         evidenceFilename: fileBuffer ? filename : null,

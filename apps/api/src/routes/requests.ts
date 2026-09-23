@@ -10,6 +10,7 @@ import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '..
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 
 export async function requestRoutes(app: FastifyInstance) {
   // X7 — the list honoured `own` (requestedById) but GET/PATCH/convert by id
@@ -287,6 +288,9 @@ export async function requestRoutes(app: FastifyInstance) {
       where: { id: request.requestedById, orgId, deletedAt: null, status: 'ACTIVE' },
       select: { id: true },
     })
+    // X45 — the converter is a user too: for an API key, the one who made it.
+    const ownerId = requester?.id ?? await actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     // Create the contract from request data
     const contract = await prisma.contract.create({
@@ -298,7 +302,7 @@ export async function requestRoutes(app: FastifyInstance) {
         analysisStatus:   hasAttachments ? 'PENDING' : 'DRAFTING',
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
-        ownerId:          requester?.id ?? userId,
+        ownerId,
         createdBy:        userId,
         ...(draftContext && { metadata: { _draftContext: draftContext } }),
       },

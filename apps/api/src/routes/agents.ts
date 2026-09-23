@@ -12,6 +12,7 @@ import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
 import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
@@ -163,12 +164,15 @@ export async function agentRoutes(app: FastifyInstance) {
         skillAllowedTools = skill.allowedTools
         // Record invocation for telemetry + audit. Skill-version freezes
         // behaviour: an edit mid-run can't change this row's effective prompt.
-        await prisma.skillInvocation.create({
+        // X45 — the invoker is a user: for an API key, the one who made it
+        // (no row when there is none; this is telemetry, not a gate).
+        const invokerId = await actingUserId(req.user)
+        if (invokerId) await prisma.skillInvocation.create({
           data: {
             skillId: skill.id,
             skillVersion: skill.version,
             threadId: body.sessionId ?? 'anonymous', // rail uses sessionId == threadId
-            userId,
+            userId: invokerId,
             orgId,
             contextType: body.pageContext?.type,
             contextId: body.pageContext?.id,
@@ -359,6 +363,13 @@ export async function agentRoutes(app: FastifyInstance) {
       })
       if (!target) return reply.status(404).send({ detail: 'Contract not found' })
     }
+    // X45 — a draft saved as a new contract needs a user to own it: for an API
+    // key, the user who made the key. Checked before the agent call, as above.
+    let ownerId: string | null = null
+    if (body.saveAs?.title && !body.saveAs.contractId) {
+      ownerId = await actingUserId(req.user)
+      if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
+    }
 
     const ctx: Record<string, unknown> = { ...(body.context ?? {}) }
     if (body.templateId) ctx.template_id = body.templateId
@@ -430,8 +441,9 @@ export async function agentRoutes(app: FastifyInstance) {
           // prisma.user.findFirst({ where: { orgId } }) -- whichever user the
           // org happened to list first -- so an agent-drafted contract showed
           // up in a stranger's 'my contracts' and the person who asked for it
-          // could not find their own draft.
-          const owner = { id: userId }
+          // could not find their own draft. (X45: for an API key, the user
+          // who made the key.)
+          const owner = ownerId && { id: ownerId }
           if (owner) {
             const plainText = result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
             const contract = await prisma.contract.create({

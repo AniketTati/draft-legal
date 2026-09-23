@@ -380,6 +380,10 @@ export async function invoiceRoutes(app: FastifyInstance) {
     })
     if (!inv) return reply.status(404).send({ detail: 'Invoice not found' })
     if (inv.status === 'RECONCILED') return reply.status(409).send({ detail: 'Already reconciled' })
+    // X45 — reconciling completes the matched obligation, whose completer is a
+    // user, and a key is none: a key's reconcile records no one there (its
+    // audit event names the key).
+    const completedById = req.user.sub.startsWith('apikey:') ? null : userId
 
     const now = new Date()
     const updated = await prisma.invoice.update({
@@ -401,7 +405,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
         data: {
           status:         'COMPLETED',
           completedAt:    now,
-          completedById:  userId,
+          completedById,
           completionNote: `Reconciled via invoice ${inv.id}${body.notes ? ` — ${body.notes.slice(0, 100)}` : ''}`,
         },
       })

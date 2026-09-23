@@ -71,8 +71,13 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
   // C11 — a binder uploaded to a diligence room splits into the target's
   // agreements; they stay in that room rather than leaking into the org's
   // own contracts, search and agent answers.
-  const parentRow = await prisma.contract.findUnique({ where: { id: contractId }, select: { diligenceRoomId: true } })
+  const parentRow = await prisma.contract.findUnique({ where: { id: contractId }, select: { diligenceRoomId: true, ownerId: true } })
   const diligenceRoomId = parentRow?.diligenceRoomId ?? null
+  // X45 — a child's owner is a user. A split a key asked for names the
+  // binder's owner; one queued by a key before that (its user `apikey:<id>`)
+  // gets the same, rather than failing after retiring the previous children.
+  const ownerId = data.ownerId ?? (userId.startsWith('apikey:') ? parentRow?.ownerId : userId)
+  if (!ownerId) throw new UnrecoverableError(`Binder ${contractId} not found`)
 
   // Previous children: replace them, unless one has moved on (then refuse).
   const previous = await previousSplitChildren(contractId, orgId)
@@ -142,7 +147,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
     const child = await prisma.contract.create({
       data: {
         orgId,
-        ownerId:          userId,
+        ownerId,
         createdBy:        userId,
         title:            slice.title,
         type:             slice.type,
