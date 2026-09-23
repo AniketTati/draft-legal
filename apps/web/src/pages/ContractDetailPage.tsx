@@ -965,7 +965,9 @@ export function ContractDetailPage() {
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
   // toggle would crash with "Invalid PDF structure". We disable it instead.
-  const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType)
+  // X49 — only a PDF: now that the version list carries the key, a DOCX or
+  // TXT latest version would otherwise open the viewer on a file it can't read.
+  const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType === 'application/pdf')
 
   // X1 — a citation that knows its page opens the original PDF at it (the
   // passage is outlined there); without a source file, ?section= still

@@ -1994,6 +1994,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Live: the Globex NDA's Original view renders, and a citation lands on its page, outlined (see X1).
     - Web typecheck clean. The production build emits the worker as a hashed asset.
   - **Left as is:** `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API, so pages render without selectable text. Fixing that means replacing the viewer, a dependency change. Keep the override: dropping it would reopen CVE-2024-4367.
+  - **Adversarial review (fresh subagent, after the summary):**
+    - *High, fixed:* the production build ships the worker as a hashed `.mjs` asset. The self-host nginx, whose default `mime.types` has no `mjs`, served it as `application/octet-stream`, and browsers won't run a module of that type. So the Original view, and X1, would never have rendered in self-hosted installs. The dev server serves it correctly, which is why the live check passed.
+      - `deploy/selfhost/nginx.conf` now serves `.mjs` as JavaScript. Checked with `nginx:alpine` against a production build: `application/octet-stream` before, `application/javascript` after.
+      - Firebase Hosting, used in production, maps `.mjs` to JavaScript itself.
+    - *Medium, fixed:* with the key now in the version list, a DOCX or TXT latest version would have opened the PDF viewer on a file it can't read, bringing back the "Invalid PDF structure" error U.1.2 had fixed. The Original view is now for PDFs only. The local data has no contract whose latest file isn't a PDF; the PDF case still renders live.
+    - *Low, left:* the viewer calls `renderTextLayer`, which pdf.js 5 doesn't have. That's one unhandled rejection per page render, with no text selection or search (as above). pdf.js 5 has no `isEvalSupported` setting to harden.
+    - Checked: `/versions` is org-scoped and behind the own-scope guard, `GET /:id` already returned `s3Key`, and the repo sets no Content-Security-Policy.
 
 ---
 
@@ -2083,7 +2090,8 @@ X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip si
 X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — c029ba8
 
 X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — 5730eed
-X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — (sha: pending)
+X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — 3d58292
+X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — (sha: pending)
 
 ---
 
