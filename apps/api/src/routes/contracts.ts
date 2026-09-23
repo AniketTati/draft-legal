@@ -904,10 +904,21 @@ export async function contractRoutes(app: FastifyInstance) {
       }
     })()
 
+    const status = statusAfterTermsChange(contract.status)
     await prisma.contract.update({
       where: { id },
       // X42 — an edited document on an approved contract needs approving again.
-      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
+      data: { currentVersionId: version.id, updatedAt: new Date(), status },
+    })
+    // X47 follow-up — the document changed, and perhaps its approval with it:
+    // on the record, as any other change to the contract is.
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: id,
+      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
+      ipAddress: req.ip,
     })
 
     return reply.status(201).send(version)

@@ -1957,7 +1957,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Local data the checks touched:** the phantom save created the Unanalyzed Document's v5 and the Globex NDA's v2 and v3 while I opened them.
     - All three were backed up (session scratchpad, `x47-phantom-versions-backup.json`) and removed. Both contracts point at their earlier current version again (Globex, its uploaded PDF), and their statuses never changed (DRAFT, EXECUTED).
     - The Unanalyzed Document's older "Edited in-place" versions (June, August) are probably earlier phantom saves, so I left them.
-  - **Left as is:** in-place edits write no audit event, as before.
+  - **Follow-up (DONE):** in-place document edits wrote no audit event, though since X42 one can undo an approval. A real edit now records `CONTRACT_UPDATED` `{ action: 'document_edited', versionNumber }`, adding `statusFrom`/`statusTo` when the approval was reset. A no-op save records nothing. `html-version-noop.integration.test.ts` checks both, and the edit case fails without the change.
 
 - **X48 — Concurrent token refreshes log the user out (Medium). — DONE.** Found during the same live checks.
   - When the 15-minute access token expires while several requests are in flight, each request's 401 handler calls `refresh()` with the same refresh token.
@@ -2224,4 +2224,5 @@ The code, tests and suite are done for all of these. What remains is a run this 
 X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
 X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — 39a6557
 X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — d2ab47a
-C1, C5 (live checks) — DONE — both verified in the browser against the local stack (C1: create, reveal, list, audit, revoke; C5: nav, filter, bad-date refusal, write-through to the Contracts list); C5 follow-up: queue reviews are audited; V1's empty state checked, its findings still need a reviewed contract — (sha: pending)
+C1, C5 (live checks) — DONE — both verified in the browser against the local stack (C1: create, reveal, list, audit, revoke; C5: nav, filter, bad-date refusal, write-through to the Contracts list); C5 follow-up: queue reviews are audited; V1's empty state checked, its findings still need a reviewed contract — 96c41de
+X47 (follow-up) — DONE — in-place document edits are audited (with the approval reset they cause), no-op saves aren't — (sha: pending)

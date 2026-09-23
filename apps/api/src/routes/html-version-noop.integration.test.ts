@@ -58,6 +58,7 @@ describe('saving a contract\'s HTML', () => {
     })
     expect(after).toEqual({ status: 'APPROVED', currentVersionId: versionId, _count: { versions: 1 } })
     expect(renderHtmlToPdfAndStore).not.toHaveBeenCalled()
+    expect(await prisma.auditEvent.count({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })).toBe(0)
   })
 
   it('a real edit, down to one space, still makes a version and returns an approved contract to DRAFT (X42)', async () => {
@@ -66,5 +67,9 @@ describe('saving a contract\'s HTML', () => {
     expect(res.statusCode).toBe(201)
     const after = await prisma.contract.findUniqueOrThrow({ where: { id }, select: { status: true, currentVersionId: true } })
     expect(after).toEqual({ status: 'DRAFT', currentVersionId: res.json().id })
+    // X47 follow-up — the edit, and the approval it undid, are on the record.
+    const audit = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })
+    expect(audit.userId).toBe(user)
+    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2, statusFrom: 'APPROVED', statusTo: 'DRAFT' })
   })
 })
