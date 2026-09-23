@@ -1917,6 +1917,31 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The agent tools' scope check (`lib/agent-scope.ts`) re-reads a key's scopes per tool call but not its maker; the chat turn that calls them was authenticated with the maker check moments before.
 
 
+- **X47 — Opening a contract saves a new version of it (High). — DONE.** Found during the live checks of C1, C5, V1 and X1, after the closing summary.
+  - Opening a contract page in the web app saves an "Edited in-place" version 5–20 s later, though nobody edited it.
+    - Cause: TipTap 3's `setEditable` emits an `update` event unless told not to. `DocumentCanvas` calls it whenever an editor mounts, and the contract page autosaves every update it hears about.
+    - When the saved HTML comes back re-serialized, the editor re-mounts and saves again.
+  - Each view:
+    - adds a version, with no audit event;
+    - moves the current version off the uploaded PDF, so the Original view, and X1's PDF citations, stop working;
+    - renders a PDF into object storage;
+    - since X42, would send an APPROVED contract back to DRAFT because someone looked at it.
+  - The autosave wiring dates from the first commit; X42 made it serious.
+  - **What changed:**
+    - `apps/web/src/components/contracts/DocumentCanvas.tsx` syncs the editable flag with `setEditable(editable, false)`, the root cause. It reports a change only while the canvas can be edited (`lib/canvas-update.ts`), so no view-mode transaction can start a save.
+    - `POST /contracts/:id/html-version`: a save whose HTML is the latest version's returns that version with no new version, render or status change. Line breaks between tags are ignored, since the extractor writes them and the editor doesn't. Any other difference is an edit, a single space included, so no real edit is lost.
+  - **Verification:**
+    - `routes/html-version-noop.integration.test.ts`:
+      - an approved uploaded contract, saved back as the editor serializes it, gets 200 and the same version, stays APPROVED, and renders nothing;
+      - a one-space edit gets 201 and a new current version, and the contract goes back to DRAFT (X42).
+      - Against the pre-fix route the first case fails (201). X42's 11 cases still pass.
+    - `apps/web/src/lib/canvas-update.test.ts`: a read-only canvas reports no edit.
+    - Web 22/22, typecheck clean, lint 0 errors (warnings at the baseline).
+  - **Local data the checks touched:** the phantom save created the Unanalyzed Document's v5 and the Globex NDA's v2 and v3 while I opened them.
+    - All three were backed up (session scratchpad, `x47-phantom-versions-backup.json`) and removed. Both contracts point at their earlier current version again (Globex, its uploaded PDF), and their statuses never changed (DRAFT, EXECUTED).
+    - The Unanalyzed Document's older "Edited in-place" versions (June, August) are probably earlier phantom saves, so I left them.
+  - **Left as is:** in-place edits write no audit event, as before.
+
 ---
 
 ## Run log
@@ -2153,3 +2178,4 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
+X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — (sha: pending)

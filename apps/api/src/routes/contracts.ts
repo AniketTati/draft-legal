@@ -60,6 +60,16 @@ function versionForms(v: { plainText: string; htmlContent: string }): string[] {
 /** X33 — how much of each version's text the agents service's version list carries (the approval prompt reads 8,000). */
 const AGENT_TEXT_EXCERPT = 20_000
 
+/**
+ * X47 — whether a saved HTML body is the document already stored. Line
+ * breaks between tags don't count: the extractor writes them and the editor
+ * never does. Any other difference is an edit, a single space included.
+ */
+function sameDocumentHtml(stored: string, saved: string): boolean {
+  const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
+  return norm(stored) === norm(saved)
+}
+
 export async function contractRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
   guardOwnScopeContractRoutes(app)
@@ -844,6 +854,13 @@ export async function contractRoutes(app: FastifyInstance) {
       where: { contractId: id },
       orderBy: { versionNumber: 'desc' },
     })
+    // X47 — a save that changes nothing makes nothing. Opening a contract made
+    // the web editor report a change, and the page saves every change: each
+    // view added a version, moved the current version off the uploaded PDF,
+    // rendered a PDF and, since X42, sent an approved contract back to DRAFT.
+    if (lastVersion && sameDocumentHtml(lastVersion.htmlContent, htmlContent)) {
+      return reply.status(200).send(lastVersion)
+    }
 
     const plainText = htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
