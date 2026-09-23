@@ -45,7 +45,7 @@ describe('computeVersionDiff', () => {
     // On the request thread not one fired; a loaded machine may fire fewer
     // than it could, so this asks only that the loop kept turning.
     expect(ticks).toBeGreaterThanOrEqual(5)
-  })
+  }, 30_000)   // the diff's own limit: under a parallel suite it can pass vitest's 5 s default
 })
 
 describe('htmlDiff', () => {

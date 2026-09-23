@@ -16,7 +16,10 @@ vi.hoisted(() => { process.env.GOTENBERG_URL ??= 'http://localhost:3002' })
 
 import { getApp, closeApp, makeOrg, makeUser, auth, cleanupAll, type TestApp } from '../test-support/helpers.js'
 
-const GOTENBERG_UP = await fetch(`${process.env.GOTENBERG_URL}/health`, { signal: AbortSignal.timeout(2000) })
+// A stack without Gotenberg refuses the connection at once; a running one can
+// take more than 2 s to answer under the full suite's load, which silently
+// skipped these cases.
+const GOTENBERG_UP = await fetch(`${process.env.GOTENBERG_URL}/health`, { signal: AbortSignal.timeout(15_000) })
   .then(r => r.ok, () => false)
 
 let app: TestApp
