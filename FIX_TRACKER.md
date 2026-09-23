@@ -1713,10 +1713,32 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The seed compiles against the project's types. A throwaway config that includes `prisma/` shows two type errors in its role-permission code (lines 129/136 before this change), which predate it; the project typecheck covers only `src`, and tsx runs the seed without typechecking.
     - Suite: typecheck 0, lint 0 errors, api unit 322/322, integration 284/284.
   - **Deploy check:** sign in to production with `admin@demo.com` / `password123`. If that works, change the password now: re-running the seed doesn't.
-- **X42 — An approval isn't tied to what was approved (High).** Found in the final-sweep review of X24.
+- **X42 — An approval isn't tied to what was approved (High). — DONE.** Found in the final-sweep review of X24.
   - Auto-approval checks type and value only at submission, and an APPROVED contract's type, value or document can change afterwards (PATCH `/contracts/:id`, version uploads) while it stays APPROVED. Moving APPROVED to EXECUTED by hand is allowed.
   - The org's rule is "NDAs up to $10k auto-approve", so a $2M MSA retyped as an NDA worth 1 and submitted is approved at once. It can then be set back to MSA at $2M, with the real document uploaded.
   - Fix: a change to the terms that approval judged (type, value, currency, a new document version) takes an APPROVED or PENDING_APPROVAL contract back to DRAFT, closing its open approval.
+  - **Plan:** confirmed.
+    - **Narrowed to APPROVED contracts.** There is no approval status for "withdrawn", and adding one is a design change.
+    - **PENDING_APPROVAL left alone:** a human approver decides on the contract as it stands at decision time, and since the X24 follow-up a late decision can't overwrite a contract that has moved on.
+    - **Portal and inbound-email versions** already move the contract to UNDER_NEGOTIATION.
+  - **What changed:**
+    - `lib/contract-status.ts` `statusAfterTermsChange()`: APPROVED goes to DRAFT.
+    - `PATCH /contracts/:id`:
+      - applies it when a user actually changes type, value or currency (sending the same values changes nothing);
+      - answers 409 when a status change comes in the same request;
+      - leaves the agents service's extraction writes alone, since document changes reset the approval where the version is saved.
+    - A new document version resets it too:
+      - document upload;
+      - editor save (`html-version`);
+      - clause apply, single and batch.
+  - **Verification (`contract-status-approval.integration.test.ts`, 4 new cases):**
+    - each of value, type and currency returns an approved contract to DRAFT;
+    - a rename, and the same terms sent again, leave it APPROVED;
+    - a value change with `status: EXECUTED` gets 409;
+    - an editor save returns it to DRAFT.
+    - Against the pre-fix code the 3 reset cases fail.
+    - The full integration suite passes (296).
+  - **Left as is:** an open approval on a contract changed while PENDING_APPROVAL stays open until decided. The approver sees the current terms.
 - **X43 — `admin`-scope API keys outlive their creator, and keys aren't audited (Medium).** Found in the final-sweep review of C1.
   - Since C1 made UI keys work, the dialog offers `admin` (full access) with no expiry by default.
   - The key check never looks at who created the key, and deactivating a user doesn't touch their keys, so an admin's key keeps full org access after they leave.
@@ -1812,4 +1834,5 @@ X28 (follow-up) — DONE — signing and declining honour expiry (not only viewi
 X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — 49bed5b
 X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — 67d9557
 X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — 3ed62a3
-X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — (sha: pending)
+X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — 54f2987
+X42 — DONE — changing an approved contract's type, value, currency or document returns it to DRAFT for approval again (REST edits, uploads, editor saves, clause applies) — (sha: pending)

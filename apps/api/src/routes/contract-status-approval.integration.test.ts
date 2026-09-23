@@ -131,3 +131,43 @@ describe('X24 follow-up — the other ways an approval status was set', () => {
     }
   })
 })
+
+describe('X42 — an approval covers the terms it approved', () => {
+  async function approved(): Promise<string> {
+    const id = await makeContract(org, user, { status: 'APPROVED', type: 'NDA' })
+    await prisma.contract.update({ where: { id }, data: { value: 1, currency: 'USD' } })
+    return id
+  }
+  const edit = (id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: `/api/v1/contracts/${id}`, headers: auth(org, ['LEGAL_OPS'], user), payload })
+
+  it('changing the type, value or currency returns an approved contract to DRAFT', async () => {
+    for (const change of [{ value: 2_000_000 }, { type: 'MSA' }, { currency: 'EUR' }]) {
+      const id = await approved()
+      expect((await edit(id, change)).statusCode, JSON.stringify(change)).toBe(200)
+      expect(await statusOf(id), JSON.stringify(change)).toBe('DRAFT')
+    }
+  })
+
+  it('other edits, and the same terms sent again, leave it APPROVED', async () => {
+    const id = await approved()
+    expect((await edit(id, { title: 'Renamed', type: 'NDA', value: 1, currency: 'USD' })).statusCode).toBe(200)
+    expect(await statusOf(id)).toBe('APPROVED')
+  })
+
+  it('a term change together with a status change is refused', async () => {
+    const id = await approved()
+    expect((await edit(id, { value: 5, status: 'EXECUTED' })).statusCode).toBe(409)
+    expect(await statusOf(id)).toBe('APPROVED')
+  })
+
+  it('a new document returns it to DRAFT', async () => {
+    const id = await approved()
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers: auth(org, ['LEGAL_OPS'], user),
+      payload: { htmlContent: '<p>Liability is uncapped.</p>' },
+    })
+    expect(res.statusCode).toBe(201)
+    expect(await statusOf(id)).toBe('DRAFT')
+  })
+})

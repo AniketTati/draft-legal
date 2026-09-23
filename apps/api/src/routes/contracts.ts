@@ -30,7 +30,7 @@ import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
-import { manualStatusRefusal, setByWorkflow } from '../lib/contract-status.js'
+import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
@@ -789,7 +789,8 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await prisma.contract.update({
       where: { id },
-      data: { currentVersionId: version.id, updatedAt: new Date() },
+      // X42 — a new document on an approved contract needs approving again.
+      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
     })
 
     // Reset analysis state and queue the full pipeline (parse → classify → extract → embed)
@@ -873,7 +874,8 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await prisma.contract.update({
       where: { id },
-      data: { currentVersionId: version.id, updatedAt: new Date() },
+      // X42 — an edited document on an approved contract needs approving again.
+      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
     })
 
     return reply.status(201).send(version)
@@ -1184,6 +1186,19 @@ export async function contractRoutes(app: FastifyInstance) {
       if (refusal) return reply.status(409).send({ detail: refusal })
     }
 
+    // X42 — a user changing an approved contract's type, value or currency
+    // changes what was approved: it goes back to DRAFT for approval again.
+    // (The agents service's extraction writes these from the document, whose
+    // own changes reset approval where a version is saved.)
+    const num = (v: unknown) => (v == null ? null : Number(v))
+    const termsChanged = req.user.sub !== 'system' && !!statusAfterTermsChange(existing.status) && (
+      (body.type !== undefined && body.type !== existing.type)
+      || (body.value !== undefined && num(body.value) !== num(existing.value))
+      || (body.currency !== undefined && body.currency !== existing.currency))
+    if (termsChanged && body.status && body.status !== existing.status) {
+      return reply.status(409).send({ detail: 'Changing the type, value or currency of an approved contract returns it to DRAFT for approval again. Change the status separately.' })
+    }
+
     // Use the contract's real orgId (internal calls come in with orgId='system')
     const effectiveOrgId = existing.orgId
 
@@ -1193,6 +1208,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // so re-analysis used to erase every report it did not itself produce.
     // A null value deletes its key (JSON merge patch, top level).
     const data: Record<string, unknown> = { ...body }
+    if (termsChanged) data.status = statusAfterTermsChange(existing.status)
     // X26 follow-up — _splitInto is written by the binder split itself
     // (lib/binder-split.ts), never changed through here, not even by the
     // agents service, whose writes follow a model that read the document.

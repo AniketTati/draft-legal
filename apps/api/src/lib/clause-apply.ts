@@ -12,6 +12,7 @@
  * version's changeNote; the row itself stays as an audit trail.
  */
 import { prisma } from './prisma.js'
+import { statusAfterTermsChange } from './contract-status.js'
 import { restorePii, piiRestorer, unresolvedPiiTokens } from './pii-policy.js'
 
 /**
@@ -247,7 +248,7 @@ export const __testing = { spliceInto, findNormalizedSpan, normalizeWithMap, loc
 export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyClauseResult> {
   const contract = await prisma.contract.findFirst({
     where:  { id: args.contractId, orgId: args.orgId, deletedAt: null },
-    select: { id: true, title: true, type: true, currentVersionId: true },
+    select: { id: true, title: true, type: true, currentVersionId: true, status: true },
   })
   if (!contract) return { ok: false, status: 404, detail: 'Contract not found' }
   if (!contract.currentVersionId) {
@@ -403,7 +404,8 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
     })
     await tx.contract.update({
       where: { id: contract.id },
-      data:  { currentVersionId: v.id },
+      // X42 — a changed clause on an approved contract needs approving again.
+      data:  { currentVersionId: v.id, status: statusAfterTermsChange(contract.status) },
     })
     return v
   })
@@ -499,7 +501,7 @@ export async function applyClauseBatch(args: {
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, currentVersionId: true },
+    select: { id: true, currentVersionId: true, status: true },
   })
   if (!contract) return { ok: false, status: 404, detail: 'Contract not found' }
   if (!contract.currentVersionId) {
@@ -681,7 +683,7 @@ export async function applyClauseBatch(args: {
         },
       },
     })
-    await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id } })
+    await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id, status: statusAfterTermsChange(contract.status) } })
     return v
   })
 

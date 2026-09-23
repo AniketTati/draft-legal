@@ -35,3 +35,14 @@ export function manualStatusRefusal(from: string, to: string): string | null {
   }
   return `Cannot transition from ${from} to ${to}`
 }
+
+/**
+ * X42 — the status a contract takes when something its approval judged
+ * changes: its type, value or currency, or its document. An APPROVED
+ * contract goes back to DRAFT, to be approved again: the approval (and
+ * auto-approval, which checks type and value at submission) covered the terms
+ * as they stood. Otherwise the status is left alone (undefined).
+ */
+export function statusAfterTermsChange(status: string): string | undefined {
+  return status === 'APPROVED' ? 'DRAFT' : undefined
+}
