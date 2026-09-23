@@ -52,14 +52,14 @@ Extract all meaningful changes as a JSON array. Ignore whitespace-only changes.
 
 Return ONLY valid JSON — no markdown, no explanation:
 [
-  {
+  {{
     "changeId": "<short unique slug, e.g. change_001>",
     "clauseType": "<payment|liability|indemnification|term|termination|confidentiality|ip|governing_law|notice|other>",
     "ourText": "<the original text that was removed (del content), or empty string if pure addition>",
     "theirText": "<the new text the counterparty proposed (ins content), or empty string if pure deletion>",
     "context": "<1–2 sentences of surrounding contract text for context>",
     "sectionRef": "<Section X or null>"
-  }
+  }}
 ]
 
 Diff HTML:
