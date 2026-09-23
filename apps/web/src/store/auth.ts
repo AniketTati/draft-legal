@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import axios from 'axios'
+import { singleFlight } from '@/lib/single-flight'
 import type { User } from '@clm/types'
 
 interface AuthState {
@@ -47,12 +48,16 @@ export const useAuthStore = create<AuthState>()(
         })
       },
 
-      refresh: async () => {
+      // X48 — one refresh at a time. Every request that met an expired access
+      // token refreshed with the same refresh token, and the server rotates it
+      // on use: each refresh after the first was refused, and the app logged
+      // the user out.
+      refresh: singleFlight(async () => {
         const { refreshToken } = get()
         if (!refreshToken) throw new Error('No refresh token')
         const { data } = await axios.post('/api/v1/auth/refresh', { refreshToken })
         set({ accessToken: data.accessToken, refreshToken: data.refreshToken })
-      },
+      }),
 
       logout: () => {
         const { accessToken } = get()

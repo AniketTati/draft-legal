@@ -1942,6 +1942,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The Unanalyzed Document's older "Edited in-place" versions (June, August) are probably earlier phantom saves, so I left them.
   - **Left as is:** in-place edits write no audit event, as before.
 
+- **X48 — Concurrent token refreshes log the user out (Medium). — DONE.** Found during the same live checks.
+  - When the 15-minute access token expires while several requests are in flight, each request's 401 handler calls `refresh()` with the same refresh token.
+  - The server rotates the refresh token on use and refuses the old one ("Refresh token revoked"). So every refresh after the first failed, and the client logged the user out.
+  - During the checks the network log showed exactly that: 2 refreshes answered 200, then 5 answered 401, then a logout.
+  - This run didn't change either side of the refresh flow; it predates the run.
+  - **What changed:** `apps/web/src/lib/single-flight.ts`. The auth store's `refresh` now runs once for all concurrent callers, and the first call after it settles starts a new one.
+  - **Verification:** `apps/web/src/lib/single-flight.test.ts`:
+    - three concurrent callers share one run and its result;
+    - after a failure, both callers see it and the next call runs again.
+    - Web suite and typecheck pass.
+  - **Left as is:** each tab of the same user holds its own copy of the refresh token, and the server keeps only the latest. A second tab's next refresh is refused and that tab signs out, as before.
+
 ---
 
 ## Run log
@@ -2178,4 +2190,5 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
-X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — (sha: pending)
+X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
+X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — (sha: pending)
