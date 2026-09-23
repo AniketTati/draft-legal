@@ -2026,7 +2026,7 @@ The work is on branch `fix/audit-2026-09-22`: 85 commits from this run (from `cc
 - api integration: 319/319 (49 files, Docker stack up), none skipped.
 - The tracker cites 85 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
 - No audit event was lost (X34). Prisma logged 120 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
-- **Adversarial subagent reviews** ran on S1, S2, S3, C5, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46. Their findings were fixed or filed.
+- **Adversarial subagent reviews** ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46. Their findings were fixed or filed.
 - **The final sweep also re-reviewed C1, X15, X24, X26, X28, X29 and X39.** These touch auth, tenancy or SSRF and had no review on record; see below.
 
 ### Final sweep reviews
@@ -2123,8 +2123,8 @@ The code, tests and suite are done for all of these. What remains is a run this 
 4. **After deploying:**
    - `pnpm install` and restart API and workers (X12's lockfile).
    - Recreate Gotenberg with the new flags (X11). Production Gotenberg is still public on Cloud Run, a hardening `deploy.sh` already defers.
-   - Run `scripts/backfill-es-index.ts` (C7/C11).
-   - Run `scripts/backfill-slack-verification.ts --fix` (X6).
+   - Run `apps/api/scripts/backfill-es-index.ts` (C7/C11).
+   - Run `apps/api/scripts/backfill-slack-verification.ts --fix` (X6).
 5. **Operational:**
    - Rotate every org's Slack signing secret and bot token (S1).
    - Revoke and re-issue scope-less API keys (C1).
