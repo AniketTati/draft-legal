@@ -4424,7 +4424,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // to one, so the flow dead-ended on asking the user to paste an id.
   //
   // Deliberately NARROWER than its user-facing counterpart, which is the
-  // reverse of the usual direction: GET /api/v1/users is requireAuth-only with
+  // reverse of the usual direction: GET /api/v1/users checks sign-in only, with
   // no query param and no limit, and hands back every org member's email and
   // role list in one response. An agent needs to look someone up, not to
   // enumerate the directory.

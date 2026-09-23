@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey, isLimitedApiKey } from '../middleware/auth.js'
 // Wave 1.7 — AI-consuming endpoints are gated on view:contract so a scopeless
 // public-API key (or a non-contract principal) can't burn the org's LLM
 // budget. Per-turn cost enforcement is tightened separately in Wave 3.
@@ -38,7 +38,7 @@ const AssistSchema = z.object({
 
 export async function agentRoutes(app: FastifyInstance) {
   // GET /api/v1/agent/models — list supported providers + models
-  app.get('/models', { preHandler: requireAuth }, async (_req: unknown, reply) => {
+  app.get('/models', { preHandler: requireUserOrAdminKey }, async (_req: unknown, reply) => {
     const upstream = await fetch(`${AGENTS_URL}/agent/models`, {
       headers: { 'x-internal-secret': INTERNAL_SECRET },
     }).catch(() => null)
@@ -138,6 +138,9 @@ export async function agentRoutes(app: FastifyInstance) {
     }
     if (!evaluatePermission(callerPermissions, 'view', 'playbook').granted) deniedTools.push('playbook_check')
     if (!evaluatePermission(callerPermissions, 'view', 'workflow').granted) deniedTools.push('approval_list')
+    // X44 — the member directory is refused to API keys without the admin scope
+    // (GET /users); user_search must not hand it to them through chat.
+    if (isLimitedApiKey(req.user)) deniedTools.push('user_search')
 
     let skillPromptOverride: string | undefined
     let skillAllowedTools: string[] | undefined

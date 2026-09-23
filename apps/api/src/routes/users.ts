@@ -1,13 +1,13 @@
 import type { FastifyInstance } from 'fastify'
 import bcrypt from 'bcryptjs'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser, requireUserOrAdminKey } from '../middleware/auth.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { UpdateUserSchema, ChangePasswordSchema, AuditAction } from '@clm/types'
 
 export async function userRoutes(app: FastifyInstance) {
   // GET /api/v1/users/me
-  app.get('/me', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/me', { preHandler: requireUser }, async (req, reply) => {
     const user = await prisma.user.findUnique({
       where: { id: req.user.sub },
       include: { userRoles: { include: { role: true } } },
@@ -29,7 +29,7 @@ export async function userRoutes(app: FastifyInstance) {
   })
 
   // PATCH /api/v1/users/me
-  app.patch('/me', { preHandler: requireAuth }, async (req, reply) => {
+  app.patch('/me', { preHandler: requireUser }, async (req, reply) => {
     const body = UpdateUserSchema.parse(req.body)
 
     const updated = await prisma.user.update({
@@ -46,7 +46,7 @@ export async function userRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/users/me/password — change own password
-  app.post('/me/password', { preHandler: requireAuth }, async (req, reply) => {
+  app.post('/me/password', { preHandler: requireUser }, async (req, reply) => {
     const body = ChangePasswordSchema.parse(req.body)
 
     const user = await prisma.user.findUnique({ where: { id: req.user.sub } })
@@ -76,7 +76,7 @@ export async function userRoutes(app: FastifyInstance) {
   })
 
   // GET /api/v1/users — list org members
-  app.get('/', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const users = await prisma.user.findMany({
       where: { orgId: req.user.orgId, deletedAt: null },
       include: { userRoles: { include: { role: true } } },

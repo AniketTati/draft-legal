@@ -22,7 +22,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser } from '../middleware/auth.js'
 import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -198,7 +198,7 @@ function defaultTitle(firstMessage: string): string {
 
 export async function agentThreadRoutes(app: FastifyInstance) {
   // Every route here requires an authenticated user + scopes to their org.
-  app.addHook('preHandler', requireAuth)
+  app.addHook('preHandler', requireUser)   // X44 — a user's threads: not for API keys
 
   // ── GET /threads — list recent (non-archived) threads ──────────────────────
   app.get('/', async (req, reply) => {

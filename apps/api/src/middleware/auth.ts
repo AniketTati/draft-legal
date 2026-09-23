@@ -125,3 +125,40 @@ export function requireRole(...roles: string[]) {
     }
   }
 }
+
+// X44 — routes that check no permission, only that someone signed in. A
+// public-API key passed them all, a scope-less legacy one included, because a
+// key's scopes are evaluated only by requirePermission. Users and the agents
+// service (neither carries key permissions) are unaffected by either guard.
+
+/** An API key without the `admin` scope (which grants every permission). */
+export function isLimitedApiKey(user: FastifyRequest['user'] | undefined): boolean {
+  const keyPermissions = user?.apiPermissions
+  return !!keyPermissions && !keyPermissions.some(p => p.action === '*' && p.resource === '*')
+}
+
+function refuseKey(reply: FastifyReply, detail: string) {
+  return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail })
+}
+
+/**
+ * A person's own things — their profile, password, notifications, agent
+ * threads. No API key has a person behind it here (it authenticates as
+ * `apikey:<id>`), so every key is refused, the admin scope included.
+ */
+export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
+  await requireAuth(req, reply)
+  if (reply.sent) return
+  if (req.user?.apiPermissions) return refuseKey(reply, 'This endpoint is for signed-in users, not API keys')
+}
+
+/**
+ * The org's shared data that any member may read — the member list, the org's
+ * settings, roles, skills, the dashboard, team workload, the model list. An
+ * API key may read it only with the `admin` scope.
+ */
+export async function requireUserOrAdminKey(req: FastifyRequest, reply: FastifyReply) {
+  await requireAuth(req, reply)
+  if (reply.sent) return
+  if (isLimitedApiKey(req.user)) return refuseKey(reply, 'This endpoint is not available to API keys without the admin scope')
+}

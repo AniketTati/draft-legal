@@ -28,7 +28,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 // Wave 1.7 — skills define agent system prompts + tool allowlists (security-
 // sensitive), so create/update/delete are admin-gated; reads stay open.
 import { requirePermission } from '../middleware/permissions.js'
@@ -74,7 +74,7 @@ export async function skillsRoutes(app: FastifyInstance) {
   // org's own skills (orgId match) + their own user-private skills.
   // `scope` filter lets the rail fetch only skills relevant to the page
   // they're on (current_contract | dashboard | portfolio | any).
-  app.get('/', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
     const q = z.object({
       scope:     z.enum([...CONTEXT_SCOPES, 'all']).default('all'),
@@ -110,7 +110,7 @@ export async function skillsRoutes(app: FastifyInstance) {
   // Full skill including systemPrompt. Admin-only visibility for built-in
   // prompts (they're effectively our IP + the UI needs the raw text only
   // in the admin editor).
-  app.get('/:id', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/:id', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const { orgId, sub: userId, roles } = req.user
     const { id } = req.params as { id: string }
 

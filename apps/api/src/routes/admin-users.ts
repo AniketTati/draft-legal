@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { invalidatePermissionCache, DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { InviteUserSchema, AssignRoleSchema, BulkImportUserSchema, AuditAction } from '@clm/types'
@@ -315,7 +315,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   // because the web client's usePermission() hook depends on it to compute
   // RoleGate visibility. Restricting to view:user broke non-admin pages with
   // 403 floods. The role catalogue is org-scoped and not sensitive.
-  app.get('/roles', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/roles', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const roles = await prisma.role.findMany({
       where: {
         OR: [{ orgId: req.user.orgId }, { orgId: null, isSystem: true }],

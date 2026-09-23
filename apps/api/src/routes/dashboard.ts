@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 import { permissionScopeFor } from '../middleware/permissions.js'
 
 const ACTIVE_STATUSES = [
@@ -79,10 +79,10 @@ const ACTIONS_TO_HIDE = [
 ]
 
 export async function dashboardRoutes(app: FastifyInstance) {
-  app.get('/', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
 
-    // X7 — this route is requireAuth-only, so resolve the scopes it must honour.
+    // X7 — this route checks sign-in only, so resolve the scopes it must honour.
     // Unless the caller can view contracts (requests) beyond its own, it counts
     // and sees only the contracts it owns (the requests it raised).
     const [contractScope, requestScope] = await Promise.all([

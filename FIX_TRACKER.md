@@ -1762,9 +1762,41 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is:**
     - A creator demoted but still active keeps their keys, whose scopes don't shrink with their role. Checking each request against the creator's current permissions would be a design change.
     - Existing users already deactivated before this change keep their keys: revoke them from the list.
-- **X44 — Routes that only check sign-in ignore API key scopes (Low).** Found in the final-sweep review of C1.
+- **X44 — Routes that only check sign-in ignore API key scopes (Low). — DONE.** Found in the final-sweep review of C1.
   - Any API key, scope-less legacy keys included, can read `GET /users` (every member's email, roles and status), `/team/workload`, `/organization`, `/admin/roles` and `/skills`: these routes check only `requireAuth`.
   - Fix: give each a permission check, or refuse API keys on routes that don't declare one.
+  - **Plan:** confirmed. 14 routes had `{ preHandler: requireAuth }` and nothing else, and agent threads added `requireAuth` as a hook. A key's scopes are evaluated only by `requirePermission`, so on these routes any key passed:
+    - the member list (`GET /users`);
+    - `GET /organization` (the org's settings) and `/organization/industry-packs`;
+    - roles, skills (×2), the dashboard, team workload, the model list;
+    - a person's own things: `/users/me` (read, edit, password), notifications (×2), agent threads.
+      - For a key these found no user (it authenticates as `apikey:<id>`). Reads returned 404 or nothing, and an admin key's profile edit or new thread was a 500. So a key could never change anyone's profile or password: only the org's data was exposed.
+    - Keys have no roles, so `requireRole` (and skills' own admin check) already refused them.
+    - **Approach:** refuse keys on these routes rather than invent a scope for each. They serve the signed-in app, and the public API's scopes (`contracts:*`, `requests:*`, `templates:*`, `reports:read`, `admin`) name none of them.
+  - **What changed (`middleware/auth.ts`):**
+    - `requireUserOrAdminKey` guards the org's shared data (the member list, org settings and industry packs, roles, skills ×2, dashboard, team workload, model list). It refuses a key without the `admin` scope; the admin scope grants every permission, so `requirePermission` would pass it anywhere.
+    - `requireUser` guards a person's own things (`/users/me` ×3, notifications ×2, the agent-threads hook). It refuses every key.
+    - `isLimitedApiKey()` is the check they share. Users and the agents service carry no key permissions and pass both. The 403 has the same shape as `requirePermission`'s.
+    - `/agent/chat` withholds the `user_search` tool from a limited key. That tool returns names, emails and roles from the member directory; without this, a `contracts:read` key could list members through chat.
+    - Three comments that named the old guard now say "checks sign-in only".
+  - **Adversarial review (fresh subagent)** confirmed the guard for every kind of caller: user, agents service, admin, narrow, scope-less, expired and revoked keys. No scope other than `admin` resolves to `*`/`*`. It parsed every route registration and found no other route a key reaches without its scopes being checked. The web app and the agents service don't call these routes with a key. It found:
+    - *Medium:* a narrow key reached the member directory through agent chat's `user_search`. Fixed as above. The orchestrator drops denied tools from the model's catalogue and refuses a call to one, so the tool is unreachable from that key.
+    - *Low:* an admin key passed person-only routes, and its profile edit and thread create were 500s. Fixed by the split into two guards.
+    - *Low:* the test only asserted "not 403" for the admin key and didn't check that the key was created. Tightened, as below.
+    - *Info:* the 403 body shape now matches `requirePermission`'s.
+    - The tracker's deploy note wrongly claimed documented public-API routes were unaffected, since the repo has no public-API docs, and named `obligations:*` scopes, which don't exist. Corrected below.
+  - **Verification (`api-keys.integration.test.ts`, 3 cases):**
+    - Org data (7 routes):
+      - a `contracts:read` key and a scope-less legacy key get 403;
+      - an admin key, an ADMIN user and a VIEWER user get 200;
+      - the model list: 403 for the narrow key, and past the guard (502, since the test stack runs no agents service) for the others;
+      - the agents service reads `/organization`;
+      - the narrow key still reads `/contracts`.
+    - Person routes: an admin key gets 403 on `/users/me`, notifications, threads, `PATCH /users/me` and thread create, while the user gets 200.
+    - Chat: a narrow key's turn goes out with `user_search` denied; an admin key's and a user's turns don't.
+    - Against the pre-fix code the org-data case fails (`/users`: 200 where 403 was expected). Without the review fixes the person-routes case (`/users/me` 404 for an admin key) and the chat case both fail.
+    - Suite (X44 alone): db:generate ok, typecheck 0, lint 0 errors, api unit 326/326, integration 301/301 (48 files).
+  - **Deploy note:** an integration that reads any of these routes with a key needs the `admin` scope now, and no key can use a person's routes. There is no narrower scope for reading the member list; add a `users:read` scope if a customer needs one.
 - **X45 — `contracts:write` API keys can't create contracts (Low, functional).** Found in the final-sweep review of C1.
   - `POST /contracts` stores the caller's id as the owner. For a key that is `apikey:<id>`, not a user, so the insert fails with a 500.
   - Fix: own the contract as the key's creator.
@@ -1851,4 +1883,5 @@ X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent
 X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — 3ed62a3
 X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — 54f2987
 X42 — DONE — changing an approved contract's type, value, currency or document returns it to DRAFT for approval again (REST edits, uploads, editor saves, clause applies) — 10771af
-X43 — DONE — deactivating a user revokes their API keys; key creation and revocation are audited; the key list shows who made each key — (sha: pending)
+X43 — DONE — deactivating a user revokes their API keys; key creation and revocation are audited; the key list shows who made each key — 8f76574
+X44 — DONE — the 15 routes that checked only sign-in now refuse API keys: the org's shared data (member list, settings, roles, skills, dashboard, workload, models) without the admin scope, a person's own things (profile, notifications, threads) always; agent chat withholds the member search from them; adversarial review — (sha: pending)

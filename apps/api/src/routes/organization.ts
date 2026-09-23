@@ -4,7 +4,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { seedOrgDefaults, INDUSTRY_PACK_INFO } from '../lib/org-seed.js'
 import type { IndustryPackId } from '../lib/org-seed.js'
@@ -78,7 +78,7 @@ const InstallPackSchema = z.object({
 
 export async function organizationRoutes(app: FastifyInstance) {
   // GET /api/v1/organization — current org details
-  app.get('/', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const org = await prisma.organization.findUnique({
       where: { id: req.user.orgId },
     })
@@ -171,7 +171,7 @@ export async function organizationRoutes(app: FastifyInstance) {
   })
 
   // GET /api/v1/organization/industry-packs — list available packs
-  app.get('/industry-packs', { preHandler: requireAuth }, async (_req, reply) => {
+  app.get('/industry-packs', { preHandler: requireUserOrAdminKey }, async (_req, reply) => {
     const packs = (Object.keys(INDUSTRY_PACK_INFO) as IndustryPackId[]).map(id => ({
       id,
       label:       INDUSTRY_PACK_INFO[id].label,

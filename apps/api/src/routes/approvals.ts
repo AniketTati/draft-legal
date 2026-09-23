@@ -16,7 +16,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser } from '../middleware/auth.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { advanceWorkflow } from '../lib/workflow-engine.js'
@@ -597,7 +597,7 @@ export async function approvalRoutes(app: FastifyInstance) {
 
 
   // ── GET /notifications — notifications for current user ───────────────────
-  app.get('/notifications', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/notifications', { preHandler: requireUser }, async (req, reply) => {
     const { sub: userId } = req.user
     const { cursor, limit = '25' } = req.query as Record<string, string>
 
@@ -617,7 +617,7 @@ export async function approvalRoutes(app: FastifyInstance) {
 
 
   // ── POST /notifications/mark-read — mark notifications as read ────────────
-  app.post('/notifications/mark-read', { preHandler: requireAuth }, async (req, reply) => {
+  app.post('/notifications/mark-read', { preHandler: requireUser }, async (req, reply) => {
     const { sub: userId } = req.user
     const { ids } = req.body as { ids?: string[] }
 

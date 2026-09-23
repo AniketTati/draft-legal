@@ -6,7 +6,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 
 const SetOooSchema = z.object({
   outOfOffice: z.boolean(),
@@ -23,8 +23,9 @@ export async function teamRoutes(app: FastifyInstance) {
   // and produced 403 console errors on every page load. Drop to
   // `requireAuth` — the response only includes name/email/role/counts,
   // not anything sensitive (no PII, no comp). Mutations (set OOO etc.)
-  // remain `requirePermission`-gated below.
-  app.get('/workload', { preHandler: requireAuth }, async (req, reply) => {
+  // remain `requirePermission`-gated below. (X44: now
+  // `requireUserOrAdminKey`, which keeps API keys without the admin scope out.)
+  app.get('/workload', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const { orgId, sub: me } = req.user
     // X21 — the directory and OOO stay visible to every member, but a count is
     // only shown where the caller could see what it counts: other people's
