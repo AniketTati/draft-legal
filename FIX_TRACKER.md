@@ -387,7 +387,23 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## Stretch (only if everything above is `DONE`, `VERIFY-PENDING` or `NOT-REPRODUCIBLE`)
 
-- **X1 — Page-jump citations.** Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
+- **X1 — Page-jump citations. — VERIFY-PENDING.**
+  - **Plan:**
+    - Confirmed: `contract_cite` returns each passage's `page` and `bbox`. The extractor records a 1-based page and the paragraph's union box in PDF points from the top-left (PyMuPDF, `extract.py`). `CitationPills` linked only to `?section=`, which scrolls the styled view to a heading that merely matches.
+    - The Original view is `@react-pdf-viewer`, which takes `initialPage` and a `renderPage` hook, so no new dependency is needed.
+    - Fix:
+      - `lib/citation-target.ts` builds the pill link, now `?section=` plus `&page=&bbox=` when known.
+      - It parses them back, ignoring malformed values.
+      - It scales the box to the rendered page.
+      - `ContractDetailPage` opens the document tab in the Original view at that page and outlines the passage with an ink ring, the same "you landed here" treatment as the TOC flash. The viewer re-mounts per citation, so `initialPage` applies. It keeps the three default layers and adds the overlay.
+      - A citation's switch to Original doesn't overwrite the user's saved view preference.
+      - Without a source PDF, `?section=` scrolls the styled view as before.
+  - **Verification:**
+    - `lib/citation-target.test.ts` has 4 cases: link with section, page and box, round-tripped; section-only fallback; malformed page or box ignored; box scaled to the page.
+    - web typecheck 0, lint 0 errors (warnings unchanged at 22), web unit 18/18.
+  - **Why VERIFY-PENDING:** needs a live click-through, which this environment can't run. Open a contract with a source PDF, ask the agent to cite a clause, and click the pill. The Original PDF should open at the cited page with the paragraph outlined. With no source file, the pill should still scroll the styled view.
+  - **Left as is:** the outline is drawn only on unrotated pages, and it assumes the CropBox starts at the page origin (true for almost every PDF; PyMuPDF and pdf.js then agree). Scanned (OCR) pages carry no box, so they land on the page without an outline.
+  - Original note: Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
 - **X2 — Custom-field backfill.** Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
 - **X3 — Empty stubs. — DONE.**
   - **Plan:**
@@ -1084,3 +1100,4 @@ X22 (follow-up) — DONE — a named trace resolves only within the caller's own
 X21 (follow-up) — DONE — Sign link bound to one verified signer, only on their turn and before expiry; convert needs create:contract; `_` no longer a wildcard in signer email matching; web title/bars; X28, X29 filed — (sha: X21-fu)
 X3 — DONE — audit log API (list/filter/cursor + chain verify, admin-only) with an admin viewer; token-gated Prometheus /metrics with bounded labels; 5xx → Cloud Error Reporting on Cloud Run; docs say what's wired — (sha: X3)
 X17 — DONE — diligence-room contracts out of analytics/dashboard/renewals/obligations/counterparty figures (a named contract still sees its own); precedents on effective versions, no rooms; iterative HNSW scans on pgvector 0.8+ — (sha: X17)
+X1 — VERIFY-PENDING — citation pills open the original PDF at the cited page with the passage outlined (styled-view section scroll kept as the fallback); needs a live click-through — (sha: X1)

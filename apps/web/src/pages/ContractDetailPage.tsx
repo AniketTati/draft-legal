@@ -4,9 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 // B.5.2 — PDF viewer re-enabled as the "Original" view via the
 // [Styled | Original] toggle. Styled (TipTap / DocumentCanvas) remains the
 // default; Legal users typically flip to Original for pixel fidelity.
-import { Worker, Viewer } from '@react-pdf-viewer/core'
+import { Worker, Viewer, type RenderPageProps } from '@react-pdf-viewer/core'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
+import { parseCitationTarget, highlightRect } from '@/lib/citation-target'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { Button } from '@/components/ui/button'
@@ -347,6 +348,8 @@ export function ContractDetailPage() {
   // the TipTap view to that heading + flash the matching TOC entry.
   const [searchParams] = useSearchParams()
   const highlightSection = searchParams.get('section') ?? null
+  // X1 — ?page=&bbox= from a citation pill: open the original PDF there.
+  const citeTarget = useMemo(() => parseCitationTarget(searchParams), [searchParams])
   // B.1 — default to 'document' so the contract itself is the first thing
   // a user sees, instead of a wall of AI-generated analysis panels.
   const [tab, setTab] = useState<Tab>('document')
@@ -391,7 +394,10 @@ export function ContractDetailPage() {
     const saved = window.localStorage.getItem('clm.doc-view')
     return saved === 'original' ? 'original' : 'styled'
   })
+  // X1 — a citation opening the original PDF is not a change of preference.
+  const citationSwitchedView = useRef(false)
   useEffect(() => {
+    if (citationSwitchedView.current) { citationSwitchedView.current = false; return }
     window.localStorage.setItem('clm.doc-view', docView)
   }, [docView])
 
@@ -945,6 +951,18 @@ export function ContractDetailPage() {
   // null it's a text-only / template-generated contract — the Original
   // toggle would crash with "Invalid PDF structure". We disable it instead.
   const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType)
+
+  // X1 — a citation that knows its page opens the original PDF at it (the
+  // passage is outlined there); without a source file, ?section= still
+  // scrolls the styled view.
+  useEffect(() => {
+    if (!citeTarget.page || !hasOriginal) return
+    setTab('document')
+    if (docView !== 'original') {
+      citationSwitchedView.current = true
+      setDocView('original')
+    }
+  }, [citeTarget.page, hasOriginal])
 
   const { data: commentsData } = useQuery({
     queryKey: ['comments', id],
@@ -2679,7 +2697,30 @@ export function ContractDetailPage() {
               <div className="h-full overflow-hidden bg-paper-50 p-4">
                 <div className="bg-card rounded-paper shadow-page h-full">
                   <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
-                    <Viewer fileUrl={pdfUrl} plugins={[layoutPlugin]} />
+                    <Viewer
+                      // X1 — remounted per citation: initialPage applies on load.
+                      key={citeTarget.page ?? 0}
+                      fileUrl={pdfUrl}
+                      plugins={[layoutPlugin]}
+                      initialPage={citeTarget.page ? citeTarget.page - 1 : 0}
+                      renderPage={citeTarget.bbox ? (props: RenderPageProps) => (
+                        <>
+                          {props.canvasLayer.children}
+                          {props.textLayer.children}
+                          {props.annotationLayer.children}
+                          {props.pageIndex === citeTarget.page! - 1 && props.rotation === 0 && (
+                            // "You landed here" is a selection, not a state: ink,
+                            // as the TOC flash for ?section= is.
+                            <div
+                              data-testid="citation-highlight"
+                              aria-hidden
+                              className="absolute pointer-events-none rounded-sm ring-2 ring-ink-950"
+                              style={highlightRect(citeTarget.bbox!, props.scale)}
+                            />
+                          )}
+                        </>
+                      ) : undefined}
+                    />
                   </Worker>
                 </div>
               </div>
