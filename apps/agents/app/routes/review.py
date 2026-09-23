@@ -231,7 +231,13 @@ async def _process_and_update(
     # UI read). X2 — their confidence and source quote were dropped; they go
     # beside the values, in _customFieldEvidence, as _typeFields keeps them.
     custom_evidence: dict = {}
+    # X26 follow-up — only the org's own fields. The model's output follows
+    # the document it read, and any other key written here (`_splitInto`, a
+    # forged report) would be trusted as the server's own state.
+    wanted_fields = {f.get("fieldKey") for f in custom_fields if isinstance(f, dict)}
     for field_key, extraction in custom_field_values.items():
+        if field_key not in wanted_fields:
+            continue
         if isinstance(extraction, dict) and extraction.get("value") is not None:
             metadata_update[field_key] = extraction["value"]
             custom_evidence[field_key] = {

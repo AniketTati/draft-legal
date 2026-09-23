@@ -1126,6 +1126,20 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - C4's `contract-metadata` test had written `_redlineStatus` as an ADMIN user, standing in for the redline failure path. It now uses the agents service headers, which is that path's real caller; its merge assertion is unchanged.
   - Original note: `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
 
+  - **Follow-up (final-sweep review, DONE):** the PATCH check holds (nested, look-alike and escaped keys are harmless; re-split stays in the org and parent). The review found:
+    - **The one writer allowed `_` keys copied keys the model chose (Low-Medium).**
+      - `review.py` copied every key of the model's `customFields` into top-level metadata, as the agents service.
+      - A document that tells the extractor to return `customFields: {"_splitInto": …}` could set it, and the next re-split would soft-delete the named contracts. It could also forge a `_compliance` or `_playbookReview` report.
+      - Now `review.py` keeps only the org's own field keys, as `extract_fields.py` does.
+      - PATCH also refuses any change to `_splitInto` from every caller, the agents service included, since only `lib/binder-split.ts` writes it. Writing the stored value back unchanged (`redline.py` merges and sends the whole metadata) still passes.
+    - **`POST /contracts` accepted `_` keys (Low),** so a user could create a contract with a forged report showing on the rail. It now refuses them as PATCH does.
+    - **Verification (`metadata-reserved.integration.test.ts`, 3 new cases):**
+      - the agents service's changed `_splitInto` gets 400, and the stored value written back gets 200;
+      - a create with `_compliance` gets 400;
+      - a tripwire checks `review.py`'s field filter.
+      - Against the pre-fix code all 3 fail.
+      - The C4 metadata-merge and binder-split tests still pass.
+    - **Residual:** `review.py` still PATCHes without `x-org-id`. That works because those routes look contracts up by id for the `system` org, and the ids come from the server.
 - **X27 — Contract text still reaches models raw on paths outside X23 (Medium). — VERIFY-PENDING.**
   - **Plan (each surface confirmed in the code):** apply the org's policy with X23's round-trip helpers wherever the model's output is shown back or stored, and the plain policy where it only goes to a model.
     - **Q&A:**
@@ -1788,4 +1802,5 @@ X40 — DONE — chat excerpts, summaries, key terms and obligations find values
 X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — d0f4d79
 X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — 8d5419d
 X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — 49bed5b
-X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — (sha: pending)
+X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — 67d9557
+X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — (sha: pending)

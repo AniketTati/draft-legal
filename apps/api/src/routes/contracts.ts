@@ -369,6 +369,12 @@ export async function contractRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const body = CreateContractSchema.parse(req.body)
     const { sub: ownerId, orgId } = req.user
+    // X26 follow-up — as for PATCH: `_` metadata keys are server state (a
+    // forged _compliance or _playbookReview showed on the rail as real).
+    const reserved = req.user.sub === 'system' ? [] : Object.keys(body.metadata ?? {}).filter(k => k.startsWith('_'))
+    if (reserved.length) {
+      return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
+    }
 
     // P27 audit (2026-05-02). Blank-create has no file → no parse
     // pipeline → no worker will ever advance analysisStatus past
@@ -1187,6 +1193,17 @@ export async function contractRoutes(app: FastifyInstance) {
     // so re-analysis used to erase every report it did not itself produce.
     // A null value deletes its key (JSON merge patch, top level).
     const data: Record<string, unknown> = { ...body }
+    // X26 follow-up — _splitInto is written by the binder split itself
+    // (lib/binder-split.ts), never changed through here, not even by the
+    // agents service, whose writes follow a model that read the document.
+    // (redline.py writes the whole metadata back, so an unchanged value
+    // passes.)
+    if (body.metadata && '_splitInto' in body.metadata) {
+      const stored = (existing.metadata as Record<string, unknown> | null)?._splitInto ?? null
+      if (JSON.stringify(body.metadata._splitInto ?? null) !== JSON.stringify(stored)) {
+        return reply.status(400).send({ detail: 'Metadata key "_splitInto" is set by the binder split only' })
+      }
+    }
     if (body.metadata && req.user.sub !== 'system') {
       // X26 — `_` keys are server state (analysis reports, the binder split's
       // _splitInto). A user who wrote _splitInto made the next re-split
