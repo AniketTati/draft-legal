@@ -682,9 +682,10 @@ const RedlineProposeSchema = z.object({
   orgId:       z.string().min(1),
   userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().min(1),
-  // Target a clause. One of clauseId | clauseType must be provided.
+  // Target a clause. One of clauseId | clauseType | sectionRef must be provided.
   clauseId:    z.string().optional(),
   clauseType:  z.string().optional(),
+  sectionRef:  z.string().max(40).optional(),   // X53 — "4", "§4", "Section 4.2"
   // Free-text direction from the user ("make the cap 6 months"), passed
   // through to the LLM alongside the playbook rules.
   instructions: z.string().max(2_000).optional(),
@@ -2502,9 +2503,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
       orgId:        body.orgId,
       clauseId:     body.clauseId,
       clauseType:   body.clauseType,
+      sectionRef:   body.sectionRef,
       instructions: body.instructions,
     })
     if (!result.ok) {
+      // X53 — a miss lists the contract's clauses (id, type, section and
+      // opening words), so the model retries by id rather than guessing
+      // another type. The openings are contract text going to the model:
+      // under the org's PII policy, found in the whole clause and document.
+      if (result.clauses?.length) {
+        const [document] = await redlineSource(body.contractId, [])
+        const openings = await redactCutExcerpts(
+          body.orgId,
+          result.clauses.map(c => ({ text: c.content, cuts: [[0, 100]] as Array<[number, number]>, valuesFrom: document })),
+          { surface: 'redline_propose.clauses', contractId: body.contractId, userId: body.userId ?? undefined },
+        )
+        const total = result.totalClauses ?? result.clauses.length
+        const cut = total > result.clauses.length
+          ? ` These are ${result.clauses.length} of the contract's ${total}; name the section to see others.`
+          : ''
+        return reply.status(result.status).send({
+          detail: `${result.detail}. Retry with clauseId set to one of these clauses.${cut}`,
+          clauses: result.clauses.map((c, i) => ({
+            clauseId: c.id, clauseType: c.clauseType, sectionRef: c.sectionRef?.slice(0, 40) ?? null, opening: openings[i]?.[0] ?? '',
+          })),
+        })
+      }
       return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
     }
     // X23 — this goes back to the chat model: the org's PII policy applies, as

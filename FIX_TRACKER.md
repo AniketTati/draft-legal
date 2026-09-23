@@ -2089,6 +2089,37 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - Adversarial inputs of 100,000–150,000 characters run in under 30 ms.
       - The review's three repros are pinned as tests, and they fail on the first cut.
 
+- **X53 — The chat can't redline a clause the user names by its section (Medium). — DONE.** Found during X23's live check.
+  - `redline_propose` targets a clause by its id, which the chat model can't see, or by its type. Its own description offers "propose changes to §X".
+  - "Redline section 4" made the model guess a type ("contractor_information"), and the tool answered only "Clause not found". The model then asked for a section number or a unique phrase, neither of which the tool takes.
+  - **What changed:**
+    - The tool takes `section_ref` ("4", "§4", "Section 4.2"). Section references are normalised, including spacing and leading zeros.
+    - A miss answers with the contract's clauses: id, type, section and opening words, so the model can retry by id.
+      - Neighbours of the section asked for come first.
+      - At most 60 are listed, with a note when the contract has more.
+      - The openings are contract text going to a model, so they're cut and redacted under the org's PII policy the way X36's excerpts are. A value that crosses the cut isn't sent.
+    - A section that misses falls back to a clause type given with it. A reference with no number ("§") names nothing.
+  - **Verification:**
+    - `routes/redline-propose-target.integration.test.ts` (6) covers:
+      - the section forms;
+      - the miss list, with a redacted SSN in an opening and a retry by id;
+      - a section the contract lacks;
+      - an empty reference;
+      - the type fallback;
+      - a 73-clause contract whose list puts 90.x first and says it's cut.
+    - `lib/agents-redline-propose-tool.test.ts` (2) is a source tripwire for the Python tool.
+    - All of these fail without the change.
+    - Live: "Redline section 4 …" produced three variants for §4, and applying one wrote the real SSN (X23).
+  - **Adversarial review (combined, fresh subagent):**
+    - Tenancy and PII hold. The list is scoped to the contract's current version after the org and own-scope checks, and the openings follow the org's mode and fail closed.
+    - Fixed from its findings:
+      - an empty key matched an unnumbered clause;
+      - "Sections 4", "sect. 4", "04" and "4 (a)" didn't normalise;
+      - a missed section ignored a type given with it;
+      - the list's cap was invisible to the model;
+      - a long `section_ref` got a 400 instead of the list (Python now clamps it).
+    - Left as is: "Article IV" doesn't match "Article 4". It falls through to the list.
+
 ---
 
 ## Run log
@@ -2192,6 +2223,7 @@ X16 (live check + follow-up) — DONE — detection finds a late second agreemen
 X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — (sha: pending)
 V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — (sha: pending)
 X52 — DONE — a card number, IBAN or SSN wrapped across a PDF line is redacted; single-line detection unchanged, cross-line only for value-shaped groups near a card or bank word; adversarial review — (sha: pending)
+X53 — DONE — the chat's redline tool takes the section the user names, and a miss lists the contract's clauses (openings redacted) to retry with; adversarial review — (sha: pending)
 
 ---
 
