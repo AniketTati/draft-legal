@@ -203,8 +203,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       // P7.2.3 — Org-wide pending approval count. Surfaces to admin
       // and legal_ops in the KPI strip so they can spot "1 deal stuck
       // somewhere in the org" without joining each approval queue.
+      // X21 — narrowed like the rest of the strip: an own-scope caller counts
+      // the approvals on their own contracts only.
       prisma.approvalInstance.count({
-        where: { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
+        where: { orgId, ...(narrowContracts ? { contract: { is: { ownerId: userId } } } : {}), status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       }),
       // P7.1.1 — Negotiations I own (Maya's primary JTBD). Returns full
       // rows (not just count) because the dashboard renders inline cards

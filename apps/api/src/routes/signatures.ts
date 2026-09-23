@@ -241,13 +241,14 @@ export async function signatureRoutes(app: FastifyInstance) {
       const limit = Math.min(100, parseInt(req.query.limit ?? '50', 10) || 50)
       const offset = Math.max(0, parseInt(req.query.offset ?? '0', 10) || 0)
       const where: Record<string, unknown> = { orgId }
-      if (req.permissionScope === 'own') {
+      const own = req.permissionScope === 'own'
+      const [owned, me] = await Promise.all([
+        own ? prisma.contract.findMany({ where: { orgId, ownerId: req.user.sub, deletedAt: null }, select: { id: true } }) : [],
+        prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } }),
+      ])
+      if (own) {
         // Own contracts, plus requests where the caller is a signer (the
         // sidebar's "awaiting me" badge reads this list).
-        const [owned, me] = await Promise.all([
-          prisma.contract.findMany({ where: { orgId, ownerId: req.user.sub, deletedAt: null }, select: { id: true } }),
-          prisma.user.findUnique({ where: { id: req.user.sub }, select: { email: true } }),
-        ])
         // Signer emails are stored as typed, so match the linked user id, or
         // the address ignoring case.
         where.OR = [
@@ -268,11 +269,18 @@ export async function signatureRoutes(app: FastifyInstance) {
           take: limit,
           skip: offset,
           include: {
-            signers: { select: { id: true, name: true, email: true, role: true, status: true, signedAt: true, signOrder: true } },
+            signers: { select: { id: true, name: true, email: true, role: true, status: true, signedAt: true, signOrder: true, userId: true, token: true } },
           },
         }),
         prisma.signatureRequest.count({ where: where as never }),
       ])
+      // X21 — an own-scope signer can't open a contract they don't own, so the
+      // page's "Open" link 404'd for them. Say which rows the caller can open,
+      // and give a pending signer the way to their own signing page.
+      const ownedIds = new Set(owned.map(c => c.id))
+      const myEmail = me?.email?.toLowerCase()
+      const isMe = (s: { userId: string | null; email: string }) =>
+        s.userId === req.user.sub || (!!myEmail && s.email.toLowerCase() === myEmail)
       // Hydrate contract title + type via a single batch query.
       const contractIds = [...new Set(items.map(i => i.contractId))]
       const contracts = contractIds.length === 0 ? [] : await prisma.contract.findMany({
@@ -290,8 +298,14 @@ export async function signatureRoutes(app: FastifyInstance) {
         expiresAt: it.expiresAt,
         signedCount: it.signers.filter(s => s.status === 'SIGNED').length,
         totalSigners: it.signers.length,
-        signers: it.signers,
+        // Tokens stay out of the list (X18); only the caller's own, as a path.
+        signers: it.signers.map(({ token: _token, userId: _userId, ...s }) => s),
         contract: contractById.get(it.contractId) ?? null,
+        canOpenContract: !own || ownedIds.has(it.contractId),
+        mySignPath: (() => {
+          const mine = it.status === 'PENDING' ? it.signers.find(s => s.status === 'PENDING' && isMe(s)) : undefined
+          return mine ? `/sign/${mine.token}` : null
+        })(),
       }))
       return reply.send({ data, total, limit, offset })
     },

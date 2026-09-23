@@ -25,8 +25,9 @@ interface TeamMember {
   outOfOffice: boolean
   outOfOfficeUntil: string | null
   delegateToId: string | null
-  activeContracts: number
-  pendingApprovals: number
+  /** Null where the caller can't see what it counts (own-scope roles, for other members). */
+  activeContracts: number | null
+  pendingApprovals: number | null
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -89,7 +90,7 @@ export function TeamPage() {
   const team = members ?? []
   // Busiest book on the team, used as the bar's denominator.
   const peakLoad = useMemo(
-    () => team.reduce((max, m) => Math.max(max, m.activeContracts), 0),
+    () => team.reduce((max, m) => Math.max(max, m.activeContracts ?? 0), 0),
     [team]
   )
 
@@ -207,17 +208,17 @@ export function TeamPage() {
               {/* Stats */}
               <div className="flex items-center gap-4 text-dense text-ink-500">
                 <span>
-                  <span className="font-semibold tabular-nums text-ink-950">{member.activeContracts}</span>{' '}
+                  <span className="font-semibold tabular-nums text-ink-950">{member.activeContracts ?? '—'}</span>{' '}
                   contracts
                 </span>
                 <span>
-                  <span className="font-semibold tabular-nums text-ink-950">{member.pendingApprovals}</span>{' '}
+                  <span className="font-semibold tabular-nums text-ink-950">{member.pendingApprovals ?? '—'}</span>{' '}
                   approvals pending
                 </span>
               </div>
 
-              {/* Workload bar */}
-              <div>
+              {/* Workload bar — only where the count is visible to the caller. */}
+              {member.activeContracts != null && <div>
                 <div className="flex items-center justify-between text-[11px] text-ink-500 mb-1">
                   {/* Say what the bar is measured against, or a full bar means
                       nothing. */}
@@ -237,7 +238,7 @@ export function TeamPage() {
                     style={{ width: `${workloadPercent(member.activeContracts, peakLoad)}%` }}
                   />
                 </div>
-              </div>
+              </div>}
             </Card>
           ))}
         </div>

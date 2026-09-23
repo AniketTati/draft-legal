@@ -18,10 +18,51 @@ import { Server } from '@hocuspocus/server'
 import * as Y from 'yjs'
 import { verifyToken } from './jwt.js'
 import { prisma } from './prisma.js'
+import { getPermissionsForRoles, evaluatePermission } from './permissions.js'
 
 const PORT = Number(process.env.COLLAB_PORT ?? 3030)
 
 let server: Server | null = null
+
+/**
+ * Who may join a contract's live document. X21 — the org check alone let any
+ * member join any contract's document, own-scope roles included; now it is
+ * what REST decides: view:contract (own scope = the owner), and without
+ * edit:contract the connection is read-only.
+ */
+export async function authenticateCollab({ token, documentName, connectionConfig }: {
+  token: string
+  documentName: string
+  connectionConfig: { readOnly: boolean }
+}): Promise<{ user: { id: string; orgId: string } }> {
+  if (!token) throw new Error('Missing token')
+  let payload
+  try { payload = verifyToken(token) }
+  catch { throw new Error('Invalid token') }
+  if (payload.type !== 'access') throw new Error('Wrong token type')
+
+  const contractId = documentName.startsWith('contract:')
+    ? documentName.slice('contract:'.length)
+    : null
+  if (!contractId) throw new Error('Bad document name')
+
+  // Tenant check: the contract must live in the user's org.
+  const c = await prisma.contract.findFirst({
+    where: { id: contractId, orgId: payload.orgId, deletedAt: null },
+    select: { id: true, ownerId: true },
+  })
+  if (!c) throw new Error('Contract not found in your org')
+
+  const permissions = await getPermissionsForRoles(payload.orgId, payload.roles ?? [])
+  const reaches = (action: string) => {
+    const r = evaluatePermission(permissions, action, 'contract')
+    return r.granted && (r.scope !== 'own' || c.ownerId === payload.sub)
+  }
+  if (!reaches('view')) throw new Error('Contract not found in your org')
+  if (!reaches('edit')) connectionConfig.readOnly = true
+
+  return { user: { id: payload.sub, orgId: payload.orgId } }
+}
 
 export function startCollabServer(): Server {
   if (server) return server
@@ -47,27 +88,7 @@ export function startCollabServer(): Server {
       })
     },
 
-    async onAuthenticate({ token, documentName }) {
-      if (!token) throw new Error('Missing token')
-      let payload
-      try { payload = verifyToken(token) }
-      catch { throw new Error('Invalid token') }
-      if (payload.type !== 'access') throw new Error('Wrong token type')
-
-      const contractId = documentName.startsWith('contract:')
-        ? documentName.slice('contract:'.length)
-        : null
-      if (!contractId) throw new Error('Bad document name')
-
-      // Tenant check: the contract must live in the user's org.
-      const c = await prisma.contract.findFirst({
-        where: { id: contractId, orgId: payload.orgId, deletedAt: null },
-        select: { id: true },
-      })
-      if (!c) throw new Error('Contract not found in your org')
-
-      return { user: { id: payload.sub, orgId: payload.orgId } }
-    },
+    onAuthenticate: authenticateCollab,
   })
 
   server.listen()

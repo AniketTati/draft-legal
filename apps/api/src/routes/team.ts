@@ -5,7 +5,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { requireAuth } from '../middleware/auth.js'
 
 const SetOooSchema = z.object({
@@ -25,7 +25,17 @@ export async function teamRoutes(app: FastifyInstance) {
   // not anything sensitive (no PII, no comp). Mutations (set OOO etc.)
   // remain `requirePermission`-gated below.
   app.get('/workload', { preHandler: requireAuth }, async (req, reply) => {
-    const { orgId } = req.user
+    const { orgId, sub: me } = req.user
+    // X21 — the directory and OOO stay visible to every member, but a count is
+    // only shown where the caller could see what it counts: other people's
+    // contracts need view:contract beyond `own`, their approval queues
+    // view:workflow beyond `own`. The caller's own counts are always shown.
+    const [contractScope, workflowScope] = await Promise.all([
+      permissionScopeFor(req, 'view', 'contract'),
+      permissionScopeFor(req, 'view', 'workflow'),
+    ])
+    const seesContracts = contractScope != null && contractScope !== 'own'
+    const seesApprovals = workflowScope != null && workflowScope !== 'own'
 
     const users = await prisma.user.findMany({
       where: { orgId, deletedAt: null, status: 'ACTIVE' },
@@ -59,8 +69,8 @@ export async function teamRoutes(app: FastifyInstance) {
       outOfOffice: u.outOfOffice,
       outOfOfficeUntil: u.outOfOfficeUntil,
       delegateToId: u.delegateToId,
-      activeContracts: contractCountMap.get(u.id) ?? 0,
-      pendingApprovals: approvalCountMap.get(u.id) ?? 0,
+      activeContracts: seesContracts || u.id === me ? contractCountMap.get(u.id) ?? 0 : null,
+      pendingApprovals: seesApprovals || u.id === me ? approvalCountMap.get(u.id) ?? 0 : null,
     }))
 
     return reply.send(result)

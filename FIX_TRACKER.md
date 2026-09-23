@@ -747,7 +747,29 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `routes/contract-parent-link.integration.test.ts` has 7 cases: cross-org, other rep, JSON-typed field, own-scope positive, same-org positive, deleted parent, and cross-org child and parent in family plus the migration SQL. Against the pre-fix code, 5 fail; the two positives are the controls.
     - A fresh subagent reviewed this adversarially with 14 probes. No other path sets a parent from client input, and `/:id/family` is the only reader that follows the link. Its findings are fixed above (JSON-typed field, deleted parent, `relationshipType`), and it found X25 and X26.
   - Original note: `POST /contracts/upload` stores the form's `parentContractId` unchecked. A user in org B can file an upload as an amendment of an org-A contract; org A's `/contracts/:id/family` then lists org B's contract (title, type, status), because the relation isn't org-filtered. Validate the parent against the caller's org (and ownership for own scope, as the guard now does for `/amendments`), and filter the family query by `orgId`. (Found while fixing X7.)
-- **X21 — Own-scope follow-ups (Low).** Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
+- **X21 — Own-scope follow-ups (Low). — DONE.**
+  - **Plan (each part confirmed in the code):**
+    - The dashboard's `orgPendingApprovals` counted every approval in the org. Narrow it like the rest of the KPI strip: an own-scope caller counts the approvals on their own contracts.
+    - `/team/workload` (requireAuth) returned every member's active-contract and pending-approval counts. The member directory and out-of-office status are deliberately visible to everyone (P14).
+      - Decision: keep the rows, but show a count only where the caller could see what it counts: other people's contracts need `view:contract` beyond `own`, their approval queues `view:workflow` beyond `own`. The caller's own counts are always shown.
+      - A hidden count is `null` and renders as "—", not as a misleading 0.
+    - Signatures page: for an own-scope signer who doesn't own the contract, "Open" goes to a contract page that 404s. The org list now says whether the caller can open each contract, and gives a pending signer the path to their own signing page. The page links "Sign" there. Signer tokens stay out of the list (X18); only the caller's own appears, as that path.
+    - Request conversion. Decision: the contract belongs to whoever asked for it, the requester, falling back to the converter when the requester is no longer an active member. It used to go to the converter, so a requester with own scope could never open the contract their request became. Legal, who converts, keeps access through org scope.
+    - Collaboration server: `onAuthenticate` checked only that the contract is in the user's org. It now decides as REST does: `view:contract` (own scope means the owner), and a caller without `edit:contract` gets a read-only connection (Hocuspocus `connectionConfig.readOnly`). The hook is exported as `authenticateCollab` so it can be tested without a socket.
+  - **What changed:** `routes/dashboard.ts`, `routes/team.ts`, `routes/signatures.ts`, `routes/requests.ts`, `lib/collab-server.ts`, and on the web `pages/TeamPage.tsx` (null counts) and `pages/SignaturesPage.tsx` (the Sign link).
+  - **Verification:**
+    - `routes/own-scope-followups.integration.test.ts` has 6 cases:
+      - dashboard count for SALES_REP vs LEGAL_OPS;
+      - workload: own count shown, others null, all shown to LEGAL_OPS;
+      - Signatures row: `canOpenContract: false`, the rep's own sign path, no tokens, owned row openable;
+      - conversion: owned by the requester, and the requester can open it;
+      - collab: own-scope members refused on others' contracts; editor read-write; VIEWER and SALES_REP (no `edit:contract`) read-only.
+    - Against the pre-fix code all 6 fail.
+    - Typecheck (api, web) 0, lint 0 errors, web unit 14/14.
+  - **Left as is:**
+    - Contracts converted before this keep the converter as owner. Reassigning them is a business decision, not a migration.
+    - The editor does not yet bind to the collaboration document, so the collab check can't be exercised live.
+  - Original note: Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
 - **X22 — Agent feedback trusts a client-supplied trace or session id (Low). — DONE.**
   - **Plan:**
@@ -869,3 +891,4 @@ X25 — DONE — matter links (contract matterId, matter counterparty/owner) mus
 X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be set by hand via REST or the agent; one shared transition table — b4484a6
 X26 — DONE — `_` contract metadata (analysis reports, _splitInto) writable only by the agents service — (sha: X26)
 X22 — DONE — agent feedback scores only the caller's own Langfuse traces (named trace or session lookup); others answer trace_not_found like missing ones — (sha: X22)
+X21 — DONE — own-scope follow-ups: dashboard org approvals + team workload counts narrowed (hidden, not zeroed); signers without the contract get their signing link; converted requests owned by the requester; collab server checks view/edit like REST — (sha: X21)

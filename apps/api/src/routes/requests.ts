@@ -272,6 +272,15 @@ export async function requestRoutes(app: FastifyInstance) {
       estimatedValue:    request.estimatedValue != null ? Number(request.estimatedValue) : undefined,
     } : undefined
 
+    // X21 — the contract belongs to whoever asked for it. It went to the
+    // converter, so a requester with own scope could never open the contract
+    // their request became. The converter keeps it only when the requester is
+    // no longer an active member.
+    const requester = await prisma.user.findFirst({
+      where: { id: request.requestedById, orgId, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true },
+    })
+
     // Create the contract from request data
     const contract = await prisma.contract.create({
       data: {
@@ -282,7 +291,7 @@ export async function requestRoutes(app: FastifyInstance) {
         analysisStatus:   hasAttachments ? 'PENDING' : 'DRAFTING',
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
-        ownerId:          userId,
+        ownerId:          requester?.id ?? userId,
         ...(draftContext && { metadata: { _draftContext: draftContext } }),
       },
     })

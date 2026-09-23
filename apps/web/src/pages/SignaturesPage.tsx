@@ -44,6 +44,10 @@ interface ApiSignatureRequest {
   totalSigners: number
   signers: ApiSigner[]
   contract: { id: string; title: string; type: string; counterpartyName: string | null } | null
+  /** False for a signer who doesn't own the contract (own scope): /contracts/:id would 404. */
+  canOpenContract?: boolean
+  /** The caller's own signing page, while their signature is pending. */
+  mySignPath?: string | null
 }
 
 const STATUS_FILTERS: { key: SrStatus | 'ALL'; label: string }[] = [
@@ -354,7 +358,7 @@ export function SignaturesPage() {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        {it.contract?.id && (
+                        {it.contract?.id && it.canOpenContract !== false ? (
                           <Link
                             to={`/contracts/${it.contract.id}`}
                             className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
@@ -362,7 +366,17 @@ export function SignaturesPage() {
                             Open
                             <ArrowRight className="size-3.5" />
                           </Link>
-                        )}
+                        ) : it.mySignPath ? (
+                          // A signer who can't open the contract signs it on
+                          // their own signing page instead.
+                          <Link
+                            to={it.mySignPath}
+                            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
+                          >
+                            Sign
+                            <ArrowRight className="size-3.5" />
+                          </Link>
+                        ) : null}
                       </td>
                     </tr>
                   )
