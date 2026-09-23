@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 // [Styled | Original] toggle. Styled (TipTap / DocumentCanvas) remains the
 // default; Legal users typically flip to Original for pixel fidelity.
 import { Worker, Viewer, type RenderPageProps } from '@react-pdf-viewer/core'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
 import { parseCitationTarget, highlightRect } from '@/lib/citation-target'
@@ -2711,7 +2712,7 @@ export function ContractDetailPage() {
               // in the system allowed a drop shadow.
               <div className="h-full overflow-hidden bg-paper-50 p-4">
                 <div className="bg-card rounded-paper shadow-page h-full">
-                  <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
+                  <Worker workerUrl={pdfWorkerUrl}>
                     <Viewer
                       // X1 — remounted per citation: initialPage applies on load.
                       key={citeTarget.page ?? 0}

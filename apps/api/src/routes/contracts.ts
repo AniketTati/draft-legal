@@ -712,6 +712,11 @@ export async function contractRoutes(app: FastifyInstance) {
       orderBy: { versionNumber: 'desc' },
       select: {
         id: true, versionNumber: true, mimeType: true, fileSize: true,
+        // X1 follow-up — the contract page enables its Original (PDF) view,
+        // and opens a citation there, only when the latest version has a
+        // stored file; without the key here it never did. GET /:id already
+        // returns it for every version.
+        s3Key: true,
         changeNote: true, changeSummary: true, createdById: true, createdAt: true,
       },
     })

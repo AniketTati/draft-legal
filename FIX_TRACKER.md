@@ -387,7 +387,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## Stretch (only if everything above is `DONE`, `VERIFY-PENDING` or `NOT-REPRODUCIBLE`)
 
-- **X1 — Page-jump citations. — VERIFY-PENDING.**
+- **X1 — Page-jump citations. — DONE.**
   - **Plan:**
     - Confirmed: `contract_cite` returns each passage's `page` and `bbox`. The extractor records a 1-based page and the paragraph's union box in PDF points from the top-left (PyMuPDF, `extract.py`). `CitationPills` linked only to `?section=`, which scrolls the styled view to a heading that merely matches.
     - The Original view is `@react-pdf-viewer`, which takes `initialPage` and a `renderPage` hook, so no new dependency is needed.
@@ -402,6 +402,9 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `lib/citation-target.test.ts` has 4 cases: link with section, page and box, round-tripped; section-only fallback; malformed page or box ignored; box scaled to the page.
     - web typecheck 0, lint 0 errors (warnings unchanged at 22), web unit 18/18.
   - **Why VERIFY-PENDING:** needs a live click-through, which this environment can't run. Open a contract with a source PDF, ask the agent to cite a clause, and click the pill. The Original PDF should open at the cited page with the paragraph outlined. With no source file, the pill should still scroll the styled view.
+  - **Live check (final sweep, signed in to the local stack):** the first attempt failed. The page never left the styled view, because the Original view had never worked (X49).
+    - With X49 fixed, the link a pill produces (`/contracts/<Globex NDA>?page=1&bbox=72,90,540,180`) switches to Original, renders the PDF at page 1, and draws the outline at the box's scaled position, with no console errors.
+    - The pill itself wasn't clicked from a live chat answer, which needs the agents service and an LLM key. Its link is built by `citationHref`, which `lib/citation-target.test.ts` covers.
   - **Left as is:** the outline is drawn only on unrotated pages, and it assumes the CropBox starts at the page origin (true for almost every PDF; PyMuPDF and pdf.js then agree). Scanned (OCR) pages carry no box, so they land on the page without an outline.
   - Original note: Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
 - **X2 — Custom-field backfill. — VERIFY-PENDING.**
@@ -1954,6 +1957,20 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Web suite and typecheck pass.
   - **Left as is:** each tab of the same user holds its own copy of the refresh token, and the server keeps only the latest. A second tab's next refresh is refused and that tab signs out, as before.
 
+- **X49 — The contract page's Original (PDF) view never works (Medium). — DONE.** Found during X1's live check.
+  - Two causes, both from the first commit:
+    - `GET /contracts/:id/versions` never returned `s3Key`, but the page enables the Original toggle only when the latest version has one. The toggle was disabled on every contract as soon as the version list loaded ("No original file").
+    - The viewer (`@react-pdf-viewer/core` 3.12) loaded its worker from unpkg, pinned to pdf.js 3.11.174. The root `package.json`'s pnpm override, `pdfjs-dist >=4.2.67` (the fix for CVE-2024-4367), installs 5.7.284, so every render failed with "The API version 5.7.284 does not match the Worker version 3.11.174".
+  - X1 needs both, so it couldn't work live.
+  - **What changed:**
+    - `/versions` returns each version's `s3Key`; `GET /contracts/:id` already returned it for every version.
+    - The viewer's worker is now the installed package's (`pdfjs-dist/build/pdf.worker.min.mjs?url`), bundled by Vite rather than fetched from a CDN, with a `*?url` type declaration.
+  - **Verification:**
+    - `routes/contract-versions.integration.test.ts`: the list says which versions have a stored file. It fails against the pre-fix route.
+    - Live: the Globex NDA's Original view renders, and a citation lands on its page, outlined (see X1).
+    - Web typecheck clean. The production build emits the worker as a hashed asset.
+  - **Left as is:** `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API, so pages render without selectable text. Fixing that means replacing the viewer, a dependency change. Keep the override: dropping it would reopen CVE-2024-4367.
+
 ---
 
 ## Run log
@@ -2191,4 +2208,5 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
 X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
-X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — (sha: pending)
+X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — 39a6557
+X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — (sha: pending)
