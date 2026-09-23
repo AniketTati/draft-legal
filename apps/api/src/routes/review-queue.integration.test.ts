@@ -99,4 +99,20 @@ describe('review queue corrections', () => {
     expect(expiry.statusCode).toBe(200)
     expect((await prisma.contract.findUnique({ where: { id: contract } }))?.expiryDate).toBeNull()
   })
+
+  it('every review is on the record, naming the field but not its value (C5 follow-up)', async () => {
+    const events = await prisma.auditEvent.findMany({
+      where: { orgId: org, resourceId: contract, action: 'CONTRACT_UPDATED' },
+      orderBy: { createdAt: 'asc' }, select: { userId: true, metadata: true },
+    })
+    const reviews = events.map(e => e.metadata as { source?: string; action?: string; field?: string })
+      .filter(m => m.source === 'review_queue')
+    expect(reviews).toEqual(expect.arrayContaining([
+      { source: 'review_queue', action: 'corrected', field: 'expiryDate' },
+      { source: 'review_queue', action: 'corrected', field: 'governingLaw' },
+      { source: 'review_queue', action: 'rejected', field: 'noticePeriod' },
+    ]))
+    expect(events.every(e => e.userId === owner)).toBe(true)
+    expect(JSON.stringify(reviews)).not.toContain('New York')
+  })
 })

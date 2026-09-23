@@ -39,6 +39,8 @@ import { requirePermission } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import { prisma } from '../lib/prisma.js'
 import { reindexContract } from '../lib/elasticsearch.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { AuditAction } from '@clm/types'
 
 // Fields worth surfacing in the queue. Extraction produces keyTerms for
 // a lot of keys but not all are HITL-worthy (internal helpers). We keep
@@ -254,6 +256,18 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     if (mapped && body.value !== undefined) {
       reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
     }
+    // C5 follow-up — a correction changes the contract's terms (the columns
+    // the list, renewals and alerts read), and a review changes what counts
+    // as checked: on the record, as a PATCH is. Like PATCH, the field is
+    // named and its value isn't.
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: contract.id,
+      metadata: { source: 'review_queue', action: body.value === undefined ? 'verified' : 'corrected', field: body.field },
+      ipAddress: req.ip,
+    })
     return reply.send({ ok: true, contractId, field: body.field, verifiedBy: userId })
   })
 
@@ -296,6 +310,14 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       },
     })
     if (mapped) reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: contract.id,
+      metadata: { source: 'review_queue', action: 'rejected', field: body.field },
+      ipAddress: req.ip,
+    })
     return reply.send({ ok: true, contractId, field: body.field, rejectedBy: userId })
   })
 }

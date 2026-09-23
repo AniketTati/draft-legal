@@ -116,7 +116,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C1 — API keys created in the UI have no scopes and fail every request
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE
 - **Severity:** High (advertised feature does not work at all)
 - **Evidence:** the create dialog sends only `{name}` (`apps/web/src/pages/AdminIntegrationsPage.tsx:300`). A key with no scopes maps to no permissions, so every permission-gated route returns 403. 11 scopes exist server-side.
 - **Acceptance criteria:** the dialog lets an admin choose scopes (and an optional expiry) and sends them; a key created through the UI can call a route its scopes allow and is refused where they do not; the one-time-reveal behaviour is unchanged.
@@ -126,6 +126,12 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** `apps/api/src/routes/integrations.ts`: new `GET /api-key-scopes`; `scopes` now requires at least one (empty or omitted → 400). `apps/web/src/lib/api-keys.ts`: `buildCreateApiKeyBody` and the expiry options. `AdminIntegrationsPage.tsx`: the dialog gains a scope picker (checkboxes, fetched from the server), an expiry select (never / 30 / 90 / 365 days), and Create is disabled until a name and at least one scope are chosen. The keys table gains a Scopes column that flags scope-less keys ("none — can't call any endpoint"). One-time reveal unchanged.
   - **Verified:** `routes/api-keys.integration.test.ts` (4) fails 2/4 before the fix (no vocabulary endpoint; the scope-less key was accepted). The 2 that passed are the pre-existing server model: a `contracts:read` key reads (200) and is refused on PATCH (403). All 4 pass after. `apps/web/src/lib/api-keys.test.ts` (4) covers the request body, including scopes, expiry and refusal without scopes. Full suite: typecheck, lint (0 errors), api unit 171/171, web 10/10, api integration 38/38.
   - **Why VERIFY-PENDING:** the dialog was not checked in a browser. There is no local `.env` for the dev API (only production `env.api.yaml`), and signing in would mean entering a password, which this run does not do. **Remaining check (≈1 min):** Admin → Integrations → New API key. The scope checkboxes list 11 scopes, the expiry select works, Create is disabled until a scope is ticked, the created key shows its scopes in the table, and the reveal modal still shows the full key once.
+  - **Live check (final sweep, signed in to the local stack):** passed.
+    - The dialog offers the 11 scopes ("Choose at least one") and expiry (Never, 30 days, 90 days, 1 year). Create key stays disabled until a name and a scope are set.
+    - Creating "C1 visual check" (`contracts:read`, 30 days) returned 201 and showed the one-time reveal ("This is the only time you'll see the full key…"). The list shows the name, prefix only, scope, Created by "Admin User" (X43) and Active.
+    - The stored key has `{contracts:read}` and a 30-day expiry, and `API_KEY_CREATED` is audited.
+    - Revoking it through the in-app confirmation turned it Revoked.
+    - The key itself wasn't used to call the API, because it's a credential. `api-keys.integration.test.ts` shows a key created by this route is honoured and refused by its scopes.
   - **Follow-up:** existing scope-less keys created through the old dialog still exist. The new Scopes column makes them visible; admins should revoke and re-issue them.
 
 
@@ -179,7 +185,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C5 — The review queue is unreachable, and its corrections don't stick
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE
 - **Severity:** High (this is the human-verification loop for AI data)
 - **Evidence:** `apps/web/src/pages/ReviewQueuePage.tsx` is routed at `/review-queue` but nothing in the app links to it. "Correct" updates only the key-terms record, so the `effectiveDate`, `expiryDate` and `value` that the contracts list and renewals read keep the wrong value. "Reject" is labelled "clear the value" but only sets confidence to 0.
 - **Acceptance criteria:** the queue is reachable from the navigation (and ideally from a low-confidence badge on the contract); a correction writes through to the canonical contract fields, so the list and renewals show the corrected value; the reject action matches its label or the label matches the behaviour; a test covers write-through.
@@ -189,6 +195,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** `apps/api/src/routes/review-queue.ts` — `COLUMN_FOR_FIELD`/`parseCorrection`. Verify writes the canonical column (`effectiveDate`/`expiryDate` as dates, `value` as a number, `governingLaw`→`jurisdiction`) and keeps `keyTerms` in step; an unparseable date or number → 400 with a readable message. Reject now clears the `keyTerms` key and the column, and keeps the rejection record. Both re-index the contract in ES when a column changes. Web: a sidebar "Extraction Queue" item under Queues (the misleading comment rewritten); `ReviewQueuePage` honours `?contractId=` (with "show all"), and correction/rejection failures toast the server's reason instead of silently closing the editor; the contract Key Terms card shows "Review N low-confidence fields", linking to the queue filtered to that contract.
   - **Verified:** new `routes/review-queue.integration.test.ts` (4). **3 defect cases fail before the fix**: a corrected expiry never reached the column, bad input was accepted, and reject left the value. All 4 pass after, including `GET /contracts` showing the corrected expiry and value. Full suite: typecheck, lint (0 errors), api unit 171/171, web 14/14, api integration 51/51.
   - **Why VERIFY-PENDING:** the nav item, the contract-page link and the toasts were not rendered in a browser (no local dev env / sign-in; see C1). **Remaining check:** the sidebar shows Queues → Extraction Queue. On a contract with low-confidence key terms, the "Review N…" link opens the queue filtered to it. Correcting an expiry date then shows the new date on Contracts and Renewals, and a bad date shows a toast.
+  - **Live check (final sweep, signed in to the local stack):** passed.
+    - The sidebar shows Queues → Extraction Queue. The queue lists the low-confidence fields, and `?contractId=` shows one contract ("show all" to widen).
+    - A bad date ("not a date") returned 400, with the message "Correction not saved — Enter the date as YYYY-MM-DD."; nothing changed.
+    - A valid date (2027-06-30) returned 200 and left the queue (14 → 13). The Contracts list filtered to type OTHER, expiring by end-2027, shows the contract with "Jun 30, 27".
+    - The contract-page "Review N low-confidence fields" link wasn't seen. The one local contract with flagged fields failed analysis and has no Key Terms card, where the link lives. The acceptance criteria ask for this link only "ideally".
+    - The test contract was then restored from its pre-test values: column, key term, confidence and search index.
+  - **Follow-up (final-sweep live check, DONE):** the check showed that queue reviews wrote no audit event, though a correction changes the contract's terms the way a PATCH does. Verify, correct and reject now write `CONTRACT_UPDATED` with `{ source: 'review_queue', action, field }`. As in PATCH, the field is named and its value isn't. The new case in `review-queue.integration.test.ts` fails without the change.
   - **Note:** new `indexContract` call sites (`review-queue.ts reindex`) → include them in C7's "every path that indexes a contract".
 
 
@@ -320,6 +333,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** `contracts.ts GET /:id/playbook-review` returns findings sorted by their clause's `sortOrder`, each with `sectionRef`, `excerpt` and `sortOrder` (clauses looked up within this contract's versions only). With no review, the 404 body adds `reason` (`no_positions` | `not_run`), `playbookPositionCount` and `contractType`. New `apps/web/src/components/contracts/PlaybookReviewRailSection.tsx`: gate banner, summary, ordered findings with a severity chip, alignment, recommendation and reasoning, each a button that jumps to the clause, plus the two explained empty states (with a Playbook link for `no_positions`). `ContractDetailPage.tsx` mounts it above Compliance and shares one `jumpToClause` with the approver `DecisionStrip`, whose inline handler it replaces with identical behaviour.
   - **Verified:** new `routes/playbook-review.integration.test.ts` (3). The first 2 **fail on the pre-fix route**: model order was returned with no section or excerpt, and the 404s carried no reason. After the fix: document order + enrichment; `no_positions` → `not_run` once an NDA position exists; org scoping holds. Full suite: typecheck, lint (0 errors), api unit 186/186, web 14/14, api integration 96/96.
   - **Why VERIFY-PENDING:** the rail section was not rendered in a browser (no local dev env / sign-in). **Remaining check:** on an analysed contract whose type has playbook positions, the "Playbook review" section lists findings in document order, and clicking one scrolls to (or opens) that clause. On a type with no positions it explains that and links to Playbook.
+  - **Live check (final sweep, signed in to the local stack):** the empty state renders: "Not reviewed yet. The playbook review runs automatically once the contract has been analysed." No local contract has a playbook review (`metadata._playbookReview`), and producing one needs the agents service and an LLM key, so the ordered findings are still unchecked.
 
 
 ## V2 — Stop answers overstating their own completeness
@@ -2209,4 +2223,5 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
 X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
 X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — 39a6557
-X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — (sha: pending)
+X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — d2ab47a
+C1, C5 (live checks) — DONE — both verified in the browser against the local stack (C1: create, reveal, list, audit, revoke; C5: nav, filter, bad-date refusal, write-through to the Contracts list); C5 follow-up: queue reviews are audited; V1's empty state checked, its findings still need a reviewed contract — (sha: pending)
