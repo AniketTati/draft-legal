@@ -155,7 +155,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C3 — `/agent` hard-codes a model and overrides the org's AI config
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE (VERIFY-PENDING → DONE after the live check below)
 - **Severity:** High (the "bring your own model" promise silently fails, and it bills the wrong model)
 - **Evidence:** `apps/web/src/pages/AgentHomePage.tsx` pins `openai/gpt-4.1-mini`, outranking Admin → Org → AI Config. A related fix already landed for unpinned chat requests; the full-page assistant still pins.
 - **Acceptance criteria:** with no explicit user choice, `/agent` turns run on the org's configured provider/model for the tier; an explicit in-session pin (if the UI offers one) is still honoured; the "which model answered" readout shows the model actually used.
@@ -165,6 +165,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** new `apps/web/src/lib/agent-chat.ts` (`buildAgentChatBody`, `readProvenance`). `AgentHomePage.tsx` no longer pins `openai/gpt-4.1-mini`. The provenance footer takes the `done` frame's resolved provider/model/tier over the per-frame request stamp, and the persisted turn now carries `provider`/`model`/`tier` (as the side rail's does), so reloaded threads keep the readout.
   - **Verified:** `lib/agent-chat.test.ts` (4) covers: no provider/model in the body without an explicit pin; an explicit pin passes through; the resolved model beats the requested stamp; unpinned turns end with the resolved model. These fail before the change because the module does not exist; the old page hard-coded the pin inline. No other web surface pins a model (grep). Full suite green: typecheck, lint 0 errors, web 14/14, api unit 171/171, api integration 43/43.
   - **Why VERIFY-PENDING:** a live `/agent` turn was not run (no agents service or LLM key here). **Remaining check:** set Admin → Org → AI Config default tier to a non-OpenAI model, ask `/agent` a question, and confirm the footer shows that model. Reload the thread and confirm the footer persists.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** the org's only configured key is Google's, so an answer from the old pin (`openai/gpt-4.1-mini`) couldn't happen. A `/agent` question was answered with the footer "Machine-authored · gemini-2.5-flash", and the stored turn names provider google, model gemini-2.5-flash, tier default. Reopening the thread later still showed the footer.
   - **Assumption:** the page has no model picker, so "an explicit in-session pin is still honoured" is satisfied by `buildAgentChatBody({ pin })`, which is ready for one but has no UI.
 
 
@@ -269,7 +270,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C10 — Binder re-split duplicates children, and DOCX binders fail opaquely
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE (VERIFY-PENDING → DONE after the live check below)
 - **Severity:** Medium
 - **Evidence:** re-splitting never deletes the first set of children (`apps/api/src/workers/parse.worker.ts:218`), so they accumulate. A DOCX flagged as a binder fails because splitting is PDF-only. Detection reads only the first 10,000 characters (`apps/agents/app/routes/detect_binder.py`), so later agreements are missed.
 - **Acceptance criteria:** re-splitting replaces the previous children (or refuses with a clear message) and never duplicates; a DOCX binder either splits or reports a clear, actionable message instead of failing; widening the detection window is optional — if skipped, note it as a follow-up rather than silently leaving it.
@@ -279,6 +280,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** new `apps/api/src/lib/binder-split.ts`. `splitBinder` moved out of `parse.worker.ts` (the worker now delegates), plus `previousSplitChildren`, `resplitBlocker`, `splitPrefix` and `SPLIT_REQUIRES_PDF`. Previous split children (by `splits/` key or `_splitInto`) are soft-deleted and removed from ES once the new slices are built. If any has left DRAFT or been edited, the split is refused, and the worker records `_splitError` on the parent. The original's bytes must be a PDF, else the worker throws `UnrecoverableError(SPLIT_REQUIRES_PDF)` (no retries). `POST /contracts/:id/split` answers 422 (not a PDF) or 409 (children moved on) with the message. `agent.worker.ts` detect-binder: a non-PDF binder is not auto-split. It records `_binderDetected`, `_binderDocumentCount` and `_binderSplitUnsupported`, then proceeds to classification as one document. Web: the binder banner shows the unsupported message instead of a failing "Review & Split" button; `_splitError` shows in a banner; the split modal toasts the route's reason.
   - **Verified:** new `lib/binder-split.integration.test.ts` (5) uses real Prisma, the real route and real pdf-lib (a 3-page PDF), with S3 faked via `vi.mock` so it runs in CI. It covers: split, then re-split replaces instead of duplicating, then a same-splits retry is idempotent; a manual exhibit survives; a re-split is refused (409 + worker) when a child moved on; a DOCX is refused (422 + `UnrecoverableError`) with no children created. **With the pre-fix handler swapped back in and the route guards stashed, 4 of 5 fail.** Full suite: typecheck, lint (0 errors), api unit 182/182, web 14/14, api integration 69/69.
   - **Why VERIFY-PENDING:** the automatic path for a DOCX (detect-binder → no split → classify) needs the agents service's LLM binder detector, which isn't available here. That branch is verified only by typecheck and reading. **Remaining check:** upload a DOCX containing two agreements. The banner should say it can't be split (with the fix), and the document should be analysed as one contract, not FAILED.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** a DOCX holding a mutual NDA and a separate distribution agreement.
+    - The detector flagged it (2 documents), and the worker recorded the "PDFs only" message without splitting.
+    - The document went on to classification and was analysed as one contract (NDA, summary, risk, expiry), not FAILED.
+    - The contract page shows the banner "Multiple agreements detected … Save this document as a PDF and upload it again to split it, or upload each agreement separately", with no Review & Split button.
   - **Deliberately left out (follow-up, per the task):** widening the detection window beyond the first 10,000 chars (`detect_binder.py:22`) → Stretch X16.
 
 
@@ -300,7 +305,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## C12 — Chat drafting ignores what the user asked for
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE (VERIFY-PENDING → DONE after the live check below)
 - **Severity:** Medium
 - **Evidence:** `contract_create_from_template` does not use the drafting pipeline. `apps/api/src/routes/internal-ai.ts:~3863-3920` guesses the contract type from keywords, takes the newest published template of that type (so untyped templates are never used) and hardcodes California law, a 2-year term and today's date whatever the user asked. It also creates the contract inline, with no confirmation card and no undo, unlike the other six write tools.
 - **Acceptance criteria:** the tool either routes through `draft_agent` (which fills variables from intent) or passes the user's stated terms through instead of hardcoded defaults; it goes behind the same confirm-and-undo card as other write tools; the tool description matches what it does.
@@ -310,6 +315,12 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** new `apps/api/src/lib/draft-plan.ts` (`planDraft`, `inferContractType`). `/tools/contract_draft` is now a read-only planner (`persisted: false`). Its schema adds `templateId`, `governingLaw`, `term`, `effectiveDate` and a `terms` map. `/tools/contract_create_from_template` (the Apply target) accepts the planned `contractType`, writes the `CONTRACT_CREATED` audit (moved from the planner) and returns `html`/`subtitle`; its undo also drops the ES doc. `apps/agents/app/tools/contract_create_from_template.py`: plans, then returns `awaitingConfirmation` with the create args and a preview summary naming the template and the blank terms. The description says it prepares, the user applies, and terms are never invented. `orchestrator.py` drafting rules changed to match (no more "already persisted"; offer listed templates on NO_TEMPLATE_MATCH). `agents.ts` comments corrected; the tool is still withheld without `create:contract`. Web: `AgentHomePage` builds the Doc artifact from the Apply result. `scripts/agent-loops/l4-draft-gate.mjs` drives plan → create and records the decision it had left open.
   - **Verified:** new `routes/draft-plan.integration.test.ts` (6). **All 6 fail on the pre-fix routes.** After the fix: stated terms (New York / 3 years / 2026-10-01 / Initech) land in the template's keys with the template's own `defaultValue` (net 30) and the org name; nothing is persisted by planning; unstated terms are reported blank and California / "2 years" / today never appear; an untyped template is chosen by name; an explicit `templateId` wins, with aliases mapped onto that template's variable names; NO_TEMPLATE_MATCH lists the org's templates. The **real** `/agent/threads/:id/actions/apply` → create → `/undo` path runs end to end (the apply RPC's internal HTTP call is forwarded in-process): owner = caller, type NDA, `CONTRACT_CREATED` audit by the caller, and undo soft-deletes. `lib/agents-drafting-tool.test.ts` (2, source tripwire): both fail on the old Python tool. Python compiles; the l4 probe passes `node --check`. Full suite: typecheck, lint (0 errors), api unit 186/186, web 14/14, api integration 86/86.
   - **Why VERIFY-PENDING:** a live chat turn was not run (no agents service or LLM). **Remaining check:** ask `/agent` to "draft an NDA with Initech, New York law, 3 years". Expect a confirm card naming the template and any blank terms, and no contract before Apply. After Apply, the draft opens as a Doc with New York / 3 years; Undo removes it. Also run `scripts/agent-loops/l4-draft-gate.mjs` against the live stack.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** "draft an NDA with Initech, New York law, 3 years".
+    - The answer came as a confirm card: "About to run contract_create_from_template · UNDOABLE", naming the "Mutual Non-Disclosure Agreement" template and the 6 terms left blank. No contract existed before Apply (count unchanged).
+    - Apply created "Initech — NDA" (DRAFT, NDA), owned by you, with a `CONTRACT_CREATED` audit by you. Its text reads "governed by the laws of New York" and "continue for 3 years", with no California or 2-year terms.
+    - Undo soft-deleted it and removed it from the search index (404). Apply and Undo are audited as `AGENT_TOOL_APPLIED` and `AGENT_TOOL_UNDONE`.
+    - Not run: `scripts/agent-loops/l4-draft-gate.mjs`. It signs in with a password and creates a VIEWER account, which I leave to you, and it pins an OpenAI model this stack has no key for.
+    - Seen in passing, left as is: reopening a thread doesn't bring back a card still waiting for Apply, because the server doesn't keep the proposal's Apply arguments. The user asks again.
   - **Product note:** this settles the open question the l4 probe recorded ("draft-first vs behind the confirmation gate", docs/36) in favour of the gate, as this tracker specified. Drafting now needs one click to commit.
 
 
@@ -329,7 +340,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ## V1 — Render the playbook review that already runs on every contract
 
-- **Status:** VERIFY-PENDING
+- **Status:** DONE (VERIFY-PENDING → DONE after the live check below)
 - **Severity:** High value, low effort
 - **Evidence:** after extraction, a job scores every clause against the org's playbook and writes findings, severity, alignment and a human-gate flag to `metadata._playbookReview` (`apps/api/src/workers/parse.worker.ts:211` → `agent.worker.ts:563` → `apps/agents/app/agents/playbook_review_agent.py`). `GET /contracts/:id/playbook-review` exists. Nothing in `apps/web` references it.
 - **Acceptance criteria:** a rail section on the contract page renders the stored review in document order, mirroring `ComplianceRailSection.tsx`, which already reads a `metadata._*` report in this shape; each finding shows severity and links to its clause; an empty state explains when no playbook positions exist.
@@ -339,6 +350,9 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Changed:** `contracts.ts GET /:id/playbook-review` returns findings sorted by their clause's `sortOrder`, each with `sectionRef`, `excerpt` and `sortOrder` (clauses looked up within this contract's versions only). With no review, the 404 body adds `reason` (`no_positions` | `not_run`), `playbookPositionCount` and `contractType`. New `apps/web/src/components/contracts/PlaybookReviewRailSection.tsx`: gate banner, summary, ordered findings with a severity chip, alignment, recommendation and reasoning, each a button that jumps to the clause, plus the two explained empty states (with a Playbook link for `no_positions`). `ContractDetailPage.tsx` mounts it above Compliance and shares one `jumpToClause` with the approver `DecisionStrip`, whose inline handler it replaces with identical behaviour.
   - **Verified:** new `routes/playbook-review.integration.test.ts` (3). The first 2 **fail on the pre-fix route**: model order was returned with no section or excerpt, and the 404s carried no reason. After the fix: document order + enrichment; `no_positions` → `not_run` once an NDA position exists; org scoping holds. Full suite: typecheck, lint (0 errors), api unit 186/186, web 14/14, api integration 96/96.
   - **Why VERIFY-PENDING:** the rail section was not rendered in a browser (no local dev env / sign-in). **Remaining check:** on an analysed contract whose type has playbook positions, the "Playbook review" section lists findings in document order, and clicking one scrolls to (or opens) that clause. On a type with no positions it explains that and links to Playbook.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** a freshly uploaded 10-section services agreement (the PII fixture below, X23).
+    - Its automatic playbook review scored 11 clauses, and the rail's "Playbook review" section lists its 6 findings in document order (§3, §6, §7, §8, §9, §10). Each has a severity, recommendation, playbook position and a reason quoting the contract.
+    - Left as is: the section's summary says "6 of 11 clause(s) deviate from the playbook" although 4 of the 6 are "accept · preferred/acceptable". It counts findings, not deviations.
   - **Live check (final sweep, signed in to the local stack):** the empty state renders: "Not reviewed yet. The playbook review runs automatically once the contract has been analysed." No local contract has a playbook review (`metadata._playbookReview`), and producing one needs the agents service and an LLM key, so the ordered findings are still unchecked.
 
 
@@ -431,7 +445,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The pill itself wasn't clicked from a live chat answer, which needs the agents service and an LLM key. Its link is built by `citationHref`, which `lib/citation-target.test.ts` covers.
   - **Left as is:** the outline is drawn only on unrotated pages, and it assumes the CropBox starts at the page origin (true for almost every PDF; PyMuPDF and pdf.js then agree). Scanned (OCR) pages carry no box, so they land on the page without an outline.
   - Original note: Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
-- **X2 — Custom-field backfill. — VERIFY-PENDING.**
+- **X2 — Custom-field backfill. — DONE** (VERIFY-PENDING → DONE after the live check below).
   - **Plan:**
     - Confirmed: extraction reads the org's field definitions at upload (`agent.worker.ts` `/review`), and nothing ever goes back, so a field added later stays empty on every existing contract. `review.py` also stored only each custom field's value, dropping the confidence and quote the model returned (unlike `_typeFields`).
     - Evidence: the value stays flat in `metadata[fieldKey]`, which search and the UI read, and the confidence and quote go beside it in `metadata._customFieldEvidence[fieldKey]` (cleared on a run that produced output, like `_typeFields`). The contract page shows the confidence icon and, on hover, the source quote.
@@ -458,6 +472,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - api unit 270/270, web 18/18;
       - api integration green, except a probe file another review had open at the time (not part of this change).
   - **Why VERIFY-PENDING:** `/extract-fields` is new Python that only compiles here; there is no Python environment with its dependencies. Live check: add a custom field to an org with analysed contracts, press "Fill in existing contracts", and watch values with confidence and quote arrive and the progress line reach "Filled in on N of M".
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** two text fields scoped to OTHER, the type with the fewest analysed contracts (3), to keep the run small.
+    - "Governing law (X2 check)" ended "Filled in on 0 of 3 existing contracts". That's right: none of the three states a governing law.
+    - "Customer name (X2 check)" ended "Filled in on 3 of 3", with values "Contoso Logistics Inc." (×2) and "Massive Dynamic", each with confidence 0.99 and its quote (`Contoso Logistics Inc. ("Customer")`).
+    - The progress line stops updating while the browser tab is hidden (React Query pauses polling then) and catches up when the tab is shown. Both fields are still in Settings → Custom Fields.
   - **Deploy:** run the migration (`20260923040000_custom_field_backfill`), and deploy the agents service with the new route before the API's worker.
   - Original note: Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
 - **X3 — Empty stubs. — DONE.**
@@ -997,7 +1015,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Now a named trace is resolved within the caller's own session list (`userId` filter, `fields=core,io`), so it is never fetched by id, and ownership needs a string `userId`.
     - Test: a fifth case asserts the only Langfuse lookup is the caller's own list. It fails before the follow-up.
   - Original note: `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
-- **X23 — PII redaction has gaps outside the chat tools (Medium). — VERIFY-PENDING.**
+- **X23 — PII redaction has gaps outside the chat tools (Medium). — DONE** (VERIFY-PENDING → DONE after the live check below).
   - **Plan (first cut):**
     - Background jobs: every agents-service call from the worker goes through `callAgents`. It applies the org's policy to every text field of the outgoing JSON (`applyPiiPolicyBatch`, one audit row per call). Ids can't match the PII patterns. Contract mode keeps emails and phones, so notice clauses survive.
     - Embeddings: clause texts are redacted before they go to the embedding provider.
@@ -1066,6 +1084,12 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - (10) Dates in the walk, token collisions, and embeddings without an org.
       - It confirmed that no restore can reveal a value to anyone who couldn't read it, and that fail-closed and ids are clean.
   - **Why VERIFY-PENDING:** the round trip relies on the model copying `[PII:KIND:xxxxxxxx]` tokens verbatim, which the prompts now ask for, and only a live stack can show it. Upload a contract with an SSN and a card number. Check that the agents-service request carries tokens, and that the stored clauses, summary and key terms carry the real values. Then run a chat redline on that clause and apply it.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** a services agreement PDF with an SSN (219-09-9999) and a Visa card number, uploaded under your session. The org's PII mode is redact. A logging proxy between the API and the agents service recorded, per call, only counts of tokens and of the fixture's raw values.
+    - **Found and fixed (X52):** the PDF's line wrap split the card number across two lines, and the detector didn't join groups across a line break, so it would have reached the models whole.
+    - With X52, `/detect-binder`, `/classify` and `/review` each received two tokens (SSN, card) and no raw value. `/extract` receives the PDF itself: that's local parsing (PyMuPDF and on-device OCR), not a model.
+    - Stored results read with the real values and no token anywhere: summary, key terms, metadata, the 11 clauses, the version text.
+    - **Found and fixed (X53):** a chat redline of "section 4" couldn't find the clause. Once fixed, the rewriter (`/redline_propose`) received 1 SSN token and returned 7 (kept verbatim), and the chat stream carried 8 tokens and no raw values. Applying the moderate variant made v2 with the real SSN, no tokens, and the requested sentence.
+    - As already noted, the chat's redline preview shows the tokens themselves.
   - **Left as is:**
     - Contract text that other paths still send raw is filed as X27 (found in this review).
     - In the chat rail, a redline preview shows the contract's own values as tokens. The applied version has the real values. Showing them would mean restoring on the `/agent/chat` relay.
@@ -1177,7 +1201,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - Against the pre-fix code all 3 fail.
       - The C4 metadata-merge and binder-split tests still pass.
     - **Residual:** `review.py` still PATCHes without `x-org-id`. That works because those routes look contracts up by id for the `system` org, and the ids come from the server.
-- **X27 — Contract text still reaches models raw on paths outside X23 (Medium). — VERIFY-PENDING.**
+- **X27 — Contract text still reaches models raw on paths outside X23 (Medium). — DONE** (VERIFY-PENDING → DONE after the live check below).
   - **Plan (each surface confirmed in the code):** apply the org's policy with X23's round-trip helpers wherever the model's output is shown back or stored, and the plain policy where it only goes to a model.
     - **Q&A:**
       - `/search/ask` and `/contracts/:id/ask`: the retrieved clauses go to Voyage's reranker and `/agent/ask` as tokens, and the answer comes back to the user with the values.
@@ -1205,7 +1229,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is:**
     - `GET /contracts/:id` (summary, key terms) stays raw for the agents service. `redline.py` reads the contract's metadata there and PATCHes it back merged, so tokenizing it could write tokens over metadata values that aren't in the document. Moving that read-modify-write to a server-side merge is a separate change. *(Superseded: the follow-up below tokenizes key terms and summary, which no agent writes back, and leaves `metadata` raw.)*
     - The redline analysis quotes removed text from the older version. A value that exists only there stays a token in the stored analysis, a display-only artifact with a warning in the log, because `PATCH /contracts/:id` restores against the current version. *(Superseded: the follow-up restores against both compared versions.)*
-  - **Follow-up (adversarial review of 0dea2dd) — VERIFY-PENDING.** The review found paths that still sent values, or fragments of them, to a model, and outputs that could put a placeholder into a document. Each finding and what changed:
+  - **Follow-up (adversarial review of 0dea2dd) — DONE** (verified live, below). The review found paths that still sent values, or fragments of them, to a model, and outputs that could put a placeholder into a document. Each finding and what changed:
     1. **The agents' redline diff leaked a value changed between versions (Medium-High).**
        - Tokenizing the finished diff missed values htmldiff had split at `-` and `.` (`123-45-<del>6789</del><ins>6780</ins>`). The same happened to an SSN split by `<strong>` and to a card number written with non-breaking spaces.
        - Now each version is tokenized BEFORE diffing:
@@ -1288,6 +1312,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `redline-internal.integration.test.ts` (C8) still passes unchanged: the agents get an HTML diff, as before.
     - **Suite:** typecheck 0, lint 0 errors (warnings unchanged), api unit 293/293, web 18/18, integration 267/267 (43 files).
   - **Why VERIFY-PENDING:** as before, a live redline analysis and approval summary, to confirm the models keep the tokens.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** the X23 contract, v1 against its chat-redlined v2.
+    - **Redline analysis:** the diff the agents service reads (fetched with its own headers) had 3 tokens and no raw value. The stored analysis found the one change (§4) with the real SSN restored in both texts, and no tokens.
+    - **Approval submission** (default 3-step workflow; the contract is now pending approval): the approval route's `/versions` and `/clauses` reads were tokenized (4 and 2 tokens, no raw values). The stored executive summary reads the contract and has no tokens (X33).
+    - `GET /contracts/:id` returns raw versions and metadata to the agents service, as the entry above says. The approval route uses only its key terms, risk factors and header fields, which carry no value.
   - **Left as is:**
     - `spanStart`/`spanEnd` in ask answers are offsets into the tokenized clause text, off by about 15 characters per value before them. Only API callers read them; the web app doesn't.
     - `dropPartialToken` also drops an ordinary trailing `[` or `[P` from a completion or classifier reason. That is harmless and simpler than telling it from a cut token.
@@ -1435,7 +1463,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The two web messages are typechecked but not seen in a browser; they need a pair past the limit.
   - **Left as is:** the agents' tokenized diff is still computed on every read, now off the request thread. It is read once per redline analysis.
   - **Test follow-up (final sweep):** the event-loop case in `diff.test.ts` timed out once at vitest's 5 s default under the parallel unit suite. Alone it passes 3/3. It now has the diff's own 30 s limit; its assertion, that the loop kept turning, is unchanged.
-- **X33 — The approval summary never gets the contract text (Low-Medium). — VERIFY-PENDING.** Found in the X27 follow-up.
+- **X33 — The approval summary never gets the contract text (Low-Medium). — DONE** (VERIFY-PENDING → DONE after the live check below). Found in the X27 follow-up.
   - `approval.py` reads `plainText` from `GET /contracts/:id/versions`, which has never returned it (it lists metadata only). The executive-summary prompt's `text_excerpt` is therefore always empty, and the summary is written from key terms and clauses alone.
   - Any fix has to hand the text over tokenized with the contract scope, as `/clauses` does, so `PATCH /approvals/:id/summary` can restore it.
   - **Plan:** confirmed.
@@ -1456,6 +1484,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Against the pre-fix code it fails (no `plainText`).
     - Suite: typecheck 0, lint 0 errors, api unit 297/297, integration 270/270.
   - **Why VERIFY-PENDING:** a live approval submission is needed to see the executive summary now reading the contract, and its stored text reading right.
+  - **Live check (2026-09-23, signed in to the local stack; agents service on :8003 running this branch, Gemini):** submitting the X23 contract for approval produced an executive summary that reads the contract: the parties, $12,500 a month for twelve months, 30-day payment, IP ownership and 30 days' termination notice. It came with a "review_required" recommendation and a high-severity risk (no indemnification clause). It has no tokens.
 - **X34 — Audit events are lost under bursts of concurrent writes for one org (Low-Medium). — DONE.** Found in the X27 follow-up.
   - The integration suite logs `[pii-policy] failed to write audit event: … P2034`. `createAuditEvent` appends to the org's hash chain in a SERIALIZABLE transaction, with 5 attempts on a fixed 10–160 ms backoff and no jitter.
   - With six or more writers at once, as parallel chat tool calls produce, retries collide again and some writers run out of attempts. Fire-and-forget callers (PII redaction, tool calls) then drop the event with a console line. The chain stays valid but incomplete.
@@ -2141,6 +2170,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - a long `section_ref` got a 400 instead of the list (Python now clamps it).
     - Left as is: "Article IV" doesn't match "Article 4". It falls through to the list.
 
+- **X54 — Chat turns barely count toward usage or the daily cost cap (Medium). — BLOCKED (needs a decision).** Found while tallying the live checks' spend.
+  - `POST /agent/chat` records a turn's usage as the user's message plus the streamed reply, priced at a flat estimate (`routes/agents.ts:294`, `lib/costCap.ts` `estimateCostUsd`). It leaves out what the agents service actually sends each model call: the system prompt, history, tool definitions and tool results, often tens of thousands of tokens a turn.
+    - Today's local tally recorded 7 chat turns as 178 input tokens under provider/model `requested-default`. The same tally priced background jobs at $1.04 for 164k input tokens, a conservative flat rate.
+  - **Effects:**
+    - The platform's daily cost cap (`PLATFORM_DAILY_COST_CAP_USD`, default $50) barely sees chat, the heaviest user of models.
+    - The admin usage panel under-reports chat by one to two orders of magnitude.
+    - A chat turn on an org's own key (BYOK) is recorded as platform spend (`isByok` is never set on this path), so it counts against the platform cap.
+  - **Fix I'd make:**
+    - The orchestrator adds up `usage_metadata` from each model call in the turn and puts it on the `done` frame, which already names the resolved provider, model, tier and key source.
+    - The relay (which forwards bytes undecoded) keeps the stream's tail, reads the `done` frame, and records real tokens, the resolved model, `isByok` from the key source, and a per-model price.
+  - **Why it isn't done:** counting chat properly makes it count far more against the daily cap. Orgs that never hit the cap could start getting 429s. The cap value, and whether chat should count toward it at all, is a product decision. A narrower first step that changes no gate is to fix only the recorded numbers and `isByok` in `org_usage_daily`, and keep the cap counter as it is.
+
 ---
 
 ## Run log
@@ -2238,38 +2279,48 @@ X48 (review) — DONE — the shared refresh times out and doesn't overwrite a s
 X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — 036b278
 X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — 4d2638c
 X50 — DONE — a tab takes the same user's newer tokens another tab stored (before refreshing, and after losing a simultaneous refresh) instead of signing out; the server rotates a refresh token atomically — 3307df0
-C8, X15 (live check + follow-up) — DONE — the redline and portfolio prompts' JSON examples broke `str.format()`, so neither agent ever reached a model; braces escaped, prompt tripwire added; C8 verified live (per-change advice on a two-version SOW), VERIFY-PENDING → DONE — (sha: pending)
-X51 — DONE — the contract rail's History section links to Negotiate when there are two versions, so a contract without extracted clauses can reach its redline analysis — (sha: pending)
-X16 (live check + follow-up) — DONE — detection finds a late second agreement live, but the split used the model's page guesses and cut a 13-page binder at page 7; pages now come from each agreement's character offset; verified live (MSA 1–12, SOW 13), VERIFY-PENDING → DONE — (sha: pending)
-X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — (sha: pending)
-V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — (sha: pending)
-X52 — DONE — a card number, IBAN or SSN wrapped across a PDF line is redacted; single-line detection unchanged, cross-line only for value-shaped groups near a card or bank word; adversarial review — (sha: pending)
-X53 — DONE — the chat's redline tool takes the section the user names, and a miss lists the contract's clauses (openings redacted) to retry with; adversarial review — (sha: pending)
-X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same user's later tokens, never resend a request as another user, and sign out only on a refused refresh; storage keeps the newer session; tokens carry a session id; same-second refreshes both succeed; sign-out ends the session after an idle pause — (sha: pending)
+C8, X15 (live check + follow-up) — DONE — the redline and portfolio prompts' JSON examples broke `str.format()`, so neither agent ever reached a model; braces escaped, prompt tripwire added; C8 verified live (per-change advice on a two-version SOW), VERIFY-PENDING → DONE — 2a5a18d
+X51 — DONE — the contract rail's History section links to Negotiate when there are two versions, so a contract without extracted clauses can reach its redline analysis — eb2e202
+X16 (live check + follow-up) — DONE — detection finds a late second agreement live, but the split used the model's page guesses and cut a 13-page binder at page 7; pages now come from each agreement's character offset; verified live (MSA 1–12, SOW 13), VERIFY-PENDING → DONE — 415dbab
+X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — 9014c45
+V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — 0ac8f89
+X52 — DONE — a card number, IBAN or SSN wrapped across a PDF line is redacted; single-line detection unchanged, cross-line only for value-shaped groups near a card or bank word; adversarial review — b34d749
+X53 — DONE — the chat's redline tool takes the section the user names, and a miss lists the contract's clauses (openings redacted) to retry with; adversarial review — 0060bae
+X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same user's later tokens, never resend a request as another user, and sign out only on a refused refresh; storage keeps the newer session; tokens carry a session id; same-second refreshes both succeed; sign-out ends the session after an idle pause — 0bdad37
+C3, C10, C12, V1, X2, X23, X27, X33 (live checks) — DONE — verified with the agents service and Gemini on the local stack; the PII round trip through a counting proxy (models saw tokens only); VERIFY-PENDING → DONE — this commit
+X54 — BLOCKED — chat usage is recorded from the message and reply only, so the daily cost cap barely counts chat; the fix changes what the cap counts, a product decision — this commit
 
 ---
 
 ## Closing summary (2026-09-23)
 
-Every task in the main list and in Stretch has a terminal status. **Nothing is BLOCKED**, and none turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
+Every task in the main list and in Stretch has a terminal status. None turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
 
-- **Main list (21):** 14 DONE, 7 VERIFY-PENDING.
-- **Stretch (49):** 43 DONE, 6 VERIFY-PENDING.
-- After the summary was first written, a signed-in session on the local stack let me run the browser checks. They passed C1, C5 and X1 and found X47–X49, all fixed (see "After the summary" below).
+- **Main list (21):** 20 DONE, 1 VERIFY-PENDING (S2).
+- **Stretch (54):** 52 DONE, 1 VERIFY-PENDING (X30), and 1 BLOCKED on your decision (X54, chat usage and the daily cost cap).
+- **Two rounds of live checks came after this summary was first written:**
+  - **First, in the browser.** They passed C1, C5 and X1 and found X47–X49.
+  - **Second, with the agents service and a model, with your OK.** They passed C3, C8, C10, C12, V1, V2, X2, X16, X23, X27 and X33. They also found and fixed the C8/X15 prompts, X51–X53, and follow-ups to X16, V2 and X49. Two more reviews of X50 led to further fixes. See below.
 
-The work is on branch `fix/audit-2026-09-22`: 97 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
-- **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them. The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs. Merge `feat/langfuse-integration` first, or together with this branch.
+The work is on branch `fix/audit-2026-09-22`: 107 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
+- **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them.
+  - The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs.
+  - Merge `feat/langfuse-integration` first, or together with this branch.
 - Nothing is pushed, no PR is open, nothing is merged.
 
-**Final verification on the branch** (run on `4d2638c`, the tree this summary describes):
-- `db:generate` succeeds, and the test database is up to date with all 40 migrations.
+**Final verification on the branch** (run on `0bdad37`, the code this summary describes; the summary commit changes only this file):
+- `db:generate` succeeds, and the test database is up to date with all 40 migrations. This round added none.
 - Typecheck: 0 errors.
 - Lint: 0 errors (warnings unchanged from the baseline: web 22, api 11).
-- api unit: 326/326 (45 files). web unit: 24/24 (7 files).
-- api integration: 327/327 (51 files, Docker stack up), none skipped.
-- The tracker cites 90 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
-- No audit event was lost (X34). Prisma logged 65 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
-- **Adversarial subagent reviews** ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46, and one combined review covered the post-summary fixes (X47–X49, the C5 follow-up). Their findings were fixed or filed.
+- api unit: 340/340 (48 files). web unit: 48/48 (8 files).
+- api integration: 340/340 (53 files, Docker stack up), none skipped.
+- The tracker cites 119 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
+- No audit event was lost (X34). Prisma logged 86 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
+- **Adversarial subagent reviews:**
+  - They ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40 and X44–X46.
+  - One combined review covered the first post-summary fixes (X47–X49, the C5 follow-up).
+  - X50 had three rounds, the last combined with X52 and X53.
+  - Their findings were fixed or filed.
 - **The final sweep also re-reviewed C1, X15, X24, X26, X28, X29 and X39.** These touch auth, tenancy or SSRF and had no review on record; see below.
 
 ### Final sweep reviews
@@ -2316,7 +2367,7 @@ I started the web app (`localhost:5173`) against this checkout's API (:3001) and
   - **Medium, X49:** a DOCX or TXT latest version would have opened the PDF viewer. The Original view is now for PDFs only.
   - **Medium, X42 gap:** the Extraction Queue could change an approved contract's value or currency without resetting the approval. It resets now.
   - **Smaller:** X47's no-op check is judged against the current version and its audit records no phantom status change. X48's refresh has a timeout and a session check.
-  - **Pre-existing, not fixed:** multi-tab sign-out (X48).
+  - **Pre-existing, then:** multi-tab sign-out (X48). It was fixed afterwards as X50.
 - **What I changed in your local environment:**
   - The dev database (`clm_dev`) lacked this branch's six migrations, and the running API already uses them (`/field-definitions` answered 500). I applied them after a full backup: `clm_dev-before-migrations.dump` in this session's scratchpad.
   - I removed the three phantom versions my browsing created before X47 was fixed, after a backup (`x47-phantom-versions-backup.json`). Both contracts point at their earlier current version again, and their statuses never changed.
@@ -2324,11 +2375,50 @@ I started the web app (`localhost:5173`) against this checkout's API (:3001) and
   - The C5 test correction was put back in the database and the search index.
   - The web dev server started for the checks is still running.
 
+### Second round: live checks with the agents service and a model
+
+You approved running the checks that needed a model, on the only key configured (Google), with a $5 limit. I ran this branch's agents service on :8003 and pointed the dev API at it.
+
+- **Passed live:** C3, C8, C10, C12, V1, V2, X2, X16, X23, X27 and X33, each recorded in its entry.
+  - The PII checks ran through a logging proxy that counted tokens and raw values in every API → agents call: models received tokens only, and stored text came back with the real values.
+- **Found and fixed:**
+  - **C8 and X15:** the redline analysis and the portfolio query had never reached a model. Their prompts' JSON examples broke `str.format()`. Now a CI tripwire checks every formatted prompt.
+  - **X51:** the Negotiate tab couldn't be opened on a contract with no extracted clauses.
+  - **X52:** a card number or IBAN wrapped across a PDF line, or an SSN wrapped after a hyphen, escaped PII redaction.
+  - **X53:** the chat couldn't redline "section 4": its tool took only clause ids or types, and a miss told the model nothing.
+  - **X16 follow-up:** a long binder was detected but split at the wrong page. Pages now come from each agreement's text offset.
+  - **V2 follow-up:** the chat's search-results table repeated a contract once per clause hit and counted hits as contracts.
+  - **X49 follow-up:** a Word upload said it had been "created from text".
+  - **X50, two more reviews:**
+    - A tab no longer takes an older or foreign stored session.
+    - A local sign-out keeps another tab's newer session.
+    - The interceptor never retries a request as another user and doesn't refresh needlessly.
+    - Tokens carry a session id, so a refresh can't be handed a later sign-in's tokens.
+    - Same-second refreshes of one session both succeed again.
+- **Filed, needs your decision:** X54, chat usage and the daily cost cap (below).
+- **Not run:** S2 needs you signed in as a SALES_REP. X30 needs a deployed revision. The `l4-draft-gate` and `v2-coverage` scripts sign in with a password, so I ran V2's question in the browser instead.
+- **Spend:** the usage table recorded $1.10 for the day, but it isn't reliable (X54): it undercounts chat and prices background jobs at a flat, conservative rate. My estimate of actual Google spend is $0.50–1.50.
+- **What I changed in your local environment, this round:**
+  - Restarted this checkout's agents service on :8003 (twice more, to load fixes) and the dev API on :3001 pointed at it, as you approved.
+  - **Stopped the Aug 30 API on :3011** and its idle twin watcher, with your OK. They shared Redis and the dev database, took about half the background jobs, and sent them to the old agents service on :8002. The command to start it again is in this session's scratchpad (`spare-api-restore.md`).
+  - Ran a logging proxy on :8004 for the PII checks, then stopped it and pointed the API back at :8003.
+  - **Test data in the dev database:**
+    - "Northwind … Data Engineering SOW": fake SSN and card number; two versions; pending approval in the standard workflow.
+    - "Tailspin / Wide World — NDA + Distribution (DOCX binder check)".
+    - Two "Contoso / Fabrikam" long binders with their split children. The first was split wrongly, before the fix.
+    - "Initech — NDA": created and undone.
+    - Two custom fields, "Governing law (X2 check)" and "Customer name (X2 check)", with their filled-in values.
+    - Chat threads from the checks.
+  - Delete any of these whenever you like.
+
 ### What landed (DONE)
 
-- **Main list (14):** S1, S3, C1, C2, C4, C5, C6, C7, C9, C11, C13, H1, H2, H3.
-- **Stretch (43), by theme:**
-  - **Found in the live checks:** X47 (a view no longer saves a version or resets an approval), X48 (no logout on concurrent refreshes), X49 (the Original PDF view works), and X1 (citations open the PDF at their page), verified live on X49.
+- **Main list (20):** S1, S3, C1–C13, V1, V2, H1, H2, H3.
+- **Stretch (52), by theme:**
+  - **Found in the live checks:**
+    - First round: X47 (a view no longer saves a version or resets an approval), X48 (no logout on concurrent refreshes), X49 (the Original PDF view works), and X1 (citations open the PDF at their page), verified live on X49.
+    - X50: tabs share one session, after three review rounds.
+    - Second round: X51 (Negotiate reachable without clauses), X52 (PII wrapped across a PDF line is redacted), X53 (the chat redlines a clause by its section number).
   - **Access, scope and tenancy:** X5, X7, X9, X10, X15, X17–X22, X24–X26, X28, X29, X31, X42.
   - **API keys:**
     - X43: revoked on deactivation, and audited;
@@ -2338,28 +2428,20 @@ I started the web app (`localhost:5173`) against this checkout's API (:3001) and
   - **Secrets and internal endpoints:** X6, X35, X38, X41.
     - X35's review found Bull Board's check and the inbound-email check skipped by `/%61dmin/queues/...` and `/api/v1/%69nbound/...` **in production too**. Now fixed.
   - **Untrusted content and uploads:** X11, X12, X13, X14, X39.
-  - **PII to models:** X36, X37, X40. X23 and X27 are VERIFY-PENDING (below).
+  - **PII to models:** X23, X27, X33, X36, X37, X40, X52. The round trip was verified live: models saw tokens only, and stored text reads with the real values.
+  - **Agent features verified live:** X2 (custom-field backfill), X16 (a long binder is split where its agreements start).
   - **Reliability and data:** X3, X4, X8, X32 (version diffs off the request thread), X34 (audit events no longer lost in bursts).
 
-### VERIFY-PENDING: what needs a live stack
+### What's left
 
-The code, tests and suite are done for all of these. What remains is a run this machine can't do: no agents-service Python environment, no LLM key, no signed-in browser, or no deployed revision.
-
-- **S2:** a chat turn as a SALES_REP only sees their own contracts through the agent's tools.
-- **C3:** `/agent` answers with the org's configured default model, shown in the footer.
-- **C8:** Negotiate → Analyze Redlines returns per-change advice.
-- **C10:** a DOCX binder with no split goes on to classification.
-- **C12:** "draft an NDA with Initech, New York law, 3 years" gives a confirm card and creates no contract before Apply.
-- **V1:** the "Playbook review" rail section lists findings in document order. Its empty state is checked live; the findings need a contract the agents service has reviewed.
-- **V2:** `node scripts/agent-loops/v2-coverage.mjs` against the live stack.
-- **X2:** "Fill in existing contracts" backfills a new custom field (the new `/extract-fields` agents route).
-- **X16:** binder detection finds the second agreement in a long binder.
-- **X23, X27, X33:** upload a contract with an SSN and a card number, then run a redline analysis and an approval submission. The models should keep the `[PII:…]` tokens, and the stored analysis and summary should read with the real values.
-- **X30:** on a deployed revision, the audit log's IP equals the client's (adjust `TRUST_PROXY_HOPS` if a load balancer adds a hop).
+- **VERIFY-PENDING:**
+  - **S2:** a chat turn as a SALES_REP only sees their own contracts through the agent's tools. The stack is ready (agents service and model running); it needs you signed in as a SALES_REP in the browser, since I don't sign in with passwords.
+  - **X30:** on a deployed revision, the audit log's IP equals the client's (adjust `TRUST_PROXY_HOPS` if a load balancer adds a hop).
+- **BLOCKED on your decision:** X54. Chat usage is recorded from the message and the reply only, so the daily cost cap and the usage panel barely see chat, and own-key chat counts as platform spend. Counting it properly makes chat count against the cap. The entry proposes the fix and a narrower first step that changes no gate.
 
 ### What to review first
 
-1. **The PII round-trip and redaction design** (X23 → X27 → X36 → X37 → X40, all in `lib/pii-policy.ts` and `lib/pii-redactor.ts`). It is the largest and subtlest change, and it touches every path where contract text reaches a model.
+1. **The PII round-trip and redaction design** (X23 → X27 → X36 → X37 → X40 → X52, all in `lib/pii-policy.ts` and `lib/pii-redactor.ts`). It is the largest and subtlest change, and it touches every path where contract text reaches a model. X52's cross-line patterns are the newest part. Check their shapes against your real contracts' card and IBAN formats.
 2. **API key identity** (X43–X46, `middleware/auth.ts` and `lib/acting-user.ts`).
    - Every key request now checks the user behind the key: an active member who can still manage API keys. This switches off existing keys of people who have left or been demoted.
    - Key management and giving anyone access need a signed-in admin.
@@ -2371,6 +2453,13 @@ The code, tests and suite are done for all of these. What remains is a run this 
 7. **X6's Slack `teamId` uniqueness** and its verification backfill.
 8. **The six migrations** (below): all are repairs or additive columns.
 9. **X47's no-op rule** (`sameDocumentHtml` in `routes/contracts.ts`): a save equal to the latest version, apart from line breaks between tags, creates nothing. Check that no real edit can look like that.
+10. **Sessions across tabs** (X48, X50; `store/auth.ts`, `lib/api.ts`, `routes/auth.ts` refresh and sign-out).
+    - Tabs share the newest tokens of the same user.
+    - Storage keeps the newer session.
+    - Tokens carry a session id from sign-in.
+    - Only a refused refresh signs a tab out.
+    - A refresh rotates atomically.
+11. **X53's clause list** (`lib/clause-propose.ts`, `routes/internal-ai.ts` `redline_propose`): a miss sends the contract's clause openings to the model, cut and redacted.
 
 ### Deploy checklist
 
@@ -2382,7 +2471,10 @@ The code, tests and suite are done for all of these. What remains is a run this 
      - Check Admin → Integrations → API keys (the "Created by" column is empty for the affected ones) and re-issue any an integration still uses.
      - Integrations that read the member list, org settings, roles, skills, dashboard, team workload or model list need an `admin`-scope key. No key can use a person's own routes (profile, notifications, threads).
      - Creating keys, inviting users, changing roles and reactivating users need a signed-in admin.
-2. **Deploy order:** the agents service before the API and worker. They need `/extract-fields` (X2), the PII token prompt rules (X23/X27) and `review.py`'s changes (C4, X2, X23, X26).
+2. **Deploy order:** the agents service before the API and worker, then the API and worker straight after.
+   - The API and worker need the agents service's `/extract-fields` (X2), the PII token prompt rules (X23/X27) and `review.py`'s changes (C4, X2, X23, X26).
+   - The agents service also brings the prompt fixes without which redline analysis and portfolio queries never run (C8, X15).
+   - Until the API follows, a chat redline that names a section number gets a 400, because the old API doesn't know `sectionRef` (X53).
 3. **Migrations** (run by `db:migrate:prod`):
    - `20260923000000_repair_stranded_escalations` (C2);
    - `…010000_unlink_cross_org_invoices` (X19);
@@ -2405,6 +2497,7 @@ The code, tests and suite are done for all of these. What remains is a run this 
    - Tell users that editing an approved contract's type, value, currency or document sends it back for approval (X42).
    - The PDF viewer's worker now ships in the app bundle instead of loading from unpkg (X49). If a Content-Security-Policy is added, allow workers from `'self'`. Self-hosted installs need the updated `deploy/selfhost/nginx.conf`, which serves `.mjs` as JavaScript.
    - Ask users to reload open tabs (X47). A tab still running the old bundle saves a phantom version whenever it opens a contract, and the API ignores only saves identical to the current version.
+   - Sessions need nothing (X50). Tokens issued before the deploy keep working and gain a session id at their next refresh, so nobody is signed out. Reloaded tabs also get the new multi-tab behaviour.
 6. **Configuration:**
    - `MARKETING_CONTACT_EMAIL` plus an email provider (H1).
    - Optional: `PII_TOKEN_SECRET`, the same on API and worker (X23); `METRICS_TOKEN` (X3).
@@ -2426,7 +2519,16 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **The Original PDF view has no selectable text** (X49): `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API. Fixing it means replacing the viewer. Keep the pdf.js ≥4.2.67 override, the fix for CVE-2024-4367.
-- **A second tab of the same user signs out on its next refresh** (X48): each tab holds its own copy of the one refresh token the server keeps. The fix is a cross-tab lock and an atomic rotation on the server.
+- **Sessions, left as is:**
+  - Two different users signed in in one browser each keep their own tab's session, as before.
+  - `iat` can't order two tokens from the same second, or from servers whose clocks differ (X50).
+  - The sign-in page doesn't pick up a session another tab kept.
+- **Chat, left as is:**
+  - A card waiting for Apply isn't restored when its thread is reopened: the server doesn't keep the proposal's Apply arguments, so the user asks again (C12).
+  - A chat redline's preview shows the PII tokens themselves; the applied text has the real values (X23).
+  - The portfolio query's search is a keyword ranking and can return near matches: "Stark Industries" for "Ironbridge Industrial Group" (X15).
+- **Small wording issues seen in the checks:** the Playbook review summary counts findings as deviations (V1). The contract header says "Edited just now" after an analysis writes its results.
+- **Audit volume:** every `GET /contracts/:id` writes a `CONTRACT_VIEWED` event, so the page's polling during an analysis wrote 33 in 40 minutes for one contract. Worth a look before the audit log grows.
 - **Audit writes follow their change outside its transaction**, as PATCH's already did. If the audit store fails, the change stands and the client gets a 500. X5 moved the org-settings audit inside its transaction; the others weren't.
 - **Earlier phantom versions:** contracts opened before X47 carry "Edited in-place" versions that changed nothing. The local Unanalyzed Document has three from June and August. They're harmless duplicates and were left in place.
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
