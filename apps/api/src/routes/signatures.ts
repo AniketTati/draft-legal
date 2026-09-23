@@ -81,6 +81,21 @@ function isSigner(s: { userId: string | null; email: string }, userId: string, e
   return !!email && s.email.toLowerCase() === email.toLowerCase()
 }
 
+/**
+ * X28 — whether a signer is still waiting for their turn: in a SEQUENTIAL
+ * request, every earlier group must have signed. Signing always checked this;
+ * viewing and declining didn't, so a later signer's link (forwarded, or
+ * copied from a list) could read the contract, or void the whole request,
+ * before the first signer acted.
+ */
+function waitingForEarlier(
+  sr: { signOrder: string; signers: Array<{ signOrder: number; status: string }> },
+  signer: { signOrder: number },
+): boolean {
+  return sr.signOrder === 'SEQUENTIAL' && sr.signers.some(s => s.signOrder < signer.signOrder && s.status !== 'SIGNED')
+}
+const NOT_YOUR_TURN = 'Earlier signers have not yet signed. You will be notified when it is your turn.'
+
 /** A value for Prisma's insensitive `equals`, which it runs as ILIKE: `_` and `%` must match only themselves. */
 function likeLiteral(v: string): string {
   return v.replace(/[\\%_]/g, '\\$&')
@@ -405,6 +420,7 @@ export async function signatureRoutes(app: FastifyInstance) {
         })
         return reply.status(410).send({ detail: 'This signing link has expired' })
       }
+      if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
       // Record a VIEWED event the first time this signer opens the link.
       const alreadyViewed = await prisma.signatureEvent.findFirst({
@@ -478,15 +494,7 @@ export async function signatureRoutes(app: FastifyInstance) {
 
       // Sequential gating: a signer can only sign if every earlier
       // signOrder bucket has finished.
-      if (sr.signOrder === 'SEQUENTIAL') {
-        const earlier = sr.signers.filter(s => s.signOrder < signer.signOrder)
-        const allEarlierSigned = earlier.every(s => s.status === 'SIGNED')
-        if (!allEarlierSigned) {
-          return reply.status(403).send({
-            detail: 'Earlier signers have not yet signed. You will be notified when it is your turn.',
-          })
-        }
-      }
+      if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
       const now = new Date()
       const updated = await prisma.signer.update({
@@ -660,12 +668,13 @@ export async function signatureRoutes(app: FastifyInstance) {
 
       const signer = await prisma.signer.findUnique({
         where: { token },
-        include: { signatureRequest: true },
+        include: { signatureRequest: { include: { signers: { select: { signOrder: true, status: true } } } } },
       })
       if (!signer) return reply.status(404).send({ detail: 'Invalid signing link' })
       const sr = signer.signatureRequest
       if (sr.status !== 'PENDING') return reply.status(410).send({ detail: 'Signing request is no longer active' })
       if (signer.status !== 'PENDING') return reply.status(409).send({ detail: 'Signer already responded' })
+      if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
       await prisma.$transaction([
         prisma.signer.update({

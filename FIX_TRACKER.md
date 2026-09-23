@@ -1144,6 +1144,21 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is:**
     - `GET /contracts/:id` (summary, key terms) stays raw for the agents service. `redline.py` reads the contract's metadata there and PATCHes it back merged, so tokenizing it could write tokens over metadata values that aren't in the document. Moving that read-modify-write to a server-side merge is a separate change.
     - The redline analysis quotes removed text from the older version. A value that exists only there stays a token in the stored analysis, a display-only artifact with a warning in the log, because `PATCH /contracts/:id` restores against the current version.
+- **X28 — The signer portal lets a later sequential signer act before their turn (Low). — DONE.** Found in the X21 review.
+  - **Plan:** confirmed in `routes/signatures.ts`. `POST /sign/:token/sign` checks that every earlier group of a SEQUENTIAL request has signed, but `GET /sign/:token` returns the full contract HTML and `POST /sign/:token/decline` voids the whole request, with no such check. A later signer's link, forwarded or copied, can read the contract or void the request before the first signer acts. Fix: one `waitingForEarlier()` check, used by all three routes.
+  - **What changed:**
+    - `waitingForEarlier()` and one message.
+    - View and decline answer 403 "Earlier signers have not yet signed. You will be notified when it is your turn." before the signer's turn. The view does so before recording a VIEWED event.
+    - Signing uses the same check.
+    - The signer portal already shows a GET's `detail` as the page message, so the waiting signer sees that sentence.
+  - **Verification:**
+    - `routes/signing-turn.integration.test.ts`: the second signer gets 403 on view (no contract text) and on decline (the request stays PENDING). The first signer views normally. Once the first has signed, the second sees the contract.
+    - Against the pre-fix code it fails. The 5 signature-related integration files pass (45 tests). Typecheck 0, lint 0 errors.
+  - (This entry was lost from the tracker when X27's entry was written, and is restored here.)
+  - Original note:
+    - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
+    - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
+    - Gate view and decline the way sign is gated.
 - **X31 — `PATCH /approvals/:instanceId/summary` is open outside production (Low-Medium).** Found while doing X27.
   - The route checks `x-internal-secret` only when `NODE_ENV === 'production'`: *"In dev with no secret set, allow all"*.
   - In any other deployment (staging, previews) anyone who can reach the API can overwrite any approval's AI summary, key risks and recommendation, with no org check.
@@ -1227,3 +1242,4 @@ X17 (follow-up) — DONE — reminders/overdue webhooks, invoice auto-match, tea
 X3 (follow-up) — DONE — verify batched + one per org + honest truncation; large audit metadata by reference; viewer paging fixed; tokens masked in error logs, invites and query strings; audit filters validated; /metrics off the Redis-backed limiter with instance labels; reporter can't throw; X30 filed — (sha: X3-fu)
 X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming restore across chunks), chat key terms, and the text the agents service reads for redline/approval summaries now follow the org's PII policy; X31 filed; needs a live redline/approval run — (sha: X27)
 X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run, TRUST_PROXY_HOPS to override); needs a deployed check of the hop count — (sha: X30)
+X28 — DONE — a later sequential signer can't view the contract or void the request before earlier signers have signed (same check as signing) — (sha: X28)
