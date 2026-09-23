@@ -1979,6 +1979,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - three concurrent callers share one run and its result;
     - after a failure, both callers see it and the next call runs again.
     - Web suite and typecheck pass.
+    - Live, after the fix: a dashboard load with an expired token sent six requests that got 401 together. They made exactly one refresh (200), each retried and got 200, and the session stayed signed in.
   - **Left as is:** each tab of the same user holds its own copy of the refresh token, and the server keeps only the latest. A second tab's next refresh is refused and that tab signs out, as before.
   - **Adversarial review (fresh subagent, after the summary):**
     - *Low, fixed:* the shared refresh had no time limit, so a hung one held up every later request. A refresh that finished after a sign-out and a new sign-in also wrote the old session's tokens over the new ones. It now times out after 15 s and leaves a changed session alone. `apps/web/src/store/auth.test.ts` fails without the change.
@@ -2093,10 +2094,15 @@ X45 — DONE — a key's writes that need a user act as the key's maker while th
 X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — 854a620
 X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — c029ba8
 
+X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
+X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — 39a6557
+X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — d2ab47a
+C1, C5 (live checks) — DONE — both verified in the browser against the local stack (C1: create, reveal, list, audit, revoke; C5: nav, filter, bad-date refusal, write-through to the Contracts list); C5 follow-up: queue reviews are audited; V1's empty state checked, its findings still need a reviewed contract — 96c41de
+X47 (follow-up) — DONE — in-place document edits are audited (with the approval reset they cause), no-op saves aren't — 34a1e79
 X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — 5730eed
 X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — 3d58292
 X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — 036b278
-X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — (sha: pending)
+X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — 4d2638c
 
 ---
 
@@ -2104,22 +2110,23 @@ X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value o
 
 Every task in the main list and in Stretch has a terminal status. **Nothing is BLOCKED**, and none turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
 
-- **Main list (21):** 12 DONE, 9 VERIFY-PENDING.
-- **Stretch (46):** 39 DONE, 7 VERIFY-PENDING.
+- **Main list (21):** 14 DONE, 7 VERIFY-PENDING.
+- **Stretch (49):** 43 DONE, 6 VERIFY-PENDING.
+- After the summary was first written, a signed-in session on the local stack let me run the browser checks. They passed C1, C5 and X1 and found X47–X49, all fixed (see "After the summary" below).
 
-The work is on branch `fix/audit-2026-09-22`: 85 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
+The work is on branch `fix/audit-2026-09-22`: 97 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
 - **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them. The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs. Merge `feat/langfuse-integration` first, or together with this branch.
 - Nothing is pushed, no PR is open, nothing is merged.
 
-**Final verification on the branch** (run on `c029ba8`, the tree this summary describes):
+**Final verification on the branch** (run on `4d2638c`, the tree this summary describes):
 - `db:generate` succeeds, and the test database is up to date with all 40 migrations.
 - Typecheck: 0 errors.
 - Lint: 0 errors (warnings unchanged from the baseline: web 22, api 11).
-- api unit: 326/326 (45 files). web unit: 18/18.
-- api integration: 319/319 (49 files, Docker stack up), none skipped.
-- The tracker cites 85 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
-- No audit event was lost (X34). Prisma logged 120 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
-- **Adversarial subagent reviews** ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46. Their findings were fixed or filed.
+- api unit: 326/326 (45 files). web unit: 24/24 (7 files).
+- api integration: 327/327 (51 files, Docker stack up), none skipped.
+- The tracker cites 90 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
+- No audit event was lost (X34). Prisma logged 65 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
+- **Adversarial subagent reviews** ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46, and one combined review covered the post-summary fixes (X47–X49, the C5 follow-up). Their findings were fixed or filed.
 - **The final sweep also re-reviewed C1, X15, X24, X26, X28, X29 and X39.** These touch auth, tenancy or SSRF and had no review on record; see below.
 
 ### Final sweep reviews
@@ -2145,10 +2152,40 @@ Three fresh subagents re-read those commits against the branch:
   - All three are fixed. X45's review also led to X46's widening: keys whose maker had gone still worked.
 - **Full-run test timing:** two test-timing problems, from tests written earlier in this run, showed up in the sweep's full runs and are fixed in `854a620`.
 
+### After the summary: live checks in the browser
+
+I started the web app (`localhost:5173`) against this checkout's API (:3001) and you signed in to the browser pane. What that showed:
+
+- **Passed live:**
+  - C1: the key dialog's scopes and expiry reach the stored key, the reveal is one-time, the list shows who made the key, and revoke works.
+  - C5: the queue is in the sidebar, filters to one contract, and refuses a malformed date; a correction reaches the Contracts list.
+  - X1: a citation link opens the PDF at its page, outlined.
+  - X48: six requests met an expired token together and shared one refresh.
+  - V1: only the empty state; no local contract has a playbook review.
+- **Found and fixed:**
+  - **X47 (High):** opening a contract saved a new version of it, and since X42 that would have sent an approved contract back to DRAFT because someone looked at it. The cause was TipTap 3's `setEditable` emitting an update, which the contract page autosaves. Now the web app doesn't report it, the API ignores a save that changes nothing, and real document edits are audited.
+  - **X48 (Medium):** requests that met an expired token together each refreshed with the same one-time refresh token, and the losers logged the user out. Refreshes are now shared.
+  - **X49 (Medium):** the Original (PDF) view had never worked. The version list didn't say which versions have a file, and the viewer's worker (pdf.js 3.11 from a CDN) didn't match the installed pdf.js 5.7. This is what blocked X1.
+  - **C5 follow-up:** extraction-queue corrections changed contract terms with no audit event; they're audited now.
+- **The combined review of those fixes** found more, all fixed except where noted:
+  - **High, X49:** the self-host nginx served the new `.mjs` worker as `application/octet-stream`, so self-hosted installs would never render PDFs. Fixed in the nginx config.
+  - **Medium, X47:** my first canvas guard also dropped real edits made from view mode by commands. The guard is now "the document changed".
+  - **Medium, X49:** a DOCX or TXT latest version would have opened the PDF viewer. The Original view is now for PDFs only.
+  - **Medium, X42 gap:** the Extraction Queue could change an approved contract's value or currency without resetting the approval. It resets now.
+  - **Smaller:** X47's no-op check is judged against the current version and its audit records no phantom status change. X48's refresh has a timeout and a session check.
+  - **Pre-existing, not fixed:** multi-tab sign-out (X48).
+- **What I changed in your local environment:**
+  - The dev database (`clm_dev`) lacked this branch's six migrations, and the running API already uses them (`/field-definitions` answered 500). I applied them after a full backup: `clm_dev-before-migrations.dump` in this session's scratchpad.
+  - I removed the three phantom versions my browsing created before X47 was fixed, after a backup (`x47-phantom-versions-backup.json`). Both contracts point at their earlier current version again, and their statuses never changed.
+  - A test key, "C1 visual check", was created and revoked; it stays in the list as Revoked.
+  - The C5 test correction was put back in the database and the search index.
+  - The web dev server started for the checks is still running.
+
 ### What landed (DONE)
 
-- **Main list (12):** S1, S3, C2, C4, C6, C7, C9, C11, C13, H1, H2, H3.
-- **Stretch (39), by theme:**
+- **Main list (14):** S1, S3, C1, C2, C4, C5, C6, C7, C9, C11, C13, H1, H2, H3.
+- **Stretch (43), by theme:**
+  - **Found in the live checks:** X47 (a view no longer saves a version or resets an approval), X48 (no logout on concurrent refreshes), X49 (the Original PDF view works), and X1 (citations open the PDF at their page), verified live on X49.
   - **Access, scope and tenancy:** X5, X7, X9, X10, X15, X17–X22, X24–X26, X28, X29, X31, X42.
   - **API keys:**
     - X43: revoked on deactivation, and audited;
@@ -2166,15 +2203,12 @@ Three fresh subagents re-read those commits against the branch:
 The code, tests and suite are done for all of these. What remains is a run this machine can't do: no agents-service Python environment, no LLM key, no signed-in browser, or no deployed revision.
 
 - **S2:** a chat turn as a SALES_REP only sees their own contracts through the agent's tools.
-- **C1:** Admin → Integrations → API keys: the new scope picker creates a key that works, and the table shows who made each key (X43).
 - **C3:** `/agent` answers with the org's configured default model, shown in the footer.
-- **C5:** Queues → Extraction Queue in the sidebar, the contract link, and corrections that stick.
 - **C8:** Negotiate → Analyze Redlines returns per-change advice.
 - **C10:** a DOCX binder with no split goes on to classification.
 - **C12:** "draft an NDA with Initech, New York law, 3 years" gives a confirm card and creates no contract before Apply.
-- **V1:** the "Playbook review" rail section lists findings in document order.
+- **V1:** the "Playbook review" rail section lists findings in document order. Its empty state is checked live; the findings need a contract the agents service has reviewed.
 - **V2:** `node scripts/agent-loops/v2-coverage.mjs` against the live stack.
-- **X1:** a citation pill opens the original PDF at the cited page, with the passage outlined.
 - **X2:** "Fill in existing contracts" backfills a new custom field (the new `/extract-fields` agents route).
 - **X16:** binder detection finds the second agreement in a long binder.
 - **X23, X27, X33:** upload a contract with an SSN and a card number, then run a redline analysis and an approval submission. The models should keep the `[PII:…]` tokens, and the stored analysis and summary should read with the real values.
@@ -2193,6 +2227,7 @@ The code, tests and suite are done for all of these. What remains is a run this 
 6. **The X11 HTML sanitizer and the Gotenberg flags**, and X12's `mammoth` lockfile override.
 7. **X6's Slack `teamId` uniqueness** and its verification backfill.
 8. **The six migrations** (below): all are repairs or additive columns.
+9. **X47's no-op rule** (`sameDocumentHtml` in `routes/contracts.ts`): a save equal to the latest version, apart from line breaks between tags, creates nothing. Check that no real edit can look like that.
 
 ### Deploy checklist
 
@@ -2225,6 +2260,8 @@ The code, tests and suite are done for all of these. What remains is a run this 
    - Sign in to production as `admin@demo.com` / `password123`; if that works, change the password (X41).
    - Clear `collab_states` before binding the editor to the shared document (X29).
    - Tell users that editing an approved contract's type, value, currency or document sends it back for approval (X42).
+   - The PDF viewer's worker now ships in the app bundle instead of loading from unpkg (X49). If a Content-Security-Policy is added, allow workers from `'self'`. Self-hosted installs need the updated `deploy/selfhost/nginx.conf`, which serves `.mjs` as JavaScript.
+   - Ask users to reload open tabs (X47). A tab still running the old bundle saves a phantom version whenever it opens a contract, and the API ignores only saves identical to the current version.
 6. **Configuration:**
    - `MARKETING_CONTACT_EMAIL` plus an email provider (H1).
    - Optional: `PII_TOKEN_SECRET`, the same on API and worker (X23); `METRICS_TOKEN` (X3).
@@ -2245,9 +2282,8 @@ The code, tests and suite are done for all of these. What remains is a run this 
 - **No narrower scope than `admin` for reading the member list** (X44): add `users:read` if a customer needs it.
 - **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
+- **The Original PDF view has no selectable text** (X49): `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API. Fixing it means replacing the viewer. Keep the pdf.js ≥4.2.67 override, the fix for CVE-2024-4367.
+- **A second tab of the same user signs out on its next refresh** (X48): each tab holds its own copy of the one refresh token the server keeps. The fix is a cross-tab lock and an atomic rotation on the server.
+- **Audit writes follow their change outside its transaction**, as PATCH's already did. If the audit store fails, the change stands and the client gets a 500. X5 moved the org-settings audit inside its transaction; the others weren't.
+- **Earlier phantom versions:** contracts opened before X47 carry "Edited in-place" versions that changed nothing. The local Unanalyzed Document has three from June and August. They're harmless duplicates and were left in place.
 - **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
-X47 — DONE — opening a contract no longer saves a version: the editor's mount-time update isn't an edit, and an HTML save identical to the latest version makes nothing (so a view can't reset an approval since X42); the checks' three phantom versions removed — 6ea5bd8
-X48 — DONE — concurrent requests that meet an expired access token share one refresh instead of racing the rotating refresh token into a logout — 39a6557
-X49 — DONE — the Original (PDF) view works: the version list says which versions have a file, and the viewer's worker matches the installed pdf.js; X1 verified live on it (VERIFY-PENDING → DONE) — d2ab47a
-C1, C5 (live checks) — DONE — both verified in the browser against the local stack (C1: create, reveal, list, audit, revoke; C5: nav, filter, bad-date refusal, write-through to the Contracts list); C5 follow-up: queue reviews are audited; V1's empty state checked, its findings still need a reviewed contract — 96c41de
-X47 (follow-up) — DONE — in-place document edits are audited (with the approval reset they cause), no-op saves aren't — (sha: pending)
