@@ -263,6 +263,8 @@ async def _process_and_update(
                 r = await client.patch(
                     f"{api_url}/api/v1/contracts/{contract_id}",
                     json=contract_payload,
+                    # X23 — the API restores PII tokens against the version read.
+                    params={"versionId": version_id},
                     headers=headers,
                     timeout=10,
                 )

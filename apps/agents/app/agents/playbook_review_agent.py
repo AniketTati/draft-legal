@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from ..jsonish import loads_lenient
 from ..router import resolve_llm
 from ..untrusted import sanitize_untrusted, wrap_untrusted_document
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ async def run_playbook_review(
             json.dumps(trimmed, indent=2),
             source="counterparty contract clause text",
         ),
-    )
+    ) + PII_TOKEN_RULE
 
     response = await resolved.llm.ainvoke([
         SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),

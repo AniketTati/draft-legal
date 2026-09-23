@@ -8,6 +8,7 @@
  * chat agent chose to call it. The review drawer needs the same capability
  * directly, hence a shared implementation rather than a self-HTTP call.
  */
+import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
 import { findCategoryForClauseType } from './clause-category.js'
 
@@ -88,6 +89,17 @@ export async function proposeClauseAlternatives(args: {
     if (pref) preferred = { content: pref.content, rules: pref.rules }
   }
 
+  // X23 — the clause goes to the model under the org's PII policy, as
+  // round-trip tokens (judged against the whole document): the variants are
+  // text to splice into the contract, so the values are put back below.
+  const document = (await prisma.contractVersion.findUnique({
+    where: { id: contract.currentVersionId }, select: { plainText: true },
+  }))?.plainText ?? ''
+  const source = [clause.content, document]
+  const { clauseText } = await redactJson(orgId, { clauseText: clause.content }, {
+    surface: 'redline_propose', contractId: contract.id, roundTrip: contract.id, valuesFrom: source,
+  })
+
   const pyRes = await fetch(`${AGENTS_URL}/redline_propose`, {
     method:  'POST',
     headers: {
@@ -95,7 +107,7 @@ export async function proposeClauseAlternatives(args: {
       'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
     },
     body: JSON.stringify({
-      clauseText:       clause.content,
+      clauseText,
       clauseType:       clause.clauseType,
       category:         category?.name,
       preferredContent: preferred?.content ?? null,
@@ -113,7 +125,7 @@ export async function proposeClauseAlternatives(args: {
     const err = await pyRes.text().catch(() => '')
     return { ok: false, status: 502, detail: 'redline_propose failed', upstream: err.slice(0, 300) }
   }
-  const proposal = await pyRes.json() as { variants?: ProposalVariant[]; error?: string }
+  const proposal = restorePii(await pyRes.json() as { variants?: ProposalVariant[]; error?: string }, source, contract.id)
 
   return {
     ok: true,

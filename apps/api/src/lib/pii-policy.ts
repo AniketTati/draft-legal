@@ -12,7 +12,7 @@
  *   await fetch(agentsUrl, { body: JSON.stringify({ plainText: text }) })
  */
 import { prisma } from './prisma.js'
-import { redactPii, type PiiMode, type PiiKind } from './pii-redactor.js'
+import { redactPii, pseudonym, type PiiMode, type PiiKind } from './pii-redactor.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 
@@ -55,6 +55,20 @@ export interface ApplyOptions {
   userId?: string
   /** Override the org's policy (e.g. force-redact for a specific path). */
   override?: PiiMode
+  /**
+   * X23 — `redactJson` only. For text whose model output is stored or spliced
+   * into a contract: each value becomes a token scoped to this key (the
+   * contract's or the request's id), in either mode, so `restorePii` can put
+   * it back.
+   */
+  roundTrip?: string
+  /**
+   * X23 — `redactJson` with `roundTrip` only: the text whose personal data is
+   * replaced, wherever it appears (default: the value's own strings). Pass
+   * the whole document: a card number is only recognised near a word like
+   * "card", and a clause or excerpt alone often lacks it.
+   */
+  valuesFrom?: unknown
 }
 
 export interface ApplyResult {
@@ -149,4 +163,115 @@ export async function applyPiiPolicyBatch(
 export function clearOrgPiiModeCache(orgId?: string): void {
   if (orgId) orgModeCache.delete(orgId)
   else orgModeCache.clear()
+}
+
+// ─── X23 — round trips ───────────────────────────────────────────────────────
+//
+// Much of what the models send back is stored or spliced into the contract:
+// the extraction's verbatim clause text, a draft, a redline. A `[REDACTED:SSN]`
+// there would replace the real value, and the clause would no longer match
+// the document it came from. So those paths send tokens instead — keyed (the
+// model can't reverse them) and scoped to one contract (they don't link one
+// contract's values to another's) — and put the values back in what returns.
+//
+// Values are found in a source text (ideally the whole document) and then
+// replaced exactly, wherever they occur: pattern-matching each string on its
+// own misses a card number whose "card" is in another sentence.
+
+const TOKEN_RX = /\[PII:[A-Z_]+:[0-9a-f]{8}\]/g
+
+function roundTripToken(scope: string) {
+  return (kind: PiiKind, value: string) => `[PII:${kind}:${pseudonym(`${scope}\u0000${value}`)}]`
+}
+
+function strings(v: unknown, out: string[] = []): string[] {
+  if (typeof v === 'string') out.push(v)
+  else if (Array.isArray(v)) v.forEach(x => strings(x, out))
+  else if (v && typeof v === 'object' && !(v instanceof Date)) Object.values(v).forEach(x => strings(x, out))
+  return out
+}
+
+function mapStrings(v: unknown, f: (s: string) => string): unknown {
+  if (typeof v === 'string') return f(v)
+  if (Array.isArray(v)) return v.map(x => mapStrings(x, f))
+  if (v && typeof v === 'object' && !(v instanceof Date)) return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, mapStrings(x, f)]))
+  return v
+}
+
+/** Every value in `source` the policy covers, with its round-trip token and kind. */
+function roundTripValues(source: unknown, scope: string): Map<string, { token: string; kind: PiiKind }> {
+  const values = new Map<string, { token: string; kind: PiiKind }>()
+  const token = roundTripToken(scope)
+  for (const s of strings(source)) {
+    redactPii(s, 'redact', { token: (kind, v) => { const t = token(kind, v); values.set(v, { token: t, kind }); return t } })
+  }
+  return values
+}
+
+/**
+ * The org's policy over every string in a JSON value (a request body, a tool
+ * result), under one policy read and one audit row. Ids and enums can't match
+ * a PII pattern, so walking every string is safe. With `roundTrip`, the
+ * values of `valuesFrom` become restorable tokens wherever they appear.
+ */
+export async function redactJson<T>(orgId: string, value: T, opts: ApplyOptions): Promise<T> {
+  if (!opts.roundTrip) {
+    const redacted = await applyPiiPolicyBatch(orgId, strings(value), opts)
+    if (redacted.total === 0) return value
+    let i = 0
+    return mapStrings(value, () => redacted.texts[i++]) as T
+  }
+
+  const mode: PiiMode = opts.override ?? await getOrgPiiMode(orgId)
+  if (mode === 'off') return value
+  const values = roundTripValues(opts.valuesFrom === undefined ? value : opts.valuesFrom, opts.roundTrip)
+  if (values.size === 0) return value
+  // One pass, longest value first: a value inside a longer one doesn't split
+  // it, and a token already written is never scanned again.
+  const rx = new RegExp(
+    [...values.keys()].sort((a, b) => b.length - a.length).map(v => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    'g',
+  )
+  const counts: Partial<Record<PiiKind, number>> = {}
+  const out = mapStrings(value, s => s.replace(rx, m => {
+    const hit = values.get(m)!
+    counts[hit.kind] = (counts[hit.kind] ?? 0) + 1
+    return hit.token
+  })) as T
+  const total = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0)
+  if (total > 0) {
+    createAuditEvent({
+      orgId,
+      userId: opts.userId,
+      action: AuditAction.PII_REDACTED,
+      resourceType: opts.contractId ? 'contract' : 'request',
+      resourceId: opts.contractId ?? 'system',
+      metadata: { surface: opts.surface, mode, counts, total, roundTrip: true },
+    }).catch((err: unknown) => {
+      console.error('[pii-policy] failed to write audit event:', err)
+    })
+  }
+  return out
+}
+
+/**
+ * Put back the values that round-trip tokens stand for. The map is rebuilt
+ * from `source` (the text that was sent, or the document it came from), so
+ * only a value that is in the source comes back; any other token, or one two
+ * values would share, stays as it is (see `unresolvedPiiTokens`).
+ * Independent of the org's current mode.
+ */
+export function restorePii<T>(value: T, source: unknown, scope: string): T {
+  if (!strings(value).some(s => s.includes('[PII:'))) return value
+  const byToken = new Map<string, string | null>()
+  for (const [v, { token }] of roundTripValues(source, scope)) {
+    byToken.set(token, byToken.has(token) && byToken.get(token) !== v ? null : v)
+  }
+  if (byToken.size === 0) return value
+  return mapStrings(value, s => s.includes('[PII:') ? s.replace(TOKEN_RX, t => byToken.get(t) ?? t) : s) as T
+}
+
+/** Round-trip-shaped tokens still in `value` (after `restorePii`: the ones it couldn't resolve). */
+export function unresolvedPiiTokens(value: unknown): string[] {
+  return strings(value).flatMap(s => s.match(TOKEN_RX) ?? [])
 }

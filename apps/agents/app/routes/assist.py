@@ -17,6 +17,7 @@ from app.agents.assist_agent import run_assist, AssistAction
 from app.router import resolve_llm
 from app.untrusted import wrap_untrusted_document
 from langchain_core.messages import HumanMessage, SystemMessage
+from app.pii_tokens import PII_TOKEN_RULE
 
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
@@ -577,7 +578,7 @@ Produce the three-variant redline now."""
 
     try:
         response = await llm.ainvoke([
-            SystemMessage(content=_REDLINE_SYSTEM),
+            SystemMessage(content=_REDLINE_SYSTEM + PII_TOKEN_RULE),
             HumanMessage(content=user_content),
         ], config={"callbacks": callbacks})
         content = response.content if isinstance(response.content, str) else str(response.content)
@@ -850,7 +851,7 @@ Produce the rewrite now. JSON only."""
             try:
                 response = await llm.ainvoke(
                     [
-                        SystemMessage(content=_BATCH_REDLINE_SYSTEM),
+                        SystemMessage(content=_BATCH_REDLINE_SYSTEM + PII_TOKEN_RULE),
                         HumanMessage(content=user_content),
                     ],
                     config={"callbacks": callbacks},

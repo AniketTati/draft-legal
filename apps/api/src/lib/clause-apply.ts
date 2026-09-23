@@ -12,6 +12,7 @@
  * version's changeNote; the row itself stays as an audit trail.
  */
 import { prisma } from './prisma.js'
+import { restorePii, unresolvedPiiTokens } from './pii-policy.js'
 
 /**
  * Minimal HTML escape for splicing text into contract HTML.
@@ -295,6 +296,19 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
   }
   if (!clause) return { ok: false, status: 404, detail: 'Clause not found on current version' }
 
+  // X23 — a proposal the chat model saw carries round-trip tokens where the
+  // contract had personal data (internal-ai redline_propose); put the values
+  // back before it is spliced in or stored. A token this contract can't
+  // resolve (altered by the model, or the text has changed since) would be
+  // written into the document as is: refuse instead.
+  args = restorePii(args, [clause.content, currentVersion.plainText], contract.id)
+  if (unresolvedPiiTokens([args.proposedText, args.rationale, args.changes]).length) {
+    return {
+      ok: false, status: 409, code: 'PII_TOKEN_UNRESOLVED',
+      detail: 'The proposal contains redacted values that no longer match this contract\'s text. Regenerate the proposal.',
+    }
+  }
+
   // Locate the clause in BOTH stored representations. They are two views of
   // one document: if only one of them can be spliced, the contract's HTML and
   // its indexed plain text would describe different agreements, so a partial
@@ -468,8 +482,8 @@ export async function applyClauseBatch(args: {
   changes:    BatchChange[]
   rationale?: string
 }): Promise<ApplyBatchResult> {
-  const { orgId, userId, contractId, changes } = args
-  if (changes.length === 0) {
+  const { orgId, userId, contractId } = args
+  if (args.changes.length === 0) {
     return { ok: false, status: 400, detail: 'changes is required' }
   }
 
@@ -487,6 +501,12 @@ export async function applyClauseBatch(args: {
     select: { id: true, versionNumber: true, htmlContent: true, plainText: true },
   })
   if (!currentVersion) return { ok: false, status: 404, detail: 'Current version missing' }
+
+  // X23 — as applyClauseProposal, each change is restored against its clause
+  // and the document below (a token left unresolved fails its clause); the
+  // rationale is only a note, so it is stored as it resolves.
+  const changes = args.changes
+  const rationale = restorePii(args.rationale, currentVersion.plainText, contract.id)
 
   const clauses = await prisma.contractClause.findMany({
     where:  { id: { in: changes.map(c => c.clauseId) }, versionId: currentVersion.id },
@@ -540,12 +560,21 @@ export async function applyClauseBatch(args: {
   const planned: Planned[] = []
   const applied: AppliedChange[] = []
 
-  for (const change of changes) {
-    const clause = clauseById.get(change.clauseId)
+  for (const proposed of changes) {
+    const clause = clauseById.get(proposed.clauseId)
+    const change = clause ? restorePii(proposed, [clause.content, currentVersion.plainText], contract.id) : proposed
     if (!clause) {
       applied.push({
         clauseId: change.clauseId, clauseType: null,
         spliced: false, matchMode: 'none', error: 'clause_not_on_current_version',
+      })
+      continue
+    }
+    // X23 — as applyClauseProposal: never splice a token that didn't resolve.
+    if (unresolvedPiiTokens(change).length) {
+      applied.push({
+        clauseId: clause.id, clauseType: clause.clauseType,
+        spliced: false, matchMode: 'none', error: 'pii_token_unresolved',
       })
       continue
     }
@@ -612,8 +641,8 @@ export async function applyClauseBatch(args: {
         versionNumber: nextVersionNumber,
         htmlContent:   nextHtml,
         plainText:     nextPlain,
-        changeNote: args.rationale
-          ? `redline_apply_batch (${planned.length} clauses): ${args.rationale}`
+        changeNote: rationale
+          ? `redline_apply_batch (${planned.length} clauses): ${rationale}`
           : `redline_apply_batch — ${planned.length} clause${planned.length === 1 ? '' : 's'} revised`,
         createdById: userId,
         metadata: {

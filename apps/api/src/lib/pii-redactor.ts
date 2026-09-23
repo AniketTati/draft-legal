@@ -154,13 +154,19 @@ const PATTERNS: Array<{
 ]
 
 /**
- * Hash a PII value to a short, stable pseudonym for tokenize mode.
- * We use SHA-256 truncated to 8 hex chars — collision-resistant enough
- * for "are these two refs the same person?" within one document, and
- * short enough not to bloat the prompt.
+ * Hash a PII value to a short, stable pseudonym for tokenize mode — 8 hex
+ * chars, enough for "are these two refs the same person?" within a document.
+ *
+ * X23 — keyed. A plain SHA-256 of an SSN, a date of birth or a phone number
+ * cut to 32 bits is reversed by trying every value, so whoever received the
+ * text (the LLM provider included) could undo tokenize mode. An HMAC under a
+ * server secret can't be. (Without either env var the key is per-process:
+ * pseudonyms then stay stable only within a process, which is all a prompt needs.)
  */
-function pseudonym(value: string): string {
-  return crypto.createHash('sha256').update(value).digest('hex').slice(0, 8)
+const PSEUDONYM_KEY = process.env.PII_TOKEN_SECRET || process.env.INTERNAL_SERVICE_SECRET || crypto.randomBytes(32).toString('hex')
+
+export function pseudonym(value: string): string {
+  return crypto.createHmac('sha256', PSEUDONYM_KEY).update(value).digest('hex').slice(0, 8)
 }
 
 /**
@@ -181,6 +187,8 @@ export const CONTRACT_TEXT_EXEMPT: PiiKind[] = ['EMAIL', 'PHONE']
 export interface RedactOptions {
   /** Restrict redaction to these kinds. Defaults to everything except CONTRACT_TEXT_EXEMPT. */
   kinds?: PiiKind[]
+  /** Replacement for a match, in place of the mode's (X23: round-trip tokens, see pii-policy.ts). */
+  token?: (kind: PiiKind, value: string) => string
 }
 
 export function redactPii(
@@ -213,6 +221,13 @@ export function redactPii(
         if (!validate(m as RegExpExecArray)) return matched
       }
       counts[kind] = (counts[kind] ?? 0) + 1
+      if (options.token) {
+        // A DOB or passport match starts with its keyword ("DOB: …"); only the
+        // value becomes the token, so the keyword stays in the text and can't
+        // travel with the token to where the model puts it.
+        const value = (kind === 'DOB' || kind === 'PASSPORT') && typeof args[1] === 'string' ? args[1] : matched
+        return matched.slice(0, matched.length - value.length) + options.token(kind, value)
+      }
       if (mode === 'tokenize') {
         return `[PII:${kind}:${pseudonym(matched)}]`
       }

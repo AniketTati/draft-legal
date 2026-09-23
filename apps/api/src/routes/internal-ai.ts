@@ -22,7 +22,7 @@ import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
-import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
+import { applyPiiPolicy, applyPiiPolicyBatch, redactJson } from '../lib/pii-policy.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -745,6 +745,23 @@ function dateRange(from?: string, to?: string): { gte?: Date; lte?: Date } | und
   return { ...(from ? { gte: new Date(from) } : {}), ...(end ? { lte: new Date(end) } : {}) }
 }
 
+/**
+ * X23 — the values a redline tool result is scrubbed of: exactly those in the
+ * contract's current text and the clauses asked about, wherever they appear
+ * in the result. A value neither holds (one the user asked for, one the model
+ * wrote) is left as written: it is nobody's data from this contract, and a
+ * token for it could never be put back when the redline is applied.
+ */
+async function redlineSource(contractId: string, clauseIds: string[]): Promise<string[]> {
+  const c = await prisma.contract.findUnique({ where: { id: contractId }, select: { currentVersionId: true } })
+  if (!c?.currentVersionId) return []
+  const [version, clauses] = await Promise.all([
+    prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { plainText: true } }),
+    prisma.contractClause.findMany({ where: { id: { in: clauseIds }, version: { contractId } }, select: { content: true } }),
+  ])
+  return [version?.plainText ?? '', ...clauses.map(cl => cl.content)]
+}
+
 export async function internalAiRoutes(app: FastifyInstance) {
   // S2 — the caller's view scope, resolved from their roles (never from the
   // body). Sends 403 and returns null when they may not view `resource`.
@@ -1387,9 +1404,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         })
       }
     } catch (err) {
-      // Redaction must never break the tool call. Fall through with a
-      // loud log; the excerpts stay raw for this one response.
+      // X23 — fail closed: if the org's PII policy can't be applied, the text
+      // doesn't go to the model at all.
       console.error('[contract_validate] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the excerpts were withheld. Try again shortly.' })
     }
 
     return reply.send({
@@ -1888,8 +1906,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // row for what the user experienced as a single tool call.
     // Structured metadata (counterparty, title, dates, riskFactors) is
     // deliberately left raw: the product depends on it.
-    let summaryOut = contract.summary
-    let snippetOut = snippet
+    let summaryOut: string | null
+    let snippetOut: string
     try {
       const redacted = await applyPiiPolicyBatch(
         body.orgId,
@@ -1900,8 +1918,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
       summaryOut = contract.summary != null ? (redacted.texts[0] ?? contract.summary) : null
       snippetOut = redacted.texts[1] ?? snippet
     } catch (err) {
-      // Redaction must never break the tool call.
-      console.error('[contract_summarize] PII redaction failed, returning unredacted text:', err)
+      // X23 — fail closed: unredacted text must not reach the model.
+      console.error('[contract_summarize] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the summary was withheld. Try again shortly.' })
     }
 
     return reply.send({
@@ -2441,7 +2460,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!result.ok) {
       return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
     }
-    return reply.send(result.data)
+    // X23 — this goes back to the chat model: the org's PII policy applies, as
+    // round-trip tokens that redline_apply puts back (clause-apply.ts).
+    return reply.send(await redactJson(body.orgId, result.data, {
+      surface: 'redline_propose', contractId: body.contractId, roundTrip: body.contractId,
+      valuesFrom: await redlineSource(body.contractId, [result.data.clause.id]),
+    }))
   })
 
 
@@ -2475,7 +2499,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!result.ok) {
       return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
     }
-    return reply.send(result.data)
+    // X23 — as redline_propose: tokens for the chat model, put back on apply.
+    return reply.send(await redactJson(body.orgId, result.data, {
+      surface: 'redline_propose_batch', contractId: body.contractId, roundTrip: body.contractId,
+      valuesFrom: await redlineSource(body.contractId, body.clauseIds),
+    }))
   })
 
   // ── POST /internal/ai/tools/comment_add (D.3.2) ────────────────────────────
@@ -4253,7 +4281,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // row) and map back by position — order, scoring and `found` flags
     // are untouched. Structured cell fields (contractId, sectionRef) and
     // the contracts[] metadata block stay raw on purpose.
-    let redactedMatrix = matrix
+    let redactedMatrix: typeof matrix
     try {
       const flat = matrix.flatMap(row => row.perContract.map(cell => cell.excerpt))
       const { texts } = await applyPiiPolicyBatch(body.orgId, flat, {
@@ -4268,8 +4296,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
         }),
       }))
     } catch (err) {
-      // Redaction must never break the tool call.
-      console.error('[portfolio_compare] PII redaction failed, returning unredacted excerpts:', err)
+      // X23 — fail closed: unredacted excerpts must not reach the model.
+      console.error('[portfolio_compare] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the comparison was withheld. Try again shortly.' })
     }
 
     return reply.send({

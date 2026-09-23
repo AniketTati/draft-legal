@@ -22,6 +22,7 @@
  *   ordering when no Voyage key is configured.
  */
 
+import { redactJson } from './pii-policy.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 
@@ -284,13 +285,22 @@ export async function embedContractVersion(versionId: string): Promise<void> {
   // Look up contractId for failure reporting
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
-    select: { contractId: true },
+    select: { contractId: true, plainText: true, contract: { select: { orgId: true } } },
   })
 
   // Batch all clause texts into a single OpenAI call (up to 2048 inputs)
   let vectors: number[][]
   try {
-    vectors = await embedTexts(clauses.map(c => c.content))
+    // X23 — the embedding provider is outside our trust zone too: the org's
+    // PII policy applies to what it is sent (the stored clause stays as is),
+    // judged against the whole document — a clause alone can lack the word
+    // that makes its card number one. No org, no call.
+    if (!version?.contract?.orgId) throw new Error('contract of this version not found')
+    const texts = clauses.map(c => c.content)
+    const outbound = await redactJson(version.contract.orgId, texts, {
+      surface: 'embeddings', contractId: version.contractId, roundTrip: version.contractId, valuesFrom: [texts, version.plainText ?? ''],
+    })
+    vectors = await embedTexts(outbound)
   } catch (err) {
     console.error('[embeddings] batch embed failed for versionId=%s:', versionId, (err as Error).message)
     if (version?.contractId) {

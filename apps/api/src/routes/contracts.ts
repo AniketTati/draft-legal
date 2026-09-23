@@ -22,6 +22,7 @@ import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededE
 import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
+import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
@@ -835,7 +836,14 @@ export async function contractRoutes(app: FastifyInstance) {
     const version = await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: id } })
     if (!version) return reply.status(404).send({ detail: 'Version not found' })
 
-    const { clauseSegments, clauseFlags } = req.body as {
+    // X23 — the extraction read this version with round-trip tokens in place
+    // of personal data (agent.worker.ts callAgents). Its segments are verbatim
+    // quotes that become the stored clause text, which later redlines must find
+    // in the document: put the values back.
+    const restored = restorePii(req.body, version.plainText, contract.id)
+    const left = unresolvedPiiTokens(restored).length
+    if (left) req.log.warn({ contractId: contract.id, versionId, left }, 'PII tokens left unresolved in extracted clauses')
+    const { clauseSegments, clauseFlags } = restored as {
       clauseSegments?: Array<{
         clauseType: string
         content: string
@@ -1064,7 +1072,7 @@ export async function contractRoutes(app: FastifyInstance) {
   app.patch('/:id', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
-    const body = UpdateContractSchema.parse(req.body)
+    let body = UpdateContractSchema.parse(req.body)
 
     // Internal service calls use orgId='system' — find by id only
     const where = orgId === 'system'
@@ -1073,6 +1081,20 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const existing = await prisma.contract.findFirst({ where })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
+
+    // X23 — the extraction read the contract with round-trip tokens in place of
+    // personal data (agent.worker.ts callAgents); put the values back in what
+    // it writes here (summary, key terms and their quotes, findings), against
+    // the version it read (?versionId=, from review.py), else the newest one.
+    if (req.user.sub === 'system' && JSON.stringify(body).includes('[PII:')) {
+      const { versionId } = req.query as { versionId?: string }
+      const version = (versionId && await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: existing.id }, select: { plainText: true } }))
+        || (existing.currentVersionId && await prisma.contractVersion.findUnique({ where: { id: existing.currentVersionId }, select: { plainText: true } }))
+        || await prisma.contractVersion.findFirst({ where: { contractId: existing.id }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
+      body = restorePii(body, version ? version.plainText : '', existing.id)
+      const left = unresolvedPiiTokens(body).length
+      if (left) req.log.warn({ contractId: existing.id, left }, 'PII tokens left unresolved in an agents-service update')
+    }
 
     // X25 — a matter link must name a live matter of the contract's own org.
     // It was stored unchecked, and the other org's matter view listed this

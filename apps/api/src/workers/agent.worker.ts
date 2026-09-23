@@ -15,6 +15,7 @@ import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyReques
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
@@ -37,9 +38,33 @@ const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 async function callAgents(
   path: string,
   init: RequestInit,
-  meta: { orgId: string; toolName: string },
+  meta: {
+    orgId: string; toolName: string
+    /** Round-trip token scope: the contract's id, or the request's. */
+    scope: string
+    contractId?: string
+    /** The whole document, when the body carries only parts of it (see redactJson's valuesFrom). */
+    context?: string | null
+  },
 ): Promise<Response> {
   await assertCostCapNotExceeded(meta.orgId)
+
+  // X23 — contract text leaves our trust zone here, so the org's PII policy
+  // applies, as it does on the chat tools (it was skipped for every job).
+  // What comes back is stored — a draft, findings, and (through the
+  // extraction's callbacks, see contracts.ts) the clause text itself — so the
+  // values go out as round-trip tokens and are put back below. Jobs whose body
+  // carries only ids (/redline, /approval-summary) are unaffected: the agents
+  // service fetches that text itself.
+  let sent: unknown
+  const source = () => [sent, meta.context ?? '']
+  if (typeof init.body === 'string') {
+    sent = JSON.parse(init.body)
+    const redacted = await redactJson(meta.orgId, sent, {
+      surface: `worker:${meta.toolName}`, contractId: meta.contractId, roundTrip: meta.scope, valuesFrom: source(),
+    })
+    init = { ...init, body: JSON.stringify(redacted) }
+  }
 
   const res = await fetch(`${AGENTS_URL}${path}`, init)
 
@@ -61,7 +86,18 @@ async function callAgents(
     outputChars,
   }).catch(() => { /* accounting must never fail a job */ })
 
-  return res
+  if (sent === undefined || !res.ok) return res
+  const text = await res.text()
+  const headers = { 'content-type': res.headers.get('content-type') ?? 'application/json' }
+  if (!text) return new Response(null, { status: res.status, headers })
+  let reply: unknown
+  try { reply = JSON.parse(text) } catch { return new Response(text, { status: res.status, headers }) }
+  const restored = restorePii(reply, source(), meta.scope)
+  const left = unresolvedPiiTokens(restored).length
+  if (left) {
+    console.warn('[agent-worker] %s scope=%s: %d PII token(s) the model altered or invented stay as tokens', meta.toolName, meta.scope, left)
+  }
+  return new Response(JSON.stringify(restored), { status: res.status, headers })
 }
 
 // playbook_check lives on THIS service's internal-ai plugin, not on the Python
@@ -111,7 +147,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  }, { orgId, toolName: 'detect_binder' })
+  }, { orgId, toolName: 'detect_binder', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /detect-binder returned ${res.status}: ${text.slice(0, 200)}`)
@@ -270,7 +306,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  }, { orgId, toolName: 'classify_document' })
+  }, { orgId, toolName: 'classify_document', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -358,7 +394,7 @@ async function handleExtractAi(data: ExtractAiJob): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body: JSON.stringify(body),
-  }, { orgId, toolName: 'redline_analysis' })
+  }, { orgId, toolName: 'redline_analysis', scope: contractId, contractId })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -389,7 +425,7 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
       counterpartyName: request.counterpartyName ?? undefined,
       orgId,
     }),
-  }, { orgId, toolName: 'classify_request' })
+  }, { orgId, toolName: 'classify_request', scope: requestId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /intake-classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -430,7 +466,7 @@ async function handleRedlineAnalysis(data: RedlineAnalysisJob): Promise<void> {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ contractId, v1Id, v2Id, orgId, userId, contractType }),
-  }, { orgId, toolName: 'redline' })
+  }, { orgId, toolName: 'redline', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /redline returned ${res.status}: ${text.slice(0, 200)}`)
@@ -640,7 +676,11 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
       })),
       contractType: contract.type,
     }),
-  }, { orgId, toolName: 'playbook_review' })
+  }, {
+    orgId, toolName: 'playbook_review', scope: contractId, contractId,
+    // The clauses are sent one by one; the document decides what counts as PII.
+    context: (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText,
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /playbook-review returned ${res.status}: ${text.slice(0, 200)}`)
@@ -693,7 +733,7 @@ async function handleApprovalSummary(data: ApprovalSummaryJob): Promise<void> {
       'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
     },
     body: JSON.stringify({ instanceId, contractId, versionId, orgId, approverIds }),
-  }, { orgId, toolName: 'approval_summary' })
+  }, { orgId, toolName: 'approval_summary', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /approval-summary returned ${res.status}: ${text.slice(0, 200)}`)
@@ -735,7 +775,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
       user_id: userId,
       context,
     }),
-  }, { orgId, toolName: 'draft_contract' })
+  }, { orgId, toolName: 'draft_contract', scope: contractId, contractId })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')

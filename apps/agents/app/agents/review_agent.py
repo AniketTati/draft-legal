@@ -24,6 +24,7 @@ from typing_extensions import TypedDict
 
 from ..router import resolve_llm
 from ..untrusted import wrap_untrusted_document
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -591,7 +592,7 @@ async def _extract(state: ReviewState) -> ReviewState:
         try:
             resp = await llm.ainvoke(
                 [
-                    SystemMessage(content=_EXTRACT_PROMPT + extra_prompt),
+                    SystemMessage(content=_EXTRACT_PROMPT + extra_prompt + PII_TOKEN_RULE),
                     # The chunk is counterparty-authored text. Frame it as data
                     # so instructions inside the contract cannot steer extraction.
                     HumanMessage(content=wrap_untrusted_document(

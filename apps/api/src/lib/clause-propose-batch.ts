@@ -19,6 +19,7 @@
  * Concurrency is bounded inside the Python route rather than here, so any
  * caller gets the limit — see `_BATCH_CONCURRENCY` in `app/routes/assist.py`.
  */
+import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
 import { matchCategory } from './clause-category.js'
 
@@ -128,14 +129,22 @@ export async function proposeClauseBatch(args: {
     }
   })
 
+  const document = (await prisma.contractVersion.findUnique({
+    where: { id: contract.currentVersionId }, select: { plainText: true },
+  }))?.plainText ?? ''
+  const source = [items, document]
+
   const res = await fetch(`${AGENTS_URL}/redline_propose_batch`, {
     method:  'POST',
     headers: {
       'content-type':      'application/json',
       'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
     },
+    // X23 — the clauses go to the model under the org's PII policy, as
+    // round-trip tokens (judged against the whole document): proposals are
+    // text to splice into the contract, so the values are put back below.
     body: JSON.stringify({
-      clauses:      items,
+      clauses:      await redactJson(orgId, items, { surface: 'redline_propose_batch', contractId, roundTrip: contractId, valuesFrom: source }),
       aggression,
       contractType: contract.type,
       instructions,
@@ -147,7 +156,7 @@ export async function proposeClauseBatch(args: {
     return { ok: false, status: 502, detail: 'redline_propose_batch failed', upstream: upstream.slice(0, 300) }
   }
 
-  const body = await res.json() as BatchProposeResult
+  const body = restorePii(await res.json() as BatchProposeResult, source, contractId)
 
   // Any clause the caller asked for that the service did not answer on gets an
   // explicit entry. Silence here would read as "no change needed".

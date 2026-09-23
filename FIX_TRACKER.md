@@ -793,11 +793,86 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Langfuse still groups traces by the client's thread id, so in the Langfuse UI a reused thread id shows two users' turns in one session. That is visible only to operators. Namespacing the session id in `tracing.py` would orphan every existing session's feedback lookup.
     - Background jobs' traces carry the org id as `userId`, so no user can score them. That is intended.
   - Original note: `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
-- **X23 — PII redaction has gaps outside the chat tools (Medium).** Found in X5 review.
-  - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
-  - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
-  - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
-  - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
+- **X23 — PII redaction has gaps outside the chat tools (Medium). — VERIFY-PENDING.**
+  - **Plan (first cut):**
+    - Background jobs: every agents-service call from the worker goes through `callAgents`. It applies the org's policy to every text field of the outgoing JSON (`applyPiiPolicyBatch`, one audit row per call). Ids can't match the PII patterns. Contract mode keeps emails and phones, so notice clauses survive.
+    - Embeddings: clause texts are redacted before they go to the embedding provider.
+    - `tokenize`: pseudonyms become an HMAC under a server secret (`PII_TOKEN_SECRET`, else `INTERNAL_SERVICE_SECRET`), so they can't be reversed by brute force.
+    - `contract_validate` / `contract_summarize` / `portfolio_compare` fail closed if redaction throws.
+    - `redline_propose` redacts the clause text it sends to the model and returns.
+  - **Plan review (revised before any commit):**
+    - Plain redaction on the worker path would corrupt stored contract data. The default mode is `redact` for every org.
+      - The `/review` extraction's `clauseSegments` are verbatim quotes. They become `ContractClause.content`, and `applyClauseProposal` must later find them in the document. A clause stored as `…SSN [REDACTED:SSN]…` can't be found, so redlines on it 409.
+      - A draft and redline proposals are text spliced into the contract, so `[REDACTED:…]` would replace the real value.
+    - Fix: round-trip tokens. Where the model's output is stored, values go out as `[PII:KIND:<hmac>]`, keyed (the model can't reverse it) and scoped to the contract or request id (it doesn't link one contract's values to another's). `restorePii` rebuilds the map from the source text and puts the values back. `redact` vs `tokenize` makes no difference on these paths; `off` sends the text as is.
+  - **What changed:**
+    - `lib/pii-redactor.ts`:
+      - `pseudonym()` is an HMAC.
+      - `redactPii` takes a `token` replacement. For DOB and passport matches, only the value becomes the token and the keyword stays.
+    - `lib/pii-policy.ts`:
+      - `redactJson(value, { roundTrip, valuesFrom })` finds the values in a source text (the whole document where the payload holds only parts of it). It then replaces exactly those values in one pass, wherever they appear, with one policy read and one audit row. Matching each string on its own missed a card number whose "card" sat in another sentence.
+      - `restorePii` treats a token two values share as ambiguous and leaves it.
+      - `unresolvedPiiTokens`.
+    - `workers/agent.worker.ts` `callAgents`, for every job, scoped to the contract or request, with the contract id on the audit row:
+      - it redacts the body with round-trip tokens, using the version text as context for the playbook review;
+      - it restores the reply, so the draft HTML, findings and intake classification are stored with real values;
+      - it warns about tokens left unresolved;
+      - an empty or 204 reply passes through, and a restore error fails the job instead of being swallowed;
+      - redaction failing fails the job.
+    - The extraction's callbacks (`routes/contracts.ts`) restore before storing:
+      - `POST /:id/versions/:versionId/clauses` restores against that version;
+      - `PATCH /:id` from the agents service restores against the version the extraction read. `review.py` now sends `?versionId=`; the fallback is the current version, then the latest. Before, a newer upload or an undo during extraction left tokens in the summary.
+    - Clause proposers (`lib/clause-propose(-batch).ts`) send the clauses tokenized, judged against the current version, and restore the variants and proposals. That covers the review drawer and the playbook redline's staged proposals.
+    - Chat tools `redline_propose(_batch)` (`routes/internal-ai.ts`):
+      - Their result goes to the chat model, so every value found in the contract text or the named clauses is tokenized wherever it appears in the result: proposal, change list, rationale.
+      - A value the document doesn't hold (one the user asked for, or one the model wrote) is left as written. It is nobody's data from this contract, and a token for it could never be restored.
+      - The first cut restored the values and then re-detected them per string. That leaked card numbers and IBANs, and it made new values unrestorable tokens that `redline_apply` spliced into the contract.
+    - `lib/clause-apply.ts`: apply and batch apply restore each proposal against its clause and the current version. A token that still doesn't resolve is refused (409 `PII_TOKEN_UNRESOLVED`, or `pii_token_unresolved` for that clause in a batch) instead of being written into the document.
+    - `lib/embeddings.ts`: clause texts go to the embedding provider redacted, judged against the whole document. Without the version's org it fails instead of sending.
+    - `contract_validate`, `contract_summarize` and `portfolio_compare` fail closed: 503, no text, if redaction throws.
+    - Agents service:
+      - `app/pii_tokens.py` `PII_TOKEN_RULE` ("copy the placeholder exactly…") is appended to every prompt whose output is stored: extraction, redline propose and batch, playbook review, and the draft agent's two prompts.
+  - **Verification:**
+    - `lib/pii-outbound.integration.test.ts` has 10 cases:
+      - a worker-style body: no SSN, card or DOB; the schedule's card number caught without its own "card"; ids untouched; emails kept; `date of birth:` readable; restored only for its own scope;
+      - an `off` org sends as is;
+      - embeddings get no SSN or context-less card, and the stored clauses are intact;
+      - extraction callbacks store the real text;
+      - PATCH restores against the version read after a newer one became current;
+      - `redline_propose`: the agents service and the chat model see no SSN, the drawer shows the real text, and a context-less card number never reaches the chat model;
+      - a chat redline applies with the real values, and a new SSN the user asked for stays as written;
+      - an unresolvable token is refused with 409;
+      - fail closed returns 503.
+    - `lib/pii-pseudonym.test.ts` has 5 cases:
+      - the keyed pseudonym;
+      - the `callAgents` tripwire;
+      - Python tripwires for the prompt rule and `review.py`'s `versionId`.
+    - Against the pre-fix code every case fails.
+    - Suite:
+      - db:generate 0, typecheck 0, lint 0 errors;
+      - api unit 265/265;
+      - api integration: everything but the X25 follow-up's new cases, which were written ahead of their code.
+    - A fresh subagent reviewed the first cut adversarially. Its findings shaped the rework above:
+      - (1) the chat path leaks, and new values become unrestorable tokens;
+      - (3) PATCH restored against the wrong version;
+      - (4) no guard against unresolved tokens;
+      - (5) context words were judged per string;
+      - (7) DOB and passport keywords;
+      - (8) the `callAgents` edge cases;
+      - (10) Dates in the walk, token collisions, and embeddings without an org.
+      - It confirmed that no restore can reveal a value to anyone who couldn't read it, and that fail-closed and ids are clean.
+  - **Why VERIFY-PENDING:** the round trip relies on the model copying `[PII:KIND:xxxxxxxx]` tokens verbatim, which the prompts now ask for, and only a live stack can show it. Upload a contract with an SSN and a card number. Check that the agents-service request carries tokens, and that the stored clauses, summary and key terms carry the real values. Then run a chat redline on that clause and apply it.
+  - **Left as is:**
+    - Contract text that other paths still send raw is filed as X27 (found in this review).
+    - In the chat rail, a redline preview shows the contract's own values as tokens. The applied version has the real values. Showing them would mean restoring on the `/agent/chat` relay.
+    - A token the model mangles in extraction output is stored as a visible token, with a warning in the log. Refusing would drop the whole extraction.
+    - Cost: redacting or restoring takes about 140 ms per MB of text on the API event loop (callbacks, applies). Typical contracts are under 0.3 MB.
+  - **Deploy:** `PII_TOKEN_SECRET` is optional. If you set it, set the same value on the API and the worker services: tokens are made in one and restored in the other. The fallback, `INTERNAL_SERVICE_SECRET`, is already shared. Rotating it changes pseudonyms; no tokens are stored.
+  - Original note:
+    - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
+    - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
+    - `contract_validate`, `contract_summarize` and `portfolio_compare` send unredacted text if redaction throws. They should fail closed.
+    - `redline_propose` returns the clause text without redaction (`clause-propose.ts`). (From X9 review.)
 - **X24 — `edit:contract` can mark a contract APPROVED without an approval (Medium). — DONE.**
   - **Plan:**
     - Confirmed: `PATCH /contracts/:id` and the agent's `set_status` share a transition table (two copies) that allows `PENDING_APPROVAL → APPROVED/REJECTED` and moves into `PENDING_APPROVAL` by hand. The web offers none of these (A.3 removed them as a workflow bypass). Only `/submit-approval` and `approval_route` enter PENDING_APPROVAL, and they also open the approval instance; only a decision or the workflow's auto-approve rule sets APPROVED / REJECTED.
@@ -843,6 +918,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `routes/metadata-reserved.integration.test.ts` has 3 cases: a user's `_splitInto` refused, ordinary keys saved, and the agents service still writes `_redlineStatus`. The first fails pre-fix.
     - C4's `contract-metadata` test had written `_redlineStatus` as an ADMIN user, standing in for the redline failure path. It now uses the agents service headers, which is that path's real caller; its merge assertion is unchanged.
   - Original note: `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
+
+- **X27 — Contract text still reaches models raw on paths outside X23 (Medium).** Found in the X23 review.
+  - `/redline` and `/approval-summary` jobs: the agents service fetches the text itself. `redline.py` gets both versions' diff HTML (`contracts.ts` `/versions/.../diff`), and `approval.py` gets the contract summary, `keyTerms` and all clause text. Neither goes through the org's policy.
+  - `POST /contracts/:id/ask` and `/search/ask` send raw clause text to `/agent/ask`.
+  - `rerankClauses` (`embeddings.ts`) sends raw clause text to Voyage.
+  - The editor assist routes in `agents.ts` (assist_stream, classify_clause, complete, assist, compare) and `playbook.ts` `/compare` send the user's selected contract text raw.
+  - `contract_get` and `contract_summarize` return `keyTerms` unredacted.
+  - Apply the policy on each, with round-trip tokens where the output is stored (see X23's helpers).
 
 ---
 
@@ -892,3 +975,4 @@ X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be
 X26 — DONE — `_` contract metadata (analysis reports, _splitInto) writable only by the agents service — (sha: X26)
 X22 — DONE — agent feedback scores only the caller's own Langfuse traces (named trace or session lookup); others answer trace_not_found like missing ones — (sha: X22)
 X21 — DONE — own-scope follow-ups: dashboard org approvals + team workload counts narrowed (hidden, not zeroed); signers without the contract get their signing link; converted requests owned by the requester; collab server checks view/edit like REST — (sha: X21)
+X23 — VERIFY-PENDING — the org's PII policy now covers background jobs, embeddings and redline proposals via contract-scoped round-trip tokens restored wherever output is stored; unresolved tokens refused on apply; tokenize keyed; 3 tools fail closed; needs a live upload + chat redline — (sha: X23)
