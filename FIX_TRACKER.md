@@ -1283,6 +1283,19 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is (for when the editor binds to the shared document):**
     - Read-only connections can still send awareness (presence) and stateless messages, both unused today.
     - `collab_states` rows written before X21 (when any org member could write) should be cleared before binding.
+  - **Follow-up (final-sweep review, DONE):** the per-message checks hold: read-only connections can't write, and login, presence, stateless and queued messages all pass through them. The review found the gap between messages.
+    - Hocuspocus sends every document update to every open connection with no hook, and its idle timeout resets on a message sent for any document.
+    - So a connection that stayed silent on a contract, while sending an occasional message for another document, kept receiving edits after its token expired or its access was revoked.
+    - The stock web client renews presence every 15 s, so it was covered.
+    - Production runs with `COLLAB_DISABLED=1`, so this was latent.
+    - **What changed:** `watchCollabConnection()` re-runs the same check every 15 s for each connection (from the `connected` hook until `onDisconnect`), and closes the connection with 4403 once it fails.
+    - **Verification:** `lib/collab-watch.test.ts` (fake timers) checks that a silent connection closes once its token expires, is closed only once, and that a stopped watcher never fires. `own-scope-followups.integration.test.ts` still passes.
+    - **Left as is (review notes):**
+      - Roles come from the token, as in REST, so a demotion applies at token expiry.
+      - The 4403 close detaches the document without closing the socket. Server state is cleared, so a rejoin needs a new login.
+      - The web client's fixed token means rejoining after 15 minutes needs a reload.
+      - Presence entries and broadcast stateless messages aren't write-checked.
+      - Hocuspocus queues unauthenticated messages without a limit.
 - **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low). — VERIFY-PENDING.** Found in the X3 review.
   - **Plan:** Fastify ran without `trustProxy`, so behind Cloud Run's front end `req.ip` was the front end's address. The per-IP rate limit then put every client in one bucket, and the audit log recorded Google's IPs. Trusting the whole `X-Forwarded-For` would let a client choose its own address, so trust only the nearest hop(s).
   - **What changed:**
@@ -1745,4 +1758,5 @@ X38 — DONE — production refuses to boot with placeholder, public (CI/test/de
 X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — 4802124
 X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — 85bf0d9
 X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — d0f4d79
-X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — (sha: pending)
+X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — 8d5419d
+X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — (sha: pending)

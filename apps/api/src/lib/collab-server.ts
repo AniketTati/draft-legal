@@ -23,6 +23,8 @@ import { getPermissionsForRoles, evaluatePermission } from './permissions.js'
 const PORT = Number(process.env.COLLAB_PORT ?? 3030)
 
 let server: Server | null = null
+/** Each open connection's watcher (X29 follow-up), keyed by its context. */
+const stopWatching = new WeakMap<object, () => void>()
 
 /** What a connection was admitted with; re-checked while it stays open (X29). */
 export interface CollabContext {
@@ -108,6 +110,28 @@ export async function checkCollabMessage(context: CollabContext, now = Date.now(
   context.checkedAt = now
 }
 
+/** How often an open connection is checked even when it sends nothing (X29 follow-up). */
+const WATCH_MS = 15_000
+
+/**
+ * X29 follow-up — re-checks an open connection on a timer and calls `close`
+ * once its rights lapse; returns a function that stops watching. Hocuspocus
+ * sends every document update to every connection, so checking only when a
+ * connection sends a message let a silent one (a custom client, or one
+ * keeping its socket alive through another document) keep receiving edits
+ * after its token expired or its access was revoked.
+ */
+export function watchCollabConnection(context: CollabContext, close: (reason: string) => void, every = WATCH_MS): () => void {
+  const timer = setInterval(() => {
+    checkCollabMessage(context).catch((err: Error) => {
+      clearInterval(timer)
+      close(err.message)
+    })
+  }, every)
+  timer.unref?.()
+  return () => clearInterval(timer)
+}
+
 export function startCollabServer(): Server {
   if (server) return server
   server = new Server({
@@ -135,6 +159,13 @@ export function startCollabServer(): Server {
     onAuthenticate: authenticateCollab,
     async beforeHandleMessage({ context }) {
       await checkCollabMessage(context as CollabContext)
+    },
+    async connected({ connection, context }) {
+      stopWatching.set(context, watchCollabConnection(context as CollabContext, reason => connection.close({ code: 4403, reason })))
+    },
+    async onDisconnect({ context }) {
+      stopWatching.get(context)?.()
+      stopWatching.delete(context)
     },
   })
 
