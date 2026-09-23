@@ -2044,6 +2044,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Signing in as a different user in another tab still leaves each tab on its own session, as before.
     - A refresh that fails for a network reason still signs that tab out, as before.
 
+
+- **X51 — The Negotiate tab can't be opened on a contract with no extracted clauses (Low). — DONE.** Found during C8's live check.
+  - The contract page shows its tab bar only outside the document view. From the document view, the only ways out were the rail's Clauses "View all", shown only when the contract has clauses, and "Review & Decide", shown only during an approval.
+  - So on a contract whose extraction found no clauses, Overview, Versions and Negotiate couldn't be opened at all, and its redlines couldn't be analysed. Ironbridge SOW #03 is one: two versions, no clauses.
+  - In the local data, 8 of the 94 contracts with two or more versions have no clauses. The gap dates from the first commit.
+  - **What changed:** the rail's History section has a "Negotiate" link when the contract has two or more versions. It opens the Negotiate tab, and with it the tab bar. It isn't called "Compare" because the header's Compare button opens a different view (CompareMode).
+  - **Verification:**
+    - Live on Ironbridge SOW #03: before, the rail offered only its section toggles and analysis actions. Now "Negotiate" opens the tab, where C8's check ran.
+    - apps/web has no component-test setup (no testing library or DOM environment), so there's no automated test. Web typecheck and lint clean.
+
 ---
 
 ## Run log
@@ -2142,6 +2152,7 @@ X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as Java
 X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — 4d2638c
 X50 — DONE — a tab takes the same user's newer tokens another tab stored (before refreshing, and after losing a simultaneous refresh) instead of signing out; the server rotates a refresh token atomically — 3307df0
 C8, X15 (live check + follow-up) — DONE — the redline and portfolio prompts' JSON examples broke `str.format()`, so neither agent ever reached a model; braces escaped, prompt tripwire added; C8 verified live (per-change advice on a two-version SOW), VERIFY-PENDING → DONE — (sha: pending)
+X51 — DONE — the contract rail's History section links to Negotiate when there are two versions, so a contract without extracted clauses can reach its redline analysis — (sha: pending)
 
 ---
 

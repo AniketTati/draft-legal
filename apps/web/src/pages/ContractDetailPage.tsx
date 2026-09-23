@@ -3760,6 +3760,21 @@ export function ContractDetailPage() {
             (familyData?.children?.length ?? 0) +
             (familyData?.parent ? 1 : 0) || null
           }
+          action={
+            // X51 — the tab bar shows only outside the document view, and the
+            // way out was Clauses' "View all" or an approval: a contract with
+            // no extracted clauses could never open Negotiate to analyze its
+            // redlines. (The header's Compare is a different view, CompareMode.)
+            versions.length >= 2 ? (
+              <button
+                onClick={() => setTab('negotiate')}
+                data-testid="rail-history-negotiate"
+                className="text-[11px] font-semibold text-ink-950 hover:underline"
+              >
+                Negotiate
+              </button>
+            ) : null
+          }
         >
           <ol className="space-y-2.5">
             {/* Parent contract — hierarchical link */}
