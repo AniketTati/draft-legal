@@ -52,10 +52,14 @@ export const useAuthStore = create<AuthState>()(
       // token refreshed with the same refresh token, and the server rotates it
       // on use: each refresh after the first was refused, and the app logged
       // the user out.
+      // The shared refresh has a time limit, so a hung one can't hold every
+      // later request, and it doesn't write one session's tokens over another's
+      // if the user signed out (or someone else signed in) while it ran.
       refresh: singleFlight(async () => {
         const { refreshToken } = get()
         if (!refreshToken) throw new Error('No refresh token')
-        const { data } = await axios.post('/api/v1/auth/refresh', { refreshToken })
+        const { data } = await axios.post('/api/v1/auth/refresh', { refreshToken }, { timeout: 15_000 })
+        if (get().refreshToken !== refreshToken) return
         set({ accessToken: data.accessToken, refreshToken: data.refreshToken })
       }),
 

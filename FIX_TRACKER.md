@@ -1976,6 +1976,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - after a failure, both callers see it and the next call runs again.
     - Web suite and typecheck pass.
   - **Left as is:** each tab of the same user holds its own copy of the refresh token, and the server keeps only the latest. A second tab's next refresh is refused and that tab signs out, as before.
+  - **Adversarial review (fresh subagent, after the summary):**
+    - *Low, fixed:* the shared refresh had no time limit, so a hung one held up every later request. A refresh that finished after a sign-out and a new sign-in also wrote the old session's tokens over the new ones. It now times out after 15 s and leaves a changed session alone. `apps/web/src/store/auth.test.ts` fails without the change.
+    - *Medium, existing, not done:* in the multi-tab case above, the signing-out tab also clears the tokens the other tabs share. The fix would be a cross-tab lock (`navigator.locks`) with a re-read of the stored token, plus an atomic rotation on the server.
+    - Checked: retried requests carry the new token, and on failure every waiter signs out but only one sign-out request is sent.
 
 - **X49 — The contract page's Original (PDF) view never works (Medium). — DONE.** Found during X1's live check.
   - Two causes, both from the first commit:
@@ -2078,7 +2082,8 @@ X45 — DONE — a key's writes that need a user act as the key's maker while th
 X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — 854a620
 X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — c029ba8
 
-X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — (sha: pending)
+X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — 5730eed
+X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — (sha: pending)
 
 ---
 
