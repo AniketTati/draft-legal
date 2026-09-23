@@ -1255,6 +1255,17 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
     - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
     - Gate view and decline the way sign is gated.
+  - **Follow-up (final-sweep review, DONE):** the turn gate holds. The review found:
+    - **Signing and declining ignored the request's expiry.** Only viewing the link marked a request EXPIRED, so a stale or leaked link could still sign (and, as last signer, complete the request and execute the contract) or void it. The X18 deploy note assumes tokens stop at expiry. Now one `expired()` check marks it and answers 410 for view, sign and decline alike.
+    - **Racing state changes:** the status was checked on a snapshot and written unconditionally. So a sender's void racing the last signature ended COMPLETED/EXECUTED after `signature.voided` had fired, and two final signers at once wrote the COMPLETED event, audit row, webhooks and obligation extraction twice.
+      - A signature now lands only on a signer and request still PENDING.
+      - Completion, a decline and a sender's void each flip the request only from PENDING, in a transaction. Exactly one wins, and only the winner executes the contract and fires events. The others get 409.
+    - **Verification (`signing-turn.integration.test.ts`, 2 new cases):**
+      - an expired link's sign and decline get 410 and leave the request EXPIRED with the signer pending;
+      - two final signatures sent at once both succeed, with one COMPLETED event.
+      - Against the pre-fix code both fail on every run: 200 for the expired link, 2 COMPLETED events.
+      - The signature-related integration files pass (26 tests).
+    - Not reproduced deterministically: a void landing between a sign request's checks and its write. It goes through the same conditional updates as the tested race.
 - **X29 — The collaboration server checks permissions once per socket (Low, latent). — DONE.** Found in the X21 review.
   - **Plan:** confirmed. `authenticateCollab` ran only in Hocuspocus' `onAuthenticate`, so an open socket kept its rights after its token expired, the user was deactivated, or the contract was deleted or reassigned. A throw from `beforeHandleMessage` closes the connection (Hocuspocus v4), so check there.
   - **What changed (`lib/collab-server.ts`):**
@@ -1733,4 +1744,5 @@ X37 — DONE — IBANs are recognized in groups of four as contracts print them,
 X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — c6ec141
 X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — 4802124
 X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — 85bf0d9
-X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — (sha: pending)
+X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — d0f4d79
+X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — (sha: pending)

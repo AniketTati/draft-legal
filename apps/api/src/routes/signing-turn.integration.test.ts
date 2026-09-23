@@ -3,18 +3,25 @@
  * turn. A later signer's link could view the contract, and decline (which
  * voids the whole request), before the first signer had acted.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+// Completing a request queues the PDF seal; the tests don't need the job.
+vi.mock('../lib/queue.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/queue.js')>()),
+  queueSealSignedPdf: vi.fn(),
+}))
+
 import { getApp, closeApp, makeOrg, makeUser, makeContract, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
-let org: string, sr: string
+let org: string, sr: string, user: string
 const first = `it-x28-first-${Date.now()}`
 const second = `it-x28-second-${Date.now()}`
 
 beforeAll(async () => {
   app = await getApp()
   org = await makeOrg('Signing Turn Org')
-  const user = await makeUser(org)
+  user = await makeUser(org)
   const contract = await makeContract(org, user, { title: 'Sequential NDA' })
   const v = await prisma.contractVersion.create({ data: { contractId: contract, versionNumber: 1, createdById: user, plainText: 'CONFIDENTIAL TERMS', htmlContent: '<p>CONFIDENTIAL TERMS</p>' } })
   await prisma.contract.update({ where: { id: contract }, data: { currentVersionId: v.id } })
@@ -28,8 +35,8 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  await prisma.signatureEvent.deleteMany({ where: { signatureRequestId: sr } })
-  await prisma.signer.deleteMany({ where: { signatureRequestId: sr } })
+  await prisma.signatureEvent.deleteMany({ where: { signatureRequest: { orgId: org } } })
+  await prisma.signer.deleteMany({ where: { signatureRequest: { orgId: org } } })
   await prisma.signatureRequest.deleteMany({ where: { orgId: org } })
   await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null } })
   await cleanupAll()
@@ -51,5 +58,45 @@ describe('a later sequential signer before their turn', () => {
     const now = await app.inject({ method: 'GET', url: `/api/v1/sign/${second}` })
     expect(now.statusCode).toBe(200)
     expect(now.body).toContain('CONFIDENTIAL TERMS')
+  })
+})
+
+describe('X28 follow-up — expiry and racing state changes', () => {
+  /** A request of its own, on a contract of its own. */
+  async function request(signers: Array<{ token: string; order: number }>, extra: { signOrder?: string; expiresAt?: Date } = {}) {
+    const contract = await makeContract(org, user, { title: 'Signing race' })
+    const v = await prisma.contractVersion.create({ data: { contractId: contract, versionNumber: 1, createdById: user, plainText: 'Terms', htmlContent: '<p>Terms</p>' } })
+    return (await prisma.signatureRequest.create({
+      data: {
+        orgId: org, contractId: contract, versionId: v.id, createdById: user, signOrder: extra.signOrder ?? 'ANY', expiresAt: extra.expiresAt,
+        signers: { create: signers.map(sg => ({ email: `${sg.token}@cp.test`, name: sg.token, signOrder: sg.order, token: sg.token })) },
+      },
+    })).id
+  }
+  const tok = (name: string) => `it-x28-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+  it('an expired link can neither sign nor decline, and the request is marked EXPIRED', async () => {
+    const past = new Date(Date.now() - 60_000)
+    const signTok = tok('late-sign')
+    const signReq = await request([{ token: signTok, order: 1 }], { expiresAt: past })
+    const signed = await app.inject({ method: 'POST', url: `/api/v1/sign/${signTok}/sign`, payload: { signedName: 'Late', consent: true } })
+    expect(signed.statusCode).toBe(410)
+    expect((await prisma.signatureRequest.findUniqueOrThrow({ where: { id: signReq } })).status).toBe('EXPIRED')
+    expect((await prisma.signer.findUniqueOrThrow({ where: { token: signTok } })).status).toBe('PENDING')
+
+    const declineTok = tok('late-decline')
+    const declineReq = await request([{ token: declineTok, order: 1 }], { expiresAt: past })
+    const declined = await app.inject({ method: 'POST', url: `/api/v1/sign/${declineTok}/decline`, payload: { reason: 'late' } })
+    expect(declined.statusCode).toBe(410)
+    expect((await prisma.signatureRequest.findUniqueOrThrow({ where: { id: declineReq } })).status).toBe('EXPIRED')
+  })
+
+  it('two final signatures at the same moment complete the request once', async () => {
+    const [a, b] = [tok('a'), tok('b')]
+    const id = await request([{ token: a, order: 1 }, { token: b, order: 1 }])
+    const results = await Promise.all([a, b].map(t => app.inject({ method: 'POST', url: `/api/v1/sign/${t}/sign`, payload: { signedName: 'Signer', consent: true } })))
+    expect(results.map(r => r.statusCode)).toEqual([200, 200])
+    expect((await prisma.signatureRequest.findUniqueOrThrow({ where: { id } })).status).toBe('COMPLETED')
+    expect(await prisma.signatureEvent.count({ where: { signatureRequestId: id, kind: 'COMPLETED' } })).toBe(1)
   })
 })

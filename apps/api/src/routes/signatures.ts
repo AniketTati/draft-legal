@@ -96,6 +96,21 @@ function waitingForEarlier(
 }
 const NOT_YOUR_TURN = 'Earlier signers have not yet signed. You will be notified when it is your turn.'
 
+/**
+ * X28 follow-up — whether a request is past its expiry, marking it EXPIRED.
+ * Only viewing the link (or a reminder after expiry) used to do that, and
+ * signing and declining checked just the status: a stale or leaked link could
+ * still sign, completing the request and executing the contract, or void it.
+ */
+async function expired(sr: { id: string; expiresAt: Date | null }): Promise<boolean> {
+  if (!sr.expiresAt || sr.expiresAt >= new Date()) return false
+  await prisma.signatureRequest.updateMany({ where: { id: sr.id, status: 'PENDING' }, data: { status: 'EXPIRED' } })
+  return true
+}
+
+/** X28 follow-up — a state change another request (a void, a decline, a signature) made first. */
+class ChangedMeanwhile extends Error {}
+
 /** A value for Prisma's insensitive `equals`, which it runs as ILIKE: `_` and `%` must match only themselves. */
 function likeLiteral(v: string): string {
   return v.replace(/[\\%_]/g, '\\$&')
@@ -412,14 +427,8 @@ export async function signatureRoutes(app: FastifyInstance) {
       if (!signer) return reply.status(404).send({ detail: 'Invalid signing link' })
       const sr = signer.signatureRequest
       if (sr.status !== 'PENDING') return reply.status(410).send({ detail: 'This signing request is no longer active' })
-      if (sr.expiresAt && sr.expiresAt < new Date()) {
-        // Lazy-expire the request the first time someone hits a stale link.
-        await prisma.signatureRequest.update({
-          where: { id: sr.id },
-          data: { status: 'EXPIRED' },
-        })
-        return reply.status(410).send({ detail: 'This signing link has expired' })
-      }
+      // Lazy-expire the request the first time someone hits a stale link.
+      if (await expired(sr)) return reply.status(410).send({ detail: 'This signing link has expired' })
       if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
       // Record a VIEWED event the first time this signer opens the link.
@@ -491,14 +500,17 @@ export async function signatureRoutes(app: FastifyInstance) {
       if (sr.status !== 'PENDING') return reply.status(410).send({ detail: 'Signing request is no longer active' })
       if (signer.status === 'SIGNED')  return reply.status(409).send({ detail: 'Already signed' })
       if (signer.status === 'DECLINED') return reply.status(409).send({ detail: 'Already declined' })
+      if (await expired(sr)) return reply.status(410).send({ detail: 'This signing link has expired' })
 
       // Sequential gating: a signer can only sign if every earlier
       // signOrder bucket has finished.
       if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
+      // Only a signer still pending, on a request still pending: a void or a
+      // decline that landed since the checks above wins.
       const now = new Date()
-      const updated = await prisma.signer.update({
-        where: { id: signer.id },
+      const signed = await prisma.signer.updateMany({
+        where: { id: signer.id, status: 'PENDING', signatureRequest: { is: { status: 'PENDING' } } },
         data: {
           status: 'SIGNED',
           signedAt: now,
@@ -507,6 +519,7 @@ export async function signatureRoutes(app: FastifyInstance) {
           signedUserAgent: req.headers['user-agent'] ?? null,
         },
       })
+      if (signed.count === 0) return reply.status(409).send({ detail: 'This signing request changed meanwhile. Reload the page.' })
       await prisma.signatureEvent.create({
         data: {
           signatureRequestId: sr.id,
@@ -529,25 +542,23 @@ export async function signatureRoutes(app: FastifyInstance) {
         include: { signers: true },
       })
       const allSigned = fresh!.signers.every(s => s.status === 'SIGNED')
-      if (allSigned) {
-        const completedAt = new Date()
-        await prisma.$transaction([
-          prisma.signatureRequest.update({
-            where: { id: sr.id },
-            data: { status: 'COMPLETED', completedAt },
-          }),
-          prisma.contract.update({
-            where: { id: sr.contractId },
-            data: { status: 'EXECUTED' },
-          }),
-          prisma.signatureEvent.create({
-            data: {
-              signatureRequestId: sr.id,
-              kind: 'COMPLETED',
-              metadata: { signerCount: fresh!.signers.length },
-            },
-          }),
-        ])
+      const completedAt = new Date()
+      // Completed once: the request flips only from PENDING, so of two final
+      // signatures at once, or a void racing the last one, exactly one wins,
+      // and only it executes the contract and fires the events.
+      const completed = allSigned && await prisma.$transaction(async tx => {
+        const flipped = await tx.signatureRequest.updateMany({
+          where: { id: sr.id, status: 'PENDING' },
+          data: { status: 'COMPLETED', completedAt },
+        })
+        if (flipped.count === 0) return false
+        await tx.contract.update({ where: { id: sr.contractId }, data: { status: 'EXECUTED' } })
+        await tx.signatureEvent.create({
+          data: { signatureRequestId: sr.id, kind: 'COMPLETED', metadata: { signerCount: fresh!.signers.length } },
+        })
+        return true
+      })
+      if (completed) {
         await createAuditEvent({
           orgId: sr.orgId,
           userId: sr.createdById,
@@ -653,7 +664,7 @@ export async function signatureRoutes(app: FastifyInstance) {
 
       return reply.send({
         ok: true,
-        signedAt: updated.signedAt,
+        signedAt: now,
         allSigned,
       })
     },
@@ -674,28 +685,37 @@ export async function signatureRoutes(app: FastifyInstance) {
       const sr = signer.signatureRequest
       if (sr.status !== 'PENDING') return reply.status(410).send({ detail: 'Signing request is no longer active' })
       if (signer.status !== 'PENDING') return reply.status(409).send({ detail: 'Signer already responded' })
+      if (await expired(sr)) return reply.status(410).send({ detail: 'This signing link has expired' })
       if (waitingForEarlier(sr, signer)) return reply.status(403).send({ detail: NOT_YOUR_TURN })
 
-      await prisma.$transaction([
-        prisma.signer.update({
-          where: { id: signer.id },
-          data: { status: 'DECLINED', declinedAt: new Date(), declinedReason: body.reason },
-        }),
-        prisma.signatureEvent.create({
-          data: {
-            signatureRequestId: sr.id,
-            signerId: signer.id,
-            kind: 'DECLINED',
-            metadata: { reason: body.reason },
-            ipAddress: req.ip,
-            userAgent: req.headers['user-agent'] ?? null,
-          },
-        }),
-        prisma.signatureRequest.update({
-          where: { id: sr.id },
-          data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: `${signer.name} declined: ${body.reason ?? '(no reason given)'}` },
-        }),
-      ])
+      // Only from PENDING, for the request and the signer alike, or a sender's
+      // void or a completed signing that landed meanwhile would be overwritten.
+      try {
+        await prisma.$transaction(async tx => {
+          const voided = await tx.signatureRequest.updateMany({
+            where: { id: sr.id, status: 'PENDING' },
+            data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: `${signer.name} declined: ${body.reason ?? '(no reason given)'}` },
+          })
+          const declined = await tx.signer.updateMany({
+            where: { id: signer.id, status: 'PENDING' },
+            data: { status: 'DECLINED', declinedAt: new Date(), declinedReason: body.reason },
+          })
+          if (voided.count === 0 || declined.count === 0) throw new ChangedMeanwhile()
+          await tx.signatureEvent.create({
+            data: {
+              signatureRequestId: sr.id,
+              signerId: signer.id,
+              kind: 'DECLINED',
+              metadata: { reason: body.reason },
+              ipAddress: req.ip,
+              userAgent: req.headers['user-agent'] ?? null,
+            },
+          })
+        })
+      } catch (err) {
+        if (err instanceof ChangedMeanwhile) return reply.status(409).send({ detail: 'This signing request changed meanwhile. Reload the page.' })
+        throw err
+      }
 
       await createAuditEvent({
         orgId: sr.orgId,
@@ -764,15 +784,18 @@ export async function signatureRoutes(app: FastifyInstance) {
       if (!sr) return reply.status(404).send({ detail: 'Signature request not found' })
       if (sr.status !== 'PENDING') return reply.status(409).send({ detail: 'Already terminated' })
 
-      await prisma.$transaction([
-        prisma.signatureRequest.update({
-          where: { id: srId },
+      // Only from PENDING: a final signature that completed the request
+      // meanwhile stands (X28 follow-up).
+      const voided = await prisma.$transaction(async tx => {
+        const flipped = await tx.signatureRequest.updateMany({
+          where: { id: srId, status: 'PENDING' },
           data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: 'Voided by sender' },
-        }),
-        prisma.signatureEvent.create({
-          data: { signatureRequestId: srId, kind: 'VOIDED', metadata: { actor: userId } },
-        }),
-      ])
+        })
+        if (flipped.count === 0) return false
+        await tx.signatureEvent.create({ data: { signatureRequestId: srId, kind: 'VOIDED', metadata: { actor: userId } } })
+        return true
+      })
+      if (!voided) return reply.status(409).send({ detail: 'Already terminated' })
 
       await createAuditEvent({
         orgId, userId,
