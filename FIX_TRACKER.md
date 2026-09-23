@@ -1148,10 +1148,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - The route checks `x-internal-secret` only when `NODE_ENV === 'production'`: *"In dev with no secret set, allow all"*.
   - In any other deployment (staging, previews) anyone who can reach the API can overwrite any approval's AI summary, key risks and recommendation, with no org check.
   - Require the internal service auth everywhere, as the other internal routes do.
-- **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low).** Found in the X3 review.
-  - Fastify runs without `trustProxy`. Behind Cloud Run's front end, `req.ip` is then likely the Google front end's address, not the client's.
-  - That value keys the per-IP rate limit (so all clients may share one bucket) and is recorded as the audit log's IP address.
-  - Set `trustProxy` to the proxy hop count Cloud Run uses (verify on a deployed revision), and check the audit IPs afterwards.
+- **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low). — VERIFY-PENDING.** Found in the X3 review.
+  - **Plan:** Fastify ran without `trustProxy`, so behind Cloud Run's front end `req.ip` was the front end's address. The per-IP rate limit then put every client in one bucket, and the audit log recorded Google's IPs. Trusting the whole `X-Forwarded-For` would let a client choose its own address, so trust only the nearest hop(s).
+  - **What changed:**
+    - `lib/trust-proxy.ts` `trustProxyHops()` returns 1 hop on Cloud Run (`K_SERVICE`) and no trust elsewhere. `TRUST_PROXY_HOPS` overrides it, e.g. 2 behind an external load balancer.
+    - `app.ts` passes it as Fastify's `trustProxy`. Only the request logger reads the forwarded hostname; nothing builds URLs from `req.protocol` or `req.hostname`.
+    - `.env.example` documents it.
+  - **Verification:** `lib/trust-proxy.test.ts` has 2 cases:
+    - the env rules;
+    - on a Fastify instance with the resulting setting, a client that sends `X-Forwarded-For: 6.6.6.6` behind a proxy appending its real `203.0.113.9` is seen as `203.0.113.9`, where the old setting saw the proxy's own address.
+  - **Why VERIFY-PENDING:** the hop count must be confirmed on a deployed revision (request an endpoint and compare the audit IP with the client's), since an external load balancer adds a hop.
 - **X29 — The collaboration server checks permissions once per socket (Low, latent).** Found in the X21 review.
   - `authenticateCollab` runs only in `onAuthenticate`. An open connection keeps its rights after token expiry, role or ownership changes, deactivation or deletion.
   - `readOnly` blocks document writes but not awareness or stateless broadcasts.
@@ -1220,3 +1226,4 @@ X23 (follow-up) — VERIFY-PENDING — apply refuses any placeholder not in the 
 X17 (follow-up) — DONE — reminders/overdue webhooks, invoice auto-match, team workload, org approval count and the extraction queue leave diligence rooms out; precedents subquery narrowed; clause search waits for the pool like a plain query — (sha: X17-fu)
 X3 (follow-up) — DONE — verify batched + one per org + honest truncation; large audit metadata by reference; viewer paging fixed; tokens masked in error logs, invites and query strings; audit filters validated; /metrics off the Redis-backed limiter with instance labels; reporter can't throw; X30 filed — (sha: X3-fu)
 X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming restore across chunks), chat key terms, and the text the agents service reads for redline/approval summaries now follow the org's PII policy; X31 filed; needs a live redline/approval run — (sha: X27)
+X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run, TRUST_PROXY_HOPS to override); needs a deployed check of the hop count — (sha: X30)

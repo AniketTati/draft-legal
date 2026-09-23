@@ -37,6 +37,7 @@ import { adminUserRoutes } from './routes/admin-users.js'
 import { adminAuditRoutes } from './routes/admin-audit.js'
 import { metricsRoutes } from './routes/metrics.js'
 import { recordRequest } from './lib/metrics.js'
+import { trustProxyHops } from './lib/trust-proxy.js'
 import { teamRoutes } from './routes/team.js'
 import { organizationRoutes } from './routes/organization.js'
 import { healthRoutes } from './routes/health.js'
@@ -124,6 +125,8 @@ export async function buildApp() {
     requestIdHeader: 'x-request-id',
     requestIdLogLabel: 'reqId',
     maxParamLength: 500,   // Portal JWT tokens can be ~400 chars
+    // X30 — resolve req.ip through the trusted proxy hop(s) (lib/trust-proxy.ts).
+    trustProxy: trustProxyHops(),
   })
 
   // Echo the request id back on every response so the client can log
