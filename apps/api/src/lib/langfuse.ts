@@ -92,41 +92,27 @@ interface TraceRow { id: string; timestamp: string; userId?: string | null; meta
  * unique across orgs, so the user decides; an org in the metadata must agree.
  */
 function ownedBy(trace: Pick<TraceRow, 'userId' | 'metadata'>, owner: TraceOwner): boolean {
-  if (trace.userId !== owner.userId) return false
+  if (typeof trace.userId !== 'string' || trace.userId !== owner.userId) return false
   const org = (trace.metadata as { org_id?: unknown } | null | undefined)?.org_id
   return org === undefined || org === owner.orgId
 }
 
-/** True when `traceId` is one of `owner`'s own chat turns. */
-export async function traceOwnedBy(traceId: string, owner: TraceOwner): Promise<boolean> {
-  if (!langfuseConfigured()) return false
-  try {
-    const res = await fetch(`${HOST().replace(/\/$/, '')}/api/public/traces/${encodeURIComponent(traceId)}`, {
-      headers: { Authorization: authHeader() },
-      signal: AbortSignal.timeout(5000),
-    })
-    if (!res.ok) return false
-    return ownedBy((await res.json()) as TraceRow, owner)
-  } catch {
-    return false
-  }
-}
-
 /**
- * Find the trace for a chat session.
+ * Find the trace a user's feedback is about, among their own turns in a chat
+ * session: `traceId` if it is one of them, else the newest.
  *
  * apps/agents sets Langfuse's `session_id` from the chat thread id, so the
  * browser only has to send the session it already knows — it never sees a
- * Langfuse trace id. Returns the OLDEST trace in the session because that is
- * the turn the feedback is most likely about when no turn is named; callers
- * with a specific turn should pass a traceId. X22 — only `owner`'s traces: the
- * session id comes from the client, and another user's thread id is as easy
- * to send as one's own.
+ * Langfuse trace id. X22 — only `owner`'s traces: the session id comes from
+ * the client, and another user's thread id is as easy to send as one's own.
+ * A named trace is resolved through the same owner-filtered list, so another
+ * user's trace and a missing one look alike, in the answer and in its timing.
  */
-export async function findTraceBySession(sessionId: string, owner: TraceOwner): Promise<string | null> {
+export async function findTraceBySession(sessionId: string, owner: TraceOwner, traceId?: string): Promise<string | null> {
   if (!langfuseConfigured()) return null
   try {
-    const q = new URLSearchParams({ sessionId, userId: owner.userId, limit: '50' })
+    // core = ids, timestamps, userId; io = metadata. Not observations/scores.
+    const q = new URLSearchParams({ sessionId, userId: owner.userId, limit: '50', fields: 'core,io' })
     const res = await fetch(`${HOST().replace(/\/$/, '')}/api/public/traces?${q}`, {
       headers: { Authorization: authHeader() },
       signal: AbortSignal.timeout(5000),
@@ -134,6 +120,7 @@ export async function findTraceBySession(sessionId: string, owner: TraceOwner): 
     if (!res.ok) return null
     const body = (await res.json()) as { data?: TraceRow[] }
     const rows = (body.data ?? []).filter(r => ownedBy(r, owner))
+    if (traceId) return rows.find(r => r.id === traceId)?.id ?? null
     if (!rows.length) return null
     rows.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     return rows[0].id   // most recent turn in the thread

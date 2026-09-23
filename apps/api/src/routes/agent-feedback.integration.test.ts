@@ -15,6 +15,7 @@ let orgA: string, orgB: string, alice: string, bob: string, mallory: string
 interface Trace { id: string; sessionId: string; userId: string; metadata: Record<string, unknown>; timestamp: string }
 let traces: Trace[] = []
 const scored: string[] = []
+const lookups: string[] = []
 
 beforeAll(async () => {
   process.env.LANGFUSE_HOST = LANGFUSE
@@ -36,6 +37,7 @@ beforeAll(async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = new URL(String(input))
     if (url.origin !== LANGFUSE) return realFetch(input as never, init)
+    if (url.pathname.startsWith('/api/public/traces')) lookups.push(url.pathname + url.search)
     if (url.pathname === '/api/public/scores') {
       scored.push((JSON.parse(String(init?.body)) as { traceId: string }).traceId)
       return new Response('{}')
@@ -95,5 +97,12 @@ describe('feedback scores only the caller\'s own chat turns', () => {
     const res = await feedback(orgA, alice, { sessionId: 'thread-1', traceId: 't-alice-1' })
     expect(res.json().recorded).toBe(true)
     expect(scored.at(-1)).toBe('t-alice-1')
+  })
+
+  it('a named trace is looked up among the caller\'s own, never fetched by id', async () => {
+    lookups.length = 0
+    await feedback(orgB, mallory, { sessionId: 'thread-1', traceId: 't-alice-1' })
+    expect(lookups.every(u => u.startsWith('/api/public/traces?') && new URL(u, LANGFUSE).searchParams.get('userId') === mallory)).toBe(true)
+    expect(lookups.length).toBe(1)
   })
 })

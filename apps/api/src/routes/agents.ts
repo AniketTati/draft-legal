@@ -12,7 +12,7 @@ import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
-import { postScore, findTraceBySession, traceOwnedBy, langfuseConfigured } from '../lib/langfuse.js'
+import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -69,10 +69,7 @@ export async function agentRoutes(app: FastifyInstance) {
     // agents service sets session_id from the thread, which is what makes this
     // resolvable without threading trace ids through the UI. X22 — either way,
     // only a trace of the caller's own counts (both ids come from the client).
-    const owner = { orgId, userId }
-    const traceId = body.traceId
-      ? (await traceOwnedBy(body.traceId, owner) ? body.traceId : null)
-      : await findTraceBySession(body.sessionId, owner)
+    const traceId = await findTraceBySession(body.sessionId, { orgId, userId }, body.traceId)
     if (!traceId) {
       return reply.send({ recorded: false, reason: 'trace_not_found' })
     }

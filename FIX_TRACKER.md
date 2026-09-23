@@ -791,7 +791,15 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Typecheck 0, lint 0 errors.
   - **Left as is:**
     - Langfuse still groups traces by the client's thread id, so in the Langfuse UI a reused thread id shows two users' turns in one session. That is visible only to operators. Namespacing the session id in `tracing.py` would orphan every existing session's feedback lookup.
-    - Background jobs' traces carry the org id as `userId`, so no user can score them. That is intended.
+    - A trace counts as the caller's only when the agents service stamped it with the caller's id. That holds for their chat turns, and for drafts, which forward the requester's id. Traces stamped with an org id (other background work) can't be scored by anyone.
+  - **Follow-up (review findings):**
+    - A fresh subagent reviewed the commit adversarially. It found no way to get another user's or org's trace scored, and confirmed that real chat traces carry the user's id.
+    - It found three things, now fixed:
+      - A named `traceId` was fetched by id. A foreign trace (a large response) and a missing one (a fast 404) answered alike but took different times. `"."` also collapsed the URL onto the list endpoint.
+      - A trace without a `userId` would pass an `undefined === undefined` check.
+      - The docstring said "oldest" for the newest.
+    - Now a named trace is resolved within the caller's own session list (`userId` filter, `fields=core,io`), so it is never fetched by id, and ownership needs a string `userId`.
+    - Test: a fifth case asserts the only Langfuse lookup is the caller's own list. It fails before the follow-up.
   - Original note: `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
 - **X23 — PII redaction has gaps outside the chat tools (Medium). — VERIFY-PENDING.**
   - **Plan (first cut):**
@@ -984,3 +992,4 @@ X22 — DONE — agent feedback scores only the caller's own Langfuse traces (na
 X21 — DONE — own-scope follow-ups: dashboard org approvals + team workload counts narrowed (hidden, not zeroed); signers without the contract get their signing link; converted requests owned by the requester; collab server checks view/edit like REST — (sha: X21)
 X23 — VERIFY-PENDING — the org's PII policy now covers background jobs, embeddings and redline proposals via contract-scoped round-trip tokens restored wherever output is stored; unresolved tokens refused on apply; tokenize keyed; 3 tools fail closed; needs a live upload + chat redline — (sha: X23)
 X25 (follow-up) — DONE — matters list hides foreign names; matter_list counts org/delete-filtered like REST; amendments inherit only a same-org matter; empty ids are validation errors; migration owner fallback needs a same-org creator — (sha: X25-fu)
+X22 (follow-up) — DONE — a named trace resolves only within the caller's own session list (no fetch by id, no timing tell); userId must be a string — (sha: X22-fu)
