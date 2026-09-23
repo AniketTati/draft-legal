@@ -15,22 +15,30 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { verifyAuditChain } from '../lib/audit.js'
+import { verifyAuditChain, type ChainVerifyResult } from '../lib/audit.js'
 import { requirePermission } from '../middleware/permissions.js'
 
+// Filters are plain text (a NUL byte made Postgres fail the query with a 500).
+const filter = z.string().max(200).refine(v => !v.includes('\0'), 'Invalid character')
+
 const ListQuery = z.object({
-  action:       z.string().optional(),          // comma-separated AuditAction values
-  resourceType: z.string().optional(),
-  resourceId:   z.string().optional(),
-  userId:       z.string().optional(),
+  action:       filter.optional(),              // comma-separated AuditAction values
+  resourceType: filter.optional(),
+  resourceId:   filter.optional(),
+  userId:       filter.optional(),
   from:         z.string().date().optional(),   // YYYY-MM-DD, inclusive
   to:           z.string().date().optional(),   // YYYY-MM-DD, exclusive
-  cursor:       z.string().optional(),          // id of the last event of the previous page
+  cursor:       z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(),   // id of the last event of the previous page
   limit:        z.coerce.number().int().min(1).max(200).default(50),
 })
 
-/** The verify walk loads rows into memory; past this it reports what it checked. */
-const VERIFY_LIMIT = 50_000
+/** The verify walk reads in batches; past this many rows it reports what it checked. */
+const VERIFY_LIMIT = 200_000
+/** Metadata above this (serialized size) is fetched per event, not listed: one row can hold ~1 MB of tool arguments. */
+const LIST_METADATA_BYTES = 4_096
+
+/** One verify per org at a time in this process: a second request shares the running one. */
+const verifying = new Map<string, Promise<ChainVerifyResult & { truncated: boolean }>>()
 
 export async function adminAuditRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
@@ -64,8 +72,16 @@ export async function adminAuditRoutes(app: FastifyInstance): Promise<void> {
       where: where as never,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: q.limit + 1,
+      select: { id: true, action: true, resourceType: true, resourceId: true, userId: true, ipAddress: true, userAgent: true, createdAt: true },
     })
     const page = rows.slice(0, q.limit)
+    // Small metadata inline; large ones via GET /:id when a row is opened.
+    const small = page.length
+      ? await prisma.$queryRaw<Array<{ id: string; metadata: unknown }>>`
+          SELECT id, metadata FROM audit_events
+          WHERE id = ANY(${page.map(r => r.id)}) AND octet_length(metadata::text) <= ${LIST_METADATA_BYTES}`
+      : []
+    const metadataOf = new Map(small.map(r => [r.id, r.metadata]))
 
     const userIds = [...new Set(page.map(r => r.userId).filter((x): x is string => !!x))]
     const users = userIds.length
@@ -79,7 +95,8 @@ export async function adminAuditRoutes(app: FastifyInstance): Promise<void> {
         action:       r.action,
         resourceType: r.resourceType,
         resourceId:   r.resourceId,
-        metadata:     r.metadata,
+        metadata:     metadataOf.get(r.id) ?? null,
+        metadataTruncated: !metadataOf.has(r.id),
         ipAddress:    r.ipAddress,
         userAgent:    r.userAgent,
         createdAt:    r.createdAt,
@@ -92,7 +109,26 @@ export async function adminAuditRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.get('/verify', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
-    const result = await verifyAuditChain(req.user.orgId, { limit: VERIFY_LIMIT })
-    return reply.send({ ...result, truncated: result.total >= VERIFY_LIMIT })
+    const { orgId } = req.user
+    let run = verifying.get(orgId)
+    if (!run) {
+      run = (async () => {
+        const [result, all] = await Promise.all([
+          verifyAuditChain(orgId, { limit: VERIFY_LIMIT }),
+          prisma.auditEvent.count({ where: { orgId } }),
+        ])
+        return { ...result, truncated: result.ok && all > result.total }
+      })().finally(() => verifying.delete(orgId))
+      verifying.set(orgId, run)
+    }
+    return reply.send(await run)
+  })
+
+  // One event in full: the list leaves out large metadata.
+  app.get('/:id', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const event = await prisma.auditEvent.findFirst({ where: { id, orgId: req.user.orgId } })
+    if (!event) return reply.status(404).send({ detail: 'Audit event not found' })
+    return reply.send(event)
   })
 }

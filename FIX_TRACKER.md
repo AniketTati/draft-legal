@@ -461,6 +461,32 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - db:generate 0, typecheck 0, lint 0 errors;
       - api unit 268/268, web 14/14, api integration 234/234.
   - **Left as is:** no scrape config, dashboards or alert rules. Counters are per process and reset on deploy, which Prometheus' `rate()` handles. The viewer has no export.
+  - **Follow-up (adversarial review of 6345ee2):** a fresh subagent confirmed there's no auth bypass or cross-org read. Every system role but ADMIN gets 403, the cursor is org-scoped, and filters are parameterized. Fixed:
+    - `/verify` loaded up to 50k full rows and hashed them synchronously: about 0.5 GB and seconds of blocked event loop per call on a 1 GiB, 1-CPU instance. The list returned full metadata, and one agent-apply audit row can hold about 1 MB of tool arguments (a 50-row page was 48 MB).
+      - `verifyAuditChain` now walks in 1,000-row batches, yielding between them (ties on `createdAt` ordered by id).
+      - The route runs one verify per org at a time (a second request shares the run), checks up to 200k rows, and reports `truncated` only when rows were actually left over. It used to say `true` at exactly 50k.
+      - The list inlines metadata only up to 4 KB serialized; larger metadata comes from a new `GET /admin/audit/:id` when a row is opened.
+    - The viewer's "Load more" refetched page 1 fresh but reused old cursors, so events landing meanwhile hid rows. It now uses TanStack's infinite query, which re-derives each cursor.
+    - Masking:
+      - The 5xx log line bypassed the request serializer and logged the raw URL. It now masks.
+      - Invite links (`/auth/invites/:token`, which sets a password) and credential query parameters (`token`, `code`, `key`, `secret`, `signature`, `password`) are masked everywhere `maskTokenPaths` runs.
+      - Error Reporting gets the route pattern, not the URL.
+    - A NUL byte in a filter or the cursor failed the query with a 500. Filters are now capped and checked, and the cursor must be id-shaped.
+    - `/metrics` sat behind the global rate limiter, which keeps its counters in Redis, so it hung during a Redis outage. It opts out; the token is its gate.
+    - Every sample now carries an `instance_id`, so series from different Cloud Run instances don't interleave as counter resets.
+    - `reportError` could throw (`String()` on an object without a prototype). Now nothing escapes it, a thrown non-Error is described, and messages are capped at 64 KB (Cloud Logging's limit is 256 KB).
+    - The viewer no longer says entries "can't be edited". It says verification finds a stored entry that was altered: the chain has no key, and deleting the newest rows isn't detectable.
+    - Tests:
+      - `admin-audit.integration.test.ts` now has 9 cases, adding bad filter/cursor → 400, large metadata by reference plus per event (404 cross-org), a 1,501-row chain verified in batches, and `instance_id` labels.
+      - `error-reporter.test.ts` has 4 cases, adding a non-Error and a message cap.
+      - `log-redact.test.ts` covers invites and query tokens.
+      - Against the pre-follow-up code, 3 integration and 2 unit cases fail. The batch case passes before too: it guards the rewrite.
+    - Suite: typecheck 0, lint 0 errors; api unit 272/272, web 18/18, api integration 250/250.
+    - **Left as is:**
+      - `createEvent` and verify both order by `createdAt`, so a same-millisecond tie can read as a break. That code is older and rare (no ties in 400 sequential and 8 concurrent writes); fixing it needs a per-org sequence column.
+      - Metadata size isn't capped at write time.
+      - Requests the client aborts aren't counted.
+      - `trustProxy` is filed as X30.
   - Original note: `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
 
 - **X4 — Lost-update race on `organization.settings`. — DONE.**
@@ -1102,6 +1128,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
   - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
   - Gate view and decline the way sign is gated.
+- **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low).** Found in the X3 review.
+  - Fastify runs without `trustProxy`. Behind Cloud Run's front end, `req.ip` is then likely the Google front end's address, not the client's.
+  - That value keys the per-IP rate limit (so all clients may share one bucket) and is recorded as the audit log's IP address.
+  - Set `trustProxy` to the proxy hop count Cloud Run uses (verify on a deployed revision), and check the audit IPs afterwards.
 - **X29 — The collaboration server checks permissions once per socket (Low, latent).** Found in the X21 review.
   - `authenticateCollab` runs only in `onAuthenticate`. An open connection keeps its rights after token expiry, role or ownership changes, deactivation or deletion.
   - `readOnly` blocks document writes but not awareness or stateless broadcasts.
@@ -1168,3 +1198,4 @@ X1 — VERIFY-PENDING — citation pills open the original PDF at the cited page
 X2 — VERIFY-PENDING — resumable per-field backfill (cursor on the definition, cost-cap pause, never overwrites) via a new /extract-fields agents route; custom-field confidence + quotes kept and shown; needs a live run — (sha: X2)
 X23 (follow-up) — VERIFY-PENDING — apply refuses any placeholder not in the source text ([REDACTED:*], mangled tokens); 64-bit tokens; restore also from the clause's version; token rule on all stored extraction passes; restore before PATCH validation; values only from the document; org-scoped tokenize pseudonyms — (sha: X23-fu)
 X17 (follow-up) — DONE — reminders/overdue webhooks, invoice auto-match, team workload, org approval count and the extraction queue leave diligence rooms out; precedents subquery narrowed; clause search waits for the pool like a plain query — (sha: X17-fu)
+X3 (follow-up) — DONE — verify batched + one per org + honest truncation; large audit metadata by reference; viewer paging fixed; tokens masked in error logs, invites and query strings; audit filters validated; /metrics off the Redis-backed limiter with instance labels; reporter can't throw; X30 filed — (sha: X3-fu)

@@ -9,6 +9,11 @@ describe('maskTokenPaths', () => {
     expect(maskTokenPaths('/api/v1/portal/tok_9/comments')).toBe('/api/v1/portal/[REDACTED]/comments')
   })
 
+  it('masks invitation links and credentials in the query string too (X3)', () => {
+    expect(maskTokenPaths('/api/v1/auth/invites/inv_secret')).toBe('/api/v1/auth/invites/[REDACTED]')
+    expect(maskTokenPaths('/api/v1/x?token=abc&email=a@b.c&code=9')).toBe('/api/v1/x?token=[REDACTED]&email=a@b.c&code=[REDACTED]')
+  })
+
   it('leaves every other URL alone', () => {
     expect(maskTokenPaths('/api/v1/contracts/cm123/signature-requests')).toBe('/api/v1/contracts/cm123/signature-requests')
     expect(maskTokenPaths(undefined)).toBeUndefined()

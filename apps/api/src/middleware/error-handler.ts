@@ -17,6 +17,7 @@
 import type { FastifyError, FastifyRequest, FastifyReply } from 'fastify'
 import { ZodError } from 'zod'
 import { reportError } from '../lib/error-reporter.js'
+import { maskTokenPaths } from '../lib/log-redact.js'
 
 export function errorHandler(
   error: FastifyError,
@@ -31,7 +32,8 @@ export function errorHandler(
     err: error,
     reqId:    req.id,
     method:   req.method,
-    url:      req.url,
+    // X3 — this line skips the request serializer, so mask credentials here.
+    url:      maskTokenPaths(req.url),
     routeUrl: req.routeOptions?.url,
     statusCode: error.statusCode ?? 500,
     userId:   userContext?.sub,
@@ -69,7 +71,8 @@ export function errorHandler(
   if (status >= 500) {
     req.log.error(ctx, error.message ?? 'unhandled error')
     reportError(error, {
-      reqId: req.id, method: req.method, url: req.url,
+      // The route pattern, not the URL: ids and query strings stay out of it.
+      reqId: req.id, method: req.method, url: req.routeOptions?.url ?? maskTokenPaths(req.url),
       userId: userContext?.sub, orgId: userContext?.orgId,
     })
   } else {

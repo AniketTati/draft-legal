@@ -22,7 +22,10 @@ async function queueCounts(): Promise<QueueCounts | null> {
 }
 
 export async function metricsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/', async (req, reply) => {
+  // Not rate-limited: the limiter keeps its counters in Redis, so during a
+  // Redis outage — when these numbers matter — every scrape would hang on it.
+  // The token is the gate.
+  app.get('/', { config: { rateLimit: false } }, async (req, reply) => {
     const token = process.env.METRICS_TOKEN
     if (!token) return reply.status(404).send({ detail: 'Not found' })
     const given = Buffer.from((req.headers.authorization ?? '').replace(/^Bearer /, ''))

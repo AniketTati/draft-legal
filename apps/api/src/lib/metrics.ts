@@ -7,11 +7,16 @@
  * Labels use the route PATTERN (`/api/v1/contracts/:id`), never the URL, so
  * the series count stays bounded; requests that matched no route share one.
  */
+import crypto from 'node:crypto'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
 const requests = new Map<string, number>()                              // method|route|status
 const durations = new Map<string, { sum: number; count: number }>()     // method|route
 const startedAt = Date.now()
+// Counters live per process, and a scrape through a load balancer reaches any
+// instance: without this label, two instances' series would interleave and
+// read as counter resets.
+const INSTANCE = `${process.env.K_REVISION ?? 'local'}-${crypto.randomBytes(3).toString('hex')}`
 
 export function recordRequest(req: FastifyRequest, reply: FastifyReply): void {
   const route = req.routeOptions?.url ?? 'unmatched'
@@ -29,8 +34,13 @@ const label = (v: string | number) => String(v).replace(/\\/g, '\\\\').replace(/
 export type QueueCounts = Record<string, Record<string, number>>
 
 export function renderMetrics(queues: QueueCounts | null): string {
-  const out: string[] = []
-  const metric = (name: string, type: string, help: string) => out.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`)
+  const lines: string[] = []
+  const metric = (name: string, type: string, help: string) => lines.push(`# HELP ${name} ${help}`, `# TYPE ${name} ${type}`)
+  // Every sample carries instance_id.
+  const out = {
+    push: (...samples: string[]) => lines.push(...samples.map(l =>
+      l.includes('{') ? l.replace('{', `{instance_id="${INSTANCE}",`) : l.replace(' ', `{instance_id="${INSTANCE}"} `))),
+  }
 
   metric('http_requests_total', 'counter', 'HTTP requests served, by route pattern and status code.')
   for (const [k, n] of requests) {
@@ -60,5 +70,5 @@ export function renderMetrics(queues: QueueCounts | null): string {
       }
     }
   }
-  return out.join('\n') + '\n'
+  return lines.join('\n') + '\n'
 }

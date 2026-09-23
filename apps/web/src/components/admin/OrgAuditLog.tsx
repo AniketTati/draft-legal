@@ -7,7 +7,7 @@
  * request (GET /admin/audit/verify). Admin only, like the endpoint.
  */
 import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useMutation } from '@tanstack/react-query'
 import { ScrollText, ShieldCheck, ShieldAlert, ChevronRight } from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatRelativeTime } from '@/lib/utils'
@@ -20,7 +20,9 @@ interface AuditEvent {
   action: string
   resourceType: string
   resourceId: string
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown> | null
+  /** Too large to list: fetched from /admin/audit/:id when the row is opened. */
+  metadataTruncated?: boolean
   ipAddress: string | null
   createdAt: string
   actor: { id: string; name: string | null; email: string | null } | null
@@ -42,30 +44,30 @@ export function OrgAuditLog() {
   const [action, setAction] = useState('')
   const [resourceType, setResourceType] = useState('')
   const [applied, setApplied] = useState({ action: '', resourceType: '' })
-  const [cursors, setCursors] = useState<string[]>([])   // cursor of each page after the first
   const [open, setOpen] = useState<string | null>(null)
 
-  const query = (cursor?: string) => {
-    const q = new URLSearchParams({ limit: String(PAGE) })
-    if (applied.action) q.set('action', applied.action)
-    if (applied.resourceType) q.set('resourceType', applied.resourceType)
-    if (cursor) q.set('cursor', cursor)
-    return api.get<AuditPage>(`/admin/audit?${q}`).then(r => r.data)
-  }
-
-  const { data: pages, isLoading, isError } = useQuery({
-    queryKey: ['org-audit', applied, cursors],
-    queryFn: async () => Promise.all([query(), ...cursors.map(c => query(c))]),
+  // Each page's cursor comes from the page before it, so a refetch re-derives
+  // them from fresh data: events landing meanwhile can't push rows out of view.
+  const { data, isLoading, isError, hasNextPage, fetchNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ['org-audit', applied],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const q = new URLSearchParams({ limit: String(PAGE) })
+      if (applied.action) q.set('action', applied.action)
+      if (applied.resourceType) q.set('resourceType', applied.resourceType)
+      if (pageParam) q.set('cursor', pageParam)
+      return api.get<AuditPage>(`/admin/audit?${q}`).then(r => r.data)
+    },
+    getNextPageParam: last => last.nextCursor,
   })
+  const pages = data?.pages
   const events = (pages ?? []).flatMap(p => p.events)
-  const next = pages?.at(-1)?.nextCursor ?? null
 
   const verify = useMutation({
     mutationFn: () => api.get<ChainCheck>('/admin/audit/verify').then(r => r.data),
   })
 
   const apply = () => {
-    setCursors([])
     setApplied({ action: action.trim().toUpperCase(), resourceType: resourceType.trim() })
   }
 
@@ -78,7 +80,7 @@ export function OrgAuditLog() {
             Audit Log
           </h1>
           <p className="text-dense text-ink-500 mt-1">
-            Every change in this organization, newest first. Entries are hash-chained and can't be edited.
+            Every change in this organization, newest first. Entries are hash-chained: verifying finds a stored entry that was altered.
           </p>
         </div>
         <Button variant="outline" onClick={() => verify.mutate()} disabled={verify.isPending} data-testid="audit-verify">
@@ -90,7 +92,7 @@ export function OrgAuditLog() {
       {verify.data && (
         <Card className="px-4 py-3 text-dense flex items-center gap-2" data-testid="audit-verify-result">
           {verify.data.ok
-            ? <><ShieldCheck className="size-4 text-ink-500" /> Chain intact — {verify.data.verified} events checked{verify.data.truncated ? ' (the oldest 50,000)' : ''}.</>
+            ? <><ShieldCheck className="size-4 text-ink-500" /> Chain intact — {verify.data.verified} events checked{verify.data.truncated ? ' (the oldest 200,000)' : ''}.</>
             : <><ShieldAlert className="size-4 text-risk-600" /> <span className="text-risk-700">Chain broken at event {verify.data.firstBreak?.eventId} ({verify.data.firstBreak?.reason}).</span></>}
         </Card>
       )}
@@ -134,21 +136,34 @@ export function OrgAuditLog() {
                   </div>
                 </div>
               </button>
-              {open === ev.id && (
-                <pre className="mt-2 ml-5 text-[11px] text-ink-700 bg-paper-50 border border-paper-200 rounded-md p-2.5 overflow-x-auto">
-                  {JSON.stringify(ev.metadata, null, 2)}
-                </pre>
-              )}
+              {open === ev.id && <EventMetadata event={ev} />}
             </div>
           ))}
         </Card>
       )}
 
-      {next && (
+      {hasNextPage && (
         <div className="text-center">
-          <Button variant="outline" onClick={() => setCursors(c => [...c, next])}>Load more</Button>
+          <Button variant="outline" onClick={() => fetchNextPage()} disabled={isFetchingNextPage}>
+            {isFetchingNextPage ? 'Loading…' : 'Load more'}
+          </Button>
         </div>
       )}
     </div>
+  )
+}
+
+/** An event's metadata; one too large to list is fetched when opened. */
+function EventMetadata({ event }: { event: AuditEvent }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['org-audit-event', event.id],
+    queryFn: () => api.get<AuditEvent>(`/admin/audit/${event.id}`).then(r => r.data),
+    enabled: !!event.metadataTruncated,
+  })
+  const metadata = event.metadataTruncated ? data?.metadata : event.metadata
+  return (
+    <pre className="mt-2 ml-5 text-[11px] text-ink-700 bg-paper-50 border border-paper-200 rounded-md p-2.5 overflow-x-auto max-h-96">
+      {isLoading ? 'Loading…' : JSON.stringify(metadata ?? {}, null, 2)}
+    </pre>
   )
 }

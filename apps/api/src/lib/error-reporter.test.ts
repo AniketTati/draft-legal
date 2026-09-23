@@ -35,6 +35,16 @@ describe('reportError', () => {
     expect(JSON.stringify(event)).not.toContain('abc123secret')
   })
 
+  it('describes a thrown non-Error, even one String() can\'t convert, and caps huge messages (X3)', () => {
+    process.env.K_SERVICE = 'clm-api'
+    const write = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect(() => reportError(Object.create(null), {})).not.toThrow()
+    expect(JSON.parse(String(write.mock.calls[0][0])).message).toMatch(/^Error: non-Error thrown/)
+    const huge = new Error('x'.repeat(300_000))
+    reportError(huge, {})
+    expect(String(write.mock.calls[1][0]).length).toBeLessThan(70_000)
+  })
+
   it('never throws from the error path', () => {
     process.env.ERROR_REPORTING = 'gcp'
     vi.spyOn(process.stderr, 'write').mockImplementation(() => { throw new Error('closed') })

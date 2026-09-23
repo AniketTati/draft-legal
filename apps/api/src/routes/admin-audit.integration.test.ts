@@ -51,6 +51,31 @@ describe('the org audit log', () => {
     expect(second.nextCursor).toBeNull()
   })
 
+  it('refuses a malformed filter or cursor instead of failing (X3 follow-up)', async () => {
+    for (const q of ['?cursor=%00', '?resourceType=%00', '?action=' + 'A'.repeat(300)]) {
+      expect((await list(q)).statusCode, q).toBe(400)
+    }
+  })
+
+  it('lists large metadata by reference and serves it per event', async () => {
+    await createAuditEvent({ orgId: org, userId: admin, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: 'big', metadata: { blob: 'x'.repeat(20_000) } })
+    const ev = (await list('?limit=1')).json().events[0]
+    expect(ev).toMatchObject({ resourceId: 'big', metadata: null, metadataTruncated: true })
+    const full = await app.inject({ method: 'GET', url: `/api/v1/admin/audit/${ev.id}`, headers: auth(org, ['ADMIN'], admin) })
+    expect((full.json().metadata as { blob: string }).blob).toHaveLength(20_000)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/admin/audit/${ev.id}`, headers: auth(other, ['ADMIN'], admin) })).statusCode).toBe(404)
+  })
+
+  it('verifies a long chain in batches', async () => {
+    // Legacy (unhashed) rows before the other org's one hashed event: more than one batch.
+    const past = Date.now() - 86_400_000
+    await prisma.auditEvent.createMany({
+      data: Array.from({ length: 1_500 }, (_, i) => ({ orgId: other, action: 'LEGACY', resourceType: 'x', resourceId: `l-${i}`, createdAt: new Date(past + i) })),
+    })
+    const res = await app.inject({ method: 'GET', url: '/api/v1/admin/audit/verify', headers: auth(other, ['ADMIN'], admin) })
+    expect(res.json()).toMatchObject({ ok: true, total: 1_501, verified: 1_501, truncated: false })
+  })
+
   it('is for admins', async () => {
     expect((await list('', ['LEGAL_OPS'])).statusCode).toBe(403)
   })
@@ -80,10 +105,10 @@ describe('GET /api/v1/metrics', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/metrics', headers: { authorization: 'Bearer it-metrics-token' } })
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toContain('text/plain')
-    expect(res.body).toMatch(/http_requests_total\{method="GET",route="\/api\/v1\/admin\/audit",status_code="200"\} \d+/)
+    expect(res.body).toMatch(/http_requests_total\{instance_id="[^"]+",method="GET",route="\/api\/v1\/admin\/audit",status_code="200"\} \d+/)
     expect(res.body).toContain('route="unmatched"')
     expect(res.body).not.toContain(junk)   // bounded labels: never the raw URL
-    expect(res.body).toMatch(/process_resident_memory_bytes \d+/)
-    expect(res.body).toMatch(/bullmq_jobs\{queue="documents",state="waiting"\} \d+/)
+    expect(res.body).toMatch(/process_resident_memory_bytes\{instance_id="[^"]+"\} \d+/)
+    expect(res.body).toMatch(/bullmq_jobs\{instance_id="[^"]+",queue="documents",state="waiting"\} \d+/)
   })
 })

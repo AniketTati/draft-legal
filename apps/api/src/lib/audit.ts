@@ -26,7 +26,7 @@
  * the org with `FOR UPDATE`. Cost: one extra row read per event.
  */
 import crypto from 'node:crypto'
-import type { Prisma } from '@prisma/client'
+import type { Prisma, AuditEvent } from '@prisma/client'
 import { prisma } from './prisma.js'
 import type { AuditAction } from '@clm/types'
 
@@ -199,66 +199,82 @@ export async function verifyAuditChain(
   orgId: string,
   opts: { sinceDate?: Date; limit?: number } = {},
 ): Promise<ChainVerifyResult> {
-  const events = await prisma.auditEvent.findMany({
-    where: {
-      orgId,
-      ...(opts.sinceDate && { createdAt: { gte: opts.sinceDate } }),
-    },
-    orderBy: { createdAt: 'asc' },
-    take: opts.limit,
-  })
-
+  // X3 — walked in batches, yielding between them: loading an org's whole log
+  // at once took ~0.5 GB and blocked the event loop for large orgs. (Ties on
+  // createdAt are ordered by id so the batches are stable.)
+  const BATCH = 1_000
   let prevHash: string | null = null
   let verified = 0
-  for (const e of events) {
-    if (!e.hash) {
-      // Unhashed legacy row — skip but don't break the chain since
-      // older events pre-date this feature.
-      verified++
-      continue
-    }
-    if (e.prevHash !== prevHash) {
-      return {
-        ok: false,
-        total: events.length,
-        verified,
-        firstBreak: {
-          eventId: e.id,
-          expected: prevHash ?? '(null)',
-          got: e.prevHash ?? '(null)',
-          reason: 'prev_hash_mismatch',
-        },
-      }
-    }
-    const expectedHash = hashAuditRow({
-      id: e.id,
-      orgId: e.orgId,
-      userId: e.userId,
-      action: e.action,
-      resourceType: e.resourceType,
-      resourceId: e.resourceId,
-      metadata: e.metadata,
-      ipAddress: e.ipAddress,
-      userAgent: e.userAgent,
-      createdAt: e.createdAt,
-      prevHash: e.prevHash,
+  let seen = 0
+  let after: { createdAt: Date; id: string } | null = null
+  for (;;) {
+    const take = opts.limit != null ? Math.min(BATCH, opts.limit - seen) : BATCH
+    if (take <= 0) break
+    const events: AuditEvent[] = await prisma.auditEvent.findMany({
+      where: {
+        orgId,
+        ...(opts.sinceDate && { createdAt: { gte: opts.sinceDate } }),
+        ...(after && { OR: [{ createdAt: { gt: after.createdAt } }, { createdAt: after.createdAt, id: { gt: after.id } }] }),
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take,
     })
-    if (expectedHash !== e.hash) {
-      return {
-        ok: false,
-        total: events.length,
-        verified,
-        firstBreak: {
-          eventId: e.id,
-          expected: expectedHash,
-          got: e.hash,
-          reason: 'hash_mismatch',
-        },
+    if (events.length === 0) break
+
+    for (const e of events) {
+      seen++
+      if (!e.hash) {
+        // Unhashed legacy row — skip but don't break the chain since
+        // older events pre-date this feature.
+        verified++
+        continue
       }
+      if (e.prevHash !== prevHash) {
+        return {
+          ok: false,
+          total: seen,
+          verified,
+          firstBreak: {
+            eventId: e.id,
+            expected: prevHash ?? '(null)',
+            got: e.prevHash ?? '(null)',
+            reason: 'prev_hash_mismatch',
+          },
+        }
+      }
+      const expectedHash = hashAuditRow({
+        id: e.id,
+        orgId: e.orgId,
+        userId: e.userId,
+        action: e.action,
+        resourceType: e.resourceType,
+        resourceId: e.resourceId,
+        metadata: e.metadata,
+        ipAddress: e.ipAddress,
+        userAgent: e.userAgent,
+        createdAt: e.createdAt,
+        prevHash: e.prevHash,
+      })
+      if (expectedHash !== e.hash) {
+        return {
+          ok: false,
+          total: seen,
+          verified,
+          firstBreak: {
+            eventId: e.id,
+            expected: expectedHash,
+            got: e.hash,
+            reason: 'hash_mismatch',
+          },
+        }
+      }
+      prevHash = e.hash
+      verified++
     }
-    prevHash = e.hash
-    verified++
+    const last: AuditEvent = events[events.length - 1]
+    after = { createdAt: last.createdAt, id: last.id }
+    await new Promise(resolve => setImmediate(resolve))
   }
 
-  return { ok: true, total: events.length, verified, firstBreak: null }
+  return { ok: true, total: seen, verified, firstBreak: null }
 }
