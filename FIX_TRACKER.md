@@ -1630,7 +1630,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - A piece that holds only part of a value, such as a stored quote the review agent capped at 800 characters, still carries that fragment; it is not an exact match.
     - Card numbers stored as JSON numbers in key terms are not strings, and are not looked at.
     - Some documents are read twice per call (`counterparty_memory`'s two surfaces; `portfolio_search` loads versions for metadata and again for text), and texts are loaded even when the org's mode is off.
-- **X41 — The seeded demo admin has a public password, and the self-host guide seeds it (High).** Found in the X38 review.
+- **X41 — The seeded demo admin has a public password, and the self-host guide seeds it (High). — DONE.** Found in the X38 review.
   - `prisma/seed.ts` creates `admin@demo.com` and `legal@demo.com` with the password `password123`, which the seed prints and the README repeats.
   - `docs/operations/SELF-HOSTING.md` tells operators to run that seed to create their first org and admin, and says nothing about changing the password. So every self-host install that follows the guide has an admin login anyone can look up.
   - `.github/workflows/deploy.yml` names the same account and password as production's smoke-test login.
@@ -1638,6 +1638,25 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - have the seed take the admin's password from the environment (or generate and print one), and refuse `password123` in production;
     - have the guide say to change it.
   - Check whether production's admin still uses it.
+  - **Plan:** confirmed. `prisma/seed.ts` hashes `'password123'` for both demo users and prints it, and the guide runs the seed inside the production container.
+    - `password123` stays for development, since the README relies on it.
+    - In production:
+      - take `SEED_ADMIN_PASSWORD`, refusing fewer than 12 characters or `password123`;
+      - otherwise generate a random password and print it once.
+    - The seed script runs on import, so the rule lives in an importable helper.
+  - **What changed:**
+    - `src/lib/seed-password.ts` `seedPassword()`.
+    - `prisma/seed.ts` uses it, and prints the generated password once, or says it came from `SEED_ADMIN_PASSWORD`. Its upserts never changed an existing user's password, and still don't: it says so.
+    - `SELF-HOSTING.md`: the seed command passes `SEED_ADMIN_PASSWORD`; keep the printed password if it generates one; change it after first sign-in, and replace the demo addresses.
+    - `deploy.yml`'s comment no longer suggests `password123` for the smoke-test admin.
+  - **Verification:** `lib/seed-password.test.ts` has 3 cases:
+    - development keeps `password123`;
+    - production generates a different random password each time and says so;
+    - `SEED_ADMIN_PASSWORD` is used, and refused in production when short or `password123`.
+    - The seed has no test run of its own. Running it against the test database would leave a demo org behind.
+    - The seed compiles against the project's types. A throwaway config that includes `prisma/` shows two type errors in its role-permission code (lines 129/136 before this change), which predate it; the project typecheck covers only `src`, and tsx runs the seed without typechecking.
+    - Suite: typecheck 0, lint 0 errors, api unit 322/322, integration 284/284.
+  - **Deploy check:** sign in to production with `admin@demo.com` / `password123`. If that works, change the password now: re-running the seed doesn't.
 
 
 ---
@@ -1713,4 +1732,5 @@ X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole te
 X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — d4805d3
 X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — c6ec141
 X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — 4802124
-X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — (sha: pending)
+X40 — DONE — chat excerpts, summaries, key terms and obligations find values against their whole contract (card/IBAN/passport/DOB), once per document, never inside a longer number — 85bf0d9
+X41 — DONE — the seed no longer gives production users password123: SEED_ADMIN_PASSWORD (12+, refused if password123) or a random one printed once; the self-host guide and deploy workflow say so; production's admin needs a manual check — (sha: pending)

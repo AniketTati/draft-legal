@@ -48,9 +48,15 @@ Startup order is enforced by health checks: Postgres → **migrate** (one-shot
 Seed the first org/admin:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml exec api-service \
+docker compose -f docker-compose.selfhost.yml exec -e SEED_ADMIN_PASSWORD='<12+ characters>' api-service \
   node --import tsx prisma/seed.ts
 ```
+
+The seed creates `admin@demo.com` and `legal@demo.com` with that password.
+Without `SEED_ADMIN_PASSWORD` it generates a random one and prints it once, so
+keep the output. It never uses the development password `password123` in
+production. Change the password after the first sign-in, and replace the demo
+addresses with real ones.
 
 ## 4. Upgrading
 

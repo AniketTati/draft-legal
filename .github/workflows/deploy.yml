@@ -7,8 +7,11 @@ name: Deploy to production
 # Required GitHub Secrets (Settings → Secrets and variables → Actions):
 #   GCP_PROJECT_ID         — e.g. draftlegal-prod-13353
 #   GCP_SA_KEY             — JSON for github-deployer SA (full file content)
-#   SMOKE_ADMIN_EMAIL      — admin@demo.com
-#   SMOKE_ADMIN_PASSWORD   — password123 (or whatever you've changed to)
+#   SMOKE_ADMIN_EMAIL      — the smoke-test admin's email
+#   SMOKE_ADMIN_PASSWORD   — its password. Never the development seed's
+#                            password123 (X41): the seed refuses it in
+#                            production, and an admin on it can be signed
+#                            into by anyone who has read the README.
 #
 # Provision the SA + secrets once with: ./scripts/setup-github-deployer.sh
 

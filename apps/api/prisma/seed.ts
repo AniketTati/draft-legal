@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { seedOrgDefaults } from '../src/lib/org-seed.js'
 import { DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../src/lib/permissions.js'
+import { seedPassword } from '../src/lib/seed-password.js'
 
 const prisma = new PrismaClient()
 
@@ -141,7 +142,9 @@ async function main() {
   }
 
   // ── Users ────────────────────────────────────────────────────────────────
-  const hash = await bcrypt.hash('password123', 12)
+  // X41 — password123 only outside production (see lib/seed-password.ts).
+  const { password, generated } = seedPassword()
+  const hash = await bcrypt.hash(password, 12)
 
   const admin = await prisma.user.upsert({
     where: { orgId_email: { orgId: org.id, email: 'admin@demo.com' } },
@@ -278,7 +281,11 @@ async function main() {
   }
 
   console.log(`✓ Org: ${org.name}`)
-  console.log(`✓ Users: admin@demo.com / legal@demo.com  (password: password123)`)
+  console.log(`✓ Users: admin@demo.com / legal@demo.com  (password: ${
+    generated ? `${password} — generated for this install, shown once; change it after signing in`
+      : process.env.SEED_ADMIN_PASSWORD ? 'from SEED_ADMIN_PASSWORD' : password
+  })`)
+  if (generated) console.log('  (users that already existed keep their password: the seed does not change it)')
   console.log(`✓ Counterparties: ${counterpartyNames.length}`)
   console.log(`✓ Demo contracts: ${DEMO_CONTRACTS.length}`)
   console.log(`✓ Signature requests: ${await prisma.signatureRequest.count({ where: { orgId: org.id } })} (one per status)`)
