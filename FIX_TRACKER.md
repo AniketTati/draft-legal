@@ -1564,10 +1564,23 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The worker runs no boot check. It trusts no inbound calls, and its only use of the secret is as the fallback PII token key.
     - The `CHANGE_ME_` database and MinIO passwords, and `storage.ts`'s `minioadmin` fallback, protect internal-only services.
   - **Deploy check:** before deploying, confirm production's `INTERNAL_SERVICE_SECRET` (Secret Manager) is random, 32+ characters and not the dev value. Otherwise the new API and agents revisions will refuse to start.
-- **X39 — Webhook deliveries follow redirects past the SSRF guard (Medium).** Found in the X35 review.
+- **X39 — Webhook deliveries follow redirects past the SSRF guard (Medium). — DONE.** Found in the X35 review.
   - `workers/webhook.worker.ts` checks the webhook URL with `assertPublicUrl`, then calls `fetch` with the default `redirect: 'follow'`.
   - A public URL that answers 302 or 307 with `Location: http://169.254.169.254/…`, or an internal host, sends the delivery there. 307 and 308 keep the POST and its body. The stored status code then tells the org admin what the internal endpoint answered.
   - Fix: `redirect: 'manual'`, treating a redirect as a failed delivery. Or re-check each hop.
+  - **Plan:** confirmed. `handleWebhookDelivery` runs `assertPublicUrl` on the webhook's own URL, then calls `fetch` with no `redirect` option, so redirects are followed.
+    - Don't follow redirects; report one as a failed delivery that says so. Re-checking each hop was rejected: a webhook's URL should be its endpoint, and following adds DNS-rebinding windows for nothing.
+    - Slack and Teams webhooks answer directly (200/202).
+  - **What changed (`workers/webhook.worker.ts`):**
+    - `fetch` gets `redirect: 'manual'`.
+    - A 3xx is a failed delivery whose error says the redirect wasn't followed. BullMQ retries, then gives up, as for any non-2xx.
+    - The handler is exported for the test.
+  - **Verification:** `workers/webhook-redirect.integration.test.ts` stubs BullMQ's `Worker` and mocks `fetch` to answer 307 toward `169.254.169.254`. The test checks that:
+    - `fetch` is called once, with `redirect: 'manual'`;
+    - the delivery row records status 307 and a redirect error;
+    - the job throws for retry.
+    - Against the pre-fix handler it fails: no `redirect` option, and the error was only "Non-2xx response: 307".
+    - Suite: typecheck 0, lint 0 errors, api unit 315/315, integration 280/280 (48 files).
 - **X40 — Clause-level chat excerpts find values without the document's context (Low-Medium).** Found in the X36 review.
   - Five chat tools look for values only within the clause or paragraph they excerpt, not the whole document:
     - `contract_cite` (the paragraph, though the handler has the plain text);
@@ -1656,4 +1669,5 @@ X34 — DONE — audit appends retry serialization failures with full jitter for
 X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — 982c289
 X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — 4a41d23
 X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — d4805d3
-X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — (sha: pending)
+X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — c6ec141
+X39 — DONE — webhook deliveries no longer follow redirects (redirect: 'manual'); a 3xx is a failed delivery that says why — (sha: pending)

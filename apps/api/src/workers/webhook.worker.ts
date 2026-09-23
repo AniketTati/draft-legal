@@ -21,7 +21,7 @@ import { formatForSlack } from '../lib/slack-formatter.js'
 import { formatForTeams } from '../lib/teams-formatter.js'
 import { assertPublicUrl, ssrfGuardEnabled } from '../lib/ssrf-guard.js'
 
-async function handleWebhookDelivery(data: WebhookDeliveryJob) {
+export async function handleWebhookDelivery(data: WebhookDeliveryJob) {
   const wh = await prisma.webhook.findUnique({
     where: { id: data.webhookId },
     select: { id: true, url: true, secret: true, enabled: true, deletedAt: true, events: true, type: true },
@@ -80,6 +80,10 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
       },
       body,
       signal: ctrl.signal,
+      // X39 — never follow a redirect: the guard above checked this URL only,
+      // and a redirect could send the delivery (with 307/308, its body too)
+      // to a private or cloud-metadata address.
+      redirect: 'manual',
     })
     clearTimeout(t)
     responseStatus = r.status
@@ -95,7 +99,11 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
       responseBody = text.slice(0, 1000)
     }
     succeeded = r.ok
-    if (!succeeded) errorMessage = `Non-2xx response: ${r.status}`
+    if (!succeeded) {
+      errorMessage = r.status >= 300 && r.status < 400
+        ? `Redirect (${r.status}) not followed: set the webhook to its final URL`
+        : `Non-2xx response: ${r.status}`
+    }
   } catch (err) {
     errorMessage = (err as Error).message?.slice(0, 500) ?? 'Delivery failed'
   }
