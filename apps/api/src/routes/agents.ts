@@ -13,6 +13,7 @@ import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
+import { redactJson, restorePii, streamRestorer } from '../lib/pii-policy.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -502,6 +503,10 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.selectedText !== 'string' || body.selectedText.trim().length === 0) {
       return reply.status(400).send({ detail: 'selectedText is required' })
     }
+    // X27 — the editor's selection is contract text: it goes to the model
+    // under the org's PII policy, and the rewrite streams back with the values.
+    const { orgId } = req.user
+    const selected = await redactJson(orgId, body.selectedText, { surface: 'assist_stream', roundTrip: orgId })
     const upstream = await fetch(`${AGENTS_URL}/assist_stream`, {
       method: 'POST',
       headers: {
@@ -509,7 +514,7 @@ export async function agentRoutes(app: FastifyInstance) {
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        selected_text: body.selectedText,
+        selected_text: selected,
         action:        body.action ?? 'rewrite',
         contract_type: body.contractType ?? 'general commercial',
         governing_law: body.governingLaw ?? 'Delaware',
@@ -525,12 +530,38 @@ export async function agentRoutes(app: FastifyInstance) {
     reply.raw.setHeader('X-Accel-Buffering', 'no')  // nginx: disable buffering
     const reader = upstream.body.getReader()
     const decoder = new TextDecoder()
+    // NDJSON: {type:'delta', text} lines carry the rewrite. Tokens can split
+    // across deltas, so each delta is restored through a buffer that holds a
+    // possible partial token back; other events pass through after a flush.
+    const restorer = streamRestorer(body.selectedText, orgId)
+    const write = (event: Record<string, unknown>) => reply.raw.write(Buffer.from(JSON.stringify(event) + '\n'))
+    const onLine = (line: string) => {
+      if (!line.trim()) return
+      let event: { type?: string; text?: string } & Record<string, unknown>
+      try { event = JSON.parse(line) } catch { return }
+      if (event.type === 'delta' && typeof event.text === 'string') {
+        const text = restorer.push(event.text)
+        if (text) write({ ...event, text })
+        return
+      }
+      const rest = restorer.flush()
+      if (rest) write({ type: 'delta', text: rest })
+      write(event)
+    }
+    let partial = ''
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
-      if (value) reply.raw.write(Buffer.from(decoder.decode(value, { stream: true })))
+      if (!value) continue
+      partial += decoder.decode(value, { stream: true })
+      const lines = partial.split('\n')
+      partial = lines.pop() ?? ''
+      lines.forEach(onLine)
     }
+    onLine(partial)
+    const rest = restorer.flush()
+    if (rest) write({ type: 'delta', text: rest })
     reply.raw.end()
     return reply
   })
@@ -547,6 +578,9 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.clauseText !== 'string' || body.clauseText.trim().length < 30) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '' })
     }
+    // X27 — the paragraph goes to the model under the org's PII policy.
+    const clauseText = body.clauseText.slice(0, 2400)
+    const sent = await redactJson(req.user.orgId, clauseText, { surface: 'classify_clause', roundTrip: req.user.orgId })
     const upstream = await fetch(`${AGENTS_URL}/classify_clause`, {
       method: 'POST',
       headers: {
@@ -554,7 +588,7 @@ export async function agentRoutes(app: FastifyInstance) {
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        clauseText:   body.clauseText.slice(0, 2400),
+        clauseText:   sent,
         contractType: body.contractType ?? 'general commercial',
         sectionHint:  body.sectionHint ?? null,
       }),
@@ -562,7 +596,7 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!upstream?.ok) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '', error: 'upstream_unavailable' })
     }
-    return reply.send(await upstream.json())
+    return reply.send(restorePii(await upstream.json(), clauseText, req.user.orgId))
   })
 
   // POST /api/v1/agent/complete — P6.1 ghost-text completion.
@@ -580,6 +614,11 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.contextBefore !== 'string' || body.contextBefore.length < 10) {
       return reply.send({ completion: '', reason: 'too_short' })
     }
+    // X27 — the text around the cursor goes to the model under the org's PII
+    // policy; the completion comes back with the values (it is typed into the
+    // document).
+    const context = [body.contextBefore.slice(-1400), (body.contextAfter ?? '').slice(0, 400)]
+    const [before, after] = await redactJson(req.user.orgId, context, { surface: 'complete', roundTrip: req.user.orgId })
     const upstream = await fetch(`${AGENTS_URL}/complete`, {
       method: 'POST',
       headers: {
@@ -587,8 +626,8 @@ export async function agentRoutes(app: FastifyInstance) {
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        contextBefore: body.contextBefore.slice(-1400),
-        contextAfter:  (body.contextAfter ?? '').slice(0, 400),
+        contextBefore: before,
+        contextAfter:  after,
         contractType:  body.contractType ?? 'general commercial',
         maxChars:      Math.max(40, Math.min(body.maxChars ?? 160, 320)),
       }),
@@ -596,12 +635,15 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!upstream?.ok) {
       return reply.send({ completion: '', error: 'upstream_unavailable' })
     }
-    return reply.send(await upstream.json())
+    return reply.send(restorePii(await upstream.json(), context, req.user.orgId))
   })
 
   // POST /api/v1/agent/assist — inline AI text improvement for editor
   app.post('/assist', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const body = AssistSchema.parse(req.body)
+    // X27 — as assist-stream: the selection goes out tokenized, the rewrite
+    // comes back with the values.
+    const selected = await redactJson(req.user.orgId, body.selectedText, { surface: 'assist', roundTrip: req.user.orgId })
 
     const upstream = await fetch(`${AGENTS_URL}/assist`, {
       method: 'POST',
@@ -610,7 +652,7 @@ export async function agentRoutes(app: FastifyInstance) {
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        selected_text: body.selectedText,
+        selected_text: selected,
         action: body.action,
         contract_type: body.contractType,
         governing_law: body.governingLaw,
@@ -624,7 +666,7 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(await upstream.json())
+    return reply.send(restorePii(await upstream.json(), body.selectedText, req.user.orgId))
   })
 
   // POST /api/v1/agent/compare — compare clause text to playbook positions
@@ -667,13 +709,14 @@ export async function agentRoutes(app: FastifyInstance) {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
-      body: JSON.stringify({ clauseText, positions }),
+      // X27 — the clause goes to the model under the org's PII policy.
+      body: JSON.stringify({ clauseText: await redactJson(orgId, clauseText, { surface: 'compare', roundTrip: orgId }), positions }),
     }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(await upstream.json())
+    return reply.send(restorePii(await upstream.json(), clauseText, orgId))
   })
 }

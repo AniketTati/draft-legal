@@ -306,3 +306,30 @@ export function unresolvedPiiTokens(value: unknown, original: unknown = []): str
     .flatMap(s => s.match(PLACEHOLDER_RX) ?? [])
     .filter(p => !originals.some(o => o.includes(p)))
 }
+
+/**
+ * X27 — `restorePii` over a stream of text pieces (an NDJSON rewrite). A
+ * token can be split across pieces, so a tail that could still become one is
+ * held back until the next piece, or `flush()`.
+ */
+export function streamRestorer(source: unknown, scope: string): { push(text: string): string; flush(): string } {
+  const restore = piiRestorer(source, scope)
+  let pending = ''
+  return {
+    push(text: string): string {
+      pending += text
+      const open = pending.lastIndexOf('[')
+      // A token is at most ~40 chars; an unclosed "[" nearer the end than
+      // that may be the start of one.
+      const hold = open >= 0 && !pending.includes(']', open) && pending.length - open < 48 ? open : pending.length
+      const out = pending.slice(0, hold)
+      pending = pending.slice(hold)
+      return restore(out)
+    },
+    flush(): string {
+      const out = pending
+      pending = ''
+      return restore(out)
+    },
+  }
+}

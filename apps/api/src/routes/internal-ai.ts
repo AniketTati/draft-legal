@@ -902,7 +902,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       effectiveDate:    contract.effectiveDate,
       expiryDate:       contract.expiryDate,
       summary:          contract.summary ? redactedSummary.text : null,
-      keyTerms:         contract.keyTerms,
+      // X27 — the key terms quote the contract too (parties, amounts, quotes).
+      keyTerms:         await redactJson(body.orgId, contract.keyTerms, { surface: 'contract_get.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       version: {
@@ -1935,7 +1936,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       value:            contract.value != null ? Number(contract.value) : null,
       currency:         contract.currency,
       summary:          summaryOut,
-      keyTerms:         contract.keyTerms,
+      // X27 — as contract_get.
+      keyTerms:         await redactJson(body.orgId, contract.keyTerms, { surface: 'contract_summarize.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       plainTextSnippet: snippetOut,

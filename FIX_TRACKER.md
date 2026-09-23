@@ -1116,18 +1116,38 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - C4's `contract-metadata` test had written `_redlineStatus` as an ADMIN user, standing in for the redline failure path. It now uses the agents service headers, which is that path's real caller; its merge assertion is unchanged.
   - Original note: `PATCH /contracts/:id` lets a client write any metadata key, and re-split replaces the contracts listed in `_splitInto` (`binder-split.ts:36-53`). A CONTRACT_MANAGER who gets 403 deleting another user's amendment can list it there and re-split, and it is soft-deleted. This is same-org only, and only for single-version drafts under a contract the attacker can edit. Treat `_`-prefixed metadata as server-owned in `PATCH`. (Found in X20 review.)
 
-- **X27 — Contract text still reaches models raw on paths outside X23 (Medium).** Found in the X23 review.
-  - `/redline` and `/approval-summary` jobs: the agents service fetches the text itself. `redline.py` gets both versions' diff HTML (`contracts.ts` `/versions/.../diff`), and `approval.py` gets the contract summary, `keyTerms` and all clause text. Neither goes through the org's policy.
-  - `POST /contracts/:id/ask` and `/search/ask` send raw clause text to `/agent/ask`.
-  - `rerankClauses` (`embeddings.ts`) sends raw clause text to Voyage.
-  - The editor assist routes in `agents.ts` (assist_stream, classify_clause, complete, assist, compare) and `playbook.ts` `/compare` send the user's selected contract text raw.
-  - `contract_get` and `contract_summarize` return `keyTerms` unredacted.
-  - `playbook_judge` (`internal-ai.ts`) sends clause text raw. `/search/ask` also reranks raw clause text through Voyage.
-  - Apply the policy on each, with round-trip tokens where the output is stored (see X23's helpers).
-- **X28 — The signer portal lets a later sequential signer act before their turn (Low).** Found in the X21 review.
-  - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
-  - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
-  - Gate view and decline the way sign is gated.
+- **X27 — Contract text still reaches models raw on paths outside X23 (Medium). — VERIFY-PENDING.**
+  - **Plan (each surface confirmed in the code):** apply the org's policy with X23's round-trip helpers wherever the model's output is shown back or stored, and the plain policy where it only goes to a model.
+    - **Q&A:**
+      - `/search/ask` and `/contracts/:id/ask`: the retrieved clauses go to Voyage's reranker and `/agent/ask` as tokens, and the answer comes back to the user with the values.
+      - Scope: the org for the portfolio ask, whose matches span contracts; the contract for a single contract.
+    - **Editor AI:**
+      - `assist`, `complete`, `classify-clause` and `compare` send tokens (scoped to the org, since the editor sends no contract id) and restore the reply.
+      - `assist-stream` rewrites the NDJSON stream. Deltas go through `streamRestorer` (new in `pii-policy.ts`), which holds back a tail that could still become a token split across chunks.
+    - **Chat tools:** `contract_get` and `contract_summarize` return `keyTerms` under the plain policy, as their text already was.
+    - **Text the agents service fetches itself:**
+      - For the agents service only, the version diff that `/redline` reads is tokenized. Its analysis is stored through `PATCH /contracts/:id`, which X23 already restores.
+      - The clauses `/approval-summary` reads are tokenized too, and `PATCH /approvals/:id/summary` now restores against the contract's text and clauses.
+      - Users reading the same endpoints see the text as before.
+  - **Not reproducible:** `playbook_judge` already sends `playbook_check`'s excerpt, which is redacted before the judge call.
+  - **Verification:**
+    - `routes/pii-surfaces.integration.test.ts` has 6 cases:
+      - both ask routes: the agent gets no SSN and the answer has it;
+      - assist, complete and classify send tokens and return values;
+      - the stream restores a token split across two deltas;
+      - `contract_get` key terms carry no SSN;
+      - the diff and clauses read by the agents service are tokenized, while users still see the text;
+      - an approval summary with a token is stored with the value.
+    - Against the pre-fix code all 6 fail.
+    - Suite: typecheck 0, lint 0 errors; api unit 272/272, integration 256/256.
+  - **Why VERIFY-PENDING:** the redline analysis and approval summary need a live run to confirm the models keep the tokens and the stored text reads right.
+  - **Left as is:**
+    - `GET /contracts/:id` (summary, key terms) stays raw for the agents service. `redline.py` reads the contract's metadata there and PATCHes it back merged, so tokenizing it could write tokens over metadata values that aren't in the document. Moving that read-modify-write to a server-side merge is a separate change.
+    - The redline analysis quotes removed text from the older version. A value that exists only there stays a token in the stored analysis, a display-only artifact with a warning in the log, because `PATCH /contracts/:id` restores against the current version.
+- **X31 — `PATCH /approvals/:instanceId/summary` is open outside production (Low-Medium).** Found while doing X27.
+  - The route checks `x-internal-secret` only when `NODE_ENV === 'production'`: *"In dev with no secret set, allow all"*.
+  - In any other deployment (staging, previews) anyone who can reach the API can overwrite any approval's AI summary, key risks and recommendation, with no org check.
+  - Require the internal service auth everywhere, as the other internal routes do.
 - **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low).** Found in the X3 review.
   - Fastify runs without `trustProxy`. Behind Cloud Run's front end, `req.ip` is then likely the Google front end's address, not the client's.
   - That value keys the per-IP rate limit (so all clients may share one bucket) and is recorded as the audit log's IP address.
@@ -1199,3 +1219,4 @@ X2 — VERIFY-PENDING — resumable per-field backfill (cursor on the definition
 X23 (follow-up) — VERIFY-PENDING — apply refuses any placeholder not in the source text ([REDACTED:*], mangled tokens); 64-bit tokens; restore also from the clause's version; token rule on all stored extraction passes; restore before PATCH validation; values only from the document; org-scoped tokenize pseudonyms — (sha: X23-fu)
 X17 (follow-up) — DONE — reminders/overdue webhooks, invoice auto-match, team workload, org approval count and the extraction queue leave diligence rooms out; precedents subquery narrowed; clause search waits for the pool like a plain query — (sha: X17-fu)
 X3 (follow-up) — DONE — verify batched + one per org + honest truncation; large audit metadata by reference; viewer paging fixed; tokens masked in error logs, invites and query strings; audit filters validated; /metrics off the Redis-backed limiter with instance labels; reporter can't throw; X30 filed — (sha: X3-fu)
+X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming restore across chunks), chat key terms, and the text the agents service reads for redline/approval summaries now follow the org's PII policy; X31 filed; needs a live redline/approval run — (sha: X27)

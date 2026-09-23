@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { searchContracts, advancedSearch, getContractFacets } from '../lib/elasticsearch.js'
 import { searchClauses, rerankClauses } from '../lib/embeddings.js'
+import { redactJson, restorePii } from '../lib/pii-policy.js'
 import { fuseRRF } from '../lib/rrf.js'
 
 const SearchSchema = z.object({
@@ -238,11 +239,18 @@ export async function searchRoutes(app: FastifyInstance) {
       return reply.send({ answer: null, sources: [], message: 'No relevant clauses found' })
     }
 
+    // X27 — the clauses go to the reranker and the model under the org's PII
+    // policy, as round-trip tokens (scoped to the org: the matches span
+    // contracts); the answer comes back to the user with the values.
+    const texts = dense.map(d => d.content)
+    const sent = await redactJson(orgId, texts, { surface: 'search_ask', roundTrip: orgId })
+    const sentOf = new Map(dense.map((d, i) => [d, sent[i]]))
+
     // P7.7.1 — voyage-rerank-2.5 over the dense candidates. Falls back
     // to identity ordering when no Voyage key is set.
     const reranked = await rerankClauses(
       question,
-      dense.map(d => ({ ref: d, text: d.content })),
+      dense.map((d, i) => ({ ref: d, text: sent[i] })),
       limit,
     )
     const clauseMatches = reranked.map((r, i) => ({
@@ -259,7 +267,10 @@ export async function searchRoutes(app: FastifyInstance) {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
-        body: JSON.stringify({ question, orgId, clauseMatches }),
+        body: JSON.stringify({
+          question, orgId,
+          clauseMatches: reranked.map((r, i) => ({ ...clauseMatches[i], content: sentOf.get(r.ref as typeof dense[number]) })),
+        }),
       },
     ).catch(() => null)
 
@@ -268,7 +279,7 @@ export async function searchRoutes(app: FastifyInstance) {
       return reply.send({ answer: null, sources: clauseMatches, message: 'Agent unavailable — showing relevant clauses' })
     }
 
-    const agentData = await agentRes.json()
+    const agentData = restorePii(await agentRes.json(), texts, orgId)
     return reply.send({ ...agentData, sources: clauseMatches })
   })
 

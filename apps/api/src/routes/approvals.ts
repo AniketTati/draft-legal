@@ -23,6 +23,7 @@ import { advanceWorkflow } from '../lib/workflow-engine.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { queueNotification, notificationQueue } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
+import { restorePii } from '../lib/pii-policy.js'
 
 // Wave 3.8 — validate workflow step definitions at save time. Each step must
 // name at least one approver, and a parallel step's requiredApprovals must be
@@ -423,7 +424,23 @@ export async function approvalRoutes(app: FastifyInstance) {
     }
 
     const { instanceId } = req.params as { instanceId: string }
-    const { aiSummary, keyRisks, nonStandardTerms, approvalRecommendation } = req.body as {
+    // X27 — the summary was written from clauses the agents service read with
+    // round-trip tokens (GET /contracts/:id/clauses); put the values back.
+    const instance = await prisma.approvalInstance.findUnique({
+      where: { id: instanceId },
+      select: { contract: { select: { id: true, currentVersionId: true } } },
+    })
+    if (!instance) return reply.status(404).send({ error: 'Approval not found' })
+    let summary = req.body as Record<string, unknown>
+    if (JSON.stringify(summary ?? null).includes('[PII:') && instance.contract.currentVersionId) {
+      const versionId = instance.contract.currentVersionId
+      const [version, clauses] = await Promise.all([
+        prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }),
+        prisma.contractClause.findMany({ where: { version: { contractId: instance.contract.id } }, select: { content: true }, take: 2_000 }),
+      ])
+      summary = restorePii(summary, [version?.plainText ?? '', clauses.map(c => c.content)], instance.contract.id)
+    }
+    const { aiSummary, keyRisks, nonStandardTerms, approvalRecommendation } = summary as {
       aiSummary?:              string
       keyRisks?:               unknown[]
       nonStandardTerms?:       string[]
