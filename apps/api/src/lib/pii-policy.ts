@@ -367,10 +367,10 @@ export function sliceOutsideTokens(text: string, start: number, end: number): st
  * htmldiff splits words at ':', so a value changed between two versions came
  * out as `[PII:SSN:<del>1a2b…]</del><ins>9f8e…]</ins>`: neither token whole.
  */
-export function withWholeTokens(texts: string[], fn: (texts: string[]) => string): string {
+export async function withWholeTokens(texts: string[], fn: (texts: string[]) => string | Promise<string>): Promise<string> {
   const tokens: string[] = []
   const tag = `piitok${randomBytes(6).toString('hex')}x`
-  const out = fn(texts.map(t => t.replace(TOKEN_RX, tok => {
+  const out = await fn(texts.map(t => t.replace(TOKEN_RX, tok => {
     let i = tokens.indexOf(tok)
     if (i < 0) i = tokens.push(tok) - 1
     return `${tag}${i}x`

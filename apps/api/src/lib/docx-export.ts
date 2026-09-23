@@ -67,7 +67,7 @@ export async function generateRedlineDocx(args: RedlineDocxArgs): Promise<Redlin
   // deletes their contract.
   if (!v1.htmlContent?.trim() || !v2.htmlContent?.trim()) throw new Error('version_pending')
 
-  const { diffHtml, stats } = computeVersionDiff(v1.htmlContent, v2.htmlContent)
+  const { diffHtml, stats } = await computeVersionDiff(v1.htmlContent, v2.htmlContent)
 
   // A two-version diff has exactly one author: whoever produced v2. Per-change
   // attribution would need metadata.redline, which is polymorphic and present

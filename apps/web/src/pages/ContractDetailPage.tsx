@@ -884,6 +884,8 @@ export function ContractDetailPage() {
     queryKey: ['contract-diff', id, diffV1Id, diffV2Id],
     queryFn: () => api.get(`/contracts/${id}/versions/${diffV1Id}/diff/${diffV2Id}`).then(r => r.data),
     enabled: !!diffV1Id && !!diffV2Id && diffV1Id !== diffV2Id && tab === 'negotiate',
+    // X32 — a pair too large to diff took the whole time limit to say so.
+    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 422 && count < 1,
   })
 
   const redlineMutation = useMutation({
@@ -2886,6 +2888,11 @@ export function ContractDetailPage() {
                 {diffQuery.isLoading ? (
                   <div className="flex items-center justify-center py-12">
                     <Loader2 className="size-5 animate-spin text-ink-400" />
+                  </div>
+                ) : diffQuery.isError ? (
+                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-500 text-body">
+                    {(diffQuery.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                      ?? 'The comparison could not be loaded.'}
                   </div>
                 ) : diffQuery.data ? (
                   <DiffViewer

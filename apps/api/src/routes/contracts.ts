@@ -3,8 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-// @ts-ignore — no type definitions for node-htmldiff
-import htmldiff from 'node-htmldiff'
+import { computeVersionDiff, htmlDiff, DiffTooLargeError } from '../lib/diff.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { renderHtmlToPdf, renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
@@ -2052,6 +2051,7 @@ export async function contractRoutes(app: FastifyInstance) {
       detail: 'This version is still being extracted. The comparison will be available once processing finishes.',
       pendingVersionIds,
     })
+    const tooLarge = () => reply.status(422).send({ error: 'Comparison too large', detail: new DiffTooLargeError().message })
 
     // X27 — the agents service reads diffs for the redline analysis, which a
     // model writes: the org's PII policy applies (round-trip tokens, put back
@@ -2071,7 +2071,9 @@ export async function contractRoutes(app: FastifyInstance) {
       const [a, b] = await getOrgPiiMode(contract.orgId) !== 'off' && [h1, h2].some(valueLeftInMarkup)
         ? [para(t1), para(t2)]
         : [h1, h2]
-      const diffHtml = withWholeTokens([a, b], ([x, y]) => htmldiff(x, y))
+      const diffHtml = await withWholeTokens([a, b], ([x, y]) => htmlDiff(x, y))
+        .catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
+      if (diffHtml === null) return tooLarge()
       const stats = { insertions: (diffHtml.match(/<ins[\s>]/g) ?? []).length, deletions: (diffHtml.match(/<del[\s>]/g) ?? []).length }
       return reply.send({ diffHtml, stats, v1Id, v2Id })
     }
@@ -2081,14 +2083,13 @@ export async function contractRoutes(app: FastifyInstance) {
 
     if (pendingVersionIds.length > 0) return pending()
 
-    const diffHtml: string = htmldiff(v1.htmlContent, v2.htmlContent)
+    // X32 — computed on a worker thread, within a time limit.
+    const computed = await computeVersionDiff(v1.htmlContent, v2.htmlContent)
+      .catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
+    if (!computed) return tooLarge()
+    const { diffHtml, stats } = computed
 
-    // Count insertions / deletions from <ins> and <del> tags
-    const insertions = (diffHtml.match(/<ins[\s>]/g) ?? []).length
-    const deletions  = (diffHtml.match(/<del[\s>]/g) ?? []).length
-    const stats = { insertions, deletions }
-
-    await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats } })
+    await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats: { ...stats } } })
 
     return reply.send({ diffHtml, stats, v1Id, v2Id })
   })
@@ -2124,6 +2125,8 @@ export async function contractRoutes(app: FastifyInstance) {
           detail: 'This version is still being extracted. The redline will be available once processing finishes.',
         })
       }
+      // X32 — the diff it is built from ran past its time limit.
+      if (err instanceof DiffTooLargeError) return reply.status(422).send({ error: 'Comparison too large', detail: msg })
       req.log.error({ err }, '[redline-docx] failed')
       return reply.status(500).send({ detail: 'Redline export failed', error: msg.slice(0, 200) })
     }

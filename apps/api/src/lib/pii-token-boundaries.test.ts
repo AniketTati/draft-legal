@@ -44,16 +44,16 @@ describe('dropPartialToken', () => {
 describe('withWholeTokens', () => {
   const diff = ([a, b]: string[]) => htmldiff(`<p>${a}</p>`, `<p>${b}</p>`)
 
-  it('keeps a changed token whole on each side of the diff (htmldiff alone splits it at ":")', () => {
+  it('keeps a changed token whole on each side of the diff (htmldiff alone splits it at ":")', async () => {
     expect(diff([`SSN ${A} here`, `SSN ${B} here`])).toContain('[PII:SSN:<del')
-    const out = withWholeTokens([`SSN ${A} here`, `SSN ${B} here`], diff)
+    const out = await withWholeTokens([`SSN ${A} here`, `SSN ${B} here`], diff)
     expect(out).toMatch(/<del[^>]*>\[PII:SSN:1a2b3c4d5e6f7a8b\]<\/del>/)
     expect(out).toMatch(/<ins[^>]*>\[PII:SSN:99887766aabbccdd\]<\/ins>/)
   })
 
-  it('an unchanged token is not a change, and text next to a token keeps its place', () => {
-    expect(withWholeTokens([`SSN ${A}.`, `SSN ${A}.`], diff)).toBe(`<p>SSN ${A}.</p>`)
-    expect(withWholeTokens([`x${A}5`, `x${A}5 y`], ([a, b]) => `${a}|${b}`)).toBe(`x${A}5|x${A}5 y`)
+  it('an unchanged token is not a change, and text next to a token keeps its place', async () => {
+    expect(await withWholeTokens([`SSN ${A}.`, `SSN ${A}.`], diff)).toBe(`<p>SSN ${A}.</p>`)
+    expect(await withWholeTokens([`x${A}5`, `x${A}5 y`], ([a, b]) => `${a}|${b}`)).toBe(`x${A}5|x${A}5 y`)
   })
 })
 

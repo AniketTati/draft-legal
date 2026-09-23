@@ -1314,11 +1314,41 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - no placeholder check for the internal secret, and one that misses the self-host placeholders (X38);
       - inbound email and the SSRF guard keyed on `NODE_ENV` (added to X35).
     - Comparisons with `!==` aren't constant-time here, nor in `auth.ts` or the internal-ai guard; `metrics.ts` uses `timingSafeEqual`. Left as is, as a known nit.
-- **X32 — htmldiff blocks the event loop on large version pairs (Medium).** Found in the X27 review.
+- **X32 — htmldiff blocks the event loop on large version pairs (Medium). — DONE.** Found in the X27 review.
   - `GET /contracts/:id/versions/:v1/diff/:v2` runs `node-htmldiff` synchronously on the request thread. On a large pair the review measured the event loop blocked for more than 5 minutes, so one request stalls every other request on that instance.
   - Users' diffs are cached after the first run. Since the X27 follow-up, the agents service's tokenized diff is computed on every read.
   - Measured on synthetic contract text: 45 KB takes 0.2 s, 178 KB 1.7 s, 354 KB 5.6 s. The review saw 17 s at 60k words of low-vocabulary text.
   - Bound the work (refuse or degrade above a size, or diff paragraph by paragraph), or move it off the request thread.
+  - **Plan:** confirmed. `node-htmldiff` is synchronous, and it runs on the request thread in three places:
+    - the diff route: users on a cache miss, the agents service on every read;
+    - the DOCX redline export (`lib/diff.ts` `computeVersionDiff`).
+    - A size cap alone would stop large contracts from being compared at all. Instead, run the diff on a worker thread, which keeps the event loop free, with:
+      - a time limit (30 s) past which the worker is stopped and the caller told why;
+      - at most two diffs at a time per process, so a burst can't take every core.
+    - The production start command (`node --import tsx src/index.ts`) and vitest both run an eval'd CommonJS worker that requires `node-htmldiff` by resolved path. Startup is about 25 ms.
+  - **What changed:**
+    - `lib/diff.ts`:
+      - `htmlDiff(a, b)` runs htmldiff on a worker thread;
+      - it rejects with `DiffTooLargeError` past the limit, terminating the worker, and reports a worker failure as an error;
+      - a small slot queue hands a finishing diff's slot straight to the next waiter;
+      - `computeVersionDiff` is now async on top of it.
+    - Both paths of the diff route use it, and so does the DOCX export. Past the limit, both answer 422 with the reason, and nothing is cached. `withWholeTokens` (X27) now accepts an async function.
+    - The agents service's redline analysis already records a non-200 diff as a failed analysis with the reason. Its HTTP timeout is 60 s, so the 30 s limit fits.
+    - Web:
+      - the compare view shows the reason instead of "No diff available";
+      - the negotiate tab shows any diff error instead of "Select two versions";
+      - neither retries a 422.
+  - **Verification:**
+    - `lib/diff.test.ts` has 4 cases:
+      - the same output and counts as htmldiff;
+      - during a diff of about 110 KB (about 0.8 s), a 5 ms timer keeps firing (before: 0 ticks);
+      - a 100 ms limit rejects with `DiffTooLargeError` within a second;
+      - a failure inside the diff rejects rather than hangs.
+    - `routes/version-diff-limit.integration.test.ts` forces the limit. The user diff, the agents' diff and the DOCX export each get 422 with the reason, and no cache row is written.
+    - Against the pre-fix code both files fail: 0 ticks, no `htmlDiff`, and a 200 where 422 is expected.
+    - Suite: typecheck 0, lint 0 errors, api unit 297/297, integration 269/269 (44 files).
+    - The two web messages are typechecked but not seen in a browser; they need a pair past the limit.
+  - **Left as is:** the agents' tokenized diff is still computed on every read, now off the request thread. It is read once per redline analysis.
 - **X33 — The approval summary never gets the contract text (Low-Medium).** Found in the X27 follow-up.
   - `approval.py` reads `plainText` from `GET /contracts/:id/versions`, which has never returned it (it lists metadata only). The executive-summary prompt's `text_excerpt` is therefore always empty, and the summary is written from key terms and clauses alone.
   - Any fix has to hand the text over tokenized with the contract scope, as `/clauses` does, so `PATCH /approvals/:id/summary` can restore it.
@@ -1413,4 +1443,5 @@ X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run,
 X28 — DONE — a later sequential signer can't view the contract or void the request before earlier signers have signed (same check as signing) — af5048a
 X29 — DONE — collab connections refused after token expiry and re-checked each minute (user live, contract live, ownership, edit); a change closes the socket — f005316
 X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — 91901bf
-X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — (sha: pending)
+X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — 8638d24
+X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — (sha: pending)
