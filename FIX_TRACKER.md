@@ -2007,6 +2007,36 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - *Low, left:* the viewer calls `renderTextLayer`, which pdf.js 5 doesn't have. That's one unhandled rejection per page render, with no text selection or search (as above). pdf.js 5 has no `isEvalSupported` setting to harden.
     - Checked: `/versions` is org-scoped and behind the own-scope guard, `GET /:id` already returned `s3Key`, and the repo sets no Content-Security-Policy.
 
+- **X50 — A second tab of the same user signs out on its next refresh (Medium). — DONE.** Left from X48, fixed after the summary at your request.
+  - Tabs share the tokens in localStorage, but each keeps its own copy in memory, and the server keeps only the newest refresh token.
+  - When one tab refreshed, another later refreshed with its stale copy and was refused, then signed out, clearing the tokens every tab shares.
+  - The server also looked the token up and replaced it in two steps, so two refreshes racing with one token could both answer 200. When the new tokens differed, which needs a second boundary between them since `iat` is in whole seconds, the loser's were already dead.
+  - **What changed:**
+    - `apps/web/src/store/auth.ts`: before refreshing, a tab takes newer tokens another tab stored, only the same user's (compared by the token's `sub`). If a refresh is refused because another tab won a simultaneous one, it looks for the winner's tokens for up to 2 s before giving up. Another user's session is never taken, and when localStorage is unavailable nothing changes.
+    - `POST /auth/refresh` rotates only while the token is still the current one: an atomic conditional update, `deletedAt: null` included. This also stops a refresh reviving a session that a sign-out or deactivation just ended.
+  - **Adversarial review (fresh subagent)** of a first version:
+    - That version kept tabs in step through a `storage` listener and refreshed under a cross-tab `navigator.locks` lock.
+    - Its findings:
+      - *Medium:* the listener could switch a tab to another user mid-request, so a request made as X was retried as Y.
+      - *Medium:* one tab's failed refresh, even a network error, signed out every tab.
+      - *Medium:* tabs without the lock (plain-http LAN hosts, older browsers, tabs on the old bundle) always lost a simultaneous refresh against the new atomic server check.
+      - Smaller: an adopted token could be expired; blocked storage broke refresh; the lock wait had no limit.
+    - All are met by the narrower design above: no listener, no lock, same-user adoption only, expiry checked, and storage read defensively.
+    - The review confirmed the atomic update, a single `UPDATE … WHERE id AND refreshToken`, lets exactly one racing refresh win.
+  - **Verification:**
+    - `apps/web/src/store/auth.test.ts`, 4 new cases:
+      - a tab takes the same user's newer stored tokens without a POST;
+      - it never takes another user's;
+      - after losing a race it takes the winner's tokens;
+      - a refused refresh with nothing newer still fails, so the tab signs out as before.
+      - The first and third fail without the change.
+    - `routes/auth-refresh.integration.test.ts`:
+      - two refreshes held until both have read the same token: one gets 200, the other 401, and the stored token is the winner's. Before the fix both got 200.
+      - The old token stops working after a refresh.
+  - **Left as is:**
+    - Signing in as a different user in another tab still leaves each tab on its own session, as before.
+    - A refresh that fails for a network reason still signs that tab out, as before.
+
 ---
 
 ## Run log
@@ -2103,6 +2133,7 @@ X47 (review) — DONE — adversarial review: a view-mode command's edit is save
 X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — 3d58292
 X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — 036b278
 X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — 4d2638c
+X50 — DONE — a tab takes the same user's newer tokens another tab stored (before refreshing, and after losing a simultaneous refresh) instead of signing out; the server rotates a refresh token atomically — (sha: pending)
 
 ---
 

@@ -257,10 +257,16 @@ export async function authRoutes(app: FastifyInstance) {
     const roles = user.userRoles.map((ur) => ur.role.name)
     const tokens = issueTokens(user.id, user.orgId, roles)
 
-    await prisma.user.update({
-      where: { id: user.id },
+    // X50 — rotate only while this is still the current token. Two refreshes
+    // racing with the same token both passed the lookup above and both
+    // answered 200, and the tokens the loser got were dead on arrival.
+    const rotated = await prisma.user.updateMany({
+      where: { id: user.id, refreshToken, deletedAt: null },
       data: { refreshToken: tokens.refreshToken },
     })
+    if (rotated.count === 0) {
+      return reply.status(401).send({ detail: 'Refresh token revoked' })
+    }
 
     return reply.send(tokens)
   })
