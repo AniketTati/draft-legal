@@ -55,3 +55,13 @@ export function guardOwnScopeContractRoutes(app: FastifyInstance, urlPattern = /
 export function ownContractWhere(req: FastifyRequest): { ownerId?: string } {
   return req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}
 }
+
+/**
+ * X17 — the org's own portfolio, for figures about it (KPIs, renewals,
+ * obligations, counterparties, precedents): a diligence room's documents are
+ * a target's contracts, not the org's (as C11 keeps them out of search), and
+ * own-scope callers count only what they own.
+ */
+export function portfolioWhere(req: FastifyRequest): { diligenceRoomId: null; ownerId?: string } {
+  return { diligenceRoomId: null, ...ownContractWhere(req) }
+}

@@ -47,9 +47,16 @@ const ListSchema = z.object({
   offset:     z.coerce.number().int().min(0).default(0),
 })
 
-/** X7 — own-scope callers see only the obligations of contracts they own. */
-function ownObligationWhere(req: FastifyRequest): { contract?: { is: { ownerId: string } } } {
-  return req.permissionScope === 'own' ? { contract: { is: { ownerId: req.user.sub } } } : {}
+/**
+ * X7 — own-scope callers see only the obligations of contracts they own.
+ * X17 — and, unless one contract is asked about, none of a diligence room's
+ * contracts: a target's obligations aren't the org's.
+ */
+function ownObligationWhere(req: FastifyRequest, contractId?: string): { contract: { is: { diligenceRoomId?: null; ownerId?: string } } } {
+  return { contract: { is: {
+    ...(contractId ? {} : { diligenceRoomId: null }),
+    ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}),
+  } } }
 }
 
 export async function obligationRoutes(app: FastifyInstance) {
@@ -68,7 +75,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
 
-    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req) }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId) }
     if (q.status !== 'all') where.status = q.status
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
@@ -150,7 +157,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid query', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId } = req.user
-    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req) }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId) }
     if (q.status !== 'all') where.status = q.status
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity

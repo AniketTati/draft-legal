@@ -710,7 +710,30 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Tripwire `lib/detect-binder-sampling.test.ts` (3 cases) fails pre-fix and passes after.
   - **Still to verify:** a live run with an LLM key on a real long binder, checking that the second agreement is detected and that `charStart` and the resulting page ranges land on it. This environment has no platform LLM key.
   - Original note: `apps/agents/app/routes/detect_binder.py:22` truncates the text, so agreements that start later in a long binder are never detected. Send head + evenly spaced windows (or page-boundary heading candidates) instead of widening the prompt linearly. (Deferred from C10.)
-- **X17 — Diligence-room contracts still count on org dashboards (Medium-Low).** `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
+- **X17 — Diligence-room contracts still count on org dashboards (Medium-Low). — DONE.**
+  - **Plan:**
+    - Confirmed: analytics (summary, distributions, timeseries, top counterparties), the dashboard KPIs, renewals (list, export, stats), obligations (list, export, stats) and counterparty counts and detail filter by org, and for own scope by owner, but never by `diligenceRoomId`. A target's contracts in a room therefore inflate the org's figures.
+    - `/contracts/:id/precedents` compares the contract with peers from rooms too, and averages every version's clauses, superseded text included.
+    - Fix:
+      - One helper, `portfolioWhere(req)` in `lib/own-scope-guard.ts`: `diligenceRoomId: null` plus own scope, used by analytics, renewals and counterparties. The dashboard KPIs and "my …" cards get the same filter.
+      - Obligations exclude room contracts except when one contract is named. A room contract's own obligations rail still lists its obligations, as C11 lets a room or a named contract through.
+      - Precedents average the effective version only (C11's `effectiveVersionsSql`, now exported), for the contract and each peer, and skip rooms.
+      - The HNSW index covers every org's clauses, and the org, version and room filters apply after it. A plain index scan can therefore return fewer than top-k rows: its `ef_search` candidates, mostly other orgs'. On pgvector 0.8+ (checked once), `searchClauses` runs with `SET LOCAL hnsw.iterative_scan = relaxed_order` in a transaction and re-sorts by similarity.
+    - Decision:
+      - Matter views are left as they are. A room contract only joins a matter by explicit attach, and REST and `matter_list` now count the same rows (X25 follow-up).
+      - The dashboard's activity feed still titles room contracts' events: it is a log of what happened, not a figure.
+  - **Verification:**
+    - `routes/diligence-portfolio.integration.test.ts`:
+      - Snapshots analytics summary, distributions and top counterparties, renewal and obligation stats, the counterparty list and detail, and the dashboard. It then adds a room contract (same type, counterparty, value, expiry, an obligation, embeddings) and requires every snapshot to be identical.
+      - The room contract is absent from the renewals and obligations lists, while `?contractId=` still lists its obligation.
+      - Precedents: the room contract is not a peer, and a peer whose current text matches scores >0.99. Averaging the superseded version made it ~0.71.
+    - Against the pre-fix code both cases fail.
+    - The retrieval suites (`retrieval-scope`, `agent-scope`, `own-scope-rest`, `clause-flags-index`) pass on the iterative-scan path, since the test DB has pgvector 0.8.2.
+    - Suite:
+      - typecheck 0, lint 0 errors;
+      - api unit 268/268, api integration 236/236.
+  - **Left as is:** the test DB is too small for the planner to choose the HNSW index, so the iterative scan's effect can't be shown there, only that the path works. Production needs pgvector ≥ 0.8 for it; older versions keep the previous behaviour.
+  - Original note: `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
 - **X18 — Signing tokens go to anyone who can view the contract (High). — DONE.**
   - **Plan:**
     - Confirmed: `GET /contracts/:id/signature-requests` includes whole signer rows, so the response carries `token`. No other route returns tokens: the org-wide list selects fields without it, `/sign/:token` shows the other signers without theirs, compliance export and sealing don't return them, and no agent tool reads them.
@@ -1060,3 +1083,4 @@ X25 (follow-up) — DONE — matters list hides foreign names; matter_list count
 X22 (follow-up) — DONE — a named trace resolves only within the caller's own session list (no fetch by id, no timing tell); userId must be a string — (sha: X22-fu)
 X21 (follow-up) — DONE — Sign link bound to one verified signer, only on their turn and before expiry; convert needs create:contract; `_` no longer a wildcard in signer email matching; web title/bars; X28, X29 filed — (sha: X21-fu)
 X3 — DONE — audit log API (list/filter/cursor + chain verify, admin-only) with an admin viewer; token-gated Prometheus /metrics with bounded labels; 5xx → Cloud Error Reporting on Cloud Run; docs say what's wired — (sha: X3)
+X17 — DONE — diligence-room contracts out of analytics/dashboard/renewals/obligations/counterparty figures (a named contract still sees its own); precedents on effective versions, no rooms; iterative HNSW scans on pgvector 0.8+ — (sha: X17)

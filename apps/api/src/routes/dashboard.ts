@@ -92,6 +92,9 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const narrowContracts = !contractScope || contractScope === 'own'
     const narrowRequests = !requestScope || requestScope === 'own'
     const ownContracts = narrowContracts ? { ownerId: userId } : {}
+    // X17 — the KPIs describe the org's own portfolio: a diligence room's
+    // documents are a target's contracts (C11 keeps them out of search too).
+    const portfolio = { diligenceRoomId: null, ...ownContracts }
     const ownRequests = narrowRequests ? { requestedById: userId } : {}
 
     // The feed takes the 40 newest events, so narrow it in the query — not
@@ -140,7 +143,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       recentEvents,
     ] = await Promise.all([
       prisma.contract.count({
-        where: { orgId, deletedAt: null, ...ownContracts, status: { in: ACTIVE_STATUSES } },
+        where: { orgId, deletedAt: null, ...portfolio, status: { in: ACTIVE_STATUSES } },
       }),
       prisma.contractRequest.count({
         where: { orgId, deletedAt: null, ...ownRequests, status: { in: OPEN_REQUEST_STATUSES } },
@@ -161,7 +164,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
-          ...ownContracts,
+          ...portfolio,
           expiryDate: { gte: now, lte: in90Days },
           // Only count active contracts — expired-EXECUTED in the
           // renewal window is the actionable signal; archived/cancelled
@@ -185,6 +188,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           expiryDate: { gte: now, lte: in90Days },
           status: { in: ACTIVE_STATUSES },
@@ -195,6 +199,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           status: 'DRAFT',
           analysisStatus: { not: 'FAILED' },
@@ -206,7 +211,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
       // X21 — narrowed like the rest of the strip: an own-scope caller counts
       // the approvals on their own contracts only.
       prisma.approvalInstance.count({
-        where: { orgId, ...(narrowContracts ? { contract: { is: { ownerId: userId, deletedAt: null } } } : {}), status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
+        where: { orgId, ...(narrowContracts ? { contract: { is: { ownerId: userId, deletedAt: null, diligenceRoomId: null } } } : {}), status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       }),
       // P7.1.1 — Negotiations I own (Maya's primary JTBD). Returns full
       // rows (not just count) because the dashboard renders inline cards
@@ -215,6 +220,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           status: { in: ['UNDER_NEGOTIATION', 'PENDING_REVIEW'] },
         },
@@ -233,6 +239,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           expiryDate: { gte: now, lte: in90Days },
           status: { in: ACTIVE_STATUSES },

@@ -23,7 +23,7 @@ import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal } from '../lib/clause-apply.js'
 import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
-import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
+import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
@@ -1399,13 +1399,13 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const selfRiskScore = normalizeRiskScore(contract.riskScore)
 
-    // Query-contract avg embedding (from all clauses across all its versions).
+    // Query-contract avg embedding, over its effective version's clauses (X17:
+    // it averaged every version's, so superseded text weighed in — C11's rule).
     const selfAvg = await prisma.$queryRaw<Array<{ avg_vec: string | null }>>`
       SELECT AVG(cc.embedding)::text AS avg_vec
       FROM   contract_clauses cc
-      JOIN   contract_versions cv ON cv.id = cc."versionId"
-      WHERE  cv."contractId" = ${id}
-             AND cc.embedding IS NOT NULL
+      JOIN   (${effectiveVersionsSql(orgId, id)}) ev ON ev.id = cc."versionId"
+      WHERE  cc.embedding IS NOT NULL
              AND cc."isSubChunk" = FALSE
     `
 
@@ -1445,10 +1445,12 @@ export async function contractRoutes(app: FastifyInstance) {
                AVG(cc.embedding) AS avg_embedding
         FROM   contracts c
         JOIN   contract_versions cv ON cv."contractId" = c.id
+        JOIN   (${effectiveVersionsSql(orgId)}) ev ON ev.id = cv.id   -- X17: one version per peer
         JOIN   contract_clauses cc  ON cc."versionId"  = cv.id
         WHERE  c."orgId"       = ${orgId}
                AND c.id        <> ${id}
                AND c."deletedAt" IS NULL
+               AND c."diligenceRoomId" IS NULL   -- X17: a target's contracts are not our precedents
                AND c.status IN ('APPROVED','EXECUTED')
                AND c.type      = ${contract.type}
                AND (${peerOwnerId}::text IS NULL OR c."ownerId" = ${peerOwnerId}::text)

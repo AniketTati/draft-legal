@@ -356,7 +356,7 @@ export interface ClauseMatch {
  * version if it has clauses, else the latest version that does. Contracts
  * with no extracted clauses at all yield nothing.
  */
-function effectiveVersionsSql(orgId: string, contractId?: string) {
+export function effectiveVersionsSql(orgId: string, contractId?: string) {
   return Prisma.sql`
     SELECT DISTINCT ON (v."contractId") v.id
     FROM   contract_versions v
@@ -378,6 +378,17 @@ export async function effectiveClauseVersionIds(orgId: string, contractIds: stri
            AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
     ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
   return rows.map(r => r.id)
+}
+
+/** X17 — pgvector 0.8 added iterative index scans; earlier versions reject the setting. Checked once. */
+let iterativeScan: Promise<boolean> | null = null
+function iterativeScanSupported(): Promise<boolean> {
+  iterativeScan ??= prisma.$queryRaw<Array<{ v: string }>>`SELECT extversion AS v FROM pg_extension WHERE extname = 'vector'`
+    .then(rows => {
+      const [major, minor] = (rows[0]?.v ?? '0.0').split('.').map(Number)
+      return major > 0 || minor >= 8
+    }, () => false)
+  return iterativeScan
 }
 
 export async function searchClauses(
@@ -410,12 +421,18 @@ export async function searchClauses(
     ? Prisma.sql`AND c."diligenceRoomId" = ${opts.diligenceRoomId}`
     : contractId ? Prisma.empty : Prisma.sql`AND c."diligenceRoomId" IS NULL`
 
-  // Raw SQL: pgvector cosine similarity, join to contracts for org scoping
-  const rows = contractId
-    ? await prisma.$queryRaw<Array<{
-        contract_id: string; version_id: string; clause_id: string
-        clause_type: string; content: string; similarity: number
-      }>>`
+  // Raw SQL: pgvector cosine similarity, join to contracts for org scoping.
+  // X17 — the HNSW index covers every org's clauses and the org, version and
+  // room filters apply after it, so a plain index scan can come back with
+  // fewer than `limit` rows (its ef_search candidates, mostly other orgs').
+  // pgvector 0.8+ keeps scanning until enough rows pass; relaxed_order may
+  // return them slightly out of order, hence the sort below.
+  type Row = {
+    contract_id: string; version_id: string; clause_id: string
+    clause_type: string; content: string; similarity: number
+  }
+  const query = contractId
+    ? Prisma.sql`
         SELECT c.id AS contract_id, cv.id AS version_id, cc.id AS clause_id,
                cc."clauseType" AS clause_type, cc.content,
                1 - (cc.embedding <=> ${vectorLiteral}::vector) AS similarity
@@ -429,10 +446,7 @@ export async function searchClauses(
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
-    : await prisma.$queryRaw<Array<{
-        contract_id: string; version_id: string; clause_id: string
-        clause_type: string; content: string; similarity: number
-      }>>`
+    : Prisma.sql`
         SELECT c.id AS contract_id, cv.id AS version_id, cc.id AS clause_id,
                cc."clauseType" AS clause_type, cc.content,
                1 - (cc.embedding <=> ${vectorLiteral}::vector) AS similarity
@@ -446,6 +460,13 @@ export async function searchClauses(
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
+  const rows = await (await iterativeScanSupported()
+    ? prisma.$transaction(async tx => {
+        await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = relaxed_order`
+        return tx.$queryRaw<Row[]>(query)
+      }, { timeout: 20_000 })
+    : prisma.$queryRaw<Row[]>(query))
+  rows.sort((a, b) => Number(b.similarity) - Number(a.similarity))
 
   return rows.map(r => ({
     contractId: r.contract_id,

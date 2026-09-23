@@ -20,7 +20,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { ownContractWhere } from '../lib/own-scope-guard.js'
+import { portfolioWhere } from '../lib/own-scope-guard.js'
 
 const TimeRangeSchema = z.object({
   // Lookback in days for cycle-time + acceptance KPIs. Defaults to 90.
@@ -59,8 +59,8 @@ export async function analyticsRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
     // X7 — own-scope callers get the figures for their own contracts.
-    const own = ownContractWhere(req)
-    const ownApprovals = own.ownerId ? { contract: { is: { ownerId: own.ownerId } } } : {}
+    const own = portfolioWhere(req)   // X17 — the org's own contracts, not a diligence room's
+    const ownApprovals = { contract: { is: { diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) } } }
     const now = new Date()
     const windowStart = new Date(now.getTime() - q.days * 24 * 60 * 60 * 1000)
     const expiringHorizon = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
@@ -179,7 +179,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
   // ── GET /distributions ───────────────────────────────────────────────
   app.get('/distributions', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
-    const own = ownContractWhere(req)   // X7
+    const own = portfolioWhere(req)   // X7, X17
 
     const [byStatus, byType, byRisk] = await Promise.all([
       prisma.contract.groupBy({
@@ -233,7 +233,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const start = new Date(now.getFullYear(), now.getMonth() - 11, 1)
 
     const contracts = await prisma.contract.findMany({
-      where:  { orgId, deletedAt: null, ...ownContractWhere(req), createdAt: { gte: start } },   // X7
+      where:  { orgId, deletedAt: null, ...portfolioWhere(req), createdAt: { gte: start } },   // X7
       select: { createdAt: true, status: true },
       take:   10_000,
     })
@@ -268,7 +268,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const limit = Math.min(50, Math.max(5, Number((req.query as { limit?: string }).limit ?? 10)))
 
     const contracts = await prisma.contract.findMany({
-      where:  { orgId, deletedAt: null, ...ownContractWhere(req), status: 'EXECUTED', counterpartyName: { not: null } },   // X7
+      where:  { orgId, deletedAt: null, ...portfolioWhere(req), status: 'EXECUTED', counterpartyName: { not: null } },   // X7
       select: { counterpartyName: true, counterpartyId: true, value: true, currency: true },
       take:   5_000,
     })
