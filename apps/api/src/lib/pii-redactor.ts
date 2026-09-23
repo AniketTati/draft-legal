@@ -160,13 +160,19 @@ const PATTERNS: Array<{
  * X23 — keyed. A plain SHA-256 of an SSN, a date of birth or a phone number
  * cut to 32 bits is reversed by trying every value, so whoever received the
  * text (the LLM provider included) could undo tokenize mode. An HMAC under a
- * server secret can't be. (Without either env var the key is per-process:
- * pseudonyms then stay stable only within a process, which is all a prompt needs.)
+ * server secret can't be. The API and the worker must share the key: round-trip
+ * tokens (pii-policy.ts) are made in one and resolved in the other. Without
+ * either env var the key is per-process, and every round trip across them
+ * breaks, hence the warning.
  */
-const PSEUDONYM_KEY = process.env.PII_TOKEN_SECRET || process.env.INTERNAL_SERVICE_SECRET || crypto.randomBytes(32).toString('hex')
+const PSEUDONYM_KEY = process.env.PII_TOKEN_SECRET || process.env.INTERNAL_SERVICE_SECRET || (() => {
+  console.warn('[pii] neither PII_TOKEN_SECRET nor INTERNAL_SERVICE_SECRET is set: PII tokens use a per-process key and can\'t be resolved by another service')
+  return crypto.randomBytes(32).toString('hex')
+})()
 
-export function pseudonym(value: string): string {
-  return crypto.createHmac('sha256', PSEUDONYM_KEY).update(value).digest('hex').slice(0, 8)
+/** `length` hex chars of the keyed hash; round-trip tokens use 16 (collisions stay negligible at census scale). */
+export function pseudonym(value: string, length = 8): string {
+  return crypto.createHmac('sha256', PSEUDONYM_KEY).update(value).digest('hex').slice(0, length)
 }
 
 /**

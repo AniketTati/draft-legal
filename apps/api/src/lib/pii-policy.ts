@@ -46,6 +46,14 @@ export async function getOrgPiiMode(orgId: string): Promise<PiiMode> {
   return mode
 }
 
+/**
+ * X23 — tokenize mode's pseudonyms, scoped to the org: under one global key
+ * the same SSN became the same token in every org's prompts, linking them.
+ */
+function orgToken(orgId: string, mode: PiiMode): ((kind: PiiKind, value: string) => string) | undefined {
+  return mode === 'tokenize' ? (kind, value) => `[PII:${kind}:${pseudonym(`${orgId}\u0000${value}`)}]` : undefined
+}
+
 export interface ApplyOptions {
   /** Arbitrary surface label so audit logs can group by call-site. */
   surface: string
@@ -87,7 +95,7 @@ export async function applyPiiPolicy(
   if (mode === 'off') {
     return { text, mode, counts: {}, total: 0 }
   }
-  const result = redactPii(text, mode)
+  const result = redactPii(text, mode, { token: orgToken(orgId, mode) })
   // Only emit an audit event if anything was actually redacted.
   // Otherwise this would spam the log on every text-free call.
   if (result.total > 0) {
@@ -135,8 +143,9 @@ export async function applyPiiPolicyBatch(
 
   const counts: Partial<Record<PiiKind, number>> = {}
   let total = 0
+  const token = orgToken(orgId, mode)
   const out = texts.map(t => {
-    const r = redactPii(t ?? '', mode)
+    const r = redactPii(t ?? '', mode, { token })
     for (const [kind, n] of Object.entries(r.counts)) {
       counts[kind as PiiKind] = (counts[kind as PiiKind] ?? 0) + (n ?? 0)
     }
@@ -178,10 +187,14 @@ export function clearOrgPiiModeCache(orgId?: string): void {
 // replaced exactly, wherever they occur: pattern-matching each string on its
 // own misses a card number whose "card" is in another sentence.
 
-const TOKEN_RX = /\[PII:[A-Z_]+:[0-9a-f]{8}\]/g
+// A round-trip token, read leniently (a model may change the hex's case).
+const TOKEN_RX = /\[PII:([A-Za-z_]+):([0-9a-fA-F]{16})\]/g
+// Anything placeholder-shaped: a token however mangled (brackets dropped or
+// escaped, cut short), a tokenize-mode pseudonym, or redact mode's marker.
+const PLACEHOLDER_RX = /PII:[A-Za-z_]+:[0-9a-fA-F]{4,}|\[REDACTED:[A-Za-z_]+\]/g
 
 function roundTripToken(scope: string) {
-  return (kind: PiiKind, value: string) => `[PII:${kind}:${pseudonym(`${scope}\u0000${value}`)}]`
+  return (kind: PiiKind, value: string) => `[PII:${kind}:${pseudonym(`${scope}\u0000${value}`, 16)}]`
 }
 
 function strings(v: unknown, out: string[] = []): string[] {
@@ -263,15 +276,33 @@ export async function redactJson<T>(orgId: string, value: T, opts: ApplyOptions)
  */
 export function restorePii<T>(value: T, source: unknown, scope: string): T {
   if (!strings(value).some(s => s.includes('[PII:'))) return value
+  return piiRestorer(source, scope)(value)
+}
+
+/** `restorePii` with the map built once, for many values against one source (a batch). */
+export function piiRestorer(source: unknown, scope: string): <T>(value: T) => T {
   const byToken = new Map<string, string | null>()
   for (const [v, { token }] of roundTripValues(source, scope)) {
     byToken.set(token, byToken.has(token) && byToken.get(token) !== v ? null : v)
   }
-  if (byToken.size === 0) return value
-  return mapStrings(value, s => s.includes('[PII:') ? s.replace(TOKEN_RX, t => byToken.get(t) ?? t) : s) as T
+  return <T>(value: T): T => {
+    if (byToken.size === 0 || !strings(value).some(s => s.includes('[PII:'))) return value
+    return mapStrings(value, s => s.includes('[PII:')
+      ? s.replace(TOKEN_RX, (t, kind: string, hex: string) => byToken.get(`[PII:${kind.toUpperCase()}:${hex.toLowerCase()}]`) ?? t)
+      : s) as T
+  }
 }
 
-/** Round-trip-shaped tokens still in `value` (after `restorePii`: the ones it couldn't resolve). */
-export function unresolvedPiiTokens(value: unknown): string[] {
-  return strings(value).flatMap(s => s.match(TOKEN_RX) ?? [])
+/**
+ * Placeholders in `value` that `original` (the text it came from) doesn't
+ * itself contain: a round-trip token nothing resolved, one a model mangled,
+ * a tokenize-mode pseudonym or redact mode's `[REDACTED:KIND]` that a chat
+ * model copied from a tool result. None of them may be written into a
+ * contract in place of the value it stands for.
+ */
+export function unresolvedPiiTokens(value: unknown, original: unknown = []): string[] {
+  const originals = strings(original)
+  return strings(value)
+    .flatMap(s => s.match(PLACEHOLDER_RX) ?? [])
+    .filter(p => !originals.some(o => o.includes(p)))
 }

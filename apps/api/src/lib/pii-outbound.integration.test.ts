@@ -22,7 +22,7 @@ vi.mock('./pii-policy.js', async importOriginal => {
 })
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
-import { redactJson, restorePii } from './pii-policy.js'
+import { redactJson, restorePii, applyPiiPolicy } from './pii-policy.js'
 import { embedContractVersion } from './embeddings.js'
 
 const SSN = '123-45-6789'
@@ -31,7 +31,7 @@ const CARD2 = '4012 8888 8888 1881'   // in a clause without the word "card"
 const TEXT = `The Employee (SSN ${SSN}, date of birth: 1990-01-02) is paid to card ${CARD}. Notices go to legal@acme.example.`
 const SCHEDULE = `Schedule A: ${CARD2}.`
 const DOC = `${TEXT}\n${SCHEDULE}`
-const TOKEN = /\[PII:[A-Z_]+:[0-9a-f]{8}\]/
+const TOKEN = /\[PII:[A-Z_]+:[0-9a-f]{16}\]/
 
 let app: TestApp
 let org: string, offOrg: string, owner: string, contract: string, versionId: string, clauseId: string, scheduleId: string
@@ -108,7 +108,7 @@ describe('a background job\'s request and reply', () => {
     const json = JSON.stringify(out)
     for (const v of [SSN, CARD, CARD2, '1990-01-02']) expect(json).not.toContain(v)
     expect(out.plainText).toContain('legal@acme.example')
-    expect(out.plainText).toMatch(/date of birth: \[PII:DOB:[0-9a-f]{8}\]/)
+    expect(out.plainText).toMatch(/date of birth: \[PII:DOB:[0-9a-f]{16}\]/)
     // The schedule's card number is caught although its own string lacks "card".
     expect(out.clauses[0].text).toMatch(TOKEN)
     expect(out).toMatchObject({ orgId: org, contractId: contract, clauses: [{ id: 'cl1' }] })
@@ -217,10 +217,67 @@ describe('redline proposals', () => {
     }
   })
 
-  it('a token the contract can\'t resolve is refused, not written into the document', async () => {
-    const res = await tool('redline_apply', { userId: owner, contractId: contract, clauseId, proposedText: 'SSN [PII:SSN:deadbeef] only.' })
-    expect(res.statusCode).toBe(409)
-    expect(res.json().code).toBe('PII_TOKEN_UNRESOLVED')
+  it('no placeholder is ever written in place of a value: unknown, mangled, or redact mode\'s marker', async () => {
+    for (const proposedText of [
+      'SSN [PII:SSN:deadbeefdeadbeef] only.',   // resolves to nothing here
+      'SSN [PII:SSN:deadbeefdeadbe only.',      // cut short, bracket lost
+      'The Employee (SSN [REDACTED:SSN]) is paid.',   // what contract_get shows in redact mode
+      'SSN [PII:SSN:9c8b4ca5] only.',           // a tokenize-mode pseudonym
+    ]) {
+      const res = await tool('redline_apply', { userId: owner, contractId: contract, clauseId, proposedText })
+      expect(res.statusCode, proposedText).toBe(409)
+      expect(res.json().code).toBe('PII_TOKEN_UNRESOLVED')
+    }
+  })
+
+  it('a token whose hex a model upper-cased still resolves', async () => {
+    const chat = await tool('redline_propose', { contractId: contract, clauseId })
+    const proposedText = (chat.json().variants[0].proposedText as string).replace(TOKEN, t => t.replace(/[0-9a-f]{16}/, h => h.toUpperCase()))
+    try {
+      const applied = await tool('redline_apply', { userId: owner, contractId: contract, clauseId, proposedText })
+      expect(applied.statusCode).toBe(200)
+      const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: applied.json().newVersionId } })
+      expect(v.plainText).toContain(SSN)
+    } finally {
+      await setCurrent(versionId)
+    }
+  })
+
+  it('a proposal still applies after the word that made its value PII was edited out', async () => {
+    // Tokenized while "card" was in the document…
+    const chat = await tool('redline_propose', { contractId: contract, clauseId: scheduleId })
+    const proposedText = chat.json().variants[0].proposedText as string
+    expect(proposedText).toMatch(TOKEN)
+    // …then the other clause is reworded without it (no clause rows on the new version).
+    const edited = await prisma.contractVersion.create({
+      data: { contractId: contract, versionNumber: 10, createdById: owner,
+        plainText: `${TEXT.replace('card', 'transfer')}\n${SCHEDULE}`, htmlContent: `<p>${TEXT.replace('card', 'transfer')}</p><p>${SCHEDULE}</p>` },
+    })
+    await setCurrent(edited.id)
+    try {
+      const applied = await tool('redline_apply', { userId: owner, contractId: contract, clauseId: scheduleId, proposedText })
+      expect(applied.statusCode).toBe(200)
+      expect((await prisma.contractVersion.findUniqueOrThrow({ where: { id: applied.json().newVersionId } })).plainText).toContain(CARD2)
+    } finally {
+      await setCurrent(versionId)
+    }
+  })
+})
+
+describe('the round-trip details', () => {
+  it('a tokenized date is restored before the update is validated', async () => {
+    const dob = ((await redactJson(org, { t: TEXT }, { surface: 'test', roundTrip: contract })).t.match(/\[PII:DOB:[0-9a-f]{16}\]/) ?? [])[0]
+    expect(dob).toBeTruthy()
+    const patch = await app.inject({ method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: agentHeaders(), payload: { effectiveDate: dob } })
+    expect(patch.statusCode).toBe(200)
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id: contract } })).effectiveDate?.toISOString().slice(0, 10)).toBe('1990-01-02')
+  })
+
+  it('tokenize mode\'s pseudonyms don\'t link one org\'s values to another\'s', async () => {
+    const a = await applyPiiPolicy(org, `SSN ${SSN}`, { surface: 'test', override: 'tokenize' })
+    const b = await applyPiiPolicy(offOrg, `SSN ${SSN}`, { surface: 'test', override: 'tokenize' })
+    expect(a.text).toMatch(/\[PII:SSN:[0-9a-f]{8}\]/)
+    expect(a.text).not.toBe(b.text)
   })
 })
 

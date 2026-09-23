@@ -841,7 +841,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // quotes that become the stored clause text, which later redlines must find
     // in the document: put the values back.
     const restored = restorePii(req.body, version.plainText, contract.id)
-    const left = unresolvedPiiTokens(restored).length
+    const left = unresolvedPiiTokens(restored, version.plainText).length
     if (left) req.log.warn({ contractId: contract.id, versionId, left }, 'PII tokens left unresolved in extracted clauses')
     const { clauseSegments, clauseFlags } = restored as {
       clauseSegments?: Array<{
@@ -1072,8 +1072,6 @@ export async function contractRoutes(app: FastifyInstance) {
   app.patch('/:id', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
-    let body = UpdateContractSchema.parse(req.body)
-
     // Internal service calls use orgId='system' — find by id only
     const where = orgId === 'system'
       ? { id, deletedAt: null }
@@ -1086,15 +1084,28 @@ export async function contractRoutes(app: FastifyInstance) {
     // personal data (agent.worker.ts callAgents); put the values back in what
     // it writes here (summary, key terms and their quotes, findings), against
     // the version it read (?versionId=, from review.py), else the newest one.
-    if (req.user.sub === 'system' && JSON.stringify(body).includes('[PII:')) {
+    // Before validation: a date still tokenized fails the schema and loses the
+    // whole update.
+    let raw: unknown = req.body
+    if (req.user.sub === 'system' && JSON.stringify(raw ?? null).includes('[PII:')) {
       const { versionId } = req.query as { versionId?: string }
       const version = (versionId && await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: existing.id }, select: { plainText: true } }))
         || (existing.currentVersionId && await prisma.contractVersion.findUnique({ where: { id: existing.currentVersionId }, select: { plainText: true } }))
         || await prisma.contractVersion.findFirst({ where: { contractId: existing.id }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
-      body = restorePii(body, version ? version.plainText : '', existing.id)
-      const left = unresolvedPiiTokens(body).length
-      if (left) req.log.warn({ contractId: existing.id, left }, 'PII tokens left unresolved in an agents-service update')
+      const source = version ? version.plainText : ''
+      raw = restorePii(raw, source, existing.id)
+      const left = unresolvedPiiTokens(raw, source).length
+      if (left) req.log.warn({ contractId: existing.id, left }, 'PII placeholders left unresolved in an agents-service update')
+      // review.py makes dates full ISO, but it can't for a token; a restored
+      // date-only value gets the same treatment here.
+      if (raw && typeof raw === 'object') {
+        const r = raw as Record<string, unknown>
+        for (const k of ['effectiveDate', 'expiryDate']) {
+          if (typeof r[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r[k] as string)) r[k] = `${r[k]}T00:00:00.000Z`
+        }
+      }
     }
+    const body = UpdateContractSchema.parse(raw)
 
     // X25 — a matter link must name a live matter of the contract's own org.
     // It was stored unchecked, and the other org's matter view listed this

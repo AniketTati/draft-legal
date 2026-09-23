@@ -12,7 +12,7 @@
  * version's changeNote; the row itself stays as an audit trail.
  */
 import { prisma } from './prisma.js'
-import { restorePii, unresolvedPiiTokens } from './pii-policy.js'
+import { restorePii, piiRestorer, unresolvedPiiTokens } from './pii-policy.js'
 
 /**
  * Minimal HTML escape for splicing text into contract HTML.
@@ -235,6 +235,12 @@ function spliceInto(
   }
 }
 
+/** A clause's own version text, when it isn't the current one (X23: a restore source). */
+async function versionText(versionId: string, currentVersionId: string): Promise<string> {
+  if (versionId === currentVersionId) return ''
+  return (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
+}
+
 /** Pure matching helpers, exported for unit tests only. */
 export const __testing = { spliceInto, findNormalizedSpan, normalizeWithMap, locateSpan }
 
@@ -256,7 +262,7 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
 
   let clause = await prisma.contractClause.findFirst({
     where:  { id: args.clauseId, versionId: currentVersion.id },
-    select: { id: true, clauseType: true, content: true, sectionRef: true },
+    select: { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
   })
 
   // P1.6 — resilience to version churn. The caller may hold a clauseId from an
@@ -278,7 +284,7 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
         // user-facing route reaches it.
         version: { contractId: contract.id },
       },
-      select: { id: true, clauseType: true, content: true, sectionRef: true },
+      select: { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
     })
     if (priorClause) {
       const byType = await prisma.contractClause.findFirst({
@@ -289,7 +295,7 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
           ...(priorClause.sectionRef ? { sectionRef: priorClause.sectionRef } : {}),
         },
         orderBy: { sortOrder: 'asc' },
-        select:  { id: true, clauseType: true, content: true, sectionRef: true },
+        select:  { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
       })
       clause = byType ?? priorClause
     }
@@ -298,11 +304,15 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
 
   // X23 — a proposal the chat model saw carries round-trip tokens where the
   // contract had personal data (internal-ai redline_propose); put the values
-  // back before it is spliced in or stored. A token this contract can't
-  // resolve (altered by the model, or the text has changed since) would be
-  // written into the document as is: refuse instead.
-  args = restorePii(args, [clause.content, currentVersion.plainText], contract.id)
-  if (unresolvedPiiTokens([args.proposedText, args.rationale, args.changes]).length) {
+  // back before it is spliced in or stored. The clause's own version is a
+  // source too: the word that made a value count as PII may have been edited
+  // out of the current one since. Anything placeholder-shaped left over (a
+  // token altered by the model, a `[REDACTED:SSN]` copied from a tool result)
+  // would replace the value in the document: refuse instead. The rationale is
+  // only a note, so it doesn't decide.
+  const original = [clause.content, currentVersion.plainText, await versionText(clause.versionId, currentVersion.id)]
+  args = restorePii(args, original, contract.id)
+  if (unresolvedPiiTokens([args.proposedText, args.changes], original).length) {
     return {
       ok: false, status: 409, code: 'PII_TOKEN_UNRESOLVED',
       detail: 'The proposal contains redacted values that no longer match this contract\'s text. Regenerate the proposal.',
@@ -510,7 +520,7 @@ export async function applyClauseBatch(args: {
 
   const clauses = await prisma.contractClause.findMany({
     where:  { id: { in: changes.map(c => c.clauseId) }, versionId: currentVersion.id },
-    select: { id: true, clauseType: true, content: true, sectionRef: true },
+    select: { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
   })
   const clauseById = new Map(clauses.map(c => [c.id, c]))
 
@@ -529,7 +539,7 @@ export async function applyClauseBatch(args: {
       // globally private, and an unscoped lookup would let a caller name
       // another org's clause and splice its text into their document.
       where:  { id: { in: unresolved }, version: { contractId: contract.id } },
-      select: { id: true, clauseType: true, content: true, sectionRef: true },
+      select: { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
     })
     for (const prior of priors) {
       const byType = await prisma.contractClause.findFirst({
@@ -540,7 +550,7 @@ export async function applyClauseBatch(args: {
           ...(prior.sectionRef ? { sectionRef: prior.sectionRef } : {}),
         },
         orderBy: { sortOrder: 'asc' },
-        select:  { id: true, clauseType: true, content: true, sectionRef: true },
+        select:  { id: true, clauseType: true, content: true, sectionRef: true, versionId: true },
       })
       // Prefer the current version's row; otherwise the prior clause's own
       // text, which still has to survive locateSpan against the current body —
@@ -560,9 +570,12 @@ export async function applyClauseBatch(args: {
   const planned: Planned[] = []
   const applied: AppliedChange[] = []
 
+  // X23 — as applyClauseProposal; the document's map is built once.
+  const restoreDoc = piiRestorer(currentVersion.plainText, contract.id)
   for (const proposed of changes) {
     const clause = clauseById.get(proposed.clauseId)
-    const change = clause ? restorePii(proposed, [clause.content, currentVersion.plainText], contract.id) : proposed
+    const original = clause ? [clause.content, currentVersion.plainText, await versionText(clause.versionId, currentVersion.id)] : []
+    const change = clause ? restorePii(restoreDoc(proposed), original.filter(t => t !== currentVersion.plainText), contract.id) : proposed
     if (!clause) {
       applied.push({
         clauseId: change.clauseId, clauseType: null,
@@ -570,8 +583,8 @@ export async function applyClauseBatch(args: {
       })
       continue
     }
-    // X23 — as applyClauseProposal: never splice a token that didn't resolve.
-    if (unresolvedPiiTokens(change).length) {
+    // X23 — as applyClauseProposal: never splice a placeholder.
+    if (unresolvedPiiTokens([change.proposedText, change.changes], original).length) {
       applied.push({
         clauseId: clause.id, clauseType: clause.clauseType,
         spliced: false, matchMode: 'none', error: 'pii_token_unresolved',

@@ -41,7 +41,12 @@ describe('the agents service keeps round-trip tokens intact (source tripwires)',
 
   it('every prompt whose output is stored tells the model to copy tokens verbatim', () => {
     expect(py('pii_tokens.py')).toMatch(/copy the placeholder exactly/)
-    expect(py('agents', 'review_agent.py')).toContain('_EXTRACT_PROMPT + extra_prompt + PII_TOKEN_RULE')
+    const review = py('agents', 'review_agent.py')
+    expect(review).toContain('_EXTRACT_PROMPT + extra_prompt + PII_TOKEN_RULE')
+    // …and the recall, validate and score passes, whose output is stored too.
+    expect(review).toContain('second_prompt + PII_TOKEN_RULE')
+    expect(review).toContain('_VALIDATE_PROMPT + payload + PII_TOKEN_RULE')
+    expect(review).toContain('_SCORE_PROMPT + payload + PII_TOKEN_RULE')
     expect(py('routes', 'assist.py')).toContain('_REDLINE_SYSTEM + PII_TOKEN_RULE')
     expect(py('routes', 'assist.py')).toContain('_BATCH_REDLINE_SYSTEM + PII_TOKEN_RULE')
     expect(py('agents', 'playbook_review_agent.py')).toContain(') + PII_TOKEN_RULE')

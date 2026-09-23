@@ -44,7 +44,12 @@ async function callAgents(
     /** Round-trip token scope: the contract's id, or the request's. */
     scope: string
     contractId?: string
-    /** The whole document, when the body carries only parts of it (see redactJson's valuesFrom). */
+    /**
+     * The text whose personal data is replaced (see redactJson's valuesFrom):
+     * the whole document when the body carries parts of it, or the request's
+     * own text. The body's other strings (org name, field labels, playbook
+     * text) are configuration, which the callbacks couldn't restore.
+     */
     context?: string | null
   },
 ): Promise<Response> {
@@ -58,7 +63,7 @@ async function callAgents(
   // carries only ids (/redline, /approval-summary) are unaffected: the agents
   // service fetches that text itself.
   let sent: unknown
-  const source = () => [sent, meta.context ?? '']
+  const source = () => (meta.context != null ? [meta.context] : [sent])
   if (typeof init.body === 'string') {
     sent = JSON.parse(init.body)
     const redacted = await redactJson(meta.orgId, sent, {
@@ -94,7 +99,7 @@ async function callAgents(
   let reply: unknown
   try { reply = JSON.parse(text) } catch { return new Response(text, { status: res.status, headers }) }
   const restored = restorePii(reply, source(), meta.scope)
-  const left = unresolvedPiiTokens(restored).length
+  const left = unresolvedPiiTokens(restored, [sent, meta.context ?? '']).length
   if (left) {
     console.warn('[agent-worker] %s scope=%s: %d PII token(s) the model altered or invented stay as tokens', meta.toolName, meta.scope, left)
   }
@@ -395,7 +400,7 @@ async function handleExtractAi(data: ExtractAiJob): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body: JSON.stringify(body),
-  }, { orgId, toolName: 'redline_analysis', scope: contractId, contractId })
+  }, { orgId, toolName: 'redline_analysis', scope: contractId, contractId, context: version.plainText })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -426,7 +431,12 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
       counterpartyName: request.counterpartyName ?? undefined,
       orgId,
     }),
-  }, { orgId, toolName: 'classify_request', scope: requestId })
+  }, {
+    orgId, toolName: 'classify_request', scope: requestId,
+    // One text, so a card number in the description counts as one when the
+    // word "card" is in the title.
+    context: [request.title, request.description, request.counterpartyName].filter(Boolean).join('\n'),
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /intake-classify returned ${res.status}: ${text.slice(0, 200)}`)

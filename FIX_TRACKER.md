@@ -997,6 +997,29 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - A token the model mangles in extraction output is stored as a visible token, with a warning in the log. Refusing would drop the whole extraction.
     - Cost: redacting or restoring takes about 140 ms per MB of text on the API event loop (callbacks, applies). Typical contracts are under 0.3 MB.
   - **Deploy:** `PII_TOKEN_SECRET` is optional. If you set it, set the same value on the API and the worker services: tokens are made in one and restored in the other. The fallback, `INTERNAL_SERVICE_SECRET`, is already shared. Rotating it changes pseudonyms; no tokens are stored.
+  - **Follow-up (second adversarial review of f4f9d57):** it found these; all are now fixed.
+    - The apply guard only knew exact tokens. In the default redact mode, a chat model copying `(SSN [REDACTED:SSN])` from `contract_get` into `redline_apply` wrote the marker over the real SSN (200). So did a token with upper-case hex, a lost bracket or escaped brackets.
+      - Apply and batch apply now refuse any placeholder-shaped text: a mangled round-trip token, a tokenize-mode pseudonym, or `[REDACTED:KIND]`. The exception is text the clause or document itself contains.
+      - Restore reads hex case-insensitively.
+    - 32-bit tokens collided at census scale (two SSNs shared one token around 86k values). Round-trip tokens are now 64-bit, and the Python rule's example is updated.
+    - A proposal failed with 409 once the word that made its value PII ("card") was edited out of the current version. Apply now also restores against the clause's own version.
+    - The extraction's recall, validate and score passes, whose output is stored, lacked the token rule. They have it now.
+    - The PATCH callback validated before restoring, so a tokenized date failed the schema and dropped the whole update. It now restores first. A restored date-only value is made full ISO, as `review.py` does for dates it can read.
+    - The worker scanned org configuration (org name, custom-field options, playbook text) for values the callbacks could never restore. Values now come from the document (`/review`) or the request's own joined text (`classify_request`, which also fixes a per-string context miss).
+    - Batch apply rebuilt the document's value map for every change. It is built once now (`piiRestorer`).
+    - A lone rationale token refused a single apply but not a batch. The rationale is a note in both now.
+    - Tokenize mode's pseudonyms used one global key, so the same SSN was the same token in every org's prompts. They are scoped to the org now.
+    - A missing key now logs a warning; the old comment wrongly said a per-process key was enough.
+    - Not changed:
+      - Replacement inside longer numbers (e.g. a passport number inside an invoice number) stays. Restore is lossless, and leaving the digits would show them.
+      - A value split across two sub-chunk windows for embeddings: the overlapping window carries it whole.
+    - Tests: `pii-outbound.integration.test.ts` now has 14 cases, adding:
+      - four placeholder shapes refused;
+      - upper-cased hex resolved;
+      - the edited-context proposal applied;
+      - a tokenized date restored before validation;
+      - per-org pseudonyms.
+    - Against the pre-follow-up code, 6 fail. The full suite is green.
   - Original note:
     - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
     - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
@@ -1061,6 +1084,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `rerankClauses` (`embeddings.ts`) sends raw clause text to Voyage.
   - The editor assist routes in `agents.ts` (assist_stream, classify_clause, complete, assist, compare) and `playbook.ts` `/compare` send the user's selected contract text raw.
   - `contract_get` and `contract_summarize` return `keyTerms` unredacted.
+  - `playbook_judge` (`internal-ai.ts`) sends clause text raw. `/search/ask` also reranks raw clause text through Voyage.
   - Apply the policy on each, with round-trip tokens where the output is stored (see X23's helpers).
 - **X28 — The signer portal lets a later sequential signer act before their turn (Low).** Found in the X21 review.
   - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
@@ -1130,3 +1154,4 @@ X3 — DONE — audit log API (list/filter/cursor + chain verify, admin-only) wi
 X17 — DONE — diligence-room contracts out of analytics/dashboard/renewals/obligations/counterparty figures (a named contract still sees its own); precedents on effective versions, no rooms; iterative HNSW scans on pgvector 0.8+ — (sha: X17)
 X1 — VERIFY-PENDING — citation pills open the original PDF at the cited page with the passage outlined (styled-view section scroll kept as the fallback); needs a live click-through — (sha: X1)
 X2 — VERIFY-PENDING — resumable per-field backfill (cursor on the definition, cost-cap pause, never overwrites) via a new /extract-fields agents route; custom-field confidence + quotes kept and shown; needs a live run — (sha: X2)
+X23 (follow-up) — VERIFY-PENDING — apply refuses any placeholder not in the source text ([REDACTED:*], mangled tokens); 64-bit tokens; restore also from the clause's version; token rule on all stored extraction passes; restore before PATCH validation; values only from the document; org-scoped tokenize pseudonyms — (sha: X23-fu)
