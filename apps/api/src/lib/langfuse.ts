@@ -79,6 +79,39 @@ export async function postScore(input: ScoreInput): Promise<boolean> {
   }
 }
 
+/** Whose trace a user's feedback may score: their own chat turns only. */
+export interface TraceOwner { orgId: string; userId: string }
+
+interface TraceRow { id: string; timestamp: string; userId?: string | null; metadata?: unknown }
+
+/**
+ * X22 — the agents service sets a chat turn's trace `userId` to the user and
+ * puts the org in its metadata (apps/agents/app/tracing.py). A trace or
+ * session id sent by the client named any trace, another org's included, and
+ * whether it was found told the caller that the session existed. User ids are
+ * unique across orgs, so the user decides; an org in the metadata must agree.
+ */
+function ownedBy(trace: Pick<TraceRow, 'userId' | 'metadata'>, owner: TraceOwner): boolean {
+  if (trace.userId !== owner.userId) return false
+  const org = (trace.metadata as { org_id?: unknown } | null | undefined)?.org_id
+  return org === undefined || org === owner.orgId
+}
+
+/** True when `traceId` is one of `owner`'s own chat turns. */
+export async function traceOwnedBy(traceId: string, owner: TraceOwner): Promise<boolean> {
+  if (!langfuseConfigured()) return false
+  try {
+    const res = await fetch(`${HOST().replace(/\/$/, '')}/api/public/traces/${encodeURIComponent(traceId)}`, {
+      headers: { Authorization: authHeader() },
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return false
+    return ownedBy((await res.json()) as TraceRow, owner)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Find the trace for a chat session.
  *
@@ -86,19 +119,21 @@ export async function postScore(input: ScoreInput): Promise<boolean> {
  * browser only has to send the session it already knows — it never sees a
  * Langfuse trace id. Returns the OLDEST trace in the session because that is
  * the turn the feedback is most likely about when no turn is named; callers
- * with a specific turn should pass a traceId.
+ * with a specific turn should pass a traceId. X22 — only `owner`'s traces: the
+ * session id comes from the client, and another user's thread id is as easy
+ * to send as one's own.
  */
-export async function findTraceBySession(sessionId: string): Promise<string | null> {
+export async function findTraceBySession(sessionId: string, owner: TraceOwner): Promise<string | null> {
   if (!langfuseConfigured()) return null
   try {
-    const q = new URLSearchParams({ sessionId, limit: '50' })
+    const q = new URLSearchParams({ sessionId, userId: owner.userId, limit: '50' })
     const res = await fetch(`${HOST().replace(/\/$/, '')}/api/public/traces?${q}`, {
       headers: { Authorization: authHeader() },
       signal: AbortSignal.timeout(5000),
     })
     if (!res.ok) return null
-    const body = (await res.json()) as { data?: Array<{ id: string; timestamp: string }> }
-    const rows = body.data ?? []
+    const body = (await res.json()) as { data?: TraceRow[] }
+    const rows = (body.data ?? []).filter(r => ownedBy(r, owner))
     if (!rows.length) return null
     rows.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     return rows[0].id   // most recent turn in the thread

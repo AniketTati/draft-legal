@@ -749,7 +749,28 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Original note: `POST /contracts/upload` stores the form's `parentContractId` unchecked. A user in org B can file an upload as an amendment of an org-A contract; org A's `/contracts/:id/family` then lists org B's contract (title, type, status), because the relation isn't org-filtered. Validate the parent against the caller's org (and ownership for own scope, as the guard now does for `/amendments`), and filter the family query by `orgId`. (Found while fixing X7.)
 - **X21 — Own-scope follow-ups (Low).** Two aggregates still count the whole org for own-scope callers: the dashboard's `orgPendingApprovals` and `/team/workload`. The Signatures page's "Open" link 404s for an own-scope signer who doesn't own the contract; it should go to their signing page. A request converted by someone else becomes the converter's contract, so the requester can't open it (`requests.ts` convert); decide whether the requester should own it. `collab-server.ts` accepts any org member for any contract; this is latent until the editor binds to the shared document. (From X7 review.)
 
-- **X22 — Agent feedback trusts a client-supplied trace or session id (Low).** `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
+- **X22 — Agent feedback trusts a client-supplied trace or session id (Low). — DONE.**
+  - **Plan:**
+    - Confirmed: `POST /agent/feedback` scores `body.traceId` as given, or the latest trace of `body.sessionId`. Neither is checked against the caller, and `recorded` vs `trace_not_found` answers whether a session exists.
+    - The agents service sets a chat turn's trace `userId` to the user (`user_id or org_id`) and its metadata `org_id` (`apps/agents/app/tracing.py`). User ids are unique across orgs.
+    - Fix: `lib/langfuse.ts` checks ownership:
+      - a named trace must have `userId` equal to the caller, and a metadata `org_id`, when present, equal to the caller's org;
+      - a session lookup asks Langfuse for the caller's traces only (`userId` filter) and applies the same check to the rows.
+      - Anything else answers `trace_not_found`, as a missing trace does.
+    - Test: `routes/agent-feedback.integration.test.ts` against a fake Langfuse that applies its public API's `userId` filter.
+  - **What changed:** `lib/langfuse.ts` adds `traceOwnedBy()` and an owner-scoped `findTraceBySession()`. `routes/agents.ts` feedback uses both with `{ orgId, userId }` from the token.
+  - **Verification:**
+    - 4 cases:
+      - another org's trace id is not scored and answers like a missing one;
+      - a colleague's trace or session is not scored;
+      - a session id shared with another user resolves to the caller's own turn, not the other user's newer one;
+      - the caller's own trace is scored.
+    - Against the pre-fix code, 3 fail; the positive case passes.
+    - Typecheck 0, lint 0 errors.
+  - **Left as is:**
+    - Langfuse still groups traces by the client's thread id, so in the Langfuse UI a reused thread id shows two users' turns in one session. That is visible only to operators. Namespacing the session id in `tracing.py` would orphan every existing session's feedback lookup.
+    - Background jobs' traces carry the org id as `userId`, so no user can score them. That is intended.
+  - Original note: `POST /agent/feedback` (`agents.ts:60-85`, `lib/langfuse.ts:91-108`) scores whichever Langfuse trace a raw `traceId` or `sessionId` names, with no org or owner check. So any user can score another org's traces, and the `recorded` / `trace_not_found` answer reveals whether a session exists. Langfuse also groups traces by the client's session id, so a reused thread id mixes users' traces. Scope the lookup to traces tagged with the caller's org and user. (Found in X8 review.)
 - **X23 — PII redaction has gaps outside the chat tools (Medium).** Found in X5 review.
   - The upload pipeline ignores the org's mode: `agent.worker.ts` sends raw `plainText` to detect-binder, classify and `/review`, and `embeddings.ts` sends raw chunks to the embedding provider.
   - `tokenize` is reversible: an unsalted SHA-256 cut to 32 bits (`pii-redactor.ts`), so SSNs, dates of birth and phone numbers can be brute-forced by whoever receives the text.
@@ -847,3 +868,4 @@ X13 — DONE — DOCX/XLSX real inflated size bounded (100MB) at upload and befo
 X25 — DONE — matter links (contract matterId, matter counterparty/owner) must be same-org; matter views org-filtered; repair migration — b661002
 X24 — DONE — approval statuses (PENDING_APPROVAL/APPROVED/REJECTED) can't be set by hand via REST or the agent; one shared transition table — b4484a6
 X26 — DONE — `_` contract metadata (analysis reports, _splitInto) writable only by the agents service — (sha: X26)
+X22 — DONE — agent feedback scores only the caller's own Langfuse traces (named trace or session lookup); others answer trace_not_found like missing ones — (sha: X22)
