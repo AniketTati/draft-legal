@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import type { Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 // @ts-ignore — no type definitions for node-htmldiff
@@ -1456,7 +1456,11 @@ export async function contractRoutes(app: FastifyInstance) {
                AVG(cc.embedding) AS avg_embedding
         FROM   contracts c
         JOIN   contract_versions cv ON cv."contractId" = c.id
-        JOIN   (${effectiveVersionsSql(orgId)}) ev ON ev.id = cv.id   -- X17: one version per peer
+        -- X17: one version per peer, chosen among the candidates only (the
+        -- DISTINCT ON would otherwise rank every version in the org).
+        JOIN   (${effectiveVersionsSql(orgId, undefined, Prisma.sql`
+                  AND c2."deletedAt" IS NULL AND c2."diligenceRoomId" IS NULL
+                  AND c2.status IN ('APPROVED','EXECUTED') AND c2.type = ${contract.type}`)}) ev ON ev.id = cv.id
         JOIN   contract_clauses cc  ON cc."versionId"  = cv.id
         WHERE  c."orgId"       = ${orgId}
                AND c.id        <> ${id}

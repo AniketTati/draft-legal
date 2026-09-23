@@ -94,6 +94,10 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
   const obWhere: Record<string, unknown> = {
     status:  'OPEN',
     dueDate: { gte: graceStart, lte: windowEnd },
+    // X17 — only the org's own live contracts: a diligence room's belong to
+    // a target (no reminders, no overdue webhooks), and a deleted contract's
+    // obligations are gone with it.
+    contract: { is: { deletedAt: null, diligenceRoomId: null } },
   }
   if (opts.orgId) obWhere.orgId = opts.orgId
 
@@ -265,6 +269,7 @@ export async function scanRenewals(
   const noticeWindowEnd = now + (MAX_NOTICE_DAYS + NOTICE_LEAD_DAYS) * 24 * 60 * 60 * 1000
   const where: Record<string, unknown> = {
     deletedAt:     null,
+    diligenceRoomId: null,   // X17 — a target's contracts don't renew with us
     status:        'EXECUTED',
     expiryDate:    { lte: new Date(Math.max(windowEnd, noticeWindowEnd)), gte: new Date(now - 30 * 24 * 60 * 60 * 1000) },
   }

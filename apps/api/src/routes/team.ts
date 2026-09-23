@@ -46,7 +46,8 @@ export async function teamRoutes(app: FastifyInstance) {
     // Get contract counts per owner
     const contractCounts = await prisma.contract.groupBy({
       by: ['ownerId'],
-      where: { orgId, deletedAt: null, status: { notIn: ['ARCHIVED', 'TERMINATED', 'EXPIRED'] } },
+      // X17 — a diligence room's uploads are a target's contracts, not anyone's book.
+      where: { orgId, deletedAt: null, diligenceRoomId: null, status: { notIn: ['ARCHIVED', 'TERMINATED', 'EXPIRED'] } },
       _count: { id: true },
     })
     const contractCountMap = new Map(contractCounts.map(c => [c.ownerId, c._count.id]))

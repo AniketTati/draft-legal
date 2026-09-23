@@ -5,8 +5,16 @@
  * counterparty counts, and precedents (which also averaged every version,
  * superseded text included). Adding a room contract must not move any of them.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+vi.mock('../lib/queue.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/queue.js')>()),
+  queueNotification: vi.fn(),
+}))
+
+import { getApp, closeApp, makeOrg, makeUser, makeContract, makeWorkflow, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { scanObligations, scanRenewals } from '../lib/obligation-scanner.js'
+import { queueNotification } from '../lib/queue.js'
 
 const DIM = 1536
 const unit = (i: number) => `[${Array.from({ length: DIM }, (_, k) => (k === i ? 1 : 0)).join(',')}]`
@@ -61,6 +69,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await prisma.invoice.deleteMany({ where: { orgId: org } })
+  await prisma.approvalInstance.deleteMany({ where: { orgId: org } })
+  await prisma.workflowDefinition.deleteMany({ where: { orgId: org } })
   await prisma.obligation.deleteMany({ where: { orgId: org } })
   await prisma.contractClause.deleteMany({ where: { id: { startsWith: 'it-x17-' } } })
   await prisma.contract.updateMany({ where: { orgId: org }, data: { currentVersionId: null, counterpartyId: null, diligenceRoomId: null } })
@@ -95,5 +106,49 @@ describe('a diligence room\'s contract is not part of the org\'s figures', () =>
     expect(ids).toContain(peer)
     // Averaging the superseded version in made this ~0.71; the current texts match.
     expect(peers.find(p => (p.contractId ?? p.id) === peer)!.similarity).toBeGreaterThan(0.99)
+  })
+})
+
+describe('…nor of the org\'s reminders, matching, workload or queues (review follow-up)', () => {
+  const IN_3_DAYS = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000)
+
+  it('the daily scanners don\'t remind anyone about a target\'s obligations or renewals', async () => {
+    await prisma.obligation.create({ data: { orgId: org, contractId: roomContract, type: 'delivery', description: 'Target delivers', quote: 'x', dueDate: IN_3_DAYS } })
+    await prisma.obligation.create({ data: { orgId: org, contractId: peer, type: 'delivery', description: 'We deliver', quote: 'x', dueDate: IN_3_DAYS } })
+    vi.mocked(queueNotification).mockClear()
+    await scanObligations({ orgId: org })
+    await scanRenewals({ orgId: org })
+    const sent = JSON.stringify(vi.mocked(queueNotification).mock.calls)
+    expect(sent).toContain('Our other MSA')        // our own obligation…
+    expect(sent).not.toContain('TARGET CO MSA')    // …never the room's
+  })
+
+  it('an invoice is never matched to a target\'s payment obligation', async () => {
+    await prisma.obligation.updateMany({ where: { orgId: org, contractId: { not: roomContract } }, data: { status: 'COMPLETED' } })
+    const roomPayment = await prisma.obligation.create({ data: { orgId: org, contractId: roomContract, type: 'payment', description: 'Pay 1000', quote: 'x', dueDate: IN_3_DAYS } })
+    try {
+      const res = await app.inject({
+        method: 'POST', url: '/api/v1/invoices', headers: auth(org, ['ADMIN'], user),
+        payload: { vendorName: 'Acme Target Supplier', amount: 1000, invoiceDate: new Date().toISOString() },
+      })
+      expect(res.statusCode).toBe(201)
+      expect(res.json().invoice.matchedObligationId ?? null).not.toBe(roomPayment.id)
+    } finally {
+      await prisma.obligation.updateMany({ where: { orgId: org, contractId: { not: roomContract } }, data: { status: 'OPEN' } })
+    }
+  })
+
+  it('team workload, the org approval count and the extraction queue leave the room out', async () => {
+    const mine = (await get('/api/v1/team/workload')).json().find((m: { id: string }) => m.id === user)
+    expect(mine.activeContracts).toBe(await prisma.contract.count({ where: { orgId: org, ownerId: user, deletedAt: null, diligenceRoomId: null } }))
+
+    const before = (await get('/api/v1/dashboard')).json().orgPendingApprovals
+    const wf = await makeWorkflow(org, user, user)
+    await prisma.approvalInstance.create({ data: { orgId: org, contractId: roomContract, workflowDefinitionId: wf, submittedById: user } })
+    expect((await get('/api/v1/dashboard')).json().orgPendingApprovals).toBe(before)
+
+    await prisma.contract.update({ where: { id: roomContract }, data: { analysisStatus: 'DONE', fieldConfidence: { value: { confidence: 0.2 } } } })
+    expect((await get('/api/v1/review-queue')).body).not.toContain(roomContract)
+    expect((await get(`/api/v1/review-queue?diligenceRoomId=${room}`)).body).toContain(roomContract)
   })
 })

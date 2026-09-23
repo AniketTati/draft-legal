@@ -356,13 +356,14 @@ export interface ClauseMatch {
  * version if it has clauses, else the latest version that does. Contracts
  * with no extracted clauses at all yield nothing.
  */
-export function effectiveVersionsSql(orgId: string, contractId?: string) {
+export function effectiveVersionsSql(orgId: string, contractId?: string, contractFilter: Prisma.Sql = Prisma.empty) {
   return Prisma.sql`
     SELECT DISTINCT ON (v."contractId") v.id
     FROM   contract_versions v
     JOIN   contracts c2 ON c2.id = v."contractId"
     WHERE  c2."orgId" = ${orgId}
            ${contractId ? Prisma.sql`AND c2.id = ${contractId}` : Prisma.empty}
+           ${contractFilter}
            AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
     ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
 }
@@ -380,14 +381,17 @@ export async function effectiveClauseVersionIds(orgId: string, contractIds: stri
   return rows.map(r => r.id)
 }
 
-/** X17 — pgvector 0.8 added iterative index scans; earlier versions reject the setting. Checked once. */
+/** X17 — pgvector 0.8 added iterative index scans; earlier versions reject the setting. Checked once (a failed check is retried). */
 let iterativeScan: Promise<boolean> | null = null
 function iterativeScanSupported(): Promise<boolean> {
   iterativeScan ??= prisma.$queryRaw<Array<{ v: string }>>`SELECT extversion AS v FROM pg_extension WHERE extname = 'vector'`
     .then(rows => {
       const [major, minor] = (rows[0]?.v ?? '0.0').split('.').map(Number)
       return major > 0 || minor >= 8
-    }, () => false)
+    }, () => {
+      iterativeScan = null
+      return false
+    })
   return iterativeScan
 }
 
@@ -460,11 +464,14 @@ export async function searchClauses(
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
-  const rows = await (await iterativeScanSupported()
+  // One contract's clauses are few enough to scan exactly: no transaction.
+  // Otherwise wait for a connection as long as a plain query would (the pool
+  // timeout), not an interactive transaction's 2 s default.
+  const rows = await (!contractId && await iterativeScanSupported()
     ? prisma.$transaction(async tx => {
         await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = relaxed_order`
         return tx.$queryRaw<Row[]>(query)
-      }, { timeout: 20_000 })
+      }, { maxWait: 10_000, timeout: 20_000 })
     : prisma.$queryRaw<Row[]>(query))
   rows.sort((a, b) => Number(b.similarity) - Number(a.similarity))
 

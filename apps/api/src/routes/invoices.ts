@@ -65,8 +65,10 @@ async function autoMatchInvoice(orgId: string, invoice: {
       orgId,
       status: 'OPEN',
       type:   'payment',
-      // A live contract only — and, for own scope, one the caller owns.
-      contract: { is: { deletedAt: null, ...(ownerId ? { ownerId } : {}) } },
+      // A live contract only — and, for own scope, one the caller owns. X17 —
+      // never a diligence room's: its obligations are a target's, and a match
+      // would let reconciling our invoice close them.
+      contract: { is: { deletedAt: null, diligenceRoomId: null, ...(ownerId ? { ownerId } : {}) } },
     },
     include: {
       contract: { select: { counterpartyName: true, currency: true, value: true } },

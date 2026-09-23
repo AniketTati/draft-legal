@@ -777,6 +777,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - typecheck 0, lint 0 errors;
       - api unit 268/268, api integration 236/236.
   - **Left as is:** the test DB is too small for the planner to choose the HNSW index, so the iterative scan's effect can't be shown there, only that the path works. Production needs pgvector ≥ 0.8 for it; older versions keep the previous behaviour.
+  - **Follow-up (adversarial review of c82ca73):** a fresh subagent reviewed the commit and confirmed each miss against the test DB. Fixed:
+    - **Scanners.** The daily obligation and renewal scanners still emailed the uploader about a target's obligations and renewals, and fired the org's `obligation.overdue` webhook for them. Both now skip room contracts. The obligation scan also skips deleted contracts, which kept sending reminders after a delete; that bug is older.
+    - **Invoice auto-match** could match a target's payment obligation, and reconciling would then close it. It no longer can; an explicit contract link still may name a room contract.
+    - **Team workload** counted every room upload (DRAFT, owned by the uploader) as the uploader's active contracts. The dashboard's org-wide approval count counted room approvals for org-scope callers.
+    - **Extraction review queue:** a freshly analysed room could push the org's own contracts out of its 500 most recent. It excludes rooms unless `?diligenceRoomId=` asks for one room's queue (or `?contractId=` names a contract).
+    - **Precedents:** the `effectiveVersionsSql` DISTINCT ON ranked every version in the org on every call (≈55 ms at 5k contracts vs 0.2 ms). It now takes the candidate filter inside (type, status, live, no room).
+    - **Clause search** under pool pressure: the interactive transaction failed at Prisma's 2 s `maxWait` where a plain query waits up to 10 s. It now waits 10 s. A search within one contract skips the transaction (it scans exactly), and a failed pgvector version check is retried instead of cached.
+    - Tests: `diligence-portfolio.integration.test.ts` now has 5 cases, adding scanners, invoice matching, and workload with the approval count and review queue. Against the pre-follow-up code, the 3 new cases fail.
+    - Suite: typecheck 0, lint 0 errors; api unit 270/270, integration 247/247.
+    - **Left as is:**
+      - The counterparty detail no longer lists a counterparty's room contracts. Listing them separately as diligence information would be a feature.
+      - The retrieval skill doc still says IVFFlat; the index is HNSW.
   - Original note: `analytics.ts:70-93,180-193,230,265`, `dashboard.ts:109-160,178,196,249,281`, `renewals.ts:70,184,236-241`, `obligations.ts:107-118,159,201-208`, `counterparties.ts:56,189`, `/contracts/:id/precedents` (`contracts.ts:1346-1400`, which also averages across all versions) and `matter_list` counts don't filter `diligenceRoomId: null`, so a target's contracts inflate the org's KPIs, renewals and obligations. Also consider `SET LOCAL hnsw.iterative_scan = relaxed_order` for filtered pgvector queries (post-filtering can return fewer than top-k). (Found in C11 review.)
 - **X18 — Signing tokens go to anyone who can view the contract (High). — DONE.**
   - **Plan:**
@@ -1155,3 +1167,4 @@ X17 — DONE — diligence-room contracts out of analytics/dashboard/renewals/ob
 X1 — VERIFY-PENDING — citation pills open the original PDF at the cited page with the passage outlined (styled-view section scroll kept as the fallback); needs a live click-through — (sha: X1)
 X2 — VERIFY-PENDING — resumable per-field backfill (cursor on the definition, cost-cap pause, never overwrites) via a new /extract-fields agents route; custom-field confidence + quotes kept and shown; needs a live run — (sha: X2)
 X23 (follow-up) — VERIFY-PENDING — apply refuses any placeholder not in the source text ([REDACTED:*], mangled tokens); 64-bit tokens; restore also from the clause's version; token rule on all stored extraction passes; restore before PATCH validation; values only from the document; org-scoped tokenize pseudonyms — (sha: X23-fu)
+X17 (follow-up) — DONE — reminders/overdue webhooks, invoice auto-match, team workload, org approval count and the extraction queue leave diligence rooms out; precedents subquery narrowed; clause search waits for the pool like a plain query — (sha: X17-fu)

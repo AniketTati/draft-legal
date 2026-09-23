@@ -123,6 +123,8 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       threshold: z.coerce.number().min(0).max(1).default(0.7),
       limit:     z.coerce.number().int().min(1).max(500).default(200),
       contractId: z.string().optional(),
+      // X17 — a diligence room's extractions, on request.
+      diligenceRoomId: z.string().optional(),
     }).parse(req.query)
 
     const where: Record<string, unknown> = {
@@ -134,6 +136,10 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       fieldConfidence: { not: {} },
       // X7 — own-scope callers review only the contracts they own.
       ...ownContractWhere(req),
+      // X17 — the org's queue is the org's contracts: a freshly analysed data
+      // room would otherwise push them out of the 500 most recent. A room's
+      // own queue, or a named contract, still comes through.
+      ...(q.contractId ? {} : { diligenceRoomId: q.diligenceRoomId ?? null }),
     }
     if (q.contractId) where.id = q.contractId
 
