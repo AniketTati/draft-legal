@@ -344,6 +344,26 @@ describe('the review of the first cut', () => {
     expect((await prisma.approvalInstance.findUniqueOrThrow({ where: { id: instance.id } })).aiSummary).toBe(`Paid by ${CARD}.`)
   })
 
+  it('X33 — the approval summary gets the version text it asks for, tokenized', async () => {
+    // approval.py reads plainText from this list; it never had any.
+    const forAgents = await app.inject({ method: 'GET', url: `/api/v1/contracts/${contract}/versions`, headers: agentHeaders() })
+    expect(forAgents.statusCode).toBe(200)
+    const latest = forAgents.json().data.find((v: { id: string }) => v.id === v2)
+    expect(latest.plainText).toContain('The Employee (SSN ')
+    expect(latest.plainText).toMatch(TOKEN)
+    expect(forAgents.body).not.toContain(SSN)
+    // Users' version list is as before: metadata only.
+    const forUser = await app.inject({ method: 'GET', url: `/api/v1/contracts/${contract}/versions`, headers: as() })
+    expect(forUser.json().data[0].plainText).toBeUndefined()
+
+    // A summary quoting the excerpt is stored with the value.
+    const token = (latest.plainText.match(TOKEN) ?? [''])[0]
+    const wf = await makeWorkflow(org, user, user)
+    const instance = await prisma.approvalInstance.create({ data: { orgId: org, contractId: contract, workflowDefinitionId: wf, submittedById: user } })
+    await app.inject({ method: 'PATCH', url: `/api/v1/approvals/${instance.id}/summary`, headers: agentHeaders(), payload: { aiSummary: `Covers SSN ${token}.` } })
+    expect((await prisma.approvalInstance.findUniqueOrThrow({ where: { id: instance.id } })).aiSummary).toBe(`Covers SSN ${SSN}.`)
+  })
+
   it('the chat\'s obligation and approval lists redact the text they quote', async () => {
     await prisma.obligation.create({
       data: { orgId: org, contractId: contract, type: 'payment', description: `Pay the holder of SSN ${SSN}.`, quote: TEXT },

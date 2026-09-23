@@ -1349,9 +1349,27 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Suite: typecheck 0, lint 0 errors, api unit 297/297, integration 269/269 (44 files).
     - The two web messages are typechecked but not seen in a browser; they need a pair past the limit.
   - **Left as is:** the agents' tokenized diff is still computed on every read, now off the request thread. It is read once per redline analysis.
-- **X33 — The approval summary never gets the contract text (Low-Medium).** Found in the X27 follow-up.
+- **X33 — The approval summary never gets the contract text (Low-Medium). — VERIFY-PENDING.** Found in the X27 follow-up.
   - `approval.py` reads `plainText` from `GET /contracts/:id/versions`, which has never returned it (it lists metadata only). The executive-summary prompt's `text_excerpt` is therefore always empty, and the summary is written from key terms and clauses alone.
   - Any fix has to hand the text over tokenized with the contract scope, as `/clauses` does, so `PATCH /approvals/:id/summary` can restore it.
+  - **Plan:** confirmed.
+    - `approval.py` picks the approval's version (the latest, as `queueApprovalSummary` names it) from `GET /contracts/:id/versions` and reads its `plainText`.
+    - The route selects metadata only, so `approval_agent`'s `text_excerpt` (`[:8000]`) was always empty.
+    - The Python side already expects the text, so the fix belongs in the API: give the agents service the text there, tokenized like `/clauses`.
+  - **What changed:**
+    - For the agents service only, `GET /contracts/:id/versions` now carries each version's `plainText`:
+      - tokenized in one pass with the contract scope, so values found in any version take the same token;
+      - cut to 20,000 characters without splitting a token, which bounds the payload.
+    - Users' list is unchanged.
+    - `PATCH /approvals/:id/summary` already restores against the latest and current versions' text (X27 follow-up).
+  - **Verification:**
+    - A new case in `routes/pii-surfaces.integration.test.ts`:
+      - the agents' list has the version text with a token and no SSN;
+      - users' list has no `plainText`;
+      - a summary quoting the excerpt's token is stored with the value.
+    - Against the pre-fix code it fails (no `plainText`).
+    - Suite: typecheck 0, lint 0 errors, api unit 297/297, integration 270/270.
+  - **Why VERIFY-PENDING:** a live approval submission is needed to see the executive summary now reading the contract, and its stored text reading right.
 - **X34 — Audit events are lost under bursts of concurrent writes for one org (Low-Medium).** Found in the X27 follow-up.
   - The integration suite logs `[pii-policy] failed to write audit event: … P2034`. `createAuditEvent` appends to the org's hash chain in a SERIALIZABLE transaction, with 5 attempts on a fixed 10–160 ms backoff and no jitter.
   - With six or more writers at once, as parallel chat tool calls produce, retries collide again and some writers run out of attempts. Fire-and-forget callers (PII redaction, tool calls) then drop the event with a console line. The chain stays valid but incomplete.
@@ -1444,4 +1462,5 @@ X28 — DONE — a later sequential signer can't view the contract or void the r
 X29 — DONE — collab connections refused after token expiry and re-checked each minute (user live, contract live, ownership, edit); a change closes the socket — f005316
 X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — 91901bf
 X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — 8638d24
-X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — (sha: pending)
+X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — 3c28689
+X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — (sha: pending)

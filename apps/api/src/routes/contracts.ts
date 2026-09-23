@@ -22,7 +22,7 @@ import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededE
 import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-apply.js'
-import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms } from '../lib/pii-policy.js'
+import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms, sliceOutsideTokens } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { clauseVersionId } from '../lib/clause-version.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
@@ -55,6 +55,9 @@ function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
 function versionForms(v: { plainText: string; htmlContent: string }): string[] {
   return [v.plainText, ...htmlTextForms(v.htmlContent)]
 }
+
+/** X33 — how much of each version's text the agents service's version list carries (the approval prompt reads 8,000). */
+const AGENT_TEXT_EXCERPT = 20_000
 
 export async function contractRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
@@ -687,6 +690,26 @@ export async function contractRoutes(app: FastifyInstance) {
     // (`portal:<shareLinkId>`, `email:<addr>`), so this needs the same ladder
     // the DOCX export uses for w:author, and both stay consistent by sharing it.
     const authors = await resolveRevisionAuthors(versions.map(v => v.createdById))
+
+    // X33 — the approval summary (approval.py) reads a version's text from
+    // this list for its prompt, and none was ever here, so every summary was
+    // written without the contract. The agents service gets the opening of
+    // each version's text, tokenized with the contract scope as /clauses is
+    // (PATCH /approvals/:id/summary restores it); users' list is unchanged.
+    if (req.user.sub === 'system') {
+      const texts = new Map((await prisma.contractVersion.findMany({
+        where: { contractId: id }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const tokenized = await redactJson(contract.orgId, versions.map(v => texts.get(v.id) ?? ''), {
+        surface: 'approval_summary.text', contractId: id, roundTrip: id,
+      })
+      return reply.send({
+        data: versions.map((v, i) => ({
+          ...v, createdByName: authors.get(v.createdById) ?? null,
+          plainText: sliceOutsideTokens(tokenized[i], 0, AGENT_TEXT_EXCERPT),
+        })),
+      })
+    }
 
     return reply.send({
       data: versions.map(v => ({ ...v, createdByName: authors.get(v.createdById) ?? null })),
