@@ -116,3 +116,43 @@ describe('review queue corrections', () => {
     expect(JSON.stringify(reviews)).not.toContain('New York')
   })
 })
+
+describe('X42 follow-up — a correction to what an approval judged', () => {
+  async function approved() {
+    const id = await makeContract(org, owner, { title: 'Approved deal', status: 'APPROVED' })
+    await prisma.contract.update({
+      where: { id },
+      data: {
+        analysisStatus: 'DONE', value: 1000, currency: 'USD', expiryDate: new Date('2026-01-01'),
+        keyTerms: { value: 1000, currency: 'USD', expiryDate: '2026-01-01' },
+        fieldConfidence: { value: lowConfidence('fees of'), currency: lowConfidence('USD'), expiryDate: lowConfidence('ending on') },
+      },
+    })
+    return id
+  }
+  const correct = (id: string, payload: Record<string, unknown>) =>
+    app.inject({ method: 'POST', url: `/api/v1/review-queue/${id}/verify`, headers: admin(), payload })
+  const statusOf = async (id: string) => (await prisma.contract.findUniqueOrThrow({ where: { id } })).status
+
+  it('a changed value sends the contract back to DRAFT, on the record; the same value or an expiry doesn\'t', async () => {
+    const id = await approved()
+    expect((await correct(id, { field: 'value', value: '1,000' })).statusCode).toBe(200)
+    expect((await correct(id, { field: 'expiryDate', value: '2027-01-01' })).statusCode).toBe(200)
+    expect(await statusOf(id)).toBe('APPROVED')
+
+    expect((await correct(id, { field: 'value', value: '2000' })).statusCode).toBe(200)
+    expect(await statusOf(id)).toBe('DRAFT')
+    const audit = await prisma.auditEvent.findFirst({
+      where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED', metadata: { path: ['statusTo'], equals: 'DRAFT' } },
+    })
+    expect(audit?.metadata).toMatchObject({ source: 'review_queue', action: 'corrected', field: 'value', statusFrom: 'APPROVED', statusTo: 'DRAFT' })
+  })
+
+  it('rejecting the currency clears it and sends the contract back to DRAFT', async () => {
+    const id = await approved()
+    const res = await app.inject({ method: 'POST', url: `/api/v1/review-queue/${id}/reject`, headers: admin(), payload: { field: 'currency' } })
+    expect(res.statusCode).toBe(200)
+    const row = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    expect({ status: row.status, currency: row.currency }).toEqual({ status: 'DRAFT', currency: null })
+  })
+})

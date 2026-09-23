@@ -40,6 +40,7 @@ import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-
 import { prisma } from '../lib/prisma.js'
 import { reindexContract } from '../lib/elasticsearch.js'
 import { createAuditEvent } from '../lib/audit.js'
+import { statusAfterTermsChange } from '../lib/contract-status.js'
 import { AuditAction } from '@clm/types'
 
 // Fields worth surfacing in the queue. Extraction produces keyTerms for
@@ -94,6 +95,18 @@ function parseCorrection(
   }
   const text = String(raw).trim()
   return { ok: true, column: text, keyTerm: text }
+}
+
+/**
+ * X42 follow-up — the terms an approval judged, among the columns the queue
+ * can write. Changing one on an approved contract sends it back to DRAFT,
+ * as a PATCH of the same column does.
+ */
+const JUDGED_COLUMNS = new Set(['value', 'currency'])
+function judgedTermChanged(column: string, before: unknown, after: string | number | Date | null): boolean {
+  if (!JUDGED_COLUMNS.has(column)) return false
+  if (before == null || after == null) return before != after
+  return column === 'value' ? Number(before) !== Number(after) : String(before) !== String(after)
 }
 
 /** Pull the human value for a given field off keyTerms / top-level columns. */
@@ -217,7 +230,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     const contract = await prisma.contract.findFirst({
       where: { id: contractId, orgId, deletedAt: null },
       select: {
-        id: true, fieldConfidence: true, keyTerms: true,
+        id: true, fieldConfidence: true, keyTerms: true, status: true, value: true,
         counterpartyName: true, jurisdiction: true, currency: true,
       },
     })
@@ -243,6 +256,10 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
         if (!parsed.ok) return reply.status(400).send({ detail: parsed.detail })
         updateData[mapped.column] = parsed.column
         if (body.field in kt || mapped.column !== body.field) kt[body.field] = parsed.keyTerm
+        if (judgedTermChanged(mapped.column, (contract as Record<string, unknown>)[mapped.column], parsed.column)) {
+          const reset = statusAfterTermsChange(contract.status)
+          if (reset) updateData.status = reset
+        }
       } else {
         kt[body.field] = body.value
       }
@@ -265,7 +282,10 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       action: AuditAction.CONTRACT_UPDATED,
       resourceType: 'contract',
       resourceId: contract.id,
-      metadata: { source: 'review_queue', action: body.value === undefined ? 'verified' : 'corrected', field: body.field },
+      metadata: {
+        source: 'review_queue', action: body.value === undefined ? 'verified' : 'corrected', field: body.field,
+        ...(updateData.status ? { statusFrom: contract.status, statusTo: updateData.status } : {}),
+      },
       ipAddress: req.ip,
     })
     return reply.send({ ok: true, contractId, field: body.field, verifiedBy: userId })
@@ -279,7 +299,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: contractId, orgId, deletedAt: null },
-      select: { id: true, fieldConfidence: true, keyTerms: true },
+      select: { id: true, fieldConfidence: true, keyTerms: true, status: true, value: true, currency: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
@@ -301,12 +321,15 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     const kt = { ...(contract.keyTerms as Record<string, unknown> ?? {}) }
     delete kt[body.field]
     const mapped = COLUMN_FOR_FIELD[body.field]
+    const reset = mapped && judgedTermChanged(mapped.column, (contract as Record<string, unknown>)[mapped.column], null)
+      ? statusAfterTermsChange(contract.status) : undefined
     await prisma.contract.update({
       where: { id: contract.id },
       data:  {
         fieldConfidence: fc as never,
         keyTerms: kt as never,
         ...(mapped ? { [mapped.column]: null } : {}),
+        ...(reset ? { status: reset } : {}),
       },
     })
     if (mapped) reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
@@ -315,7 +338,10 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       action: AuditAction.CONTRACT_UPDATED,
       resourceType: 'contract',
       resourceId: contract.id,
-      metadata: { source: 'review_queue', action: 'rejected', field: body.field },
+      metadata: {
+        source: 'review_queue', action: 'rejected', field: body.field,
+        ...(reset ? { statusFrom: contract.status, statusTo: reset } : {}),
+      },
       ipAddress: req.ip,
     })
     return reply.send({ ok: true, contractId, field: body.field, rejectedBy: userId })

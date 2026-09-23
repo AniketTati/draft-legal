@@ -1758,6 +1758,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Against the pre-fix code the 3 reset cases fail.
     - The full integration suite passes (296).
   - **Left as is:** an open approval on a contract changed while PENDING_APPROVAL stays open until decided. The approver sees the current terms.
+  - **Follow-up (after the summary, DONE):** the review of the live-check fixes found that the Extraction Queue could change `value` or `currency` on an approved contract without X42's reset, by a correction or by a reject that clears the value.
+    - The queue now resets it the same way, only when the value actually changes. An expiry or another term approval doesn't judge leaves the approval alone.
+    - The review's audit event records `statusFrom`/`statusTo`.
+    - `review-queue.integration.test.ts` has 2 new cases, which fail without the change.
 - **X43 — `admin`-scope API keys outlive their creator, and keys aren't audited (Medium). — DONE.** Found in the final-sweep review of C1.
   - Since C1 made UI keys work, the dialog offers `admin` (full access) with no expiry by default.
   - The key check never looks at who created the key, and deactivating a user doesn't touch their keys, so an admin's key keeps full org access after they leave.
@@ -2091,7 +2095,8 @@ X46 — DONE — key management and giving anyone access (invite, roles, reactiv
 
 X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — 5730eed
 X48 (review) — DONE — the shared refresh times out and doesn't overwrite a session that changed while it ran — 3d58292
-X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — (sha: pending)
+X49 (review) — DONE — self-hosted nginx serves the PDF worker (.mjs) as JavaScript; the Original view is for PDFs only — 036b278
+X42 (follow-up) — DONE — Extraction Queue corrections and rejects of value or currency reset an approval as PATCH does, on the record — (sha: pending)
 
 ---
 
