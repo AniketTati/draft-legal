@@ -1386,9 +1386,10 @@ export async function contractRoutes(app: FastifyInstance) {
 
   // ── Internal: trigger chunk-and-index (called by agents after clauses stored) ─
   app.post('/:id/versions/:versionId/chunk', async (req, reply) => {
-    // Internal-only — validated via x-internal-secret header
-    const secret = req.headers['x-internal-secret']
-    if (secret !== process.env.INTERNAL_SERVICE_SECRET) {
+    // Internal-only — validated via x-internal-secret header. X35: an unset
+    // secret refuses everyone (a missing header used to equal it).
+    const expected = process.env.INTERNAL_SERVICE_SECRET
+    if (!expected || req.headers['x-internal-secret'] !== expected) {
       return reply.status(401).send({ detail: 'Unauthorized' })
     }
     const { id, versionId } = req.params as { id: string; versionId: string }

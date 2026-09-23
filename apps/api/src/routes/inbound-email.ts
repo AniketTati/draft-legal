@@ -167,17 +167,15 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
 
   // ── Auth: shared-secret header (mailgun / sendgrid both let you set
   // arbitrary headers on the inbound webhook).
+  // Scoped to this plugin's routes by registration (X35: a req.url prefix
+  // test here was skipped by `/api/v1/%69nbound/email`, which still routed).
   app.addHook('preHandler', async (req, reply) => {
-    if (!req.url.startsWith('/api/v1/inbound')) return
     const expected = process.env.INBOUND_EMAIL_SECRET
     if (!expected) {
-      // Hard-fail if not configured in production. In dev with no secret,
-      // skip the auth (and log a loud warning).
-      if (process.env.NODE_ENV === 'production') {
-        return reply.status(503).send({ error: 'Inbound email handler not configured' })
-      }
-      req.log.warn('[inbound-email] INBOUND_EMAIL_SECRET unset — accepting unauthenticated request (dev only)')
-      return
+      // X35 — not configured is closed in every environment. Skipping the
+      // check outside production opened staging and previews to anyone who
+      // could forge a counterparty's From.
+      return reply.status(503).send({ error: 'Inbound email handler not configured' })
     }
     const got = req.headers['x-inbound-secret']
     if (got !== expected) {

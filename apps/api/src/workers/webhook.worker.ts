@@ -62,8 +62,9 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
 
   try {
     // Wave 1.5 — SSRF guard: refuse to POST to a URL that resolves to a
-    // private / loopback / link-local / cloud-metadata address (hosted
-    // deployments only; self-host can opt out via WEBHOOK_ALLOW_PRIVATE_URLS).
+    // private / loopback / link-local / cloud-metadata address (every
+    // environment since X35; a self-host that must deliver to its own
+    // network opts out via WEBHOOK_ALLOW_PRIVATE_URLS).
     // Throws before the fetch, so an internal target never gets a request.
     await assertPublicUrl(wh.url)
     const ctrl = new AbortController()
@@ -85,7 +86,8 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
     // Wave 1.5 — do NOT reflect the response body into the delivery log when
     // the SSRF guard is active: it was an exfiltration channel (a blocked
     // internal endpoint's content leaking to a tenant). Store status only.
-    // With the guard off (self-host/dev) we keep a capped body for debugging.
+    // With the guard turned off (WEBHOOK_ALLOW_PRIVATE_URLS) we keep a
+    // capped body for debugging.
     if (ssrfGuardEnabled()) {
       responseBody = null
     } else {

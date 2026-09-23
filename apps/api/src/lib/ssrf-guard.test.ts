@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { isPrivateIp, assertUrlShape } from './ssrf-guard.js'
+import { isPrivateIp, assertUrlShape, ssrfGuardEnabled } from './ssrf-guard.js'
 
 // Wave 1.5 — SSRF guard for user-supplied webhook URLs.
 describe('isPrivateIp', () => {
@@ -26,5 +26,24 @@ describe('assertUrlShape', () => {
   it('accepts public https URLs', () => {
     expect(() => assertUrlShape('https://hooks.example.com/abc')).not.toThrow()
     expect(() => assertUrlShape('http://api.acme.io/webhook')).not.toThrow()
+  })
+})
+
+describe('ssrfGuardEnabled', () => {
+  it('X35 — is on in every environment unless turned off explicitly', () => {
+    const saved = { env: process.env.NODE_ENV, flag: process.env.WEBHOOK_ALLOW_PRIVATE_URLS }
+    try {
+      delete process.env.WEBHOOK_ALLOW_PRIVATE_URLS
+      for (const env of ['development', 'test', 'staging', 'production']) {
+        process.env.NODE_ENV = env
+        expect(ssrfGuardEnabled(), env).toBe(true)
+      }
+      process.env.WEBHOOK_ALLOW_PRIVATE_URLS = 'true'
+      expect(ssrfGuardEnabled()).toBe(false)
+    } finally {
+      process.env.NODE_ENV = saved.env
+      if (saved.flag === undefined) delete process.env.WEBHOOK_ALLOW_PRIVATE_URLS
+      else process.env.WEBHOOK_ALLOW_PRIVATE_URLS = saved.flag
+    }
   })
 })

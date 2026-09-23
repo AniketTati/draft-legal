@@ -8,9 +8,10 @@
  * loopback / link-local / metadata addresses.
  *
  * Self-host tension: a self-hosted deployment may legitimately POST to a
- * service on its own private network. So the guard is ON by default only in
- * production, and can be turned off with WEBHOOK_ALLOW_PRIVATE_URLS=true. In
- * dev it is OFF so local receivers (localhost) work for testing.
+ * service on its own private network. So the guard can be turned off with
+ * WEBHOOK_ALLOW_PRIVATE_URLS=true — which is also how to test with a local
+ * receiver (localhost). It is ON everywhere else (X35: it used to be off
+ * whenever NODE_ENV wasn't 'production', staging and previews included).
  *
  * Residual TOCTOU: we resolve DNS then fetch, so a rebinding attacker could in
  * theory flip the record between the two. The creation-time shape check + the
@@ -22,8 +23,10 @@ import net from 'node:net'
 
 /** Whether the guard actively blocks private targets in this environment. */
 export function ssrfGuardEnabled(): boolean {
-  if (process.env.WEBHOOK_ALLOW_PRIVATE_URLS === 'true') return false
-  return process.env.NODE_ENV === 'production'
+  // X35 — on in every environment unless turned off explicitly: keyed on
+  // NODE_ENV it was off on staging and previews, where an org admin could
+  // point a webhook at the cloud metadata address.
+  return process.env.WEBHOOK_ALLOW_PRIVATE_URLS !== 'true'
 }
 
 /** True if an IP literal is in a private / loopback / link-local / ULA range. */

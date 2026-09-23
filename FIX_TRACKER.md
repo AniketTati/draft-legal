@@ -1390,13 +1390,56 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - api unit 297/297;
       - integration 271/271 (45 files).
   - **Left as is:** under a burst, a request that awaits its audit write can now wait up to about 5 s instead of failing after 0.3 s.
-- **X35 — Two more internal-only checks are open outside production, or when the secret is unset (Low-Medium).** Found while planning X31.
+- **X35 — Two more internal-only checks are open outside production, or when the secret is unset (Low-Medium; Critical once reviewed). — DONE.** Found while planning X31.
   - Bull Board (`/admin/queues`, `app.ts`) is open whenever `NODE_ENV !== 'production'`. It shows job payloads and can retry or remove jobs.
   - `POST /contracts/:id/versions/:versionId/chunk` compares `secret !== INTERNAL_SERVICE_SECRET`. With the variable unset and no header, that is `undefined !== undefined`, so the request passes, for any org's contract.
   - Require the secret in every environment, and treat an unset secret as "refuse".
   - Found in the X31 review, the same class:
     - `routes/inbound-email.ts` skips its signature check when `INBOUND_EMAIL_SECRET` is unset and `NODE_ENV` isn't production. `.env.example` ships that secret empty. The sender check trusts the payload's `from`, so anyone who knows a contract id and the counterparty's address can add a version to that contract.
     - `lib/ssrf-guard.ts` is off outside production, so on staging an org admin can point a webhook at the cloud metadata address. Key the exemption on an explicit development flag, not on `NODE_ENV`.
+  - **Plan:** all four confirmed and reproduced (see the verification below). Each check either skipped itself when `NODE_ENV` wasn't `production`, or compared against a secret that could be unset. A shared stack that isn't production is open in either case. Fix:
+    - Every internal secret check requires a configured secret and treats an unset one as "refuse".
+    - The two developer conveniences become explicit opt-ins:
+      - `BULL_BOARD_OPEN=true`, ignored in production;
+      - the existing `WEBHOOK_ALLOW_PRIVATE_URLS=true`.
+  - **What changed:**
+    - `app.ts`: Bull Board needs `x-internal-secret` everywhere unless `BULL_BOARD_OPEN=true` outside production.
+    - `routes/contracts.ts`: the chunk-and-index callback refuses while `INTERNAL_SERVICE_SECRET` is unset.
+    - `routes/inbound-email.ts`: with `INBOUND_EMAIL_SECRET` unset, the webhook answers 503 in every environment.
+    - `lib/ssrf-guard.ts`: on unless `WEBHOOK_ALLOW_PRIVATE_URLS=true`.
+    - `.env.example` documents both flags and says the inbound secret is required everywhere.
+  - **Verification:**
+    - `routes/internal-checks.integration.test.ts` has 3 cases, run under `NODE_ENV=test`:
+      - Bull Board: no header or a wrong secret gets 401 and the secret gets 200. With `BULL_BOARD_OPEN=true` it gets 200, but 401 under production.
+      - The chunk callback gets 401 with the secret unset and queues nothing; with the secret, 202.
+      - Inbound mail gets 503 with its secret unset.
+    - `lib/ssrf-guard.test.ts`: the guard is on under development, test, staging and production, and off only with the flag.
+    - Against the pre-fix code every case fails: 200, 202, 400 (auth skipped), and the guard off in development.
+    - `inbound-email-attachments.integration.test.ts` still passes (it sets the secret).
+    - Suite: typecheck 0, lint 0 errors, api unit 298/298, integration 274/274 (46 files).
+  - **For developers:**
+    - to open Bull Board in a browser on your own machine, set `BULL_BOARD_OPEN=true`;
+    - to test webhooks against a local receiver, set `WEBHOOK_ALLOW_PRIVATE_URLS=true`;
+    - to post mail to the inbound webhook locally, set `INBOUND_EMAIL_SECRET` and send it as `x-inbound-secret`.
+  - **Adversarial review:** it found the fix incomplete, and a critical hole that was already there.
+    - **Critical, now fixed:** both prefix hooks tested `req.url`, the raw request line. The router decodes percent-encoding and drops an absolute-form `http://host`, so these reached their handlers without a secret, in every environment including production:
+      - `GET /%61dmin/queues/api/queues` (and the job API: read payloads, add, retry, clean);
+      - `POST /api/v1/%69nbound/email`.
+    - The Bull Board check now lives in a plugin that registers Bull Board itself, so it covers exactly those routes whatever the URL. The inbound hook drops its URL test, since it was already scoped to its plugin.
+    - The test now sends the encoded paths too. Against the prefix-check version it gets 200 and 400 where it expects 401 and 503.
+    - Also fixed from the review:
+      - `scripts/p76-3-verify.mjs` now sends `x-inbound-secret`;
+      - the webhook worker's comments are current;
+      - the event-loop assertion in X32's `diff.test.ts` flaked under heavy load and now asks only that the loop kept turning (≥5 ticks; 0 on the request thread).
+    - Filed: X39, webhook deliveries follow redirects past the SSRF guard. The internal-secret placeholder is already X38.
+  - **Reviewed and left as is:**
+    - `INBOUND_EMAIL_ALLOW_ALL` stays an explicit opt-in that production ignores, and the route now needs its secret anyway.
+    - The API image sets `NODE_ENV=production` (Dockerfile, self-host compose), so these NODE_ENV-keyed dev conveniences only affect stacks run outside it:
+      - the logger's token masking, off in development;
+      - the signing link printed in development;
+      - the self-signed signing certificate outside production;
+      - auth rate limits, off under test;
+      - the 10× global rate limit outside production.
 - **X36 — The older chat tools cut contract text before redacting it (Low-Medium).** Found in the X27 follow-up review.
   - Several chat tools slice text to a window and then redact each window on its own:
     - `contract_get`, `contract_cite`, `counterparty_memory` (twice) and `portfolio_search`;
@@ -1411,6 +1454,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - `lib/secrets.ts` `assertSecretsConfigured` checks only `JWT_SECRET` and `PORTAL_JWT_SECRET`. `looksInsecure` recognizes only a `change-me` prefix, while `.env.selfhost.example` ships `CHANGE_ME_…` values of 37–44 characters, which pass.
   - `INTERNAL_SERVICE_SECRET` is never checked, so a production API starts with the example value from either env file. Anyone who has read the repo then passes the internal routes' check and `requireAuth`'s internal bypass, which is ADMIN in any org they name. With the self-host JWT placeholders, they can forge tokens too.
   - Fix: check `INTERNAL_SERVICE_SECRET` at boot like the JWT secrets, and treat any value that starts with `change-me` or `change_me` (in any case) or equals an example-file value as a placeholder.
+- **X39 — Webhook deliveries follow redirects past the SSRF guard (Medium).** Found in the X35 review.
+  - `workers/webhook.worker.ts` checks the webhook URL with `assertPublicUrl`, then calls `fetch` with the default `redirect: 'follow'`.
+  - A public URL that answers 302 or 307 with `Location: http://169.254.169.254/…`, or an internal host, sends the delivery there. 307 and 308 keep the POST and its body. The stored status code then tells the org admin what the internal endpoint answered.
+  - Fix: `redirect: 'manual'`, treating a redirect as a failed delivery. Or re-check each hop.
 
 
 ---
@@ -1480,4 +1527,5 @@ X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline 
 X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — 8638d24
 X32 — DONE — version diffs (review UI, agents' redline diff, DOCX export) run on a worker thread with a 30 s limit and two at a time; past it a 422 says why and nothing is cached; the web shows the reason — 3c28689
 X33 — VERIFY-PENDING — the approval summary's version text (approval.py reads it from /versions, which never had it) is now there for the agents service, tokenized with the contract scope and restored on store; needs a live approval run — 5ea086e
-X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — (sha: pending)
+X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — 3d8fe95
+X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — (sha: pending)

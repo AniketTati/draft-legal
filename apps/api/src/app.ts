@@ -217,17 +217,25 @@ export async function buildApp() {
     queues: [new BullMQAdapter(documentQueue), new BullMQAdapter(agentQueue), new BullMQAdapter(notificationQueue), new BullMQAdapter(scanQueue), new BullMQAdapter(webhookQueue), new BullMQAdapter(signingQueue)] as any,
     serverAdapter: bullBoardAdapter,
   })
-  app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith('/admin/queues')) return
-    if (process.env.NODE_ENV !== 'production') return // open in dev
-    const secret = req.headers['x-internal-secret']
-    if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
-      return reply.status(401).send({ error: 'Unauthorized' })
-    }
-  })
-  await app.register(bullBoardAdapter.registerPlugin(), {
-    prefix: '/admin/queues',
-    basePath: '/admin/queues',
+  // X35 — the internal secret in every environment. "Open in dev" also
+  // opened it on staging and previews (job payloads; add, retry, remove).
+  // A developer's own stack can opt in with BULL_BOARD_OPEN=true, which
+  // production ignores. The hook is scoped to Bull Board's own routes by
+  // registering both in one plugin: a check on req.url (the raw request
+  // line) was skipped by `/%61dmin/queues/…` or an absolute-form URL, which
+  // the router still matched.
+  await app.register(async board => {
+    board.addHook('onRequest', async (req, reply) => {
+      if (process.env.BULL_BOARD_OPEN === 'true' && process.env.NODE_ENV !== 'production') return
+      const expected = process.env.INTERNAL_SERVICE_SECRET
+      if (!expected || req.headers['x-internal-secret'] !== expected) {
+        return reply.status(401).send({ error: 'Unauthorized' })
+      }
+    })
+    await board.register(bullBoardAdapter.registerPlugin(), {
+      prefix: '/admin/queues',
+      basePath: '/admin/queues',
+    })
   })
 
   // Error handler MUST be set BEFORE route plugins are registered —
