@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,6 +26,32 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+
+# X38 — shared-secret values that are public in the repo (CI, tests, docs).
+_PUBLIC_SECRETS = {
+    "clm-internal-dev-secret-2026",
+    "ci-integration-internal-secret",
+    "integration-internal-service-secret",
+}
+
+
+def _check_internal_secret() -> None:
+    """X38 — on Cloud Run, where this service is public, refuse to start with a
+    shared secret anyone who has read the repo knows (an env-file placeholder,
+    a CI or dev value) or one too short to trust: it is all that stands between
+    the internet and the platform's model keys. Local runs are left alone."""
+    if not os.environ.get("K_SERVICE"):
+        return
+    secret = os.environ.get("INTERNAL_SERVICE_SECRET", "")
+    value = secret.strip().strip("'\"").strip().lower()
+    if len(secret) < 32 or value in _PUBLIC_SECRETS or re.match(r"(change|replace)[-_ ]?me", value):
+        raise RuntimeError(
+            "INTERNAL_SERVICE_SECRET is missing, shorter than 32 characters or a known placeholder; "
+            "refusing to start on Cloud Run. Set the same random value on the API, the worker and this service."
+        )
+
+
+_check_internal_secret()
 
 app = FastAPI(title="CLM Agent Service", version="0.1.0")
 

@@ -26,7 +26,11 @@ cp .env.selfhost.example .env.selfhost
 ```
 
 The API **refuses to boot** with a missing/short/placeholder `JWT_SECRET` or
-`PORTAL_JWT_SECRET` (Wave 1 fail-closed secrets) — this is deliberate.
+`PORTAL_JWT_SECRET` (Wave 1 fail-closed secrets) — this is deliberate. The same
+goes for a short or placeholder `INTERNAL_SERVICE_SECRET` (the `CHANGE_ME_`
+values in `.env.selfhost.example` are refused): it lets a caller act as an
+admin of any org, so it must be random and 32+ characters, and the same on the
+API, worker and agents services.
 
 ## 3. Build the web bundle + start
 
@@ -49,6 +53,13 @@ docker compose -f docker-compose.selfhost.yml exec api-service \
 ```
 
 ## 4. Upgrading
+
+> **Placeholder secrets are refused.** An install still running the example
+> `CHANGE_ME_` values, or an `INTERNAL_SERVICE_SECRET` under 32 characters,
+> will not start after this upgrade. Set new values first. Change
+> `INTERNAL_SERVICE_SECRET` on the API, worker and agents services together;
+> a new `JWT_SECRET` signs everyone out, and a new `PORTAL_JWT_SECRET` ends
+> outstanding portal links.
 
 Migrations run automatically on every `up` via the one-shot `migrate` service,
 so upgrading is:

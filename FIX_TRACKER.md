@@ -1523,10 +1523,47 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - api unit 307/307;
       - integration 279/279.
   - **Left as is:** an IBAN-shaped string that fails its checksum (a typo, a made-up number) is no longer redacted, like a card that fails Luhn.
-- **X38 — Placeholder secrets pass the production boot check (High).** Found in the X31 review.
+- **X38 — Placeholder secrets pass the production boot check (High). — DONE.** Found in the X31 review.
   - `lib/secrets.ts` `assertSecretsConfigured` checks only `JWT_SECRET` and `PORTAL_JWT_SECRET`. `looksInsecure` recognizes only a `change-me` prefix, while `.env.selfhost.example` ships `CHANGE_ME_…` values of 37–44 characters, which pass.
   - `INTERNAL_SERVICE_SECRET` is never checked, so a production API starts with the example value from either env file. Anyone who has read the repo then passes the internal routes' check and `requireAuth`'s internal bypass, which is ADMIN in any org they name. With the self-host JWT placeholders, they can forge tokens too.
   - Fix: check `INTERNAL_SERVICE_SECRET` at boot like the JWT secrets, and treat any value that starts with `change-me` or `change_me` (in any case) or equals an example-file value as a placeholder.
+  - **Plan:** confirmed.
+    - `looksInsecure` matched only a `change-me` prefix, so the self-host example's `CHANGE_ME_…` JWT secrets (37–44 characters) booted in production.
+    - Nothing checked `INTERNAL_SERVICE_SECRET` at all. It is the key to `requireAuth`'s internal bypass (ADMIN in any named org) and to `/internal/ai/resolve` (the model keys).
+    - Fix at boot:
+      - recognize every public value;
+      - check the internal secret like the JWT ones;
+      - warn only when it is unset, because every internal check then refuses.
+  - **What changed:**
+    - `lib/secrets.ts`:
+      - placeholders are recognized in any spelling (`change-me`, `CHANGE_ME_`, `replace me`), quoted or padded;
+      - every secret value public in the repo is refused: the CI and integration-test values, and the dev value the skill docs name.
+      - `assertSecretsConfigured` now checks `INTERNAL_SERVICE_SECRET`. Production refuses to boot on a placeholder or on fewer than 32 characters (on Cloud Run the previous revision keeps serving). Unset only warns. The secret is never generated, since the agents service must hold the same value.
+    - `apps/agents/main.py`: on Cloud Run (`K_SERVICE`), where the service is public, it refuses to start with a missing, short or public secret. Local runs are unchanged.
+    - `deploy/selfhost/nginx.conf`: the edge drops `X-Internal-Secret`, `X-Internal-Service` and `X-Org-Id`. The agents service calls the API directly on the compose network, and the web app never sends them. Checked with `nginx -t`.
+    - `.env.selfhost.example` and `SELF-HOSTING.md`:
+      - the internal secret's rules;
+      - an upgrade note: installs on placeholders won't start, rotate the internal secret on all three services together, and a new JWT secret signs everyone out.
+  - **Verification:** `lib/secrets.test.ts` has 8 new cases:
+    - the self-host placeholders are refused;
+    - the internal placeholder is refused, and a strong value accepted;
+    - an unset internal secret only warns;
+    - a short one is refused in production;
+    - every public value is refused however it is written;
+    - a test reads `.env.example` and `.env.selfhost.example` and asserts all three secrets in each are refused, so renaming a placeholder can't quietly reopen this;
+    - outside production a placeholder only warns;
+    - a tripwire checks the agents-side check.
+    - The Python check was exercised directly, since there is no Python env here: it allows a local run, refuses a placeholder, a CI value or a short secret on Cloud Run, and accepts a strong one. `py_compile` passes.
+    - The placeholder cases fail against the pre-fix code.
+    - Suite: typecheck 0, lint 0 errors, api unit 315/315, integration 279/279.
+  - **Adversarial review:**
+    - It confirmed the placeholder fix, and every internal check refuses when the secret is unset.
+    - It found that public non-`change-me` values (CI, tests, docs), short secrets, the public Cloud Run agents service and the self-host edge were still open. All are fixed above.
+    - Filed from it: X41 (the seeded demo admin's public password).
+  - **Left as is:**
+    - The worker runs no boot check. It trusts no inbound calls, and its only use of the secret is as the fallback PII token key.
+    - The `CHANGE_ME_` database and MinIO passwords, and `storage.ts`'s `minioadmin` fallback, protect internal-only services.
+  - **Deploy check:** before deploying, confirm production's `INTERNAL_SERVICE_SECRET` (Secret Manager) is random, 32+ characters and not the dev value. Otherwise the new API and agents revisions will refuse to start.
 - **X39 — Webhook deliveries follow redirects past the SSRF guard (Medium).** Found in the X35 review.
   - `workers/webhook.worker.ts` checks the webhook URL with `assertPublicUrl`, then calls `fetch` with the default `redirect: 'follow'`.
   - A public URL that answers 302 or 307 with `Location: http://169.254.169.254/…`, or an internal host, sends the delivery there. 307 and 308 keep the POST and its body. The stored status code then tells the org admin what the internal endpoint answered.
@@ -1538,6 +1575,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Card numbers and IBANs are only recognized near a payment word. So "…pays by corporate credit card. 4.2 Billing. Charges go to 4111 1111 1111 1111 monthly." sends the card raw when clause 4.2 is the source.
   - The same holds for `keyTerms` in `contract_get` and `contract_summarize`: each string is checked on its own.
   - `embeddings.ts` already finds values against the version's text (`valuesFrom`). Give `cutAndRedact` a separate text to find values in, and pass each clause's document. The multi-contract tools need the matched versions' text loaded.
+- **X41 — The seeded demo admin has a public password, and the self-host guide seeds it (High).** Found in the X38 review.
+  - `prisma/seed.ts` creates `admin@demo.com` and `legal@demo.com` with the password `password123`, which the seed prints and the README repeats.
+  - `docs/operations/SELF-HOSTING.md` tells operators to run that seed to create their first org and admin, and says nothing about changing the password. So every self-host install that follows the guide has an admin login anyone can look up.
+  - `.github/workflows/deploy.yml` names the same account and password as production's smoke-test login.
+  - Fix:
+    - have the seed take the admin's password from the environment (or generate and print one), and refuse `password123` in production;
+    - have the guide say to change it.
+  - Check whether production's admin still uses it.
 
 
 ---
@@ -1610,4 +1655,5 @@ X33 — VERIFY-PENDING — the approval summary's version text (approval.py read
 X34 — DONE — audit appends retry serialization failures with full jitter for up to 5 s instead of 5 lockstep attempts: a 16-writer burst lost 4–8 events, now none, chain verified — 3d8fe95
 X35 — DONE — Bull Board, the chunk callback and inbound email need their secrets in every environment (unset refuses), with explicit dev opt-ins; SSRF guard on everywhere; review found /%61dmin/queues and /api/v1/%69nbound skipped the prefix hooks even in production — now scoped by plugin; X39 filed — 982c289
 X36 — DONE — chat-tool excerpts (10 tools) are redacted against the whole text and never cut through a value (cutAndRedact: one scan, merged runs); the card detector finds a card followed by another digit group; X40 filed — 4a41d23
-X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — (sha: pending)
+X37 — DONE — IBANs are recognized in groups of four as contracts print them, checked by their mod-97 checksum (so all-caps look-alikes stay), with the trailing-group fallback — d4805d3
+X38 — DONE — production refuses to boot with placeholder, public (CI/test/dev) or short secrets, now including INTERNAL_SERVICE_SECRET; the Cloud Run agents service does the same; the self-host edge drops internal headers; X41 filed — (sha: pending)

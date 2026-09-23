@@ -28,10 +28,19 @@ const MIN_LEN = 32
 // Known-insecure values we must never accept in production: the old
 // hardcoded fallbacks, plus the `change-me…` placeholders shipped in
 // .env.example. Kept lowercase for case-insensitive comparison.
+// X38 — and every other value that is public in the repo: the CI and
+// integration-test secrets, and the dev internal secret the skill docs name.
 const INSECURE_VALUES = new Set([
   'dev-secret-change-me',
   'portal-dev-secret',
   'change-me',
+  'clm-internal-dev-secret-2026',
+  'ci-integration-jwt-secret-32chars-minimum',
+  'ci-integration-portal-secret-32chars-min',
+  'ci-integration-internal-secret',
+  'integration-test-jwt-secret-32chars-minimum',
+  'integration-portal-secret-32chars-minimum',
+  'integration-internal-service-secret',
 ])
 
 function isProd(): boolean {
@@ -39,8 +48,11 @@ function isProd(): boolean {
 }
 
 function looksInsecure(value: string): boolean {
-  const v = value.toLowerCase()
-  return INSECURE_VALUES.has(v) || v.startsWith('change-me')
+  // X38 — the example files' placeholders in any spelling: `change-me…`
+  // (.env.example) and `CHANGE_ME_…` (.env.selfhost.example, 37–44
+  // characters, which passed), quoted or padded, and `replace-me…`.
+  const v = value.trim().replace(/^['"]+|['"]+$/g, '').trim().toLowerCase()
+  return INSECURE_VALUES.has(v) || /^(change|replace)[-_ ]?me/.test(v)
 }
 
 // ── Dev-only persisted secrets ───────────────────────────────────────────
@@ -127,4 +139,34 @@ export function resolveSecret(name: string): string {
 export function assertSecretsConfigured(): void {
   resolveSecret('JWT_SECRET')
   resolveSecret('PORTAL_JWT_SECRET')
+  checkInternalSecret()
+}
+
+/**
+ * X38 — the agents service's shared secret admits a caller as ADMIN of any
+ * org it names (requireAuth's internal bypass) and hands out the model keys
+ * (/internal/ai/resolve), yet nothing checked it: a production API started
+ * with an example file's placeholder, which anyone who has read the repo
+ * knows. Production refuses to boot with a placeholder or a short one, as for
+ * the JWT secrets (on Cloud Run a refused revision leaves the previous one
+ * serving). Unset only warns: every internal check then refuses rather than
+ * opens. Never generated, since the agents service must hold the same value.
+ */
+function checkInternalSecret(): void {
+  const name = 'INTERNAL_SERVICE_SECRET'
+  const value = process.env[name]
+  const fix = `Generate one: node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))" and set it on the API, the worker and the agents service.`
+  if (!value) {
+    console.warn(`[secrets] ${name} is not set: the agents service can't call the API. ${fix}`)
+    return
+  }
+  if (looksInsecure(value)) {
+    if (isProd()) throw new Error(`[secrets] ${name} is set to a known-insecure placeholder. Refusing to boot in production. ${fix}`)
+    console.warn(`[secrets] ${name} is a placeholder — fine for dev, but production will refuse to boot with it.`)
+    return
+  }
+  if (value.length < MIN_LEN) {
+    if (isProd()) throw new Error(`[secrets] ${name} is too short (${value.length} chars); require >= ${MIN_LEN} in production. ${fix}`)
+    console.warn(`[secrets] ${name} is short (${value.length} chars) — fine for dev, but production will refuse to boot with it.`)
+  }
 }
