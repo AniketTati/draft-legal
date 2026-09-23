@@ -7,9 +7,9 @@
  *      org, request id, error name + stack).
  *   2. Zod / Fastify validation errors get clean 4xx responses; only
  *      true unknowns become 500s.
- *   3. Optional Sentry forwarding — if the SDK is installed and
- *      SENTRY_DSN is set, errors mirror to Sentry. Otherwise we
- *      no-op gracefully so dev / preview envs don't need Sentry.
+ *   3. 5xx errors also go to lib/error-reporter.ts, which on Cloud Run
+ *      writes them as Cloud Error Reporting events (X3); elsewhere the
+ *      log line below is the record.
  *   4. The 5xx response body never leaks stack traces or internal
  *      detail to the client; the request id IS surfaced so users can
  *      report it and we can correlate.
@@ -63,9 +63,9 @@ export function errorHandler(
   }
 
   const status = error.statusCode ?? 500
-  // Anything 4xx is an expected client problem. Only 5xx ships to
-  // Sentry — buyers don't need an alert every time someone fat-fingers
-  // a contract id and we 404.
+  // Anything 4xx is an expected client problem. Only 5xx is reported —
+  // nobody needs an alert every time someone fat-fingers a contract id
+  // and we 404.
   if (status >= 500) {
     req.log.error(ctx, error.message ?? 'unhandled error')
     reportError(error, {

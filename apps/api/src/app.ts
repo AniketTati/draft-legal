@@ -36,6 +36,7 @@ import { dashboardRoutes } from './routes/dashboard.js'
 import { adminUserRoutes } from './routes/admin-users.js'
 import { adminAuditRoutes } from './routes/admin-audit.js'
 import { metricsRoutes } from './routes/metrics.js'
+import { recordRequest } from './lib/metrics.js'
 import { teamRoutes } from './routes/team.js'
 import { organizationRoutes } from './routes/organization.js'
 import { healthRoutes } from './routes/health.js'
@@ -234,6 +235,9 @@ export async function buildApp() {
   // JSON in `message` instead of the structured 422. (Found in the
   // 2026-06-10 full-app review via POST /search with a bad body.)
   app.setErrorHandler(errorHandler)
+
+  // X3 — request counters for GET /api/v1/metrics.
+  app.addHook('onResponse', async (req, reply) => { recordRequest(req, reply) })
 
   // Routes
   await app.register(healthRoutes)

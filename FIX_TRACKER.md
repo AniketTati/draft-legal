@@ -389,7 +389,35 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 - **X1 — Page-jump citations.** Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
 - **X2 — Custom-field backfill.** Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
-- **X3 — Empty stubs.** `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
+- **X3 — Empty stubs. — DONE.**
+  - **Plan:**
+    - Confirmed: `routes/admin-audit.ts` and `routes/metrics.ts` register no routes, and `lib/error-reporter.ts` drops every error. That is despite `middleware/error-handler.ts` promising Sentry forwarding and the docs promising Prometheus/Grafana and Sentry.
+    - The audit data itself exists: hash-chained `AuditEvent`s for every write, and `verifyAuditChain`. Only the AI-settings slice could be read back (`GET /admin/ai/audit`).
+    - Decision: implement the minimum useful version of each, with no new dependency, rather than delete them:
+      - **Audit log API:** `GET /api/v1/admin/audit` returns the org's events newest first. It filters by action, resource type/id, user and dates, and pages by keyset cursor (offsets drift while events land). `GET /api/v1/admin/audit/verify` re-walks the hash chain. Both require `configure:organization` (ADMIN), like the AI audit: the log holds IPs and every resource id.
+      - **Viewer:** an "Audit Log" tab on the org admin page: filters, load more, metadata per row, and "Verify integrity".
+      - **Metrics:** `GET /api/v1/metrics` serves Prometheus text:
+        - HTTP requests and durations by route pattern; unmatched URLs share one label, so the series count stays bounded;
+        - process memory and uptime;
+        - BullMQ job counts per queue and state, with a 2 s cap so a scrape can't hang on Redis.
+        - It is 404 unless `METRICS_TOKEN` is set, and then needs it as a bearer token (constant-time compare). There is no client library, just a counter map in `lib/metrics.ts` and an `onResponse` hook in `app.ts`.
+      - **Error reporting:** 5xx errors are written to stderr as Cloud Error Reporting `ReportedErrorEvent`s on Cloud Run (`K_SERVICE`) or with `ERROR_REPORTING=gcp`, with signing and portal tokens masked in the URL. Error Reporting groups and alerts on them with no SDK or key; elsewhere the structured log line remains the record. Sentry, which isn't installed, is no longer promised in the handler.
+      - **Docs:** `02-TECH-STACK.md` and `19-DEPLOYMENT-STRATEGY.md` now say what is wired and what is still a plan (Grafana, Sentry, PostHog). `.env.example` documents `METRICS_TOKEN` and `ERROR_REPORTING`.
+  - **Verification:**
+    - `routes/admin-audit.integration.test.ts` has 6 cases:
+      - newest first with the actor, and no other org's rows;
+      - action filter plus cursor paging without overlap;
+      - LEGAL_OPS gets 403;
+      - the chain verifies, then a tampered row is found (`hash_mismatch`);
+      - metrics are 404 without a token and 401 with none or a wrong one;
+      - with the token, text/plain with a route-pattern counter, `unmatched` for junk URLs (never the URL itself), process memory and queue gauges.
+    - `lib/error-reporter.test.ts` has 3 cases: silent off Cloud Run; one Error Reporting event with the token masked; never throws.
+    - Against the stubs, 6 of the 9 fail. The other 3 pass against the stubs by design: 404 without a token, silent off Cloud Run, never throws.
+    - Suite:
+      - db:generate 0, typecheck 0, lint 0 errors;
+      - api unit 268/268, web 14/14, api integration 234/234.
+  - **Left as is:** no scrape config, dashboards or alert rules. Counters are per process and reset on deploy, which Prometheus' `rate()` handles. The viewer has no export.
+  - Original note: `apps/api/src/routes/admin-audit.ts`, `routes/metrics.ts` and `lib/error-reporter.ts` are explicit stubs, so there is no audit viewer, no metrics endpoint and no error reporting. Implement the minimum useful version of each, or remove them and the docs that promise them.
 
 - **X4 — Lost-update race on `organization.settings`. — DONE.**
   - **Plan:**
@@ -1031,3 +1059,4 @@ X23 — VERIFY-PENDING — the org's PII policy now covers background jobs, embe
 X25 (follow-up) — DONE — matters list hides foreign names; matter_list counts org/delete-filtered like REST; amendments inherit only a same-org matter; empty ids are validation errors; migration owner fallback needs a same-org creator — (sha: X25-fu)
 X22 (follow-up) — DONE — a named trace resolves only within the caller's own session list (no fetch by id, no timing tell); userId must be a string — (sha: X22-fu)
 X21 (follow-up) — DONE — Sign link bound to one verified signer, only on their turn and before expiry; convert needs create:contract; `_` no longer a wildcard in signer email matching; web title/bars; X28, X29 filed — (sha: X21-fu)
+X3 — DONE — audit log API (list/filter/cursor + chain verify, admin-only) with an admin viewer; token-gated Prometheus /metrics with bounded labels; 5xx → Cloud Error Reporting on Cloud Run; docs say what's wired — (sha: X3)
