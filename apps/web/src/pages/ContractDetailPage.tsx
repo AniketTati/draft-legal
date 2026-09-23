@@ -968,6 +968,9 @@ export function ContractDetailPage() {
   // X49 — only a PDF: now that the version list carries the key, a DOCX or
   // TXT latest version would otherwise open the viewer on a file it can't read.
   const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType === 'application/pdf')
+  // …but a Word or text upload still has an original: say that, not "created
+  // from text or a template".
+  const originalNotPdf = !!versions[0]?.s3Key && !hasOriginal
 
   // X1 — a citation that knows its page opens the original PDF at it (the
   // passage is outlined there); without a source file, ?section= still
@@ -1213,9 +1216,11 @@ export function ContractDetailPage() {
                 title={
                   isEditing
                     ? 'Exit Edit mode to switch to Original PDF'
-                    : !hasOriginal
-                      ? 'No original file — this contract was created from text or a template.'
-                      : 'View the original PDF — pixel-exact, read-only.'
+                    : originalNotPdf
+                      ? 'The original file isn\u2019t a PDF, so it can\u2019t be shown here. Download it from Actions.'
+                      : !hasOriginal
+                        ? 'No original file — this contract was created from text or a template.'
+                        : 'View the original PDF — pixel-exact, read-only.'
                 }
                 data-testid="doc-view-original"
                 className={cn(
@@ -2680,8 +2685,12 @@ export function ContractDetailPage() {
               return (
                 <div className="flex flex-col items-center justify-center h-64 bg-card rounded-card border border-paper-200 shadow-e1 m-4" data-testid="no-original-pdf">
                   <FileText className="size-8 text-ink-400 mb-3" />
-                  <p className="text-body font-medium text-ink-950">No original file</p>
-                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">This contract was created from text or a template — there's no source PDF to display.</p>
+                  <p className="text-body font-medium text-ink-950">{originalNotPdf ? 'The original isn\u2019t a PDF' : 'No original file'}</p>
+                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">
+                    {originalNotPdf
+                      ? 'Only PDFs open in this view. Download the original from Actions, or read it in the Styled view.'
+                      : 'This contract was created from text or a template — there\'s no source PDF to display.'}
+                  </p>
                   <Button variant="outline" size="sm" className="mt-3" onClick={() => setDocView('styled')}>
                     Switch to Styled view
                   </Button>

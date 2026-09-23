@@ -2021,6 +2021,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - *Medium, fixed:* with the key now in the version list, a DOCX or TXT latest version would have opened the PDF viewer on a file it can't read, bringing back the "Invalid PDF structure" error U.1.2 had fixed. The Original view is now for PDFs only. The local data has no contract whose latest file isn't a PDF; the PDF case still renders live.
     - *Low, left:* the viewer calls `renderTextLayer`, which pdf.js 5 doesn't have. That's one unhandled rejection per page render, with no text selection or search (as above). pdf.js 5 has no `isEvalSupported` setting to harden.
     - Checked: `/versions` is org-scoped and behind the own-scope guard, `GET /:id` already returned `s3Key`, and the repo sets no Content-Security-Policy.
+  - **Follow-up (C10's live check):** a DOCX upload opened in the Original view (the view is a per-browser preference) on "No original file — this contract was created from text or a template", which is wrong: it was uploaded, as a Word file. That copy predates X49, but X49's PDF-only rule is what now sends every non-PDF upload to it. Such contracts now say "The original isn't a PDF — only PDFs open in this view; download the original from Actions, or read it in the Styled view", and the Original toggle's tooltip says the same. Web typecheck clean; there's no component-test setup for the page.
 
 - **X50 — A second tab of the same user signs out on its next refresh (Medium). — DONE.** Left from X48, fixed after the summary at your request.
   - Tabs share the tokens in localStorage, but each keeps its own copy in memory, and the server keeps only the newest refresh token.
@@ -2162,6 +2163,7 @@ X50 — DONE — a tab takes the same user's newer tokens another tab stored (be
 C8, X15 (live check + follow-up) — DONE — the redline and portfolio prompts' JSON examples broke `str.format()`, so neither agent ever reached a model; braces escaped, prompt tripwire added; C8 verified live (per-change advice on a two-version SOW), VERIFY-PENDING → DONE — (sha: pending)
 X51 — DONE — the contract rail's History section links to Negotiate when there are two versions, so a contract without extracted clauses can reach its redline analysis — (sha: pending)
 X16 (live check + follow-up) — DONE — detection finds a late second agreement live, but the split used the model's page guesses and cut a 13-page binder at page 7; pages now come from each agreement's character offset; verified live (MSA 1–12, SOW 13), VERIFY-PENDING → DONE — (sha: pending)
+X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — (sha: pending)
 
 ---
 
