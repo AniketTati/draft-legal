@@ -2002,4 +2002,154 @@ X43 — DONE — deactivating a user revokes their API keys; key creation and re
 X44 — DONE — the 15 routes that checked only sign-in now refuse API keys: the org's shared data (member list, settings, roles, skills, dashboard, workload, models) without the admin scope, a person's own things (profile, notifications, threads) always; agent chat withholds the member search from them; adversarial review — e733768
 X45 — DONE — a key's writes that need a user act as the key's maker while they can still manage API keys (contract creates on every path, matters, request conversion, org AI keys, skill telemetry); a key's split keeps the binder's owner; a key's obligation completions name no one; otherwise 422 NO_ACTING_USER before anything is stored; adversarial review — e5eb4e6
 X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — 854a620
-X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — (sha: pending)
+X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — c029ba8
+
+
+---
+
+## Closing summary (2026-09-23)
+
+Every task in the main list and in Stretch has a terminal status. **Nothing is BLOCKED**, and none turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
+
+- **Main list (21):** 12 DONE, 9 VERIFY-PENDING.
+- **Stretch (46):** 39 DONE, 7 VERIFY-PENDING.
+
+The work is on branch `fix/audit-2026-09-22`: 85 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
+- **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them. Merge that branch first, or rebase this run's commits onto `main`.
+- Nothing is pushed, no PR is open, nothing is merged.
+
+**Final verification on the branch** (run on `c029ba8`, the tree this summary describes):
+- `db:generate` succeeds, and the test database is up to date with all 40 migrations.
+- Typecheck: 0 errors.
+- Lint: 0 errors (warnings unchanged from the baseline: web 22, api 11).
+- api unit: 326/326 (45 files). web unit: 18/18.
+- api integration: 319/319 (49 files, Docker stack up), none skipped.
+- The tracker cites 85 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
+- No audit event was lost (X34). Prisma logged 120 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
+- **Adversarial subagent reviews** ran on S1, S2, S3, C5, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40, X44, X45 and X46. Their findings were fixed or filed.
+- **The final sweep also re-reviewed C1, X15, X24, X26, X28, X29 and X39.** These touch auth, tenancy or SSRF and had no review on record; see below.
+
+### Final sweep reviews
+
+Three fresh subagents re-read those commits against the branch:
+- **C1 and X24:**
+  - C1's scope model holds. The review filed:
+    - X43: admin keys outlive their creator, and keys aren't audited;
+    - X44: sign-in-only routes ignore key scopes;
+    - X45: keys can't create contracts.
+  - X24's REST and agent checks hold. Three other ways set an approval status by hand (CSV import, the agent's undo, a late decision); fixed in `67d9557`. It also filed X42 (an approval isn't tied to what was approved), fixed in `10771af`.
+- **X26, X15 and X39:**
+  - X15 is clean.
+  - X26: `review.py` copied model-chosen keys into `_` metadata, and `POST /contracts` accepted `_` keys. Fixed in `3ed62a3`.
+  - X39: SSRF errors named internal addresses, and IPv6 literals kept their brackets. Fixed in `54f2987`.
+- **X28 and X29:**
+  - X28's turn gate holds, but signing and declining ignored expiry, and racing requests could complete a request twice or overwrite a void. Fixed in `8d5419d`.
+  - X29's per-message checks hold, but a silent connection kept receiving edits after its token expired. Fixed in `49bed5b`.
+- **What the filed items' own reviews found:**
+  - X44's: the member directory was still reachable through agent chat.
+  - X45's: a demoted key maker would own the key's contracts.
+  - X46's: an admin key could invite a new admin, or restore its demoted maker's role, to outlive its own revocation.
+  - All three are fixed. X45's review also led to X46's widening: keys whose maker had gone still worked.
+- **Full-run test timing:** two test-timing problems, from tests written earlier in this run, showed up in the sweep's full runs and are fixed in `854a620`.
+
+### What landed (DONE)
+
+- **Main list (12):** S1, S3, C2, C4, C6, C7, C9, C11, C13, H1, H2, H3.
+- **Stretch (39), by theme:**
+  - **Access, scope and tenancy:** X5, X7, X9, X10, X15, X17–X22, X24–X26, X28, X29, X31, X42.
+  - **API keys:**
+    - X43: revoked on deactivation, and audited;
+    - X44: scopes honoured on sign-in-only routes;
+    - X45: a key's writes act as its maker;
+    - X46: keys can't make keys or grant access, and a key works only while its maker could still make it.
+  - **Secrets and internal endpoints:** X6, X35, X38, X41.
+    - X35's review found Bull Board's check and the inbound-email check skipped by `/%61dmin/queues/...` and `/api/v1/%69nbound/...` **in production too**. Now fixed.
+  - **Untrusted content and uploads:** X11, X12, X13, X14, X39.
+  - **PII to models:** X36, X37, X40. X23 and X27 are VERIFY-PENDING (below).
+  - **Reliability and data:** X3, X4, X8, X32 (version diffs off the request thread), X34 (audit events no longer lost in bursts).
+
+### VERIFY-PENDING: what needs a live stack
+
+The code, tests and suite are done for all of these. What remains is a run this machine can't do: no agents-service Python environment, no LLM key, no signed-in browser, or no deployed revision.
+
+- **S2:** a chat turn as a SALES_REP only sees their own contracts through the agent's tools.
+- **C1:** Admin → Integrations → API keys: the new scope picker creates a key that works, and the table shows who made each key (X43).
+- **C3:** `/agent` answers with the org's configured default model, shown in the footer.
+- **C5:** Queues → Extraction Queue in the sidebar, the contract link, and corrections that stick.
+- **C8:** Negotiate → Analyze Redlines returns per-change advice.
+- **C10:** a DOCX binder with no split goes on to classification.
+- **C12:** "draft an NDA with Initech, New York law, 3 years" gives a confirm card and creates no contract before Apply.
+- **V1:** the "Playbook review" rail section lists findings in document order.
+- **V2:** `node scripts/agent-loops/v2-coverage.mjs` against the live stack.
+- **X1:** a citation pill opens the original PDF at the cited page, with the passage outlined.
+- **X2:** "Fill in existing contracts" backfills a new custom field (the new `/extract-fields` agents route).
+- **X16:** binder detection finds the second agreement in a long binder.
+- **X23, X27, X33:** upload a contract with an SSN and a card number, then run a redline analysis and an approval submission. The models should keep the `[PII:…]` tokens, and the stored analysis and summary should read with the real values.
+- **X30:** on a deployed revision, the audit log's IP equals the client's (adjust `TRUST_PROXY_HOPS` if a load balancer adds a hop).
+
+### What to review first
+
+1. **The PII round-trip and redaction design** (X23 → X27 → X36 → X37 → X40, all in `lib/pii-policy.ts` and `lib/pii-redactor.ts`). It is the largest and subtlest change, and it touches every path where contract text reaches a model.
+2. **API key identity** (X43–X46, `middleware/auth.ts` and `lib/acting-user.ts`).
+   - Every key request now checks the user behind the key: an active member who can still manage API keys. This switches off existing keys of people who have left or been demoted.
+   - Key management and giving anyone access need a signed-in admin.
+   - What a key creates is owned by its maker.
+3. **Boot and secret checks** (X38) and **internal-endpoint checks** (X31, X35). Production now refuses to start on placeholder, public or short secrets, so check the deploy steps below before rolling out.
+4. **Permission and scope changes** (X7, X9, X10, X21, X44, including the decision that a converted request is owned by its requester) and C11/X17's retrieval filters.
+5. **X42's approval reset:** changing an approved contract's type, value, currency or document sends it back to DRAFT.
+6. **The X11 HTML sanitizer and the Gotenberg flags**, and X12's `mammoth` lockfile override.
+7. **X6's Slack `teamId` uniqueness** and its verification backfill.
+8. **The six migrations** (below): all are repairs or additive columns.
+
+### Deploy checklist
+
+1. **Before deploying:**
+   - Confirm production's `INTERNAL_SERVICE_SECRET`, `JWT_SECRET` and `PORTAL_JWT_SECRET` are random, 32+ characters, and none of the values public in the repo. Otherwise the new API and agents revisions refuse to start (X38); on Cloud Run the old revision keeps serving.
+   - Change the internal secret on the API, worker and agents together.
+   - **API keys** (X44–X46):
+     - Keys whose maker has left, was deleted, can no longer manage API keys, or is another key, stop working on deploy. The migration revokes those of makers who left.
+     - Check Admin → Integrations → API keys (the "Created by" column is empty for the affected ones) and re-issue any an integration still uses.
+     - Integrations that read the member list, org settings, roles, skills, dashboard, team workload or model list need an `admin`-scope key. No key can use a person's own routes (profile, notifications, threads).
+     - Creating keys, inviting users, changing roles and reactivating users need a signed-in admin.
+2. **Deploy order:** the agents service before the API and worker. They need `/extract-fields` (X2), the PII token prompt rules (X23/X27) and `review.py`'s changes (C4, X2, X23, X26).
+3. **Migrations** (run by `db:migrate:prod`):
+   - `20260923000000_repair_stranded_escalations` (C2);
+   - `…010000_unlink_cross_org_invoices` (X19);
+   - `…020000_unlink_cross_org_parents` (X20);
+   - `…030000_repair_cross_org_matter_links` (X25);
+   - `…040000_custom_field_backfill` (X2);
+   - `…050000_revoke_orphaned_api_keys` (X46).
+   - X43's new audit actions (`API_KEY_CREATED`, `API_KEY_REVOKED`) need no migration: the column is a string.
+4. **After deploying:**
+   - `pnpm install` and restart API and workers (X12's lockfile).
+   - Recreate Gotenberg with the new flags (X11). Production Gotenberg is still public on Cloud Run, a hardening `deploy.sh` already defers.
+   - Run `scripts/backfill-es-index.ts` (C7/C11).
+   - Run `scripts/backfill-slack-verification.ts --fix` (X6).
+5. **Operational:**
+   - Rotate every org's Slack signing secret and bot token (S1).
+   - Revoke and re-issue scope-less API keys (C1).
+   - Re-issue pending signer tokens (X18).
+   - Sign in to production as `admin@demo.com` / `password123`; if that works, change the password (X41).
+   - Clear `collab_states` before binding the editor to the shared document (X29).
+   - Tell users that editing an approved contract's type, value, currency or document sends it back for approval (X42).
+6. **Configuration:**
+   - `MARKETING_CONTACT_EMAIL` plus an email provider (H1).
+   - Optional: `PII_TOKEN_SECRET`, the same on API and worker (X23); `METRICS_TOKEN` (X3).
+   - Check `TRUST_PROXY_HOPS` (X30).
+   - Inbound email needs `INBOUND_EMAIL_SECRET` in every environment (X35); without it the webhook answers 503, as production already did.
+   - For local development: `BULL_BOARD_OPEN=true` and `WEBHOOK_ALLOW_PRIVATE_URLS=true` are the explicit opt-ins (X35), and the seed takes `SEED_ADMIN_PASSWORD` (X41).
+
+### Known leftovers, not filed as tasks
+
+- **Model-dependent PII risk:** the PII round trip depends on models copying tokens verbatim. Where one doesn't, the result is refused (502, a stream error, 409 on apply) or logged, never stored raw.
+- **PII detection limits:**
+  - excerpts that hold only part of a value;
+  - card numbers stored as JSON numbers;
+  - IBANs or cards that fail their checksum;
+  - a typo'd value.
+- **What an admin key configured outlives it** (X46): webhooks, Slack settings, share links. An admin key is full access by design; review them after revoking a leaked one.
+- **A demoted maker's keys are refused, not revoked** (X46): re-promoting the maker brings them back, and the key list shows them as live.
+- **No narrower scope than `admin` for reading the member list** (X44): add `users:read` if a customer needs it.
+- **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
+- **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
+- **Deferred hardening:** encryption at rest for Slack secrets (S1), and private Gotenberg on Cloud Run (X11).
