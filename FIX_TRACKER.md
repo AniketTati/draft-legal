@@ -2015,7 +2015,7 @@ Every task in the main list and in Stretch has a terminal status. **Nothing is B
 - **Stretch (46):** 39 DONE, 7 VERIFY-PENDING.
 
 The work is on branch `fix/audit-2026-09-22`: 85 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
-- **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them. Merge that branch first, or rebase this run's commits onto `main`.
+- **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them. The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs. Merge `feat/langfuse-integration` first, or together with this branch.
 - Nothing is pushed, no PR is open, nothing is merged.
 
 **Final verification on the branch** (run on `c029ba8`, the tree this summary describes):
