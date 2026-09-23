@@ -1629,6 +1629,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - the job throws for retry.
     - Against the pre-fix handler it fails: no `redirect` option, and the error was only "Non-2xx response: 307".
     - Suite: typecheck 0, lint 0 errors, api unit 315/315, integration 280/280 (48 files).
+  - **Follow-up (final-sweep review, DONE):** the redirect fix is correct. No other fetch in the API goes to a URL a tenant controls. Two small leaks next to it:
+    - **The resolved internal address was in the error.** It is stored on the delivery and shown to the webhook's owner, so pointing a webhook at a single-word host mapped the internal network. The message no longer names the address.
+    - **IPv6 literals kept their brackets in `URL.hostname`,** so the private-literal check never saw `[::1]` or `[fd00::…]`; they were stopped only because resolving the bracketed name failed. The host is now checked without brackets.
+    - **Verification (`lib/ssrf-guard.test.ts`, 2 new cases):**
+      - `::1`, `fd00::1`, `fe80::1` and `::ffff:127.0.0.1` literals are refused, and a public IPv6 literal passes;
+      - with DNS mocked to an internal address, the error doesn't contain it.
+      - Both fail against the pre-fix guard.
+    - **Left as is:** DNS rebinding between the check and the fetch. Closing it needs connect-time address checks (an `https.request` with a guarded `lookup`), since `fetch` has no hook; noted in `ssrf-guard.ts` since Wave 1.5.
 - **X40 — Clause-level chat excerpts find values without the document's context (Low-Medium). — DONE.** Found in the X36 review.
   - Five chat tools look for values only within the clause or paragraph they excerpt, not the whole document:
     - `contract_cite` (the paragraph, though the handler has the plain text);
@@ -1803,4 +1811,5 @@ X41 — DONE — the seed no longer gives production users password123: SEED_ADM
 X28 (follow-up) — DONE — signing and declining honour expiry (not only viewing); sign, completion, decline and void change state only from PENDING, so racing requests can't complete twice or overwrite a void — 8d5419d
 X29 (follow-up) — DONE — open collab connections are re-checked every 15 s even when silent, closing at token expiry or revoked access (latent: production runs with collab disabled) — 49bed5b
 X24 (follow-up) — DONE — the CSV import refuses approval statuses; the agent's status undo applies only while the contract still has the status it set; late approval decisions no longer overwrite a contract that moved on; X42 filed — 67d9557
-X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — (sha: pending)
+X26 (follow-up) — DONE — review.py writes only the org's own custom fields; _splitInto can't be changed through PATCH by anyone (an unchanged write-back passes); creating a contract refuses _ keys — 3ed62a3
+X39 (follow-up) — DONE — SSRF errors no longer name the internal address; IPv6 literals are checked without their brackets — (sha: pending)

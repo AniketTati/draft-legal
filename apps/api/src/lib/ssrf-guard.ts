@@ -67,7 +67,7 @@ export function assertUrlShape(raw: string): URL {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error('Only http(s) webhook URLs are allowed')
   }
-  const host = u.hostname.toLowerCase()
+  const host = bareHost(u).toLowerCase()
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) {
     throw new Error('Webhook URL host is not allowed')
   }
@@ -96,13 +96,25 @@ export function isUrlShapeAllowed(raw: string): boolean {
 export async function assertPublicUrl(raw: string): Promise<void> {
   if (!ssrfGuardEnabled()) return
   const u = assertUrlShape(raw)
-  const host = u.hostname
+  const host = bareHost(u)
   if (net.isIP(host)) return // literal IP already validated by assertUrlShape
   const records = await lookup(host, { all: true })
   if (records.length === 0) throw new Error('Webhook URL host did not resolve')
   for (const { address } of records) {
     if (isPrivateIp(address)) {
-      throw new Error(`Webhook URL resolves to a private address (${address})`)
+      // X39 follow-up — not which address: the message is stored on the
+      // delivery and shown to the webhook's owner, who could map the
+      // internal network with it.
+      throw new Error('Webhook URL resolves to a private or internal address')
     }
   }
+}
+
+/**
+ * X39 follow-up — the URL's host without the brackets an IPv6 literal keeps
+ * in `URL.hostname` ("[::1]"): with them net.isIP says no, so a private IPv6
+ * literal went unchecked (and was stopped only because it failed to resolve).
+ */
+function bareHost(u: URL): string {
+  return u.hostname.replace(/^\[(.*)\]$/, '$1')
 }
