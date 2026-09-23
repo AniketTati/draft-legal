@@ -137,9 +137,9 @@ export function DocumentCanvas({
       ],
       content: html,
       editable,
-      // X47 — only an edit someone can make is reported (lib/canvas-update).
-      onUpdate: ({ editor: ed }) => {
-        const edited = editedHtml(ed)
+      // X47 — only an update that changed the document is an edit (lib/canvas-update).
+      onUpdate: (update) => {
+        const edited = editedHtml(update)
         if (edited !== null) onChange?.(edited)
       },
     },

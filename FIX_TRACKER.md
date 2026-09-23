@@ -1945,8 +1945,8 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - since X42, would send an APPROVED contract back to DRAFT because someone looked at it.
   - The autosave wiring dates from the first commit; X42 made it serious.
   - **What changed:**
-    - `apps/web/src/components/contracts/DocumentCanvas.tsx` syncs the editable flag with `setEditable(editable, false)`, the root cause. It reports a change only while the canvas can be edited (`lib/canvas-update.ts`), so no view-mode transaction can start a save.
-    - `POST /contracts/:id/html-version`: a save whose HTML is the latest version's returns that version with no new version, render or status change. Line breaks between tags are ignored, since the extractor writes them and the editor doesn't. Any other difference is an edit, a single space included, so no real edit is lost.
+    - `apps/web/src/components/contracts/DocumentCanvas.tsx` syncs the editable flag with `setEditable(editable, false)`, the root cause. It reports an update only when its transaction changed the document (`lib/canvas-update.ts`), which `setEditable`'s synthetic update never does.
+    - `POST /contracts/:id/html-version`: a save whose HTML is the current version's returns that version with no new version, render or status change. Line breaks between tags are ignored, since the extractor writes them and the editor doesn't. Any other difference is an edit, a single space included.
   - **Verification:**
     - `routes/html-version-noop.integration.test.ts`:
       - an approved uploaded contract, saved back as the editor serializes it, gets 200 and the same version, stays APPROVED, and renders nothing;
@@ -1957,6 +1957,12 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Local data the checks touched:** the phantom save created the Unanalyzed Document's v5 and the Globex NDA's v2 and v3 while I opened them.
     - All three were backed up (session scratchpad, `x47-phantom-versions-backup.json`) and removed. Both contracts point at their earlier current version again (Globex, its uploaded PDF), and their statuses never changed (DRAFT, EXECUTED).
     - The Unanalyzed Document's older "Edited in-place" versions (June, August) are probably earlier phantom saves, so I left them.
+  - **Adversarial review (fresh subagent, after the summary):** these findings were fixed.
+    - *Medium:* the first guard, which reported only while the canvas was editable, also dropped real edits made from view mode by commands, such as "apply defined term everywhere" and the AI rewrite on a deviation badge, which used to be autosaved. The guard is now `transaction.docChanged`.
+    - *Low:* the no-op check compared against the latest version. After a redline undo the contract stands on an older one, and saving the latest again was dropped. It now compares against the current version.
+    - *Low:* the edit audit recorded a `statusFrom` on every draft edit. Only a real reset is recorded now.
+    - *Info:* the API check absorbs only line breaks between tags. TipTap re-serializes extractor HTML in other ways (list items, comments, `<pre>`, `&nbsp;`), so a tab still running the old bundle keeps saving phantom versions until it's reloaded. The client fix is what stops it.
+    - New cases fail against the previous route: a draft edit records no status change, and after an undo, saving the latest again makes a version while saving it once more doesn't.
   - **Follow-up (DONE):** in-place document edits wrote no audit event, though since X42 one can undo an approval. A real edit now records `CONTRACT_UPDATED` `{ action: 'document_edited', versionNumber }`, adding `statusFrom`/`statusTo` when the approval was reset. A no-op save records nothing. `html-version-noop.integration.test.ts` checks both, and the edit case fails without the change.
 
 - **X48 — Concurrent token refreshes log the user out (Medium). — DONE.** Found during the same live checks.
@@ -2072,6 +2078,7 @@ X45 — DONE — a key's writes that need a user act as the key's maker while th
 X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — 854a620
 X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — c029ba8
 
+X47 (review) — DONE — adversarial review: a view-mode command's edit is saved again (guard on docChanged), no-op judged against the current version, no phantom status in the edit audit — (sha: pending)
 
 ---
 

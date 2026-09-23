@@ -72,4 +72,29 @@ describe('saving a contract\'s HTML', () => {
     expect(audit.userId).toBe(user)
     expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2, statusFrom: 'APPROVED', statusTo: 'DRAFT' })
   })
+
+  it('an edit to a draft records no status change it did not make', async () => {
+    const id = await makeContract(org, user, { title: 'Draft NDA', status: 'DRAFT' })
+    const v = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, htmlContent: '<p>Old</p>', plainText: 'Old', createdById: user } })
+    await prisma.contract.update({ where: { id }, data: { currentVersionId: v.id } })
+    expect((await save(id, '<p>New</p>')).statusCode).toBe(201)
+    const audit = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })
+    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2 })
+  })
+
+  it('is judged against the version the contract stands on: after an undo, saving the latest again is a change', async () => {
+    const id = await makeContract(org, user, { title: 'Redlined NDA', status: 'DRAFT' })
+    const v1 = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, htmlContent: '<p>Before</p>', plainText: 'Before', createdById: user } })
+    const v2 = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 2, htmlContent: '<p>After</p>', plainText: 'After', createdById: user } })
+    await prisma.contract.update({ where: { id }, data: { currentVersionId: v1.id } })   // an undo put it back on v1
+
+    const again = await save(id, '<p>After</p>')
+    expect(again.statusCode).toBe(201)
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).currentVersionId).toBe(again.json().id)
+
+    const same = await save(id, '<p>After</p>')
+    expect(same.statusCode).toBe(200)
+    expect(same.json().id).toBe(again.json().id)
+    expect(v2.id).not.toBe(again.json().id)
+  })
 })

@@ -863,8 +863,14 @@ export async function contractRoutes(app: FastifyInstance) {
     // the web editor report a change, and the page saves every change: each
     // view added a version, moved the current version off the uploaded PDF,
     // rendered a PDF and, since X42, sent an approved contract back to DRAFT.
-    if (lastVersion && sameDocumentHtml(lastVersion.htmlContent, htmlContent)) {
-      return reply.status(200).send(lastVersion)
+    // "Nothing" is judged against the version the contract stands on — the
+    // latest, unless an undo moved it back, when saving the latest again is
+    // a real change.
+    const standing = contract.currentVersionId && contract.currentVersionId !== lastVersion?.id
+      ? await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: id } })
+      : lastVersion
+    if (standing && sameDocumentHtml(standing.htmlContent, htmlContent)) {
+      return reply.status(200).send(standing)
     }
 
     const plainText = htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
@@ -917,7 +923,7 @@ export async function contractRoutes(app: FastifyInstance) {
       action: AuditAction.CONTRACT_UPDATED,
       resourceType: 'contract',
       resourceId: id,
-      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
+      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status && status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
       ipAddress: req.ip,
     })
 

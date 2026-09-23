@@ -1,17 +1,19 @@
 /**
- * X47 — opening a contract saved a new version: the read-only canvas
- * reported TipTap's mount-time `update` as an edit, and the page autosaves
- * every edit it is told about.
+ * X47 — opening a contract saved a new version: TipTap's mount-time
+ * `update` (from setEditable, which changes nothing) was reported as an
+ * edit, and the page autosaves every edit it is told about.
  */
 import { describe, it, expect } from 'vitest'
 import { editedHtml } from './canvas-update'
 
+const editor = { getHTML: () => '<h1>Globex — Mutual NDA</h1><p>Body</p>' }
+
 describe('editedHtml', () => {
-  it('a read-only canvas reports no edit, whatever TipTap emits', () => {
-    expect(editedHtml({ isEditable: false, getHTML: () => '<h1>Globex — Mutual NDA</h1><p>Body</p>' })).toBeNull()
+  it('an update that changed nothing is no edit', () => {
+    expect(editedHtml({ editor, transaction: { docChanged: false } })).toBeNull()
   })
 
-  it('an editable canvas reports its HTML', () => {
-    expect(editedHtml({ isEditable: true, getHTML: () => '<p>Changed</p>' })).toBe('<p>Changed</p>')
+  it('a change to the document is, typed or made by a command while the canvas is read-only', () => {
+    expect(editedHtml({ editor, transaction: { docChanged: true } })).toBe('<h1>Globex — Mutual NDA</h1><p>Body</p>')
   })
 })
