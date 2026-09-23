@@ -2067,6 +2067,28 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Live on Ironbridge SOW #03: before, the rail offered only its section toggles and analysis actions. Now "Negotiate" opens the tab, where C8's check ran.
     - apps/web has no component-test setup (no testing library or DOM environment), so there's no automated test. Web typecheck and lint clean.
 
+- **X52 — A card number, IBAN or SSN wrapped across a line in a PDF escapes redaction (Medium). — DONE.** Found during X23's live check.
+  - Text extracted from a PDF breaks lines wherever the layout wrapped. A card number printed as "4111 1111 1111 1111" came out as "4111 1111\n1111 1111". The detector joins digit groups only across spaces or dashes: X27 deliberately kept line breaks out, so that a column of numbers isn't read as a card. So the number went to the models whole. The same happened to an IBAN wrapped between groups and an SSN wrapped after a hyphen.
+  - **What changed** (`lib/pii-redactor.ts`):
+    - The single-line patterns are unchanged and run first.
+    - New cross-line patterns for cards and IBANs accept only value-shaped groups: for a card, a first group of 4 digits, then groups of 4–6, the last 3–6; for an IBAN, groups of four. Exactly one line break is allowed. A card or banking word must appear on the match's own lines or the line before.
+    - A match that fails its check lets the scan resume after its line break, since the value may start on the next line.
+    - SSN and ITIN accept one line break after a hyphen.
+    - Values restore byte for byte, line break included.
+  - **Verification:** `lib/pii-redactor.test.ts` +7 cases:
+    - wrapped cards (several break positions, CRLF, Amex);
+    - a wrapped IBAN and a wrapped SSN;
+    - the review's regressions below.
+    - Live: the X23 fixture's wrapped card reached the models as a token.
+  - **Adversarial review (fresh subagent)** of the first cut, which let the break sit between any digits:
+    - *High, fixed:* a number ending the line before a card ("Page 3 of 12", "Invoice 2024", "Expiry 12/27") was joined to it, the pair failed Luhn, and the card leaked. That happened in 81% of "Ref <n>\n<card>" samples, where the old detector caught every one. IBANs the same.
+    - *Medium, fixed:* whenever a card word such as "credit" appeared anywhere, dates, phone numbers and amounts on consecutive lines were read as cards (about 18%, 18% and 9%).
+    - **After the redesign:**
+      - 0 of 2,000 glued samples leak.
+      - None of 800 date pairs, 500 amount pairs and 1,000 phone pairs is taken for a card.
+      - Adversarial inputs of 100,000–150,000 characters run in under 30 ms.
+      - The review's three repros are pinned as tests, and they fail on the first cut.
+
 ---
 
 ## Run log
@@ -2169,6 +2191,7 @@ X51 — DONE — the contract rail's History section links to Negotiate when the
 X16 (live check + follow-up) — DONE — detection finds a late second agreement live, but the split used the model's page guesses and cut a 13-page binder at page 7; pages now come from each agreement's character offset; verified live (MSA 1–12, SOW 13), VERIFY-PENDING → DONE — (sha: pending)
 X49 (follow-up) — DONE — a Word or text upload's Original view says its original isn't a PDF, not that the contract was created from text — (sha: pending)
 V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — (sha: pending)
+X52 — DONE — a card number, IBAN or SSN wrapped across a PDF line is redacted; single-line detection unchanged, cross-line only for value-shaped groups near a card or bank word; adversarial review — (sha: pending)
 
 ---
 

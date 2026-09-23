@@ -78,14 +78,15 @@ function validHead(kind: PiiKind, matched: string): string | null {
     const head = matched.slice(0, ends[k])
     const chars = head.replace(/[^A-Z0-9]/g, '')
     if (chars.length < (kind === 'CC' ? 13 : 12)) break
-    if (kind === 'CC' ? luhnValid(chars) : ibanValid(chars)) return head
+    if (kind === 'CC' && chars.length > 19) continue
+    if (oneLineBreakAtMost(head) && (kind === 'CC' ? luhnValid(chars) : ibanValid(chars))) return head
   }
   return null
 }
 
 /** X37 — the IBAN check: the first four characters moved to the end, letters as 10–35, mod 97 is 1. */
 function ibanValid(value: string): boolean {
-  const s = value.replace(/ /g, '')
+  const s = value.replace(/\s/g, '')
   let rem = 0
   for (const c of s.slice(4) + s.slice(0, 4)) {
     const v = c >= 'A' && c <= 'Z' ? String(c.charCodeAt(0) - 55) : c
@@ -113,6 +114,21 @@ function luhnValid(digits: string): boolean {
   return sum % 10 === 0
 }
 
+/**
+ * X52 — a value may be split by one line break: text extracted from a PDF
+ * breaks lines wherever the layout wrapped, at a space between groups or
+ * after a hyphen. More than one break is a column of numbers, not one value
+ * (X27).
+ */
+const LINE_BREAK = String.raw`[^\S\r\n]*\r?\n[^\S\r\n]*`
+function oneLineBreakAtMost(s: string): boolean {
+  return (s.match(/\n/g) ?? []).length <= 1
+}
+/** A card's group separator: any single space, or a dash (X27). */
+const GROUP_SEP = String.raw`(?:[^\S\r\n]|-)`
+const CARD_WORDS = /\b(?:card|credit|debit|visa|mastercard|amex|american express|cvv|cvc|pan)\b/i
+const BANK_WORDS = /\b(?:iban|swift|bic|bank|wire|remit|account\s*(?:no|number|#))\b/i
+
 const PATTERNS: Array<{
   kind: PiiKind
   rx: RegExp
@@ -124,6 +140,13 @@ const PATTERNS: Array<{
    * therefore need a nearby word to justify treating a match as an identifier.
    */
   requiresContext?: RegExp
+  /**
+   * X52 — a pattern whose match crosses a line break: the match also needs
+   * one of these words on its own lines or the line before, and a match that
+   * isn't a value lets the scan resume after its line break (the value may
+   * start on the next line).
+   */
+  near?: RegExp
 }> = [
   // Credit card — 13-19 digits, optionally separated by space/dash.
   // We strip separators before Luhn-checking. Any single space counts, not
@@ -139,7 +162,24 @@ const PATTERNS: Array<{
     kind: 'CC',
     rx: /\b(?:\d(?:[^\S\r\n]|-)?){12,18}\d\b/g,
     validate: (m) => luhnValid(m[0].replace(/\D/g, '')),
-    requiresContext: /\b(?:card|credit|debit|visa|mastercard|amex|american express|cvv|cvc|pan)\b/i,
+    requiresContext: CARD_WORDS,
+  },
+  // X52 — a grouped card number that a line wrap split: card-shaped groups
+  // only (a first group of 4 digits, the rest of 4-6, the last of 3-6) with
+  // one line break between two of them, and a card word close by. Looser,
+  // a number ending one line was joined to the next line's card, and the
+  // pair failed Luhn and hid it; and dates, phone numbers or amounts on
+  // consecutive lines passed as cards. It runs after the pattern above, so
+  // a card on one line is already taken.
+  {
+    kind: 'CC',
+    rx: new RegExp(String.raw`\b\d{4}(?:${GROUP_SEP}\d{4,6}){0,3}${LINE_BREAK}(?:\d{4,6}${GROUP_SEP}){0,3}\d{3,6}\b`, 'g'),
+    validate: (m) => {
+      const digits = m[0].replace(/\D/g, '')
+      return digits.length >= 13 && digits.length <= 19 && oneLineBreakAtMost(m[0]) && luhnValid(digits)
+    },
+    requiresContext: CARD_WORDS,
+    near: CARD_WORDS,
   },
   // IBAN — letters AA + 2 digits + up to 30 alphanumerics.
   //
@@ -155,15 +195,30 @@ const PATTERNS: Array<{
     // Allowing spaces also admits all-caps text ("US10 YEAR NOTE"); every
     // real IBAN carries a mod-97 check, as a card carries Luhn.
     validate: (m) => ibanValid(m[0]),
-    requiresContext: /\b(?:iban|swift|bic|bank|wire|remit|account\s*(?:no|number|#))\b/i,
+    requiresContext: BANK_WORDS,
+  },
+  // X52 — a grouped IBAN that a line wrap split: groups of four with one
+  // line break between two of them, and a banking word close by (as for
+  // cards above).
+  {
+    kind: 'IBAN',
+    rx: new RegExp(String.raw`\b[A-Z]{2}\d{2}(?: [A-Z0-9]{4}){0,6}${LINE_BREAK}(?:[A-Z0-9]{4} ){0,6}[A-Z0-9]{1,4}\b`, 'g'),
+    validate: (m) => oneLineBreakAtMost(m[0]) && ibanValid(m[0]),
+    requiresContext: BANK_WORDS,
+    near: BANK_WORDS,
   },
   // SSN — NNN-NN-NNNN. Excludes obvious invalids (000-, 666-, 9XX-).
   {
     kind: 'SSN',
-    rx: /\b(?!000|666|9\d\d)(\d{3})-(?!00)(\d{2})-(?!0000)(\d{4})\b/g,
+    rx: new RegExp(String.raw`\b(?!000|666|9\d\d)(\d{3})-(?:${LINE_BREAK})?(?!00)(\d{2})-(?:${LINE_BREAK})?(?!0000)(\d{4})\b`, 'g'),
+    validate: (m) => oneLineBreakAtMost(m[0]),
   },
   // ITIN — 9NN-NN-NNNN (always starts with 9, second group 70-99 etc.)
-  { kind: 'ITIN', rx: /\b9\d{2}-\d{2}-\d{4}\b/g },
+  {
+    kind: 'ITIN',
+    rx: new RegExp(String.raw`\b9\d{2}-(?:${LINE_BREAK})?\d{2}-(?:${LINE_BREAK})?\d{4}\b`, 'g'),
+    validate: (m) => oneLineBreakAtMost(m[0]),
+  },
   // Passport — keyword-anchored to avoid false positives on order #s.
   // Matches: "Passport: A12345678" / "passport no. AB1234567" / etc.
   {
@@ -236,6 +291,38 @@ export interface RedactOptions {
   token?: (kind: PiiKind, value: string) => string
 }
 
+/**
+ * X52 — `text.replace(rx, …)` for the patterns whose matches cross a line
+ * break. A match needs `near` on its own lines or the line before, and one
+ * that isn't a value lets the scan resume after its line break rather than
+ * after the whole match, since the value may start on the next line.
+ */
+function replaceAcrossLines(
+  text: string,
+  rx: RegExp,
+  near: RegExp,
+  replace: (whole: string, first: unknown) => string | null,
+): string {
+  const scan = new RegExp(rx.source, rx.flags.includes('g') ? rx.flags : `${rx.flags}g`)
+  let out = ''
+  let last = 0
+  for (let m = scan.exec(text); m; m = scan.exec(text)) {
+    const start = m.index
+    const end = start + m[0].length
+    const lineStart = text.lastIndexOf('\n', start - 1)
+    const from = lineStart <= 0 ? 0 : text.lastIndexOf('\n', lineStart - 1) + 1
+    const lineEnd = text.indexOf('\n', end)
+    const replacement = near.test(text.slice(from, lineEnd === -1 ? text.length : lineEnd)) ? replace(m[0], m[1]) : null
+    if (replacement === null) {
+      scan.lastIndex = start + m[0].indexOf('\n') + 1
+      continue
+    }
+    out += text.slice(last, start) + replacement
+    last = scan.lastIndex = end
+  }
+  return out + text.slice(last)
+}
+
 export function redactPii(
   input: string,
   mode: PiiMode = 'redact',
@@ -250,27 +337,26 @@ export function redactPii(
   const counts: Partial<Record<PiiKind, number>> = {}
   let text = input
 
-  for (const { kind, rx, validate, requiresContext } of PATTERNS) {
+  for (const { kind, rx, validate, requiresContext, near } of PATTERNS) {
     if (!enabled.has(kind)) continue
     // Context is judged against the ORIGINAL input: an earlier pattern may
     // already have replaced the very word that justifies this one.
     if (requiresContext && !requiresContext.test(input)) continue
-    text = text.replace(rx, (...args) => {
-      // The args layout differs depending on capturing groups; the
-      // matched substring is always args[0].
-      const whole = args[0] as string
+    // The replacement for one match, or null when it isn't a value. `first`
+    // is the first capture group, where the pattern has one.
+    const replace = (whole: string, first: unknown): string | null => {
       // What is replaced, and what follows it unchanged.
       let matched = whole
       let rest = ''
       // Run optional validator (e.g. Luhn for CC).
       if (validate) {
         const m = whole.match(new RegExp(rx.source))
-        if (!m) return whole
+        if (!m) return null
         if (!validate(m as RegExpExecArray)) {
           // X36 — a card number followed by another digit group ("…1111
           // 12/27", a table's next column) fails the check as a whole.
           const head = validHead(kind, whole)
-          if (!head) return whole
+          if (!head) return null
           matched = head
           rest = whole.slice(head.length)
         }
@@ -280,14 +366,19 @@ export function redactPii(
         // A DOB or passport match starts with its keyword ("DOB: …"); only the
         // value becomes the token, so the keyword stays in the text and can't
         // travel with the token to where the model puts it.
-        const value = (kind === 'DOB' || kind === 'PASSPORT') && typeof args[1] === 'string' ? args[1] : matched
+        const value = (kind === 'DOB' || kind === 'PASSPORT') && typeof first === 'string' ? first : matched
         return matched.slice(0, matched.length - value.length) + options.token(kind, value) + rest
       }
       if (mode === 'tokenize') {
         return `[PII:${kind}:${pseudonym(matched)}]` + rest
       }
       return `[REDACTED:${kind}]` + rest
-    })
+    }
+    text = near
+      ? replaceAcrossLines(text, rx, near, replace)
+      // The args layout differs depending on capturing groups; the matched
+      // substring is always args[0], the first group args[1].
+      : text.replace(rx, (...args) => replace(args[0] as string, args[1]) ?? (args[0] as string))
   }
 
   const total = Object.values(counts).reduce((a, b) => a + b, 0)

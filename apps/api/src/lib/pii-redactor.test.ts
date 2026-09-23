@@ -39,6 +39,13 @@ describe('redactPii', () => {
       expect(r.counts.ITIN).toBe(1)
       expect(r.counts.SSN ?? 0).toBe(0)
     })
+    it('X52 — finds an SSN a line wraps after a hyphen', () => {
+      expect(redactPii('Social Security Number is 219-09-\n9999. Company will', 'redact').text).toBe('Social Security Number is [REDACTED:SSN]. Company will')
+      expect(redactPii('SSN 219-\n09-9999', 'redact').text).toBe('SSN [REDACTED:SSN]')
+      expect(redactPii('ITIN 912-\n78-1234', 'redact').text).toBe('ITIN [REDACTED:ITIN]')
+      // Two breaks: parts of a list, not one number.
+      expect(redactPii('Items 219-\n09-\n9999', 'redact').counts.SSN ?? 0).toBe(0)
+    })
     it('handles multiple SSNs', () => {
       const r = redactPii('Two: 111-22-3333 and 444-55-6666', 'redact')
       expect(r.text).toBe('Two: [REDACTED:SSN] and [REDACTED:SSN]')
@@ -78,6 +85,36 @@ describe('redactPii', () => {
     it('X27 — does not join digit groups across lines', () => {
       const r = redactPii('Card on file.\n4111\n1111\n1111\n1111', 'redact')
       expect(r.counts.CC ?? 0).toBe(0)
+    })
+    it('X52 — finds a card number split by one line break, as text extracted from a PDF wraps it', () => {
+      for (const br of ['\n', ' \n', '\r\n', '\n  ']) {
+        const r = redactPii(`charged to the Company Visa card number 4111 1111${br}1111 1111, expiring 12/2028`, 'redact')
+        expect(r.text, JSON.stringify(br)).toBe('charged to the Company Visa card number [REDACTED:CC], expiring 12/2028')
+      }
+      // …and keeps the break, and every other character, in what it restores.
+      const values: string[] = []
+      redactPii('Visa card 4111 1111\n1111 1111.', 'redact', { token: (_k, v) => { values.push(v); return '[T]' } })
+      expect(values).toEqual(['4111 1111\n1111 1111'])
+    })
+    it('X52 — a card split by one break, then another number on the next line, is still found', () => {
+      expect(redactPii('Card: 4111 1111\n1111 1111 12\n27', 'redact').text).toBe('Card: [REDACTED:CC] 12\n27')
+    })
+    it('X52 review — a number ending the line before a card doesn\'t hide it', () => {
+      expect(redactPii('Customer authorizes charges to its Visa card.\nPage 3 of 12\n4111 1111 1111 1111', 'redact').text)
+        .toBe('Customer authorizes charges to its Visa card.\nPage 3 of 12\n[REDACTED:CC]')
+      expect(redactPii('Card details (Schedule 2)\nExpiry 12/27\n5500 0000 0000 0004', 'redact').text)
+        .toBe('Card details (Schedule 2)\nExpiry 12/27\n[REDACTED:CC]')
+      // …nor when the card is the one wrapped.
+      expect(redactPii('Visa card ref 2024\n4111 1111\n1111 1111', 'redact').text).toBe('Visa card ref 2024\n[REDACTED:CC]')
+      expect(redactPii('Amex card 3782\n822463 10005 on file', 'redact').text).toBe('Amex card [REDACTED:CC] on file')
+    })
+    it('X52 review — dates, phone numbers and amounts on consecutive lines are not cards', () => {
+      const dates = 'Customer pays by wire; overdue amounts accrue a service credit.\nPayment Dates\n2025-01-01\n2025-02-01\n2025-03-01\n'
+      expect(redactPii(dates, 'redact').text).toBe(dates)
+      expect(redactPii('Notices. Credit notes go to the numbers below.\n415-555-0142\n212-555-0199\n', 'redact').counts.CC ?? 0).toBe(0)
+      expect(redactPii('Credit limit per year:\n1250000\n3400000\n', 'redact').counts.CC ?? 0).toBe(0)
+      // A wrapped digit run with no card word near it isn't taken for one.
+      expect(redactPii('A service credit applies.\n\n\nReference 4111 1111\n1111 1111', 'redact').counts.CC ?? 0).toBe(0)
     })
   })
 
@@ -154,6 +191,14 @@ describe('redactPii', () => {
       expect(redactPii('IBAN: NO93 8601 1117 947.', 'redact').text).toBe('IBAN: [REDACTED:IBAN].')
       // A word after the last full group is not part of it.
       expect(redactPii('Wire to BE68 5390 0754 7034 BANK in Brussels.', 'redact').text).toBe('Wire to [REDACTED:IBAN] BANK in Brussels.')
+    })
+    it('X52 — redacts a grouped IBAN that a line break splits', () => {
+      expect(redactPii('Wire to IBAN GB29 NWBK 6016\n1331 9268 19 at Barclays.', 'redact').text).toBe('Wire to IBAN [REDACTED:IBAN] at Barclays.')
+      expect(redactPii('Wire to IBAN GB29 NWBK\n6016\n1331 9268 19 at Barclays.', 'redact').counts.IBAN ?? 0).toBe(0)
+    })
+    it('X52 review — a code ending the line before an IBAN doesn\'t hide it', () => {
+      expect(redactPii('Remit by wire to the bank account for FY24\nGB29 NWBK 6016 1331 9268 19', 'redact').text)
+        .toBe('Remit by wire to the bank account for FY24\n[REDACTED:IBAN]')
     })
     it('X37 — leaves all-caps text that only looks like one (the IBAN check fails)', () => {
       const t = 'The bank reviews US10 YEAR NOTE yields monthly.'
