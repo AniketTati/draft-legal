@@ -404,7 +404,35 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Why VERIFY-PENDING:** needs a live click-through, which this environment can't run. Open a contract with a source PDF, ask the agent to cite a clause, and click the pill. The Original PDF should open at the cited page with the paragraph outlined. With no source file, the pill should still scroll the styled view.
   - **Left as is:** the outline is drawn only on unrotated pages, and it assumes the CropBox starts at the page origin (true for almost every PDF; PyMuPDF and pdf.js then agree). Scanned (OCR) pages carry no box, so they land on the page without an outline.
   - Original note: Citation pills open the original PDF at the stored page and highlight the stored bounding box, instead of scrolling to a matching heading. The page and bbox are already stored and unused (`apps/web/src/components/agent/CitationPills.tsx`).
-- **X2 — Custom-field backfill.** Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
+- **X2 — Custom-field backfill. — VERIFY-PENDING.**
+  - **Plan:**
+    - Confirmed: extraction reads the org's field definitions at upload (`agent.worker.ts` `/review`), and nothing ever goes back, so a field added later stays empty on every existing contract. `review.py` also stored only each custom field's value, dropping the confidence and quote the model returned (unlike `_typeFields`).
+    - Evidence: the value stays flat in `metadata[fieldKey]`, which search and the UI read, and the confidence and quote go beside it in `metadata._customFieldEvidence[fieldKey]` (cleared on a run that produced output, like `_typeFields`). The contract page shows the confidence icon and, on hover, the source quote.
+    - Backfill:
+      - Re-running the full `/review` per contract is the wrong tool: it replaces every clause row (new ids) and re-embeds.
+      - Instead, a new agents endpoint, `POST /extract-fields`, asks for only the named fields, chunk by chunk, and stops once each has a value. It uses the same untrusted-document framing and PII token rule.
+      - `lib/custom-field-backfill.ts` walks the org's own analysed contracts of the field's type (no diligence rooms), in id order, 20 at a time.
+      - It skips contracts that already hold a value or have no text.
+      - It writes value plus evidence in one SQL statement, only if the field is still empty, so a value that landed meanwhile wins and concurrent metadata keys survive.
+      - It saves `{status, cursor, processed, filled, failed, total, error}` on the definition after every contract (new nullable `backfill` column, migration `20260923040000_custom_field_backfill`).
+      - A failing contract is counted and skipped. The cost cap pauses it. A crash leaves the cursor for BullMQ's retry, or the admin's next press, to resume from.
+      - The worker runs it through `callAgents`, so the PII policy and cost cap apply.
+      - `POST /field-definitions/:id/backfill` (configure:contract) queues it. There is one job per field; a failed or finished job is cleared, so a new press resumes or re-scans.
+      - Settings → Custom fields gets a "Fill in existing contracts" button per field, plus a progress line that polls while it runs.
+  - **Verification:**
+    - `lib/custom-field-backfill.integration.test.ts` has 4 cases:
+      - only the org's own analysed contracts of the type that lack a value are asked about (not an NDA, a room contract, an unanalysed or empty one), with value and evidence stored, an existing value kept, and status saved;
+      - a cost-cap pause mid-run, then a resume that picks up after the last processed contract, with a failing contract counted and skipped;
+      - a value that lands during extraction is never overwritten;
+      - the route queues for ADMIN and refuses VIEWER.
+    - `lib/custom-field-agents.test.ts`: Python tripwires (evidence kept and cleared; `/extract-fields` mounted with the token rule and untrusted framing). `py_compile` passes for the Python files.
+    - Suite:
+      - db:generate 0, typecheck 0, lint 0 errors (web warnings unchanged);
+      - api unit 270/270, web 18/18;
+      - api integration green, except a probe file another review had open at the time (not part of this change).
+  - **Why VERIFY-PENDING:** `/extract-fields` is new Python that only compiles here; there is no Python environment with its dependencies. Live check: add a custom field to an org with analysed contracts, press "Fill in existing contracts", and watch values with confidence and quote arrive and the progress line reach "Filled in on N of M".
+  - **Deploy:** run the migration (`20260923040000_custom_field_backfill`), and deploy the agents service with the new route before the API's worker.
+  - Original note: Adding a field only affects future uploads; there is no bulk re-extract (`apps/api/src/routes/field-definitions.ts:56-76`). Add a resumable backfill job, and stop dropping confidence and quotes for custom fields (`apps/agents/app/routes/review.py:231`).
 - **X3 — Empty stubs. — DONE.**
   - **Plan:**
     - Confirmed: `routes/admin-audit.ts` and `routes/metrics.ts` register no routes, and `lib/error-reporter.ts` drops every error. That is despite `middleware/error-handler.ts` promising Sentry forwarding and the docs promising Prometheus/Grafana and Sentry.
@@ -1101,3 +1129,4 @@ X21 (follow-up) — DONE — Sign link bound to one verified signer, only on the
 X3 — DONE — audit log API (list/filter/cursor + chain verify, admin-only) with an admin viewer; token-gated Prometheus /metrics with bounded labels; 5xx → Cloud Error Reporting on Cloud Run; docs say what's wired — (sha: X3)
 X17 — DONE — diligence-room contracts out of analytics/dashboard/renewals/obligations/counterparty figures (a named contract still sees its own); precedents on effective versions, no rooms; iterative HNSW scans on pgvector 0.8+ — (sha: X17)
 X1 — VERIFY-PENDING — citation pills open the original PDF at the cited page with the passage outlined (styled-view section scroll kept as the fallback); needs a live click-through — (sha: X1)
+X2 — VERIFY-PENDING — resumable per-field backfill (cursor on the definition, cost-cap pause, never overwrites) via a new /extract-fields agents route; custom-field confidence + quotes kept and shown; needs a live run — (sha: X2)

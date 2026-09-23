@@ -227,10 +227,19 @@ async def _process_and_update(
     if type_fields_out:
         metadata_update["_typeFields"] = type_fields_out
 
-    # Org-defined custom fields — stored flat by fieldKey
+    # Org-defined custom fields — stored flat by fieldKey (what search and the
+    # UI read). X2 — their confidence and source quote were dropped; they go
+    # beside the values, in _customFieldEvidence, as _typeFields keeps them.
+    custom_evidence: dict = {}
     for field_key, extraction in custom_field_values.items():
         if isinstance(extraction, dict) and extraction.get("value") is not None:
             metadata_update[field_key] = extraction["value"]
+            custom_evidence[field_key] = {
+                "confidence": extraction.get("confidence", 0.5),
+                "quote":      extraction.get("quote"),
+            }
+    if custom_evidence:
+        metadata_update["_customFieldEvidence"] = custom_evidence
 
     if open_ended:
         metadata_update["_aiFindings"] = open_ended
@@ -242,6 +251,7 @@ async def _process_and_update(
     if not (has_error and not has_output):
         metadata_update.setdefault("_typeFields", None)
         metadata_update.setdefault("_aiFindings", None)
+        metadata_update.setdefault("_customFieldEvidence", None)
     if metadata_update:
         contract_payload["metadata"] = metadata_update
 

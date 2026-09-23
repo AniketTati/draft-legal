@@ -329,12 +329,24 @@ function ClauseCard({
 // B.1 — `hideIfEmpty` suppresses the row entirely when the value is an
 // empty/placeholder string. Previously the Contract Details panel showed
 // 6+ rows of `—` on contracts that had no extraction yet.
-function DetailRow({ label, value, hideIfEmpty = true }: { label: string; value: string; hideIfEmpty?: boolean }) {
+function DetailRow({ label, value, hideIfEmpty = true, evidence }: {
+  label: string
+  value: string
+  hideIfEmpty?: boolean
+  /** X2 — an extracted value's confidence and source quote (custom fields). */
+  evidence?: { confidence?: number; quote?: string | null }
+}) {
   if (hideIfEmpty && (!value || value === '—' || value === '-')) return null
   return (
     <div className="flex items-start justify-between gap-4 py-2.5 border-b border-paper-100 last:border-0">
       <span className="text-dense text-ink-500 whitespace-nowrap pt-0.5">{label}</span>
-      <span className="text-dense text-ink-950 font-medium text-right">{value}</span>
+      <span
+        className="text-dense text-ink-950 font-medium text-right inline-flex items-center gap-1.5"
+        title={evidence?.quote ? `Source: “${evidence.quote}”` : undefined}
+      >
+        {value}
+        {evidence?.confidence != null && <ConfidenceIcon confidence={evidence.confidence} />}
+      </span>
     </div>
   )
 }
@@ -2297,6 +2309,7 @@ export function ContractDetailPage() {
                           key={fd.fieldKey}
                           label={fd.fieldLabel}
                           value={formatTermValue(fd.fieldKey, customMeta[fd.fieldKey])}
+                          evidence={(customMeta._customFieldEvidence as Record<string, { confidence?: number; quote?: string | null }> | undefined)?.[fd.fieldKey]}
                         />
                       ))}
                     </div>

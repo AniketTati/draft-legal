@@ -350,6 +350,9 @@ model ContractFieldDefinition {
   options      Json      @default("[]") // For select/multiselect: ["Option A", "Option B"]
   sortOrder    Int       @default(0)
   helpText     String? // Optional UI hint shown below the field
+  // X2 — progress of filling this field in on existing contracts:
+  // { status, cursor, processed, filled, failed, total, error, updatedAt }
+  backfill     Json?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?

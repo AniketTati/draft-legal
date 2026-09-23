@@ -11,7 +11,8 @@ import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob } from '../lib/queue.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
+import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -817,6 +818,24 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
   console.info('[agent-worker] draft-contract done contractId=%s', contractId)
 }
 
+// ─── backfill-custom-field (X2) ──────────────────────────────────────────────
+// See lib/custom-field-backfill.ts. The extraction goes through callAgents, so
+// the org's PII policy and cost cap apply as on every other job.
+
+async function handleBackfillCustomField(data: BackfillCustomFieldJob): Promise<void> {
+  const state = await runCustomFieldBackfill(data, async ({ orgId, contractId, body }) => {
+    const res = await callAgents('/extract-fields', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
+      body:    JSON.stringify(body),
+    }, { orgId, toolName: 'backfill_custom_field', scope: contractId, contractId })
+    if (!res.ok) throw new Error(`Agents /extract-fields returned ${res.status}`)
+    return ((await res.json()) as { customFields?: Record<string, ExtractedField> }).customFields ?? null
+  })
+  console.info('[agent-worker] backfill-custom-field field=%s status=%s processed=%d filled=%d failed=%d',
+    data.fieldDefinitionId, state?.status, state?.processed ?? 0, state?.filled ?? 0, state?.failed ?? 0)
+}
+
 export const agentWorker = new Worker(
   'agents',
   async (job) => {
@@ -839,6 +858,8 @@ export const agentWorker = new Worker(
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {
       await handleDraftContract(job.data as DraftContractJobData)
+    } else if (job.name === 'backfill-custom-field') {
+      await handleBackfillCustomField(job.data as BackfillCustomFieldJob)
     }
   },
   { connection: redis, concurrency: 2 }

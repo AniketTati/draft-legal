@@ -254,6 +254,29 @@ export interface PlaybookRedlineJob {
   versionId:  string
   aggression: 'least' | 'moderate' | 'aggressive'
 }
+export interface BackfillCustomFieldJob {
+  orgId:             string
+  fieldDefinitionId: string
+}
+
+/**
+ * X2 — fill a custom field in on existing contracts. One job per field: a
+ * second press while it runs is the same job. A failed run is removed first,
+ * so pressing again resumes it from its saved cursor.
+ */
+export async function queueBackfillCustomField(payload: BackfillCustomFieldJob): Promise<void> {
+  const jobId = `backfill-custom-field-${payload.fieldDefinitionId}`
+  const existing = await agentQueue.getJob(jobId)
+  if (existing && (await existing.isFailed() || await existing.isCompleted())) await existing.remove()
+  await agentQueue.add('backfill-custom-field', payload, {
+    jobId,
+    attempts: 3,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  })
+}
+
 export function queuePlaybookRedline(payload: PlaybookRedlineJob): void {
   agentQueue.add('playbook-redline', payload, {
     // One attempt. A retry re-runs every LLM call in the batch, and the job is

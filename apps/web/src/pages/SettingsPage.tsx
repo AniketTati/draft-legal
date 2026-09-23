@@ -78,6 +78,18 @@ const COMMON_TIMEZONES = [
   'Asia/Dubai', 'Asia/Kolkata', 'Asia/Shanghai', 'Asia/Tokyo', 'Australia/Sydney',
 ]
 
+/** X2 — one line on where a field's backfill stands. */
+function backfillLabel(b: { status: string; processed: number; filled: number; failed: number; total: number | null; error: string | null }): string {
+  const of = b.total != null ? ` of ${b.total}` : ''
+  switch (b.status) {
+    case 'QUEUED':  return 'Backfill queued…'
+    case 'RUNNING': return `Filling in: ${b.processed}${of} contracts checked, ${b.filled} filled`
+    case 'PAUSED':  return `Paused after ${b.processed}${of} contracts (${b.error ?? 'paused'}) — press again to resume`
+    case 'FAILED':  return `Stopped after ${b.processed}${of} contracts — press again to resume`
+    default:        return `Filled in on ${b.filled} of ${b.processed} existing contracts${b.failed ? ` (${b.failed} could not be read)` : ''}`
+  }
+}
+
 interface NewField {
   fieldKey: string
   fieldLabel: string
@@ -116,6 +128,14 @@ export function SettingsPage() {
     queryFn: () => api.get('/field-definitions', {
       params: filterType ? { contractType: filterType } : undefined,
     }).then(r => r.data),
+    // X2 — follow a running backfill's progress.
+    refetchInterval: q => ((q.state.data as any)?.data ?? []).some((d: any) => ['QUEUED', 'RUNNING'].includes(d.backfill?.status)) ? 4000 : false,
+  })
+
+  // X2 — fill a field in on the contracts analysed before it existed.
+  const backfillField = useMutation({
+    mutationFn: (id: string) => api.post(`/field-definitions/${id}/backfill`).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['field-definitions'] }),
   })
 
   const createField = useMutation({
@@ -435,7 +455,22 @@ export function SettingsPage() {
                             {def.helpText && (
                               <p className="text-dense text-ink-400 mt-0.5 italic">{def.helpText}</p>
                             )}
+                            {def.backfill && (
+                              <p className="text-[11px] text-ink-500 mt-0.5 tabular-nums" data-testid={`backfill-status-${def.id}`}>
+                                {backfillLabel(def.backfill)}
+                              </p>
+                            )}
                           </div>
+                          <Button
+                            variant="outline"
+                            size="xs"
+                            onClick={() => backfillField.mutate(def.id)}
+                            disabled={['QUEUED', 'RUNNING'].includes(def.backfill?.status) || (backfillField.isPending && backfillField.variables === def.id)}
+                            title="Extract this field from contracts analysed before it existed"
+                            data-testid={`backfill-field-${def.id}`}
+                          >
+                            Fill in existing contracts
+                          </Button>
                           <button
                             onClick={() => setPendingDeleteField(def)}
                             aria-label={`Delete field ${def.fieldLabel}`}
