@@ -12,7 +12,8 @@
  * who can still manage the org's API keys; what it creates names the key as
  * creator. A key's obligation completions name no user, and a key's split
  * leaves the children with the binder's owner. A key with no such user is
- * told so, before anything is stored.
+ * told so, before anything is stored. (Since X46 a key whose maker has left
+ * doesn't authenticate at all.)
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
@@ -37,7 +38,8 @@ vi.mock('../lib/elasticsearch.js', async importOriginal => ({
 import { s3 } from '../lib/storage.js'
 import { queueSplitBinder } from '../lib/queue.js'
 import { hashApiKey } from '../middleware/auth.js'
-import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
+import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, grantRole, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
 let org: string, otherOrg: string, maker: string, leaver: string, demoted: string, colleague: string
@@ -54,15 +56,6 @@ function multipart(filename: string, contentType: string, body: string, fields: 
     Buffer.from(`\r\n--${boundary}--\r\n`),
   ])
   return { payload, headers: { 'content-type': `multipart/form-data; boundary=${boundary}` } }
-}
-
-async function grantRole(orgId: string, userId: string, name: string) {
-  const role = await prisma.role.upsert({
-    where: { orgId_name: { orgId, name } },
-    create: { orgId, name, isSystem: true },
-    update: {},
-  })
-  await prisma.userRole.create({ data: { userId, roleId: role.id } })
 }
 
 async function keyFor(userId: string, name: string, scopes = ['contracts:write']) {
@@ -94,8 +87,8 @@ beforeAll(async () => {
   ;({ headers: writer, id: writerId } = await keyFor(maker, 'Writer'))
   orphan = (await keyFor(leaver, 'Orphaned writer')).headers
   demotedKey = (await keyFor(demoted, 'Demoted writer')).headers
-  // Deactivated before X43, which now revokes a leaver's keys: the key still
-  // authenticates, but there is no one left to act as.
+  // Deactivated before X43, which now revokes a leaver's keys (and since X46
+  // such a key no longer authenticates).
   await prisma.user.update({ where: { id: leaver }, data: { status: 'DEACTIVATED' } })
   // Moved to an own-scope role while still active.
   await prisma.userRole.deleteMany({ where: { userId: demoted } })
@@ -241,8 +234,8 @@ describe('where the owner isn\'t the key\'s maker', () => {
     const invoice = await prisma.invoice.create({
       data: { orgId: org, contractId, createdById: maker, vendorName: 'Keyed vendor', amount: 100, invoiceDate: new Date(), matchedObligationId: quarterly.id },
     })
-    const reconciled = await app.inject({ method: 'POST', url: `/api/v1/invoices/${invoice.id}/reconcile`, headers: orphan, payload: {} })
-    expect(reconciled.statusCode).toBe(200)   // needs no user, so a key without one can still reconcile
+    const reconciled = await app.inject({ method: 'POST', url: `/api/v1/invoices/${invoice.id}/reconcile`, headers: writer, payload: {} })
+    expect(reconciled.statusCode).toBe(200)
     expect(await completion(quarterly.id)).toEqual({ status: 'COMPLETED', completedById: null })
 
     // A signed-in user's completion is still theirs.
@@ -271,49 +264,52 @@ describe('where the owner isn\'t the key\'s maker', () => {
     expect(chat.statusCode).toBe(200)
     expect((await prisma.skillInvocation.findFirstOrThrow({ where: { skillId: skill.id } })).userId).toBe(maker)
 
-    // No user to record for a key without one: the chat still runs, unrecorded.
-    const orphanChat = await app.inject({ method: 'POST', url: '/api/v1/agent/chat', headers: orphan, payload: { message: 'hi', agentMode: true, skillSlug: '@keyed' } })
-    expect(orphanChat.statusCode).toBe(200)
+    // A key whose maker can no longer make keys doesn't get this far (X46).
+    const refused = await app.inject({ method: 'POST', url: '/api/v1/agent/chat', headers: demotedKey, payload: { message: 'hi', agentMode: true, skillSlug: '@keyed' } })
+    expect(refused.statusCode).toBe(401)
     expect(await prisma.skillInvocation.count({ where: { skillId: skill.id } })).toBe(1)
   })
 })
 
 describe('a key with no user to act as', () => {
-  it('is told why, before anything is stored, uploaded or drafted', async () => {
+  it('since X46 doesn\'t authenticate: nothing is stored, uploaded or drafted', async () => {
     const other = await makeUser(otherOrg)
     const deleted = await makeUser(org)
     await grantRole(org, deleted, 'ADMIN')
     await prisma.user.update({ where: { id: deleted }, data: { deletedAt: new Date() } })
-    const noUser = [
-      orphan,                        // its maker was deactivated
-      demotedKey,                    // its maker can no longer manage API keys
-      await storedKey(deleted),      // its maker was deleted
-      await storedKey(other),        // its maker is in another org
-    ]
     const before = await prisma.contract.count({ where: { orgId: org } })
-    for (const headers of noUser) {
+    // Its maker left, can no longer make keys, was deleted, or is in another org.
+    for (const headers of [orphan, demotedKey, await storedKey(deleted), await storedKey(other)]) {
       const res = await app.inject({ method: 'POST', url: '/api/v1/contracts', headers, payload: { title: 'Nobody\'s NDA', type: 'NDA' } })
-      expect(res.statusCode).toBe(422)
-      expect(res.json()).toMatchObject({ error: 'NO_ACTING_USER', detail: expect.stringMatching(/no user to act as/) })
+      expect(res.statusCode).toBe(401)
     }
 
     const sends = vi.mocked(s3.send).mock.calls.length
     const file = multipart('orphan.txt', 'text/plain', 'Orphaned upload.')
-    const up = await app.inject({ method: 'POST', url: '/api/v1/contracts/upload', headers: { ...orphan, ...file.headers }, payload: file.payload })
-    expect(up.statusCode).toBe(422)
+    const up = await app.inject({ method: 'POST', url: '/api/v1/contracts/upload', headers: { ...demotedKey, ...file.headers }, payload: file.payload })
+    expect(up.statusCode).toBe(401)
     const room = await prisma.diligenceRoom.create({ data: { orgId: org, name: 'Orphan room', createdById: maker } })
     const roomFile = multipart('orphan.txt', 'text/plain', 'Orphaned upload.')
-    const roomUp = await app.inject({ method: 'POST', url: `/api/v1/diligence/${room.id}/upload`, headers: { ...orphan, ...roomFile.headers }, payload: roomFile.payload })
-    expect(roomUp.statusCode).toBe(422)
+    const roomUp = await app.inject({ method: 'POST', url: `/api/v1/diligence/${room.id}/upload`, headers: { ...demotedKey, ...roomFile.headers }, payload: roomFile.payload })
+    expect(roomUp.statusCode).toBe(401)
     expect(vi.mocked(s3.send).mock.calls.length).toBe(sends)
 
     const calls = draftCalls.length
     const draft = await app.inject({
-      method: 'POST', url: '/api/v1/agent/draft', headers: orphan,
+      method: 'POST', url: '/api/v1/agent/draft', headers: demotedKey,
       payload: { userMessage: 'Draft a mutual NDA', saveAs: { title: 'Orphan draft' } },
     })
-    expect(draft.statusCode).toBe(422)
-    expect(draftCalls.length).toBe(calls)   // no paid agent call for a save that can't happen
+    expect(draft.statusCode).toBe(401)
+    expect(draftCalls.length).toBe(calls)
     expect(await prisma.contract.count({ where: { orgId: org } })).toBe(before)
+  })
+
+  it('a route would still answer NO_ACTING_USER rather than pick someone', () => {
+    // requireAuth puts the user behind a key on the request; without one
+    // (a key authenticated some other way) there is no one to act as.
+    expect(actingUserId({ sub: `apikey:${writerId}` })).toBeNull()
+    expect(actingUserId({ sub: `apikey:${writerId}`, keyMakerId: maker })).toBe(maker)
+    expect(actingUserId({ sub: maker })).toBe(maker)
+    expect(NO_ACTING_USER).toMatchObject({ error: 'NO_ACTING_USER', detail: expect.stringMatching(/no user to act as/) })
   })
 })

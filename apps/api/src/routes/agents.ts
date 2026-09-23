@@ -166,7 +166,7 @@ export async function agentRoutes(app: FastifyInstance) {
         // behaviour: an edit mid-run can't change this row's effective prompt.
         // X45 — the invoker is a user: for an API key, the one who made it
         // (no row when there is none; this is telemetry, not a gate).
-        const invokerId = await actingUserId(req.user)
+        const invokerId = actingUserId(req.user)
         if (invokerId) await prisma.skillInvocation.create({
           data: {
             skillId: skill.id,
@@ -367,7 +367,7 @@ export async function agentRoutes(app: FastifyInstance) {
     // key, the user who made the key. Checked before the agent call, as above.
     let ownerId: string | null = null
     if (body.saveAs?.title && !body.saveAs.contractId) {
-      ownerId = await actingUserId(req.user)
+      ownerId = actingUserId(req.user)
       if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
     }
 

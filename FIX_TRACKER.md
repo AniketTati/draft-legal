@@ -1856,10 +1856,65 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Suite: db:generate ok, typecheck 0, lint 0 errors, integration 310 passed (49 files).
       - `render-ssrf`'s 2 Gotenberg cases skipped under the full run's load: the 2-second health probe timed out. Run alone they pass.
       - api unit 325/326: `diff.test.ts`'s event-loop case hit vitest's 5-second default under load. It passes alone, 3/3. Both are timing problems in tests from earlier in this run (X11, X32), fixed in their own commit next.
-- **X46 — An API key can mint API keys that outlive the user behind it (Medium).** Found while fixing X45.
+- **X46 — An API key can mint API keys that outlive the user behind it (Medium). — DONE.** Found while fixing X45.
   - Key management (`/admin/integrations/api-keys`: create, list, revoke) checks `configure:organization`. An `admin`-scope key has that, so a key can create keys, and the new key records `createdById: apikey:<id>`.
   - X43 revokes a deactivated user's keys by `createdById = <user>`, so keys minted through their keys survive it. A leaked admin key can also mint replacements that outlive its own revocation.
   - Fix: key management for signed-in users only, refusing every API key. Deactivation also revokes the keys minted by the keys it revokes, so chains made before the fix are caught.
+  - **Plan:** confirmed. `POST /api-keys` records `createdById: req.user.sub`, which for a key is `apikey:<id>`.
+    - **Widened at X45's review:** a key whose maker was deactivated before X43, or deleted, kept authenticating everywhere, and so did every key made through a key. Nothing at request time looked at who made a key.
+  - **What changed:**
+    - `lib/acting-user.ts` `keyMaker()`: the user behind a key, while they could still make it:
+      - it follows `apikey:` links (at most 5) through keys that are unrevoked, unexpired and in the key's org, to the root user;
+      - it returns that user only while they are an active member of the org who can manage its API keys (`configure:organization`, read from their roles in the database).
+      - X45's `actingUserId` now reads the result from the request instead of resolving it again.
+    - `middleware/auth.ts`: a key authenticates only while `keyMaker` finds its user. Otherwise it gets 401 "API key invalid or revoked", the same answer as a revoked key, with the reason in the server log. The user's id rides on `req.user.keyMakerId`.
+      - This switches off, with no further step, the keys of users who left before X43, were deleted, or were moved to a role that can't make keys, and every key made through a key whose chain is broken.
+      - Cost: the key lookup plus the user and their roles on each key request (the org's role permissions are cached). The chain walk adds one query per link, for legacy chains only.
+    - `routes/integrations.ts`:
+      - key management (scope list, create, list, revoke) takes `requireUser` before its permission check, so no API key can manage keys;
+      - creating a key also needs `keyMaker` to accept the creator, which refuses a deactivated user's still-valid access token and the agents service.
+    - `routes/admin-users.ts`:
+      - giving someone access (invite, bulk import, role change, reactivate) takes `requireUser`, so an admin key can't invite a new admin or restore its demoted maker's role. Deactivation stays open to admin keys, for offboarding automation.
+      - Deactivation revokes the whole tree of keys the user made and keys made through them, including through an already-revoked key, and the audit records how many.
+    - Migration `20260923050000_revoke_orphaned_api_keys` (a data repair) revokes keys whose maker is deactivated, deleted or missing, keys made through a revoked or expired key, and everything made through those. The list then shows them revoked, and reactivating a user doesn't bring them back.
+    - An admin key keeps its other admin rights: webhooks, settings, reading members, and deactivation.
+  - **Adversarial review (fresh subagent)**, which probed the running code in a separate org:
+    - Confirmed:
+      - no other code creates `ApiKey` rows;
+      - `requireAuth` is the only place keys are authenticated;
+      - chains can't cycle, and a link into another org is refused;
+      - the deactivation walk terminates and counts correctly;
+      - there is no other way a user leaves an org;
+      - the web UI manages keys with the user's token.
+    - Fixed:
+      - *Medium:* an admin key could invite a new admin, accept the invite through the public route, and mint a replacement key that survived the original's revocation. Fixed by the admin-users guard.
+      - *Medium:* sign-in checked membership, not authority, so a demoted admin's key could restore their role. Now the maker must still hold `configure:organization`, and role changes need a signed-in user.
+      - *Low:* keys of pre-X43 leavers were blocked but not revoked, so reactivating the user revived them. Fixed by the migration.
+      - *Low:* key creation trusted the token, letting a deactivated admin's still-valid token or the agents service create a key. Fixed by the creation check.
+      - *Low:* expiry didn't pass down a chain. Now every link must be unexpired.
+      - *Low:* the 401 detail told a leaked key's holder the key was real. It now says what a revoked key does.
+      - *Low:* the chain limit counted differently at sign-in and in `actingUserId`, which also repeated the lookups. It is now resolved once, at sign-in.
+      - *Tests:* nothing covered revoking a parent while the root user is active; that case is added, along with the others below.
+  - **Verification:**
+    - `api-keys.integration.test.ts`, 6 X46 cases:
+      - an admin key gets 403 on key create, list, scope list and revoke, and on invite, bulk import, role change and reactivate, and still 200 on webhooks;
+      - a pre-X43 leaver's key, a key made through their key, and a demoted admin's key go from 200 to 401, with the revoked-key wording;
+      - a key made through a key goes from 200 to 401 when that key is revoked while its user stays active; so does a child of an expired key, and a link into another org; chains are followed through 5 keys and no further;
+      - a deactivated admin's still-valid token and the agents service can't create a key, while an active admin can;
+      - deactivation revokes the user's key and the keys made through it (the audit counts 4), and they stay revoked after reactivation;
+      - the migration revokes the keys of a deactivated user, a deleted one and a missing one, children of revoked and expired keys, and a grandchild, and leaves a healthy chain working.
+    - The X45 tests follow the new rule: keys whose maker left, was deleted, is in another org or was demoted get 401 before anything is stored, uploaded or drafted. The route guard's helper is checked directly.
+    - Test makers now hold an ADMIN role in the database, as real key makers do, via a shared `grantRole` test helper. The signing-tokens test's key has such a maker.
+    - Against the pre-fix code all 9 new or changed cases fail.
+    - Migration applied to the test database (40 migrations, up to date).
+    - Suite: db:generate ok, typecheck 0, lint 0 errors (warnings at the baseline, web 22 and api 11), api unit 326/326, web 18/18, integration 319/319 (49 files).
+  - **Deploy note:** on deploy, keys whose maker is gone or can no longer manage API keys stop working, and the migration revokes those of makers who left.
+    - Re-issue any still in use: Admin → Integrations → API keys, where the "Created by" column is empty for keys made by keys or by users who are gone.
+    - Automations that created keys, invited users, changed roles or reactivated users with an admin key must move to a signed-in admin.
+  - **Left as is:**
+    - Webhooks, Slack settings and share links an admin key configured keep working after the key is revoked. An admin key is full access by design; review them after revoking a leaked one.
+    - A demoted maker's keys are refused while they are demoted, not revoked; re-promoting them brings the keys back. The list shows them live.
+    - The agent tools' scope check (`lib/agent-scope.ts`) re-reads a key's scopes per tool call but not its maker; the chat turn that calls them was authenticated with the maker check moments before.
 
 
 ---
@@ -1946,4 +2001,5 @@ X42 — DONE — changing an approved contract's type, value, currency or docume
 X43 — DONE — deactivating a user revokes their API keys; key creation and revocation are audited; the key list shows who made each key — 8f76574
 X44 — DONE — the 15 routes that checked only sign-in now refuse API keys: the org's shared data (member list, settings, roles, skills, dashboard, workload, models) without the admin scope, a person's own things (profile, notifications, threads) always; agent chat withholds the member search from them; adversarial review — e733768
 X45 — DONE — a key's writes that need a user act as the key's maker while they can still manage API keys (contract creates on every path, matters, request conversion, org AI keys, skill telemetry); a key's split keeps the binder's owner; a key's obligation completions name no one; otherwise 422 NO_ACTING_USER before anything is stored; adversarial review — e5eb4e6
-X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — (sha: pending)
+X11/X32 (test follow-up) — DONE — the Gotenberg SSRF cases no longer skip silently when the health probe is slow under load, and the event-loop diff case gets the diff's own time limit — 854a620
+X46 — DONE — key management and giving anyone access (invite, roles, reactivate) are for signed-in users; a key authenticates only while the user behind it could still make it (active, configure:organization, through unrevoked unexpired links); deactivation revokes whole key trees; repair migration revokes keys orphaned before; adversarial review — (sha: pending)

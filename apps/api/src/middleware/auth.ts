@@ -4,13 +4,15 @@ import type { Permission } from '@clm/types'
 import { verifyToken, type JwtPayload } from '../lib/jwt.js'
 import { prisma } from '../lib/prisma.js'
 import { resolveApiScopePermissions } from '../lib/permissions.js'
+import { keyMaker } from '../lib/acting-user.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
     // `apiPermissions` is set only on public-API-key requests (Wave 1.2):
     // the key's scopes resolved to a concrete permission set. When present,
     // requirePermission evaluates it directly instead of role lookup.
-    user: JwtPayload & { apiPermissions?: Permission[] }
+    // `keyMakerId` (X46) is the user behind such a key (lib/acting-user.ts).
+    user: JwtPayload & { apiPermissions?: Permission[]; keyMakerId?: string }
   }
 }
 
@@ -66,13 +68,23 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
       const keyHash = hashApiKey(token)
       const key = await prisma.apiKey.findUnique({
         where: { keyHash },
-        select: { id: true, orgId: true, scopes: true, expiresAt: true, revokedAt: true },
+        select: { id: true, orgId: true, scopes: true, expiresAt: true, revokedAt: true, createdById: true },
       })
       if (!key || key.revokedAt) {
         return reply.status(401).send({ title: 'Unauthorized', detail: 'API key invalid or revoked', status: 401 })
       }
       if (key.expiresAt && key.expiresAt < new Date()) {
         return reply.status(401).send({ title: 'Unauthorized', detail: 'API key expired', status: 401 })
+      }
+      // X46 — a key works only while the user behind it could still make it:
+      // an active member of the org who can manage its API keys. X43 revoked a
+      // user's keys when they were deactivated, but not keys of users gone
+      // before it, keys made through other keys, or a demoted maker's keys.
+      // The holder is told no more than for a revoked key.
+      const keyMakerId = await keyMaker(key.orgId, key.createdById)
+      if (!keyMakerId) {
+        req.log.info({ apiKeyId: key.id }, 'API key refused: no active member who can manage API keys behind it')
+        return reply.status(401).send({ title: 'Unauthorized', detail: 'API key invalid or revoked', status: 401 })
       }
       // Best-effort lastUsedAt update.
       prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } })
@@ -87,6 +99,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
         roles: [],
         type:  'access',
         apiPermissions: resolveApiScopePermissions(key.scopes),
+        keyMakerId,
       }
       return
     } catch {

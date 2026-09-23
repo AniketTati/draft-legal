@@ -199,7 +199,7 @@ export async function adminAiRoutes(app: FastifyInstance) {
     // the one who made it. A rotation keeps the row's creator.
     let createdById = userId
     if (!priorRow) {
-      const acting = await actingUserId(req.user)
+      const acting = actingUserId(req.user)
       if (!acting) return reply.status(422).send(NO_ACTING_USER)
       createdById = acting
     }

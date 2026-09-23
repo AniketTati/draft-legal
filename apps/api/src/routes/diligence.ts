@@ -186,7 +186,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
     })
     if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
     // X45 — an API key's uploads belong to the user who made the key.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()

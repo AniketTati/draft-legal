@@ -195,7 +195,7 @@ export async function matterRoutes(app: FastifyInstance) {
     const foreign = await foreignReference(orgId, { counterpartyId: body.counterpartyId })
     if (foreign) return reply.status(404).send({ detail: foreign })
     // X45 — a matter's owner is a user: for an API key, the one who made it.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
     const matter = await prisma.matter.create({
       data: {

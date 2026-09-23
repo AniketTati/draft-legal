@@ -184,7 +184,7 @@ export async function contractRoutes(app: FastifyInstance) {
   app.post('/bulk-import', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
     // X45 — an API key's rows belong to the user who made the key.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
@@ -380,7 +380,7 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
     }
     // X45 — an API key's contract belongs to the user who made the key.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     // P27 audit (2026-05-02). Blank-create has no file → no parse
@@ -435,7 +435,7 @@ export async function contractRoutes(app: FastifyInstance) {
   app.post('/upload', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const { sub: userId, orgId } = req.user
     // X45 — an API key's upload belongs to the user who made the key.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
@@ -1760,7 +1760,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
     // X45 — an API key's amendment belongs to the user who made the key.
-    const ownerId = await actingUserId(req.user)
+    const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const relationshipType = (body.relationshipType ?? 'amendment').toLowerCase()

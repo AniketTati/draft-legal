@@ -33,7 +33,8 @@ import { prisma } from '../lib/prisma.js'
 import { mergeOrgSettings, removeOrgSetting } from '../lib/org-settings.js'
 import { slackTeamOfToken } from '../lib/slack.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { hashApiKey, API_KEY_PREFIX } from '../middleware/auth.js'
+import { hashApiKey, API_KEY_PREFIX, requireUser } from '../middleware/auth.js'
+import { keyMaker } from '../lib/acting-user.js'
 import { queueWebhookDelivery } from '../lib/queue.js'
 import { isTeamsUrl } from '../lib/teams-formatter.js'
 import { VALID_API_SCOPES } from '../lib/permissions.js'
@@ -113,19 +114,29 @@ export async function integrationsRoutes(app: FastifyInstance) {
     return reply.send({ events: WEBHOOK_EVENTS })
   })
 
+  // X46 — managing API keys is for signed-in users. An admin-scope key passed
+  // configure:organization, so a key could mint keys (recorded as made by
+  // `apikey:<id>`) that survive revoking it and its maker's deactivation.
+
   // ── GET /api-key-scopes — the scope vocabulary for the create dialog ──
-  app.get('/api-key-scopes', { preHandler: requirePermission('configure', 'organization') }, async (_req, reply) => {
+  app.get('/api-key-scopes', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (_req, reply) => {
     return reply.send({ scopes: VALID_API_SCOPES })
   })
 
   // ── POST /api-keys — create (returns full key once) ───────────────────
-  app.post('/api-keys', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.post('/api-keys', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     let body
     try { body = CreateApiKeySchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId, sub: userId } = req.user
+    // X46 — only someone who could make a key now: a deactivated user's access
+    // token outlives the deactivation by its lifetime, and the agents service
+    // is no user. A key's access ends with its maker's (keyMaker).
+    if (!await keyMaker(orgId, userId)) {
+      return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail: 'Only an active member who can manage API keys can create one' })
+    }
 
     const fullKey = generateApiKey()
     const created = await prisma.apiKey.create({
@@ -159,7 +170,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
   })
 
   // ── GET /api-keys — list ─────────────────────────────────────────────
-  app.get('/api-keys', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.get('/api-keys', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     const { orgId } = req.user
     const keys = await prisma.apiKey.findMany({
       where: { orgId },
@@ -178,7 +189,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
   })
 
   // ── DELETE /api-keys/:id — revoke ─────────────────────────────────────
-  app.delete('/api-keys/:id', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.delete('/api-keys/:id', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
     const updated = await prisma.apiKey.updateMany({

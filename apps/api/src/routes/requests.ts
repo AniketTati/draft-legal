@@ -289,7 +289,7 @@ export async function requestRoutes(app: FastifyInstance) {
       select: { id: true },
     })
     // X45 — the converter is a user too: for an API key, the one who made it.
-    const ownerId = requester?.id ?? await actingUserId(req.user)
+    const ownerId = requester?.id ?? actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     // Create the contract from request data

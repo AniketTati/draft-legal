@@ -6,16 +6,20 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { requireUserOrAdminKey } from '../middleware/auth.js'
+import { requireUser, requireUserOrAdminKey } from '../middleware/auth.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { invalidatePermissionCache, DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { InviteUserSchema, AssignRoleSchema, BulkImportUserSchema, AuditAction } from '@clm/types'
 
 export async function adminUserRoutes(app: FastifyInstance) {
   const adminGuard = requirePermission('configure', 'user')
+  // X46 — giving someone access (a new account, a role, a reactivation) is for
+  // signed-in users: an admin-scope key could invite a new admin, or put its
+  // demoted maker's role back, and so outlive its own revocation.
+  const grantGuard = [requireUser, adminGuard]
 
   // POST /api/v1/admin/users/invite — invite a user to the org
-  app.post('/invite', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/invite', { preHandler: grantGuard }, async (req, reply) => {
     const body = InviteUserSchema.parse(req.body)
     const { orgId } = req.user
 
@@ -114,7 +118,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // PATCH /api/v1/admin/users/:id/roles — assign/replace roles
-  app.patch('/:id/roles', { preHandler: adminGuard }, async (req, reply) => {
+  app.patch('/:id/roles', { preHandler: grantGuard }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const body = AssignRoleSchema.parse(req.body)
     const { orgId } = req.user
@@ -191,9 +195,19 @@ export async function adminUserRoutes(app: FastifyInstance) {
       data: { status: 'DEACTIVATED', refreshToken: null },
     })
     // X43 — and their API keys: a key never checks who made it, so an admin's
-    // `admin`-scope key kept full access after they left.
+    // `admin`-scope key kept full access after they left. X46 — and every key
+    // made through those keys (recorded as made by `apikey:<id>`) before key
+    // management was closed to keys, however deep the chain, including keys
+    // made by one of theirs that was already revoked.
+    const chain = new Set<string>()
+    for (let makers = [id]; makers.length;) {
+      const made = await prisma.apiKey.findMany({ where: { orgId, createdById: { in: makers } }, select: { id: true } })
+      const fresh = made.map(k => k.id).filter(k => !chain.has(k))
+      fresh.forEach(k => chain.add(k))
+      makers = fresh.map(k => `apikey:${k}`)
+    }
     const keys = await prisma.apiKey.updateMany({
-      where: { orgId, createdById: id, revokedAt: null },
+      where: { orgId, id: { in: [...chain] }, revokedAt: null },
       data:  { revokedAt: new Date() },
     })
 
@@ -211,7 +225,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/admin/users/:id/reactivate
-  app.post('/:id/reactivate', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/:id/reactivate', { preHandler: grantGuard }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
 
@@ -241,7 +255,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/admin/users/bulk-import — bulk invite users via JSON array
-  app.post('/bulk-import', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/bulk-import', { preHandler: grantGuard }, async (req, reply) => {
     const users = BulkImportUserSchema.parse(req.body)
     const { orgId } = req.user
 

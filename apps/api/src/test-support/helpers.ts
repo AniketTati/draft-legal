@@ -57,6 +57,21 @@ export async function makeUser(orgId: string): Promise<string> {
   return user.id
 }
 
+/**
+ * Give `userId` the role `name` in `orgId`: an org copy of the system role,
+ * with its default permissions. The JWT from `auth()` carries roles for the
+ * request itself; this is for code that reads a user's roles from the
+ * database, such as the check that an API key's maker can still make keys.
+ */
+export async function grantRole(orgId: string, userId: string, name: string): Promise<void> {
+  const role = await prisma.role.upsert({
+    where: { orgId_name: { orgId, name } },
+    create: { orgId, name, isSystem: true },
+    update: {},
+  })
+  await prisma.userRole.create({ data: { userId, roleId: role.id } })
+}
+
 /** Bearer header for a principal in `orgId` holding `roles`. */
 export function auth(orgId: string, roles: string[] = ['ADMIN'], sub?: string): Record<string, string> {
   const token = signAccessToken({ sub: sub ?? `it-user-${randomUUID()}`, orgId, roles })

@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
-import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, grantRole, prisma, type TestApp } from '../test-support/helpers.js'
 import { hashApiKey } from '../middleware/auth.js'
 
 let app: TestApp
@@ -87,8 +87,10 @@ describe('signature request tokens', () => {
 
   it('a contracts:read API key gets no tokens', async () => {
     const key = `clm_${randomBytes(24).toString('hex')}`
+    const keyAdmin = await makeUser(org)
+    await grantRole(org, keyAdmin, 'ADMIN')   // X46 — a key works while its maker can make keys
     await prisma.apiKey.create({
-      data: { orgId: org, name: 'x18', keyHash: hashApiKey(key), prefix: key.slice(0, 8), scopes: ['contracts:read'], createdById: owner },
+      data: { orgId: org, name: 'x18', keyHash: hashApiKey(key), prefix: key.slice(0, 8), scopes: ['contracts:read'], createdById: keyAdmin },
     })
     const res = await list({ authorization: `Bearer ${key}` })
     expect(res.statusCode).toBe(200)
