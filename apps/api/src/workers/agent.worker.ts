@@ -11,6 +11,7 @@ import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
+import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
@@ -197,8 +198,9 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     const existingMeta = (contract?.metadata as Record<string, unknown>) ?? {}
     const totalPages = (existingMeta._totalPages as number) ?? 100  // fallback if not PDF
 
-    // Compute concrete page ranges from LLM pageHint strings ("~page N")
-    const splits = docsToSplitSpecs(result.documents, totalPages)
+    // Concrete page ranges: from each agreement's offset in the text, else
+    // from the model's "~page N" hints.
+    const splits = docsToSplitSpecs(result.documents, totalPages, version.plainText.length)
 
     const metadata = {
       ...existingMeta,
@@ -234,62 +236,6 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     })
     queueClassifyDocument({ contractId, versionId, orgId })
   }
-}
-
-// Convert LLM pageHint strings ("~page N") to concrete {pageStart,
-// pageEnd} ranges. Resilient to an LLM that hands us bad hints:
-//   • "~page 1" for all 3 docs (all same) → distribute evenly
-//   • "~page 5" on a 2-page PDF (out of range) → clamp + distribute
-//   • missing hints → index-proportional default
-// If after parsing we end up with <2 unique page starts but docs.length >= 2,
-// we FALL BACK to even distribution across the PDF.
-function docsToSplitSpecs(
-  docs: Array<{ title: string; docType: string; charStart?: number; pageHint?: string }>,
-  totalPages: number
-): SplitBinderJob['splits'] {
-  if (docs.length === 0) return []
-  const evenShare = Math.max(1, Math.floor(totalPages / docs.length))
-
-  let withPages = docs.map((doc, i) => {
-    const match = doc.pageHint?.match(/\d+/)
-    const rawPage = match ? parseInt(match[0], 10) : NaN
-    // Valid if within [1, totalPages]
-    const pageNum = Number.isFinite(rawPage) && rawPage >= 1 && rawPage <= totalPages
-      ? rawPage
-      : i * evenShare + 1
-    return { ...doc, pageNum }
-  })
-
-  // Sort by LLM-suggested start (usable when hints vary).
-  withPages.sort((a, b) => a.pageNum - b.pageNum)
-
-  // Collapsed starts? Example: LLM gave pageHint="~page 1" for every
-  // agreement → all pageNums equal. Detect + re-distribute so we
-  // actually carve N pieces.
-  const uniqueStarts = new Set(withPages.map(w => w.pageNum))
-  if (uniqueStarts.size < withPages.length && withPages.length >= 2) {
-    console.warn(
-      '[agent-worker] docsToSplitSpecs: %d unique starts for %d docs — redistributing evenly',
-      uniqueStarts.size, withPages.length,
-    )
-    // Preserve the original order from the LLM (insertion order) for
-    // the title sequence, then space them across totalPages.
-    withPages = docs.map((doc, i) => ({
-      ...doc,
-      pageNum: Math.min(totalPages, i * evenShare + 1),
-    }))
-  }
-
-  return withPages.map((doc, i) => {
-    const nextStart = i < withPages.length - 1 ? withPages[i + 1].pageNum : totalPages + 1
-    const pageEnd   = Math.max(doc.pageNum, nextStart - 1)
-    return {
-      title:     doc.title,
-      type:      doc.docType,
-      pageStart: doc.pageNum,
-      pageEnd,
-    }
-  })
 }
 
 // ─── classify-document ────────────────────────────────────────────────────────
