@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
@@ -240,10 +241,18 @@ export async function searchRoutes(app: FastifyInstance) {
     }
 
     // X27 — the clauses go to the reranker and the model under the org's PII
-    // policy, as round-trip tokens (scoped to the org: the matches span
-    // contracts); the answer comes back to the user with the values.
+    // policy, as round-trip tokens: values found against the matched versions'
+    // whole text (a card number counts as one when "card" is anywhere in its
+    // contract), scoped to this request so tokens can't be linked across
+    // requests; the answer comes back to the user with the values.
+    const scope = randomUUID()
     const texts = dense.map(d => d.content)
-    const sent = await redactJson(orgId, texts, { surface: 'search_ask', roundTrip: orgId })
+    const documents = (await prisma.contractVersion.findMany({
+      where: { id: { in: [...new Set(dense.map(d => d.versionId))] } },
+      select: { plainText: true },
+    })).map(v => v.plainText)
+    const source = [texts, documents]
+    const sent = await redactJson(orgId, texts, { surface: 'search_ask', roundTrip: scope, valuesFrom: source })
     const sentOf = new Map(dense.map((d, i) => [d, sent[i]]))
 
     // P7.7.1 — voyage-rerank-2.5 over the dense candidates. Falls back
@@ -279,7 +288,7 @@ export async function searchRoutes(app: FastifyInstance) {
       return reply.send({ answer: null, sources: clauseMatches, message: 'Agent unavailable — showing relevant clauses' })
     }
 
-    const agentData = restorePii(await agentRes.json(), texts, orgId)
+    const agentData = restorePii(await agentRes.json(), source, scope)
     return reply.send({ ...agentData, sources: clauseMatches })
   })
 

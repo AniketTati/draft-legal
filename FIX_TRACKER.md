@@ -1142,8 +1142,104 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Suite: typecheck 0, lint 0 errors; api unit 272/272, integration 256/256.
   - **Why VERIFY-PENDING:** the redline analysis and approval summary need a live run to confirm the models keep the tokens and the stored text reads right.
   - **Left as is:**
-    - `GET /contracts/:id` (summary, key terms) stays raw for the agents service. `redline.py` reads the contract's metadata there and PATCHes it back merged, so tokenizing it could write tokens over metadata values that aren't in the document. Moving that read-modify-write to a server-side merge is a separate change.
-    - The redline analysis quotes removed text from the older version. A value that exists only there stays a token in the stored analysis, a display-only artifact with a warning in the log, because `PATCH /contracts/:id` restores against the current version.
+    - `GET /contracts/:id` (summary, key terms) stays raw for the agents service. `redline.py` reads the contract's metadata there and PATCHes it back merged, so tokenizing it could write tokens over metadata values that aren't in the document. Moving that read-modify-write to a server-side merge is a separate change. *(Superseded: the follow-up below tokenizes key terms and summary, which no agent writes back, and leaves `metadata` raw.)*
+    - The redline analysis quotes removed text from the older version. A value that exists only there stays a token in the stored analysis, a display-only artifact with a warning in the log, because `PATCH /contracts/:id` restores against the current version. *(Superseded: the follow-up restores against both compared versions.)*
+  - **Follow-up (adversarial review of 0dea2dd) — VERIFY-PENDING.** The review found paths that still sent values, or fragments of them, to a model, and outputs that could put a placeholder into a document. Each finding and what changed:
+    1. **The agents' redline diff leaked a value changed between versions (Medium-High).**
+       - Tokenizing the finished diff missed values htmldiff had split at `-` and `.` (`123-45-<del>6789</del><ins>6780</ins>`). The same happened to an SSN split by `<strong>` and to a card number written with non-breaking spaces.
+       - Now each version is tokenized BEFORE diffing:
+         - values are found in its plain text, its HTML, and its HTML's visible text (`htmlTextForms`: tags dropped, and tags as spaces);
+         - the HTML's space entities and whitespace runs become one plain space (`plainSpacesHtml`), as the extractors do for `plainText`;
+         - `withWholeTokens` (new in `pii-policy.ts`) keeps each token one word for htmldiff, which otherwise splits it at `:`;
+         - when the markup itself still splits a value (`valueLeftInMarkup`), the plain texts are diffed instead.
+       - The agents' diff is not cached, and a version still being extracted gets the same 409 users get.
+       - `PATCH /contracts/:id` restores a redline analysis against the same forms of both compared versions (`_redlineAnalysis.v1Id`/`v2Id`). A value that exists only in the older version now comes back too.
+    2. **The approval summary sent raw key terms (Medium).** `GET /contracts/:id` now tokenizes `keyTerms` and `summary` for the agents service (contract scope).
+       - `metadata` stays raw: `redline.py` merges it back, and it goes to no model.
+       - `PATCH /approvals/:id/summary` restores against the text the agents service was given:
+         - the clauses of the version `/clauses` picks (a shared `clauseVersionId()`, in sort order);
+         - that version's text;
+         - the current version's text;
+         - the key terms and summary.
+    3. **The playbook tester the UI uses was missed (Medium).** `POST /playbook/test` now sends the clause as tokens and restores the comparison.
+    4. **Nothing stopped a mangled placeholder from reaching the document (Medium).**
+       - `PII_TOKEN_RULE` is added to every prompt these paths send tokens to:
+         - `assist.py` ×4, `assist_agent.py` ×2, `ask_agent.py`;
+         - `redline_agent.py` ×3 and `approval_agent.py` ×3.
+       - After restoring:
+         - `/assist` answers 502;
+         - `/complete` returns no ghost text;
+         - `/assist-stream` ends with an `error` event instead of `done`.
+       - A stream that stops without `done` or `error` also ends with an error, since its held-back tail may be half a token.
+       - The popover no longer offers Replace or Insert after an error.
+    5. **Values were found per slice (Low-Medium).**
+       - `complete` and `classify-clause` cut the text to size before redacting, which sent `3-45-6789…` and `SSN 123-45-6`. They now redact all the text they were given, then cut without splitting a token (`sliceOutsideTokens`).
+       - Both ask routes find values against the whole version text, so a card whose "credit card" is elsewhere in the contract is caught. For the portfolio ask, that means every matched version.
+    6. **The approval restore read different text from the clause read (Low).** Covered by 2.
+    7. **Org-wide token scope (Low).** The editor and Q&A round trips happen within one request, so each now uses a random scope, and tokens can't be linked across requests.
+    8. **Output truncation could cut a token (Low).** `dropPartialToken` drops a token cut off at the end of a classify or complete reply.
+    9. **Test hygiene (Nit).** The test now deletes its `versionDiffCache` rows (no foreign key). The dead `orgOf()` branch in `/clauses` is removed.
+    10. **Adjacent surfaces.** `obligations_list` (description, quote) and `approval_list` (AI summary) now go through the policy, like the other chat tools.
+  - **A second adversarial review of this follow-up found, and this commit also fixes:**
+    - **High: the diff could still send a card number that the HTML spaced differently from `plainText`** (double, thin or figure spaces, or a tab). The HTML's whitespace is now normalized as above, and so is the text `valueLeftInMarkup` reads.
+      - At the detector (`pii-redactor.ts`), a card's digit groups may be separated by any single space character, not just U+0020. Word and the editor write no-break and thin spaces, so those card numbers went out whole on every plain-text surface. Groups on separate lines still don't join.
+    - **`approval_list` cut the summary to 400 characters before redacting it,** so a value across the cut went out as a fragment. It now redacts the whole summary, then cuts.
+      - The older chat tools do the same (filed as X36).
+    - **The completion's cursor is a cut too.**
+      - Values are now also found across it: a date of birth whose keyword is before the cursor is caught.
+      - When a value spans the cursor (`123-45-|6789`), nothing is sent (`valueAcross`), since each half matches no pattern.
+    - **`/assist` receives HTML.** A label and its value in separate tags (`<strong>Date of birth:</strong> 1980-05-12`, `<td>Passport No.</td><td>A1234567</td>`) went out raw.
+      - Values are now found in the HTML's text forms, and the HTML is sent with its spaces normalized.
+      - A value its formatting splits can't be tokenized, so the request is refused with a 422 that says why. The editor now shows the server's reason instead of a generic "try again".
+    - **`/contracts/:id/ask` found values in the current version,** while its clauses can come from an older one after an editor save. It now uses the matched clauses' own versions, as `/search/ask` does.
+    - **`/assist-stream`:**
+      - An upstream connection reset ended the handler with a throw after the headers were sent. It now ends with the cut-off error.
+      - The selection is cut to the agents service's 6,000 characters here, without splitting a token. So are `/compare` and `/playbook/test` at 2,000.
+    - **Mangled placeholders the check missed:** `[PII:SSN]`, `[PII:SSN:1a2]` and `[REDACTED]` now count as unresolved.
+    - **The approval summary restore:**
+      - it logs unresolved placeholders, like `PATCH /contracts/:id`;
+      - it includes the latest version's text, which is what `GET /contracts/:id` reads when there is no current version.
+  - **Verification:**
+    - `routes/pii-surfaces.integration.test.ts` has 9 new cases (15 in the file):
+      - **The redline diff:**
+        - the agents' diff of a changed SSN has no digits and a whole token on each side;
+        - it stays that way with markup splitting the value, with a Word card number written with `&nbsp;` or U+00A0, and with double, thin or figure spaces or a tab;
+        - a pending version gets 409.
+      - **Playbook tester:** it sends tokens and restores.
+      - **Windows and the cursor:**
+        - neither the complete window nor the classify window carries any part of a value that straddles the cut;
+        - with the cursor inside a value nothing is sent;
+        - a date of birth whose keyword is before the cursor doesn't go out.
+      - **The editor's HTML:** labelled values in other tags go out as tokens and come back, and a value split by formatting gets 422.
+      - **Per-contract ask:** it finds a card number through its older clause version's text.
+      - **Mangled or cut-off replies:**
+        - a mangled placeholder gets 502 from `/assist`, and an `error` event rather than `done` from the stream;
+        - a cut-off stream and a reset one both end in an error, without the half token.
+      - **Approval summary:**
+        - `GET /contracts/:id` for the agents tokenizes key terms and summary, and a summary quoting a value found only there is stored with the value;
+        - so is one tokenized against the latest version when there is no current one.
+      - **Chat lists:** `obligations_list` and `approval_list` carry no SSN, even across the 400-character cut.
+    - **Unit tests:**
+      - `lib/pii-token-boundaries.test.ts` has 16 cases for the new helpers and the widened placeholder check;
+      - `lib/pii-redactor.test.ts` has 2 for card spacing;
+      - `lib/pii-pseudonym.test.ts` has a tripwire for each new `PII_TOKEN_RULE`.
+    - **Pre-fix check:** against the pre-fix code, all 9 new integration cases, the card-spacing case and the tripwire fail. Without the non-breaking-space step, the card diff case fails too.
+    - `redline-internal.integration.test.ts` (C8) still passes unchanged: the agents get an HTML diff, as before.
+    - **Suite:** typecheck 0, lint 0 errors (warnings unchanged), api unit 293/293, web 18/18, integration 267/267 (43 files).
+  - **Why VERIFY-PENDING:** as before, a live redline analysis and approval summary, to confirm the models keep the tokens.
+  - **Left as is:**
+    - `spanStart`/`spanEnd` in ask answers are offsets into the tokenized clause text, off by about 15 characters per value before them. Only API callers read them; the web app doesn't.
+    - `dropPartialToken` also drops an ordinary trailing `[` or `[P` from a completion or classifier reason. That is harmless and simpler than telling it from a cut token.
+    - `/search/ask` finds values once to redact and again to restore (about 160 ms for 60 versions of about 100 KB each). The answer takes seconds anyway.
+    - The question text goes to embeddings, Voyage and `/agent/ask` as typed, as in chat.
+    - For the agents service, `riskFactors` and the `versions` array of `GET /contracts/:id` stay raw. `riskFactors` are metadata the chat tools also leave raw (P21). No agent sends the version texts to a model.
+    - Filed from this work:
+      - X32: htmldiff blocks the event loop on large version pairs, and the agents' diff is now computed on every read;
+      - X33: the approval summary never gets the contract text;
+      - X34: audit rows are lost under concurrent writes;
+      - X35: two more internal checks are open outside production or when the secret is unset;
+      - X36: the older chat tools cut text before redacting it;
+      - X37: IBANs written in groups aren't recognized.
 - **X28 — The signer portal lets a later sequential signer act before their turn (Low). — DONE.** Found in the X21 review.
   - **Plan:** confirmed in `routes/signatures.ts`. `POST /sign/:token/sign` checks that every earlier group of a SEQUENTIAL request has signed, but `GET /sign/:token` returns the full contract HTML and `POST /sign/:token/decline` voids the whole request, with no such check. A later signer's link, forwarded or copied, can read the contract or void the request before the first signer acts. Fix: one `waitingForEarlier()` check, used by all three routes.
   - **What changed:**
@@ -1190,6 +1286,32 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is (for when the editor binds to the shared document):**
     - Read-only connections can still send awareness (presence) and stateless messages, both unused today.
     - `collab_states` rows written before X21 (when any org member could write) should be cleared before binding.
+- **X32 — htmldiff blocks the event loop on large version pairs (Medium).** Found in the X27 review.
+  - `GET /contracts/:id/versions/:v1/diff/:v2` runs `node-htmldiff` synchronously on the request thread. On a large pair the review measured the event loop blocked for more than 5 minutes, so one request stalls every other request on that instance.
+  - Users' diffs are cached after the first run. Since the X27 follow-up, the agents service's tokenized diff is computed on every read.
+  - Measured on synthetic contract text: 45 KB takes 0.2 s, 178 KB 1.7 s, 354 KB 5.6 s. The review saw 17 s at 60k words of low-vocabulary text.
+  - Bound the work (refuse or degrade above a size, or diff paragraph by paragraph), or move it off the request thread.
+- **X33 — The approval summary never gets the contract text (Low-Medium).** Found in the X27 follow-up.
+  - `approval.py` reads `plainText` from `GET /contracts/:id/versions`, which has never returned it (it lists metadata only). The executive-summary prompt's `text_excerpt` is therefore always empty, and the summary is written from key terms and clauses alone.
+  - Any fix has to hand the text over tokenized with the contract scope, as `/clauses` does, so `PATCH /approvals/:id/summary` can restore it.
+- **X34 — Audit events are lost under bursts of concurrent writes for one org (Low-Medium).** Found in the X27 follow-up.
+  - The integration suite logs `[pii-policy] failed to write audit event: … P2034`. `createAuditEvent` appends to the org's hash chain in a SERIALIZABLE transaction, with 5 attempts on a fixed 10–160 ms backoff and no jitter.
+  - With six or more writers at once, as parallel chat tool calls produce, retries collide again and some writers run out of attempts. Fire-and-forget callers (PII redaction, tool calls) then drop the event with a console line. The chain stays valid but incomplete.
+  - Serialize appends per org, or retry with jitter until a deadline.
+- **X35 — Two more internal-only checks are open outside production, or when the secret is unset (Low-Medium).** Found while planning X31.
+  - Bull Board (`/admin/queues`, `app.ts`) is open whenever `NODE_ENV !== 'production'`. It shows job payloads and can retry or remove jobs.
+  - `POST /contracts/:id/versions/:versionId/chunk` compares `secret !== INTERNAL_SERVICE_SECRET`. With the variable unset and no header, that is `undefined !== undefined`, so the request passes, for any org's contract.
+  - Require the secret in every environment, and treat an unset secret as "refuse".
+- **X36 — The older chat tools cut contract text before redacting it (Low-Medium).** Found in the X27 follow-up review.
+  - Several chat tools slice text to a window and then redact each window on its own:
+    - `contract_get`, `contract_cite`, `counterparty_memory` (twice) and `portfolio_search`;
+    - `contract_summarize`, `playbook_check` and `org_memory`;
+    - `clause_search`, whose before, match and after windows are each redacted separately.
+  - A value that crosses a cut matches no pattern, so a fragment (`123-45-6`, `4111 1111 1111`) goes to the chat model. A card number whose "card" falls outside the window goes out whole.
+  - Redact the whole text (or find values against it), then cut without splitting a placeholder, as X27 does for the editor routes.
+- **X37 — IBANs written in groups are not recognized (Low-Medium).** Found in the X27 follow-up.
+  - The IBAN pattern (`\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b`) only matches the unspaced form. Contracts usually print an IBAN in groups of four (`GB29 NWBK 6016 1331 9268 19`), which goes to every model surface as written.
+  - Allow single spaces between the groups, keeping the banking-word anchor.
 
 
 ---
@@ -1255,3 +1377,4 @@ X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming re
 X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run, TRUST_PROXY_HOPS to override); needs a deployed check of the hop count — 11f6a7f
 X28 — DONE — a later sequential signer can't view the contract or void the request before earlier signers have signed (same check as signing) — af5048a
 X29 — DONE — collab connections refused after token expiry and re-checked each minute (user live, contract live, ownership, edit); a change closes the socket — f005316
+X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — (sha: pending)

@@ -96,7 +96,9 @@ const PATTERNS: Array<{
   requiresContext?: RegExp
 }> = [
   // Credit card — 13-19 digits, optionally separated by space/dash.
-  // We strip separators before Luhn-checking.
+  // We strip separators before Luhn-checking. Any single space counts, not
+  // just U+0020: Word and the editor write card numbers with no-break or thin
+  // spaces (X27), and those went out whole.
   //
   // Luhn is only a 1-in-10 filter, so roughly one in ten long reference
   // numbers passes it: an agreement id, an invoice number, a claim number.
@@ -105,8 +107,8 @@ const PATTERNS: Array<{
   // as a card number.
   {
     kind: 'CC',
-    rx: /\b(?:\d[ -]?){12,18}\d\b/g,
-    validate: (m) => luhnValid(m[0].replace(/[ -]/g, '')),
+    rx: /\b(?:\d(?:[^\S\r\n]|-)?){12,18}\d\b/g,
+    validate: (m) => luhnValid(m[0].replace(/\D/g, '')),
     requiresContext: /\b(?:card|credit|debit|visa|mastercard|amex|american express|cvv|cvc|pan)\b/i,
   },
   // IBAN — letters AA + 2 digits + up to 30 alphanumerics.

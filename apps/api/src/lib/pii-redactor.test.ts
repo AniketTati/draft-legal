@@ -63,6 +63,16 @@ describe('redactPii', () => {
       const r = redactPii('Card: 5555-5555-5555-4444', 'redact')
       expect(r.text).toContain('[REDACTED:CC]')
     })
+    it('X27 — handles no-break, thin and figure spaces (Word and the editor write them)', () => {
+      for (const sp of ['\u00a0', '\u2009', '\u2007', '\u202f', '\t']) {
+        const r = redactPii(`Card: 4111${sp}1111${sp}1111${sp}1111 expires 12/27`, 'redact')
+        expect(r.text, JSON.stringify(sp)).toBe('Card: [REDACTED:CC] expires 12/27')
+      }
+    })
+    it('X27 — does not join digit groups across lines', () => {
+      const r = redactPii('Card on file.\n4111\n1111\n1111\n1111', 'redact')
+      expect(r.counts.CC ?? 0).toBe(0)
+    })
   })
 
   // Email and phone are opt-in — see CONTRACT_TEXT_EXEMPT. In a contract, a

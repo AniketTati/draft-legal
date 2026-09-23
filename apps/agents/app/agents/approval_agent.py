@@ -19,6 +19,7 @@ from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
 
 from ..router import resolve_llm
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ async def step_summarize(state: ApprovalState) -> dict:
             text_excerpt=state['contract_plain_text'][:8000],
         )
         response = await resolved.llm.ainvoke(
-            [SystemMessage(content="You are a legal analyst."), HumanMessage(content=prompt)],
+            [SystemMessage(content="You are a legal analyst." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
             config={"callbacks": resolved.callbacks},
         )
         summary = response.content.strip() if hasattr(response, 'content') else str(response).strip()
@@ -186,7 +187,7 @@ async def step_flag_risks(state: ApprovalState) -> dict:
             clauses_json=json.dumps(all_clauses[:10], indent=2)[:4000],
         )
         response = await resolved.llm.ainvoke(
-            [SystemMessage(content="You are a contract risk analyst."), HumanMessage(content=prompt)],
+            [SystemMessage(content="You are a contract risk analyst." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
             config={"callbacks": resolved.callbacks},
         )
         raw = response.content if hasattr(response, 'content') else str(response)
@@ -219,7 +220,7 @@ async def step_recommend(state: ApprovalState) -> dict:
             executive_summary=state['executive_summary'],
         )
         response = await resolved.llm.ainvoke(
-            [SystemMessage(content="You are a contract approval advisor."), HumanMessage(content=prompt)],
+            [SystemMessage(content="You are a contract approval advisor." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
             config={"callbacks": resolved.callbacks},
         )
         raw = response.content if hasattr(response, 'content') else str(response)

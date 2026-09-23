@@ -23,7 +23,8 @@ import { advanceWorkflow } from '../lib/workflow-engine.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { queueNotification, notificationQueue } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
-import { restorePii } from '../lib/pii-policy.js'
+import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
+import { clauseVersionId } from '../lib/clause-version.js'
 
 // Wave 3.8 — validate workflow step definitions at save time. Each step must
 // name at least one approver, and a parallel step's requiredApprovals must be
@@ -428,17 +429,29 @@ export async function approvalRoutes(app: FastifyInstance) {
     // round-trip tokens (GET /contracts/:id/clauses); put the values back.
     const instance = await prisma.approvalInstance.findUnique({
       where: { id: instanceId },
-      select: { contract: { select: { id: true, currentVersionId: true } } },
+      select: { contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
     })
     if (!instance) return reply.status(404).send({ error: 'Approval not found' })
     let summary = req.body as Record<string, unknown>
-    if (JSON.stringify(summary ?? null).includes('[PII:') && instance.contract.currentVersionId) {
-      const versionId = instance.contract.currentVersionId
-      const [version, clauses] = await Promise.all([
-        prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }),
-        prisma.contractClause.findMany({ where: { version: { contractId: instance.contract.id } }, select: { content: true }, take: 2_000 }),
+    if (JSON.stringify(summary ?? null).includes('[PII:')) {
+      // The same text the agents service was given: the clauses of the
+      // version GET /contracts/:id/clauses picks and that version's text, and
+      // the key terms and summary GET /contracts/:id handed over (tokenized
+      // against the current version's text, or the latest one's).
+      const { contract } = instance
+      const versionId = await clauseVersionId(contract.id, contract.currentVersionId)
+      const latest = await prisma.contractVersion.findFirst({ where: { contractId: contract.id }, orderBy: { versionNumber: 'desc' }, select: { id: true } })
+      const ids = [...new Set([versionId, contract.currentVersionId, latest?.id].filter((v): v is string => !!v))]
+      const [versions, clauses] = await Promise.all([
+        prisma.contractVersion.findMany({ where: { id: { in: ids }, contractId: contract.id }, select: { plainText: true } }),
+        versionId
+          ? prisma.contractClause.findMany({ where: { versionId, isSubChunk: false }, orderBy: { sortOrder: 'asc' }, select: { content: true } })
+          : Promise.resolve([]),
       ])
-      summary = restorePii(summary, [version?.plainText ?? '', clauses.map(c => c.content)], instance.contract.id)
+      const source = [versions.map(v => v.plainText), clauses.map(c => c.content), contract.keyTerms, contract.summary]
+      summary = restorePii(summary, source, contract.id)
+      const left = unresolvedPiiTokens(summary, source).length
+      if (left) req.log.warn({ instanceId, contractId: contract.id, left }, 'PII placeholders left unresolved in an approval summary')
     }
     const { aiSummary, keyRisks, nonStandardTerms, approvalRecommendation } = summary as {
       aiSummary?:              string

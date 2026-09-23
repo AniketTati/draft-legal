@@ -224,7 +224,9 @@ export function BubbleAiPopover({ editor, open, onClose, selectedText: incomingT
               </span>
             ) : null)}
           </div>
-          {!streaming && result && (
+          {/* A stream that ended in an error (X27: an unresolved PII token
+              among others) is incomplete: nothing to put in the document. */}
+          {!streaming && result && !error && (
             <div className="mt-2 flex gap-1 flex-wrap">
               <Button
                 variant="assist"

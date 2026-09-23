@@ -22,6 +22,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..router import ResolvedLlm, resolve_llm
+from ..pii_tokens import PII_TOKEN_RULE
 
 # ─── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ async def run_ask(
 
     try:
         resp = await llm.ainvoke([
-            SystemMessage(content=_ASK_SYSTEM),
+            SystemMessage(content=_ASK_SYSTEM + PII_TOKEN_RULE),
             HumanMessage(content=f"Scope: {scope}\n\nClauses:\n{context}\n\nQuestion: {question}"),
         ], config={"callbacks": resolved.callbacks})
         answer = resp.content

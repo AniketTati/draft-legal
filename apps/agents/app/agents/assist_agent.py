@@ -20,6 +20,7 @@ from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..router import resolve_llm
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +167,7 @@ async def run_assist(
     if action in _HTML_ACTIONS:
         system_content = _DOCUMENT_SYSTEM_PROMPT
         response = await llm.ainvoke([
-            SystemMessage(content=system_content),
+            SystemMessage(content=system_content + PII_TOKEN_RULE),
             HumanMessage(content=user_content),
         ], config={"callbacks": callbacks})
         raw = response.content.strip()
@@ -182,7 +183,7 @@ async def run_assist(
     system_content = _SYSTEM_PROMPT.format(contract_type=contract_type)
 
     response = await llm.ainvoke([
-        SystemMessage(content=system_content),
+        SystemMessage(content=system_content + PII_TOKEN_RULE),
         HumanMessage(content=user_content),
     ], config={"callbacks": callbacks})
 

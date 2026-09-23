@@ -3484,8 +3484,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
       .filter(c => !seen.has(c.id))
       .map(c => ({ id: c.id, title: c.title }))
 
+    // X27 — an obligation's description and source quote are contract text,
+    // bound for the chat model like any other excerpt.
+    const page = items.slice(0, body.limit)
+    const texts = await redactExcerpts(body.orgId, page.flatMap(i => [i.description as string | null, i.quote as string | null]), {
+      surface: 'obligations_list', contractId: body.contractId ?? undefined,
+    })
+    page.forEach((item, k) => { item.description = texts[2 * k]; item.quote = texts[2 * k + 1] })
+
     return reply.send({
-      items: items.slice(0, body.limit),
+      items: page,
       total: items.length,
       contractId: body.contractId ?? null,
       // P7.7.3 / F-83 — When the answer is empty, surface "X contracts
@@ -3890,11 +3898,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
         instance:   inst ? {
           status:                 inst.status,
           submittedAt:            inst.submittedAt,
-          aiSummary:              inst.aiSummary?.slice(0, 400) ?? null,
+          aiSummary:              inst.aiSummary ?? null,
           approvalRecommendation: inst.approvalRecommendation,
         } : null,
       }
     })
+    // X27 — the AI summary is written from the contract and stored with the
+    // real values; going back to the chat model, the org's policy applies.
+    // Redacted whole, then cut: a value across the cut matched no pattern.
+    const summaries = await redactExcerpts(body.orgId, items.map(i => i.instance?.aiSummary ?? null), { surface: 'approval_list.aiSummary' })
+    items.forEach((item, k) => { if (item.instance) item.instance.aiSummary = summaries[k]?.slice(0, 400) ?? null })
     return reply.send({ items, total: items.length, scope: body.scope })
   })
 

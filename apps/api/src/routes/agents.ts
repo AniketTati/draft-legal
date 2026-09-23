@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
 import { requireAuth } from '../middleware/auth.js'
 // Wave 1.7 — AI-consuming endpoints are gated on view:contract so a scopeless
 // public-API key (or a non-contract principal) can't burn the org's LLM
@@ -13,7 +14,7 @@ import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
-import { redactJson, restorePii, streamRestorer } from '../lib/pii-policy.js'
+import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -506,7 +507,10 @@ export async function agentRoutes(app: FastifyInstance) {
     // X27 — the editor's selection is contract text: it goes to the model
     // under the org's PII policy, and the rewrite streams back with the values.
     const { orgId } = req.user
-    const selected = await redactJson(orgId, body.selectedText, { surface: 'assist_stream', roundTrip: orgId })
+    const scope = randomUUID()   // tokens mean nothing outside this request
+    // Cut to the agents service's 6,000-character limit here, where a cut
+    // can't split a token.
+    const selected = sliceOutsideTokens(await redactJson(orgId, body.selectedText, { surface: 'assist_stream', roundTrip: scope }), 0, 6000)
     const upstream = await fetch(`${AGENTS_URL}/assist_stream`, {
       method: 'POST',
       headers: {
@@ -533,7 +537,9 @@ export async function agentRoutes(app: FastifyInstance) {
     // NDJSON: {type:'delta', text} lines carry the rewrite. Tokens can split
     // across deltas, so each delta is restored through a buffer that holds a
     // possible partial token back; other events pass through after a flush.
-    const restorer = streamRestorer(body.selectedText, orgId)
+    const restorer = streamRestorer(body.selectedText, scope)
+    let streamed = ''
+    let ended = false
     const write = (event: Record<string, unknown>) => reply.raw.write(Buffer.from(JSON.stringify(event) + '\n'))
     const onLine = (line: string) => {
       if (!line.trim()) return
@@ -541,27 +547,42 @@ export async function agentRoutes(app: FastifyInstance) {
       try { event = JSON.parse(line) } catch { return }
       if (event.type === 'delta' && typeof event.text === 'string') {
         const text = restorer.push(event.text)
+        streamed += text
         if (text) write({ ...event, text })
         return
       }
       const rest = restorer.flush()
+      streamed += rest
       if (rest) write({ type: 'delta', text: rest })
+      if (event.type === 'done' || event.type === 'error') ended = true
+      // A placeholder the model mangled would be inserted where a value was:
+      // end with an error instead, and the popover won't offer to apply it.
+      if (event.type === 'done' && unresolvedPiiTokens(streamed, body.selectedText).length) {
+        write({ type: 'error', message: 'The suggestion lost a redacted value from your text. Try again.' })
+        return
+      }
       write(event)
     }
     let partial = ''
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      if (!value) continue
-      partial += decoder.decode(value, { stream: true })
-      const lines = partial.split('\n')
-      partial = lines.pop() ?? ''
-      lines.forEach(onLine)
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (!value) continue
+        partial += decoder.decode(value, { stream: true })
+        const lines = partial.split('\n')
+        partial = lines.pop() ?? ''
+        lines.forEach(onLine)
+      }
+      onLine(partial)
+    } catch (err) {
+      req.log.warn({ err }, 'assist-stream: the agents service stream failed')
     }
-    onLine(partial)
-    const rest = restorer.flush()
-    if (rest) write({ type: 'delta', text: rest })
+    // The agents service ends every stream with done or error: one that just
+    // stops (or resets) was cut off, and what the restorer still holds may be
+    // half a token.
+    if (!ended) write({ type: 'error', message: 'The suggestion was cut off. Try again.' })
     reply.raw.end()
     return reply
   })
@@ -578,9 +599,12 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.clauseText !== 'string' || body.clauseText.trim().length < 30) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '' })
     }
-    // X27 — the paragraph goes to the model under the org's PII policy.
-    const clauseText = body.clauseText.slice(0, 2400)
-    const sent = await redactJson(req.user.orgId, clauseText, { surface: 'classify_clause', roundTrip: req.user.orgId })
+    // X27 — the paragraph goes to the model under the org's PII policy:
+    // values found in the whole paragraph, then cut to size without
+    // splitting a token.
+    const clauseText = body.clauseText
+    const scope = randomUUID()
+    const sent = sliceOutsideTokens(await redactJson(req.user.orgId, clauseText, { surface: 'classify_clause', roundTrip: scope }), 0, 2400)
     const upstream = await fetch(`${AGENTS_URL}/classify_clause`, {
       method: 'POST',
       headers: {
@@ -596,7 +620,7 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!upstream?.ok) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '', error: 'upstream_unavailable' })
     }
-    return reply.send(restorePii(await upstream.json(), clauseText, req.user.orgId))
+    return reply.send(dropPartialToken(restorePii(await upstream.json(), clauseText, scope)))
   })
 
   // POST /api/v1/agent/complete — P6.1 ghost-text completion.
@@ -617,8 +641,20 @@ export async function agentRoutes(app: FastifyInstance) {
     // X27 — the text around the cursor goes to the model under the org's PII
     // policy; the completion comes back with the values (it is typed into the
     // document).
-    const context = [body.contextBefore.slice(-1400), (body.contextAfter ?? '').slice(0, 400)]
-    const [before, after] = await redactJson(req.user.orgId, context, { surface: 'complete', roundTrip: req.user.orgId })
+    // Values are found in all the text the editor sent, before the window is
+    // cut: cutting first sent fragments of a value, and a card number whose
+    // "card" fell outside the window went out whole.
+    // The cursor is a cut too: values are also found across it (a date of
+    // birth whose keyword is before it), and one it splits sends nothing.
+    const context = [body.contextBefore, body.contextAfter ?? '']
+    const source = [context.join(''), ...context]
+    const scope = randomUUID()
+    const [fullBefore, fullAfter] = await redactJson(req.user.orgId, context, { surface: 'complete', roundTrip: scope, valuesFrom: source })
+    if (await getOrgPiiMode(req.user.orgId) !== 'off' && valueAcross(fullBefore, fullAfter)) {
+      return reply.send({ completion: '' })
+    }
+    const before = sliceOutsideTokens(fullBefore, fullBefore.length - 1400, fullBefore.length)
+    const after = sliceOutsideTokens(fullAfter, 0, 400)
     const upstream = await fetch(`${AGENTS_URL}/complete`, {
       method: 'POST',
       headers: {
@@ -635,7 +671,10 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!upstream?.ok) {
       return reply.send({ completion: '', error: 'upstream_unavailable' })
     }
-    return reply.send(restorePii(await upstream.json(), context, req.user.orgId))
+    const out = dropPartialToken(restorePii(await upstream.json() as { completion?: string }, source, scope))
+    // Ghost text is inserted with Tab: never offer one carrying a placeholder.
+    if (unresolvedPiiTokens(out.completion ?? '', context).length) return reply.send({ ...out, completion: '' })
+    return reply.send(out)
   })
 
   // POST /api/v1/agent/assist — inline AI text improvement for editor
@@ -643,7 +682,17 @@ export async function agentRoutes(app: FastifyInstance) {
     const body = AssistSchema.parse(req.body)
     // X27 — as assist-stream: the selection goes out tokenized, the rewrite
     // comes back with the values.
-    const selected = await redactJson(req.user.orgId, body.selectedText, { surface: 'assist', roundTrip: req.user.orgId })
+    // The editor sends HTML: values are found in its text too (a label and
+    // its value in separate tags), and it goes out with its spaces made plain.
+    const scope = randomUUID()
+    const html = plainSpacesHtml(body.selectedText)
+    const forms = htmlTextForms(html)
+    const selected = await redactJson(req.user.orgId, html, { surface: 'assist', roundTrip: scope, valuesFrom: forms })
+    if (await getOrgPiiMode(req.user.orgId) !== 'off' && valueLeftInMarkup(selected)) {
+      return reply.status(422).send({
+        detail: 'The selection has a redacted value split by formatting (bold or a link inside it), so it can\'t go to the AI. Remove that formatting and try again.',
+      })
+    }
 
     const upstream = await fetch(`${AGENTS_URL}/assist`, {
       method: 'POST',
@@ -666,7 +715,13 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(restorePii(await upstream.json(), body.selectedText, req.user.orgId))
+    const out = restorePii(await upstream.json(), forms, scope)
+    // "Rewrite document" replaces the whole editor content with this: a
+    // placeholder the model mangled would replace a value in the next save.
+    if (unresolvedPiiTokens(out, body.selectedText).length) {
+      return reply.status(502).send({ detail: 'The suggestion lost a redacted value from your text. Try again.' })
+    }
+    return reply.send(out)
   })
 
   // POST /api/v1/agent/compare — compare clause text to playbook positions
@@ -703,6 +758,7 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(404).send({ detail: 'No playbook positions found for this category' })
     }
 
+    const scope = randomUUID()
     const upstream = await fetch(`${AGENTS_URL}/compare`, {
       method: 'POST',
       headers: {
@@ -710,13 +766,14 @@ export async function agentRoutes(app: FastifyInstance) {
         'x-internal-secret': INTERNAL_SECRET,
       },
       // X27 — the clause goes to the model under the org's PII policy.
-      body: JSON.stringify({ clauseText: await redactJson(orgId, clauseText, { surface: 'compare', roundTrip: orgId }), positions }),
+      // Cut to the agents service's 2,000-character limit without splitting a token.
+      body: JSON.stringify({ clauseText: sliceOutsideTokens(await redactJson(orgId, clauseText, { surface: 'compare', roundTrip: scope }), 0, 2000), positions }),
     }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(restorePii(await upstream.json(), clauseText, orgId))
+    return reply.send(restorePii(await upstream.json(), clauseText, scope))
   })
 }

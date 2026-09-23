@@ -56,4 +56,18 @@ describe('the agents service keeps round-trip tokens intact (source tripwires)',
   it('the extraction names the version it read, so the API restores against that one', () => {
     expect(py('routes', 'review.py')).toContain('params={"versionId": version_id}')
   })
+
+  it('X27 — so does every prompt the Q&A, editor, redline and approval paths send tokens to', () => {
+    const assist = py('routes', 'assist.py')
+    for (const system of ['_CLASSIFY_SYSTEM', 'system', '_COMPARE_SYSTEM', '_STREAM_SYSTEM']) {
+      expect(assist, system).toContain(`SystemMessage(content=${system} + PII_TOKEN_RULE)`)
+    }
+    expect(py('agents', 'ask_agent.py')).toContain('SystemMessage(content=_ASK_SYSTEM + PII_TOKEN_RULE)')
+    expect(py('agents', 'assist_agent.py').match(/SystemMessage\(content=system_content \+ PII_TOKEN_RULE\)/g)?.length).toBe(2)
+    for (const file of ['redline_agent.py', 'approval_agent.py']) {
+      const src = py('agents', file)
+      expect(src.match(/SystemMessage\(content="[^"]+" \+ PII_TOKEN_RULE\)/g)?.length, file).toBe(3)
+      expect(src, file).not.toMatch(/SystemMessage\(content="[^"]+"\)/)
+    }
+  })
 })

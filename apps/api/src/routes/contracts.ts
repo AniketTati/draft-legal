@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
@@ -21,9 +22,10 @@ import { applyPiiPolicy } from '../lib/pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
-import { applyClauseProposal } from '../lib/clause-apply.js'
-import { restorePii, unresolvedPiiTokens, redactJson } from '../lib/pii-policy.js'
+import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-apply.js'
+import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
+import { clauseVersionId } from '../lib/clause-version.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
@@ -46,9 +48,13 @@ function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
   return { ...row, riskScore: normalizeRiskScore(row.riskScore) }
 }
 
-/** A contract's org, for internal calls that carry no org of their own. */
-async function orgOf(contractId: string): Promise<string> {
-  return (await prisma.contract.findUniqueOrThrow({ where: { id: contractId }, select: { orgId: true } })).orgId
+/**
+ * X27 — each form of a version's text a value can be found in: the redline
+ * diff tokenizes the values of all of them, and the analysis written from it
+ * is restored against the same.
+ */
+function versionForms(v: { plainText: string; htmlContent: string }): string[] {
+  return [v.plainText, ...htmlTextForms(v.htmlContent)]
 }
 
 export async function contractRoutes(app: FastifyInstance) {
@@ -579,6 +585,19 @@ export async function contractRoutes(app: FastifyInstance) {
       resourceId: id,
     })
 
+    // X27 — the agents service reads the key terms and summary here for the
+    // approval summary's prompt: the org's PII policy applies (round-trip
+    // tokens, put back when the summary is stored, see approvals.ts).
+    // `metadata` stays as it is: redline.py writes it back merged.
+    if (req.user.sub === 'system') {
+      const current = contract.versions.find(v => v.id === contract.currentVersionId) ?? contract.versions[0]
+      const read = await redactJson(contract.orgId, { keyTerms: contract.keyTerms, summary: contract.summary }, {
+        surface: 'agents_contract_read', contractId: id, roundTrip: id,
+        valuesFrom: [current?.plainText ?? '', contract.keyTerms, contract.summary],
+      })
+      return reply.send(withNormalizedRisk({ ...contract, ...read }))
+    }
+
     return reply.send(withNormalizedRisk(contract))
   })
 
@@ -989,21 +1008,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // version has no clauses yet (happens when a user saves a new version
     // from the editor before re-analysis runs). Otherwise the rail/drawer
     // look empty until extraction catches up.
-    let versionId = contract.currentVersionId
-    if (versionId) {
-      const count = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
-      if (count === 0) {
-        const fallback = await prisma.contractVersion.findFirst({
-          where: {
-            contractId: id,
-            clauses: { some: { isSubChunk: false } },
-          },
-          orderBy: { versionNumber: 'desc' },
-          select: { id: true },
-        })
-        if (fallback) versionId = fallback.id
-      }
-    }
+    const versionId = await clauseVersionId(id, contract.currentVersionId)
     if (!versionId) return reply.send({ data: [] })
 
     const clauses = await prisma.contractClause.findMany({
@@ -1022,7 +1027,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // when the summary is stored, see approvals.ts).
     if (req.user.sub === 'system') {
       const text = (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
-      return reply.send({ data: await redactJson(orgId === 'system' ? await orgOf(id) : orgId, clauses, {
+      return reply.send({ data: await redactJson(orgId, clauses, {
         surface: 'approval_summary.clauses', contractId: id, roundTrip: id, valuesFrom: [clauses.map(c => c.content), text],
       }) })
     }
@@ -1106,7 +1111,15 @@ export async function contractRoutes(app: FastifyInstance) {
       const version = (versionId && await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: existing.id }, select: { plainText: true } }))
         || (existing.currentVersionId && await prisma.contractVersion.findUnique({ where: { id: existing.currentVersionId }, select: { plainText: true } }))
         || await prisma.contractVersion.findFirst({ where: { contractId: existing.id }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
-      const source = version ? version.plainText : ''
+      // A redline analysis quotes both versions it compared (X27).
+      const analysis = (raw as { metadata?: { _redlineAnalysis?: { v1Id?: unknown; v2Id?: unknown } } } | null)?.metadata?._redlineAnalysis
+      const compared = analysis
+        ? await prisma.contractVersion.findMany({
+            where: { contractId: existing.id, id: { in: [analysis.v1Id, analysis.v2Id].filter((v): v is string => typeof v === 'string') } },
+            select: { plainText: true, htmlContent: true },
+          })
+        : []
+      const source = [version ? version.plainText : '', ...compared.flatMap(versionForms)]
       raw = restorePii(raw, source, existing.id)
       const left = unresolvedPiiTokens(raw, source).length
       if (left) req.log.warn({ contractId: existing.id, left }, 'PII placeholders left unresolved in an agents-service update')
@@ -1384,8 +1397,17 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     // X27 — the clauses go to the model under the org's PII policy, as
-    // round-trip tokens; the answer comes back to the user with the values.
-    const sent = await redactJson(orgId, clauseMatches, { surface: 'contract_ask', contractId: id, roundTrip: id })
+    // round-trip tokens (values found against the whole text of the versions
+    // the clauses come from, scoped to this request); the answer comes back
+    // to the user with the values.
+    const scope = randomUUID()
+    const documents = (await prisma.contractVersion.findMany({
+      where:  { id: { in: [...new Set(clauseMatches.map(m => m.versionId))] }, contractId: id },
+      select: { plainText: true },
+    })).map(v => v.plainText)
+    const sent = await redactJson(orgId, clauseMatches, {
+      surface: 'contract_ask', contractId: id, roundTrip: scope, valuesFrom: [clauseMatches.map(m => m.content), documents],
+    })
     const agentRes = await fetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
@@ -1399,7 +1421,7 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.send({ answer: null, sources: clauseMatches, message: 'Agent unavailable — showing relevant clauses' })
     }
 
-    const agentData = restorePii(await agentRes.json(), clauseMatches, id)
+    const agentData = restorePii(await agentRes.json(), [clauseMatches.map(m => m.content), documents], scope)
     return reply.send({ ...agentData, sources: clauseMatches })
   })
 
@@ -2015,19 +2037,6 @@ export async function contractRoutes(app: FastifyInstance) {
     ])
     if (!v1 || !v2) return reply.status(404).send({ error: 'Version not found' })
 
-    // X27 — the agents service reads diffs for the redline analysis, which a
-    // model writes: the org's PII policy applies (round-trip tokens, put back
-    // when the analysis is stored through PATCH /:id).
-    const forCaller = async (diff: { diffHtml: string; stats: unknown }) => ({
-      ...(req.user.sub === 'system'
-        ? await redactJson(contract.orgId, diff, { surface: 'redline_diff', contractId, roundTrip: contractId, valuesFrom: [v1.plainText, v2.plainText] })
-        : diff),
-      v1Id, v2Id,
-    })
-
-    const cached = await prisma.versionDiffCache.findUnique({ where: { v1Id_v2Id: { v1Id, v2Id } } })
-    if (cached) return reply.send(await forCaller({ diffHtml: cached.diffHtml, stats: cached.stats }))
-
     // A version whose text has not been extracted yet (freshly uploaded, or a
     // counterparty turn still moving through the parse pipeline) has
     // htmlContent ''. Diffing against '' renders the entire other version as
@@ -2038,13 +2047,39 @@ export async function contractRoutes(app: FastifyInstance) {
       ...(v1.htmlContent?.trim() ? [] : [v1Id]),
       ...(v2.htmlContent?.trim() ? [] : [v2Id]),
     ]
-    if (pendingVersionIds.length > 0) {
-      return reply.status(409).send({
-        error:  'Version still processing',
-        detail: 'This version is still being extracted. The comparison will be available once processing finishes.',
-        pendingVersionIds,
+    const pending = () => reply.status(409).send({
+      error:  'Version still processing',
+      detail: 'This version is still being extracted. The comparison will be available once processing finishes.',
+      pendingVersionIds,
+    })
+
+    // X27 — the agents service reads diffs for the redline analysis, which a
+    // model writes: the org's PII policy applies (round-trip tokens, put back
+    // when the analysis is stored through PATCH /:id). Tokens go into each
+    // version BEFORE diffing: htmldiff splits words at '-' and '.', so a value
+    // changed between versions came out as `123-45-<del>6789</del>…`, which no
+    // replacement over the finished diff could find. Not cached (users' diffs
+    // are): the tokens are the agents' alone.
+    if (req.user.sub === 'system') {
+      if (pendingVersionIds.length > 0) return pending()
+      const [h1, h2, t1, t2] = await redactJson(contract.orgId, [plainSpacesHtml(v1.htmlContent), plainSpacesHtml(v2.htmlContent), v1.plainText, v2.plainText], {
+        surface: 'redline_diff', contractId, roundTrip: contractId, valuesFrom: [...versionForms(v1), ...versionForms(v2)],
       })
+      // The HTML diff, as users get it; the plain text's when the markup
+      // splits a value the replacement couldn't reach.
+      const para = (t: string) => t.split(/\n+/).map(l => `<p>${escapeText(l)}</p>`).join('')
+      const [a, b] = await getOrgPiiMode(contract.orgId) !== 'off' && [h1, h2].some(valueLeftInMarkup)
+        ? [para(t1), para(t2)]
+        : [h1, h2]
+      const diffHtml = withWholeTokens([a, b], ([x, y]) => htmldiff(x, y))
+      const stats = { insertions: (diffHtml.match(/<ins[\s>]/g) ?? []).length, deletions: (diffHtml.match(/<del[\s>]/g) ?? []).length }
+      return reply.send({ diffHtml, stats, v1Id, v2Id })
     }
+
+    const cached = await prisma.versionDiffCache.findUnique({ where: { v1Id_v2Id: { v1Id, v2Id } } })
+    if (cached) return reply.send({ diffHtml: cached.diffHtml, stats: cached.stats, v1Id, v2Id })
+
+    if (pendingVersionIds.length > 0) return pending()
 
     const diffHtml: string = htmldiff(v1.htmlContent, v2.htmlContent)
 
@@ -2055,7 +2090,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats } })
 
-    return reply.send(await forCaller({ diffHtml, stats }))
+    return reply.send({ diffHtml, stats, v1Id, v2Id })
   })
 
 

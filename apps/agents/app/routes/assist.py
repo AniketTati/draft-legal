@@ -172,7 +172,7 @@ Classify now. JSON only."""
         provider = resolved.provider
         model = resolved.model
         response = await llm.ainvoke([
-            SystemMessage(content=_CLASSIFY_SYSTEM),
+            SystemMessage(content=_CLASSIFY_SYSTEM + PII_TOKEN_RULE),
             HumanMessage(content=user),
         ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
@@ -249,7 +249,7 @@ async def complete(req: CompleteRequest, x_internal_secret: str = Header(default
         provider = resolved.provider
         model = resolved.model
         response = await llm.ainvoke([
-            SystemMessage(content=system),
+            SystemMessage(content=system + PII_TOKEN_RULE),
             HumanMessage(content=user),
         ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
@@ -354,7 +354,7 @@ Playbook positions (from most to least preferred):
 Analyze how well the submitted clause matches each position."""
 
     response = await llm.ainvoke([
-        SystemMessage(content=_COMPARE_SYSTEM),
+        SystemMessage(content=_COMPARE_SYSTEM + PII_TOKEN_RULE),
         HumanMessage(content=user_content),
     ], config={"callbacks": resolved.callbacks})
 
@@ -701,7 +701,7 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
             # yield a start event so the client can show "typing…"
             yield json.dumps({"type": "start", "action": req.action, "model": model, "provider": provider}) + "\n"
             async for chunk in llm.astream([
-                SystemMessage(content=_STREAM_SYSTEM),
+                SystemMessage(content=_STREAM_SYSTEM + PII_TOKEN_RULE),
                 HumanMessage(content=user),
             ], config={"callbacks": callbacks}):
                 piece = chunk.content if isinstance(chunk.content, str) else (

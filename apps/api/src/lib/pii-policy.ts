@@ -11,6 +11,7 @@
  *   })
  *   await fetch(agentsUrl, { body: JSON.stringify({ plainText: text }) })
  */
+import { randomBytes } from 'node:crypto'
 import { prisma } from './prisma.js'
 import { redactPii, pseudonym, type PiiMode, type PiiKind } from './pii-redactor.js'
 import { createAuditEvent } from './audit.js'
@@ -190,8 +191,9 @@ export function clearOrgPiiModeCache(orgId?: string): void {
 // A round-trip token, read leniently (a model may change the hex's case).
 const TOKEN_RX = /\[PII:([A-Za-z_]+):([0-9a-fA-F]{16})\]/g
 // Anything placeholder-shaped: a token however mangled (brackets dropped or
-// escaped, cut short), a tokenize-mode pseudonym, or redact mode's marker.
-const PLACEHOLDER_RX = /PII:[A-Za-z_]+:[0-9a-fA-F]{4,}|\[REDACTED:[A-Za-z_]+\]/g
+// escaped, its hex cut short or lost), a tokenize-mode pseudonym, or redact
+// mode's marker with or without its kind.
+const PLACEHOLDER_RX = /\[?PII:[A-Za-z_]+(?::[0-9a-fA-F]*)?\]?|\[REDACTED(?::[A-Za-z_]+)?\]/g
 
 function roundTripToken(scope: string) {
   return (kind: PiiKind, value: string) => `[PII:${kind}:${pseudonym(`${scope}\u0000${value}`, 16)}]`
@@ -332,4 +334,86 @@ export function streamRestorer(source: unknown, scope: string): { push(text: str
       return restore(out)
     },
   }
+}
+
+/**
+ * X27 — a token cut off at the end of a string (the model's output capped,
+ * or the text sliced for a window) is dropped rather than shown or inserted.
+ */
+export function dropPartialToken<T>(value: T): T {
+  return mapStrings(value, s => s.replace(/\[(?:P(?:I(?:I(?::[A-Za-z_]*(?::[0-9a-fA-F]{0,16})?)?)?)?)?$/, '')) as T
+}
+
+/**
+ * X27 — slice tokenized text without splitting a token: a cut that would land
+ * inside one moves to its edge (the start of the window forward past it, the
+ * end back before it).
+ */
+export function sliceOutsideTokens(text: string, start: number, end: number): string {
+  let from = Math.max(0, start)
+  let to = Math.min(text.length, end)
+  for (const m of text.matchAll(TOKEN_RX)) {
+    const a = m.index ?? 0
+    const b = a + m[0].length
+    if (from > a && from < b) from = b
+    if (to > a && to < b) to = a
+  }
+  return from < to ? text.slice(from, to) : ''
+}
+
+/**
+ * X27 — runs a word-level tool (htmldiff) over tokenized texts with each token
+ * standing in as one plain word, then puts the tokens back in its output.
+ * htmldiff splits words at ':', so a value changed between two versions came
+ * out as `[PII:SSN:<del>1a2b…]</del><ins>9f8e…]</ins>`: neither token whole.
+ */
+export function withWholeTokens(texts: string[], fn: (texts: string[]) => string): string {
+  const tokens: string[] = []
+  const tag = `piitok${randomBytes(6).toString('hex')}x`
+  const out = fn(texts.map(t => t.replace(TOKEN_RX, tok => {
+    let i = tokens.indexOf(tok)
+    if (i < 0) i = tokens.push(tok) - 1
+    return `${tag}${i}x`
+  })))
+  return out.replace(new RegExp(`${tag}(\\d+)x`, 'g'), (_, i: string) => tokens[Number(i)])
+}
+
+/**
+ * X27 — HTML with its space entities and every run of whitespace made one
+ * plain space, as the extractors make plainText. Word writes a card number as
+ * `4111&nbsp;1111…` or with double spaces, which no value found in the plain
+ * text matches, so the HTML sent to a model is this one.
+ */
+export function plainSpacesHtml(html: string): string {
+  return html.replace(/&nbsp;|&#160;|&#xa0;/gi, ' ').replace(/\s+/g, ' ')
+}
+
+/**
+ * X27 — the forms of HTML to find values in: the HTML itself, and its text
+ * with the tags dropped (joining what markup splits, `123-45-<b>6789</b>`)
+ * and as spaces (keeping table cells apart, `<td>Card</td><td>4111…`).
+ */
+export function htmlTextForms(html: string): string[] {
+  const h = plainSpacesHtml(html)
+  return [h, h.replace(/<[^>]*>/g, ''), h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')]
+}
+
+/**
+ * X27 — whether tokenized HTML still shows a value the policy covers once its
+ * tags are dropped: one its markup splits, which replacing exact values can't
+ * reach.
+ */
+export function valueLeftInMarkup(html: string): boolean {
+  return htmlTextForms(html).slice(1).some(t => redactPii(t, 'redact').total > 0)
+}
+
+/**
+ * X27 — whether a value the policy covers runs across the join of two
+ * tokenized texts (the editor's cursor): neither half matches on its own, so
+ * both would go out raw.
+ */
+export function valueAcross(before: string, after: string): boolean {
+  const a = before.slice(-200)
+  const b = after.slice(0, 200)
+  return redactPii(a + b, 'redact').total > redactPii(a, 'redact').total + redactPii(b, 'redact').total
 }

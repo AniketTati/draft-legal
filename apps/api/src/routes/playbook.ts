@@ -9,6 +9,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
+import { randomUUID } from 'node:crypto'
+import { redactJson, restorePii, sliceOutsideTokens } from '../lib/pii-policy.js'
 
 const POSITION_TYPES = ['preferred', 'acceptable', 'fallback', 'walkaway'] as const
 
@@ -179,13 +181,18 @@ export async function playbookRoutes(app: FastifyInstance) {
       // localhost — which is not the agents service there. The catch below
       // turns that into a 200 with no AI comparison, so it degraded silently.
       const agentUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
+      // X27 — the clause being tested (typically pasted from a contract) goes
+      // to the model under the org's PII policy; the comparison comes back
+      // with the values.
+      const scope = randomUUID()
       const agentRes = await fetch(`${agentUrl}/compare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
         },
-        body: JSON.stringify({ clauseText, positions }),
+        // Cut to the agents service's 2,000-character limit without splitting a token.
+        body: JSON.stringify({ clauseText: sliceOutsideTokens(await redactJson(orgId, clauseText, { surface: 'playbook_test', roundTrip: scope }), 0, 2000), positions }),
       })
 
       if (!agentRes.ok) {
@@ -194,7 +201,7 @@ export async function playbookRoutes(app: FastifyInstance) {
         return reply.status(502).send({ detail: 'Agent service error' })
       }
 
-      const result = await agentRes.json()
+      const result = restorePii(await agentRes.json(), clauseText, scope)
       return reply.send(result)
     } catch (err) {
       app.log.error({ err }, 'Agent service unreachable')
