@@ -74,7 +74,8 @@ describe('aggregates count only what the caller could open', () => {
   })
 
   it('team workload: other members\' counts are hidden from an own-scope caller, not faked', async () => {
-    const byId = (rows: Array<{ id: string }>) => new Map(rows.map(r => [r.id, r as { activeContracts: number | null; pendingApprovals: number | null }]))
+    type Row = { id: string; activeContracts: number | null; pendingApprovals: number | null }
+    const byId = (rows: Row[]) => new Map(rows.map(r => [r.id, r]))
     const forRep = byId((await app.inject({ method: 'GET', url: '/api/v1/team/workload', headers: as(rep) })).json())
     expect(forRep.get(rep)?.activeContracts).toBe(1)
     expect(forRep.get(rep2)?.activeContracts).toBeNull()
