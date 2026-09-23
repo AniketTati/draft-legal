@@ -416,19 +416,22 @@ export async function approvalRoutes(app: FastifyInstance) {
   // Called by the Python approval agent after it finishes generating the summary.
   // Protected by internal secret header rather than user JWT.
   app.patch('/:instanceId/summary', async (req, reply) => {
-    const secret = req.headers['x-internal-secret']
-    if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
-      // In dev with no secret set, allow all — in prod this header is required
-      if (process.env.NODE_ENV === 'production') {
-        return reply.status(401).send({ error: 'Unauthorized' })
-      }
+    // X31 — the agents service's secret, in every environment. The check
+    // used to apply only in production, so on staging or a preview anyone
+    // could rewrite any approval's summary, risks and recommendation.
+    const expected = process.env.INTERNAL_SERVICE_SECRET
+    if (!expected || req.headers['x-internal-secret'] !== expected) {
+      return reply.status(401).send({ error: 'Unauthorized' })
     }
+    // The org it acts for (approval.py sends x-org-id): another org's
+    // instance is not found.
+    const orgId = (req.headers['x-org-id'] as string | undefined)?.trim()
 
     const { instanceId } = req.params as { instanceId: string }
     // X27 — the summary was written from clauses the agents service read with
     // round-trip tokens (GET /contracts/:id/clauses); put the values back.
-    const instance = await prisma.approvalInstance.findUnique({
-      where: { id: instanceId },
+    const instance = await prisma.approvalInstance.findFirst({
+      where: { id: instanceId, ...(orgId ? { orgId } : {}) },
       select: { contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
     })
     if (!instance) return reply.status(404).send({ error: 'Approval not found' })

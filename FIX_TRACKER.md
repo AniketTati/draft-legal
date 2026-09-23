@@ -1255,20 +1255,6 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `GET /sign/:token` shows the full contract, and `POST /sign/:token/decline` voids the whole request, for a signer whose sequential group hasn't been asked yet. Only signing itself returns 403.
     - A later signer's link can reach them early (forwarded, or copied from a list), so they can read the contract or void the request before the first signer acts.
     - Gate view and decline the way sign is gated.
-- **X31 — `PATCH /approvals/:instanceId/summary` is open outside production (Low-Medium).** Found while doing X27.
-  - The route checks `x-internal-secret` only when `NODE_ENV === 'production'`: *"In dev with no secret set, allow all"*.
-  - In any other deployment (staging, previews) anyone who can reach the API can overwrite any approval's AI summary, key risks and recommendation, with no org check.
-  - Require the internal service auth everywhere, as the other internal routes do.
-- **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low). — VERIFY-PENDING.** Found in the X3 review.
-  - **Plan:** Fastify ran without `trustProxy`, so behind Cloud Run's front end `req.ip` was the front end's address. The per-IP rate limit then put every client in one bucket, and the audit log recorded Google's IPs. Trusting the whole `X-Forwarded-For` would let a client choose its own address, so trust only the nearest hop(s).
-  - **What changed:**
-    - `lib/trust-proxy.ts` `trustProxyHops()` returns 1 hop on Cloud Run (`K_SERVICE`) and no trust elsewhere. `TRUST_PROXY_HOPS` overrides it, e.g. 2 behind an external load balancer.
-    - `app.ts` passes it as Fastify's `trustProxy`. Only the request logger reads the forwarded hostname; nothing builds URLs from `req.protocol` or `req.hostname`.
-    - `.env.example` documents it.
-  - **Verification:** `lib/trust-proxy.test.ts` has 2 cases:
-    - the env rules;
-    - on a Fastify instance with the resulting setting, a client that sends `X-Forwarded-For: 6.6.6.6` behind a proxy appending its real `203.0.113.9` is seen as `203.0.113.9`, where the old setting saw the proxy's own address.
-  - **Why VERIFY-PENDING:** the hop count must be confirmed on a deployed revision (request an endpoint and compare the audit IP with the client's), since an external load balancer adds a hop.
 - **X29 — The collaboration server checks permissions once per socket (Low, latent). — DONE.** Found in the X21 review.
   - **Plan:** confirmed. `authenticateCollab` ran only in Hocuspocus' `onAuthenticate`, so an open socket kept its rights after its token expired, the user was deactivated, or the contract was deleted or reassigned. A throw from `beforeHandleMessage` closes the connection (Hocuspocus v4), so check there.
   - **What changed (`lib/collab-server.ts`):**
@@ -1286,6 +1272,48 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **Left as is (for when the editor binds to the shared document):**
     - Read-only connections can still send awareness (presence) and stateless messages, both unused today.
     - `collab_states` rows written before X21 (when any org member could write) should be cleared before binding.
+- **X30 — `req.ip` is probably the proxy's address on Cloud Run (Low). — VERIFY-PENDING.** Found in the X3 review.
+  - **Plan:** Fastify ran without `trustProxy`, so behind Cloud Run's front end `req.ip` was the front end's address. The per-IP rate limit then put every client in one bucket, and the audit log recorded Google's IPs. Trusting the whole `X-Forwarded-For` would let a client choose its own address, so trust only the nearest hop(s).
+  - **What changed:**
+    - `lib/trust-proxy.ts` `trustProxyHops()` returns 1 hop on Cloud Run (`K_SERVICE`) and no trust elsewhere. `TRUST_PROXY_HOPS` overrides it, e.g. 2 behind an external load balancer.
+    - `app.ts` passes it as Fastify's `trustProxy`. Only the request logger reads the forwarded hostname; nothing builds URLs from `req.protocol` or `req.hostname`.
+    - `.env.example` documents it.
+  - **Verification:** `lib/trust-proxy.test.ts` has 2 cases:
+    - the env rules;
+    - on a Fastify instance with the resulting setting, a client that sends `X-Forwarded-For: 6.6.6.6` behind a proxy appending its real `203.0.113.9` is seen as `203.0.113.9`, where the old setting saw the proxy's own address.
+  - **Why VERIFY-PENDING:** the hop count must be confirmed on a deployed revision (request an endpoint and compare the audit IP with the client's), since an external load balancer adds a hop.
+- **X31 — `PATCH /approvals/:instanceId/summary` is open outside production (Low-Medium). — DONE.** Found while doing X27.
+  - **Plan:** confirmed in `routes/approvals.ts`.
+    - The route has no auth preHandler, and its secret check returned 401 only when `NODE_ENV === 'production'`. Everywhere else every caller got through, with no org check on the instance.
+    - Its one caller, `approval.py`, sends the internal secret, `x-internal-service: agents` and `x-org-id`.
+    - Fix:
+      - require the secret in every environment, as the internal-ai guard does, with an unset secret refusing everything;
+      - look the instance up in the org the caller names.
+  - **What changed:**
+    - The check now applies in every environment.
+    - The instance lookup is scoped to `x-org-id` when that header is sent, so another org's instance is a 404.
+    - A secret-holder that names no org still works.
+  - **Verification:** a new case in `routes/approvals.integration.test.ts`, run under `NODE_ENV=test`:
+    - Each of these gets 401:
+      - no header;
+      - a wrong secret;
+      - a user's bearer token;
+      - an empty header with no secret configured.
+    - The secret with another org's `x-org-id` gets 404, and the summary is unchanged.
+    - `approval.py`'s headers get 200, and the summary is stored.
+    - Against the pre-fix code it fails: the unauthenticated PATCH got 200.
+    - Suite:
+      - typecheck 0;
+      - lint 0 errors;
+      - api unit 293/293;
+      - integration 268/268 (43 files).
+  - **Adversarial review:** it found no way around the check and no caller that breaks. It found one gap in the test:
+    - With the secret unset, the test sent an empty header, which fails even without the unset-secret guard (`'' !== undefined`).
+    - It now also sends no header, which is the `undefined === undefined` hole. Against a check without the guard, that case gets 200 and the test fails.
+    - The review also found three existing issues, now filed:
+      - no placeholder check for the internal secret, and one that misses the self-host placeholders (X38);
+      - inbound email and the SSRF guard keyed on `NODE_ENV` (added to X35).
+    - Comparisons with `!==` aren't constant-time here, nor in `auth.ts` or the internal-ai guard; `metrics.ts` uses `timingSafeEqual`. Left as is, as a known nit.
 - **X32 — htmldiff blocks the event loop on large version pairs (Medium).** Found in the X27 review.
   - `GET /contracts/:id/versions/:v1/diff/:v2` runs `node-htmldiff` synchronously on the request thread. On a large pair the review measured the event loop blocked for more than 5 minutes, so one request stalls every other request on that instance.
   - Users' diffs are cached after the first run. Since the X27 follow-up, the agents service's tokenized diff is computed on every read.
@@ -1302,6 +1330,9 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Bull Board (`/admin/queues`, `app.ts`) is open whenever `NODE_ENV !== 'production'`. It shows job payloads and can retry or remove jobs.
   - `POST /contracts/:id/versions/:versionId/chunk` compares `secret !== INTERNAL_SERVICE_SECRET`. With the variable unset and no header, that is `undefined !== undefined`, so the request passes, for any org's contract.
   - Require the secret in every environment, and treat an unset secret as "refuse".
+  - Found in the X31 review, the same class:
+    - `routes/inbound-email.ts` skips its signature check when `INBOUND_EMAIL_SECRET` is unset and `NODE_ENV` isn't production. `.env.example` ships that secret empty. The sender check trusts the payload's `from`, so anyone who knows a contract id and the counterparty's address can add a version to that contract.
+    - `lib/ssrf-guard.ts` is off outside production, so on staging an org admin can point a webhook at the cloud metadata address. Key the exemption on an explicit development flag, not on `NODE_ENV`.
 - **X36 — The older chat tools cut contract text before redacting it (Low-Medium).** Found in the X27 follow-up review.
   - Several chat tools slice text to a window and then redact each window on its own:
     - `contract_get`, `contract_cite`, `counterparty_memory` (twice) and `portfolio_search`;
@@ -1312,6 +1343,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X37 — IBANs written in groups are not recognized (Low-Medium).** Found in the X27 follow-up.
   - The IBAN pattern (`\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b`) only matches the unspaced form. Contracts usually print an IBAN in groups of four (`GB29 NWBK 6016 1331 9268 19`), which goes to every model surface as written.
   - Allow single spaces between the groups, keeping the banking-word anchor.
+- **X38 — Placeholder secrets pass the production boot check (High).** Found in the X31 review.
+  - `lib/secrets.ts` `assertSecretsConfigured` checks only `JWT_SECRET` and `PORTAL_JWT_SECRET`. `looksInsecure` recognizes only a `change-me` prefix, while `.env.selfhost.example` ships `CHANGE_ME_…` values of 37–44 characters, which pass.
+  - `INTERNAL_SERVICE_SECRET` is never checked, so a production API starts with the example value from either env file. Anyone who has read the repo then passes the internal routes' check and `requireAuth`'s internal bypass, which is ADMIN in any org they name. With the self-host JWT placeholders, they can forge tokens too.
+  - Fix: check `INTERNAL_SERVICE_SECRET` at boot like the JWT secrets, and treat any value that starts with `change-me` or `change_me` (in any case) or equals an example-file value as a placeholder.
 
 
 ---
@@ -1377,4 +1412,5 @@ X27 — VERIFY-PENDING — Q&A (and its reranker), the editor's AI (streaming re
 X30 — VERIFY-PENDING — req.ip through the trusted proxy hop (1 on Cloud Run, TRUST_PROXY_HOPS to override); needs a deployed check of the hop count — 11f6a7f
 X28 — DONE — a later sequential signer can't view the contract or void the request before earlier signers have signed (same check as signing) — af5048a
 X29 — DONE — collab connections refused after token expiry and re-checked each minute (user live, contract live, ownership, edit); a change closes the socket — f005316
-X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — (sha: pending)
+X27 (follow-up) — VERIFY-PENDING — two adversarial reviews: agents' redline diff tokenized before diffing (whole tokens, HTML spacing/markup), GET /contracts/:id key terms + approval restore sources, playbook tester, cursor/window cuts, HTML labels, placeholder guards (502/422/stream error), card spaces at the detector, per-request scopes, chat lists; X32–X37 filed — 91901bf
+X31 — DONE — the approval summary PATCH needs the internal secret in every environment (unset secret refuses) and stays in the caller's x-org-id org; X38 filed, X35 widened — (sha: pending)

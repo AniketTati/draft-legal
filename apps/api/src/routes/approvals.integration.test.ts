@@ -194,3 +194,40 @@ describe('C2: escalation, step-0 workflows and oversight', () => {
     expect((await prisma.contract.findUnique({ where: { id: contract } }))?.status).toBe('APPROVED')
   })
 })
+
+describe('X31 — only the agents service writes the AI summary', () => {
+  it('needs the internal secret in every environment, and stays in the org the caller names', async () => {
+    const contract = await makeContract(org, submitter, { title: 'Summary target' })
+    const instance = await prisma.approvalInstance.create({
+      data: { orgId: org, contractId: contract, workflowDefinitionId: workflowId, submittedById: submitter, aiSummary: 'Original.' },
+    })
+    const patch = (headers: Record<string, string>) => app.inject({
+      method: 'PATCH', url: `/api/v1/approvals/${instance.id}/summary`, headers, payload: { aiSummary: 'Overwritten.' },
+    })
+    const stored = async () => (await prisma.approvalInstance.findUniqueOrThrow({ where: { id: instance.id } })).aiSummary
+    const secret = process.env.INTERNAL_SERVICE_SECRET as string
+
+    // Outside production, where the old check let every caller through.
+    expect(process.env.NODE_ENV).not.toBe('production')
+    expect((await patch({})).statusCode).toBe(401)
+    expect((await patch({ 'x-internal-secret': 'wrong' })).statusCode).toBe(401)
+    expect((await patch(auth(org, ['ADMIN'], submitter))).statusCode).toBe(401)   // a user is not the agents service
+    // With no secret configured, nothing matches it: not an empty header, and
+    // not a missing one (undefined === undefined is the hole to avoid).
+    delete process.env.INTERNAL_SERVICE_SECRET
+    try {
+      expect((await patch({ 'x-internal-secret': '' })).statusCode).toBe(401)
+      expect((await patch({})).statusCode).toBe(401)
+    } finally {
+      process.env.INTERNAL_SERVICE_SECRET = secret
+    }
+    // Another org's instance is not found for a caller acting for this one.
+    const other = await makeOrg('X31 Other Org')
+    expect((await patch({ 'x-internal-secret': secret, 'x-org-id': other })).statusCode).toBe(404)
+    expect(await stored()).toBe('Original.')
+
+    // The agents service, as approval.py calls it.
+    expect((await patch({ 'x-internal-secret': secret, 'x-internal-service': 'agents', 'x-org-id': org })).statusCode).toBe(200)
+    expect(await stored()).toBe('Overwritten.')
+  })
+})
