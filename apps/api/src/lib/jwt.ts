@@ -17,6 +17,12 @@ export interface JwtPayload {
   orgId: string
   roles: string[]
   type: 'access' | 'refresh'
+  /**
+   * X50 — the sign-in this token descends from, carried on by every refresh.
+   * Signing is deterministic and `iat` is whole seconds, so without it a
+   * sign-in and a refresh in the same second minted the very same tokens.
+   */
+  sid?: string
 }
 
 export function signAccessToken(payload: Omit<JwtPayload, 'type'>): string {

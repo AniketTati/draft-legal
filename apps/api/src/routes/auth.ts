@@ -110,7 +110,7 @@ export async function authRoutes(app: FastifyInstance) {
       },
     })
 
-    const tokens = issueTokens(user.id, orgId, ['ADMIN'])
+    const tokens = issueTokens(user.id, orgId, ['ADMIN'], crypto.randomUUID())
 
     await prisma.user.update({
       where: { id: user.id },
@@ -208,7 +208,7 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name)
-    const tokens = issueTokens(user.id, user.orgId, roles)
+    const tokens = issueTokens(user.id, user.orgId, roles, crypto.randomUUID())
 
     // Reset the per-email throttle on a successful login. A user
     // who's been locked out can fix their typo and get back in
@@ -255,7 +255,10 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name)
-    const tokens = issueTokens(user.id, user.orgId, roles)
+    // A token from before sessions had ids gets one derived from it, so two
+    // refreshes racing with it still mint the same tokens (below).
+    const sid = payload.sid ?? crypto.createHash('sha256').update(refreshToken).digest('hex').slice(0, 32)
+    const tokens = issueTokens(user.id, user.orgId, roles, sid)
 
     // X50 — rotate only while this is still the current token. Two refreshes
     // racing with the same token both passed the lookup above and both
@@ -265,7 +268,15 @@ export async function authRoutes(app: FastifyInstance) {
       data: { refreshToken: tokens.refreshToken },
     })
     if (rotated.count === 0) {
-      return reply.status(401).send({ detail: 'Refresh token revoked' })
+      // The race was lost — but a winner refreshing the same session in the
+      // same second minted these very tokens (signing is deterministic, `iat`
+      // is whole seconds, and a sign-in starts a new `sid`), and they are the
+      // current ones: hand them over, as before, rather than refuse a
+      // harmless race.
+      const current = await prisma.user.count({
+        where: { id: user.id, refreshToken: tokens.refreshToken, deletedAt: null },
+      })
+      if (current === 0) return reply.status(401).send({ detail: 'Refresh token revoked' })
     }
 
     return reply.send(tokens)
@@ -447,20 +458,40 @@ export async function authRoutes(app: FastifyInstance) {
 
   // POST /api/v1/auth/logout
   app.post('/logout', async (req, reply) => {
+    // Whose session ends: the access token's user or, once that token has
+    // expired (15 idle minutes), the user whose current refresh token this
+    // is (X50 review). Before, a sign-out after a pause ended nothing on the
+    // server, and other tabs kept the session going.
+    let who: { sub: string; orgId: string } | null = null
     const header = req.headers.authorization
     if (header?.startsWith('Bearer ')) {
       try {
         const payload = verifyToken(header.slice(7))
+        who = { sub: payload.sub, orgId: payload.orgId }
+      } catch { /* expired or invalid */ }
+    }
+    const refreshToken = (req.body as { refreshToken?: unknown } | undefined)?.refreshToken
+    if (!who && typeof refreshToken === 'string') {
+      try {
+        const payload = verifyToken(refreshToken)
+        // Only the current token: an old one can't end a newer session.
+        if (payload.type === 'refresh' && await prisma.user.count({ where: { id: payload.sub, refreshToken } })) {
+          who = { sub: payload.sub, orgId: payload.orgId }
+        }
+      } catch { /* expired or invalid */ }
+    }
+    if (who) {
+      try {
         await prisma.user.update({
-          where: { id: payload.sub },
+          where: { id: who.sub },
           data: { refreshToken: null },
         })
         await createAuditEvent({
-          orgId: payload.orgId,
-          userId: payload.sub,
+          orgId: who.orgId,
+          userId: who.sub,
           action: AuditAction.USER_LOGOUT,
           resourceType: 'user',
-          resourceId: payload.sub,
+          resourceId: who.sub,
         })
       } catch { /* ignore */ }
     }
@@ -468,8 +499,8 @@ export async function authRoutes(app: FastifyInstance) {
   })
 }
 
-function issueTokens(userId: string, orgId: string, roles: string[]) {
-  const base = { sub: userId, orgId, roles }
+function issueTokens(userId: string, orgId: string, roles: string[], sid: string) {
+  const base = { sub: userId, orgId, roles, sid }
   return {
     accessToken: signAccessToken(base),
     refreshToken: signRefreshToken(base),

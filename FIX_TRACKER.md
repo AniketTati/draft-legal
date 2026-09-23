@@ -2055,7 +2055,28 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
       - The old token stops working after a refresh.
   - **Left as is:**
     - Signing in as a different user in another tab still leaves each tab on its own session, as before.
-    - A refresh that fails for a network reason still signs that tab out, as before.
+  - **Second adversarial review (fresh subagent) of `3307df0`**, and what changed:
+    - *Medium:* "newer" meant "different". A tab took any same-user pair from storage, even an older, dead one that a tab with a stale copy had written back, then failed and signed out. Now it takes only a pair issued later (`iat`) whose access token is also the same user's.
+    - The storage poll skipped the session-changed check.
+    - The 401 interceptor could send a request made as one user again as another, after a sign-in during the refresh.
+    - A failed refresh called the server's sign-out, which could end the session every tab shares.
+    - Fixed: the poll checks the session, the interceptor re-sends a request only as the user who made it, and a failed refresh signs out this tab only.
+    - *Low:* the atomic rotation refused a harmless same-second race, in which both racers mint identical tokens. Now both get the current pair.
+    - The validity margin is 60 seconds, against clock skew. New tests cover a late winner, a session change and an older pair.
+  - **Third review (combined with X52 and X53, fresh subagent)** found no High or Medium issues. Fixed:
+    - **Same-second sign-in:** a refresh could be handed a newer sign-in's tokens when a sign-out and a sign-in fell in the same second, because the tokens were then identical.
+      - Tokens now carry a session id (`sid`) from sign-in through every refresh.
+      - A token from before this change gets one derived from the token itself, so sessions in flight continue.
+    - **Expired pair:** the storage poll adopted a pair whose access token had expired.
+    - **Stale write-back:** a stale tab's state change (a profile save) wrote its older tokens over the newer ones in storage. Storage now keeps the same user's newer tokens.
+    - **Network errors:** a network error or timeout during a refresh signed the tab out. Now only a refused refresh does.
+    - **Sign-out after a pause:** signing out after 15 idle minutes ended nothing on the server, since only the expired access token was sent. The refresh token now goes with it, and only the user's current one counts.
+    - **Left as is:**
+      - `iat` can't order two tokens issued in the same second, or by servers whose clocks differ.
+      - The sign-in page doesn't pick up a session another tab kept.
+  - **Verification after both reviews:**
+    - `store/auth.test.ts` has 17 cases, `lib/api.test.ts` 7 and `routes/auth-refresh.integration.test.ts` 7. Each fix's test fails on the version before it.
+    - Live: an expired session in the running app refreshed onto `sid` tokens, with no sign-out.
 
 
 - **X51 — The Negotiate tab can't be opened on a contract with no extracted clauses (Low). — DONE.** Found during C8's live check.
@@ -2224,6 +2245,7 @@ X49 (follow-up) — DONE — a Word or text upload's Original view says its orig
 V2 (live check + follow-up) — DONE — a set question's answer states it's partial (7 of 104) and the tool carries the coverage block; the search-results table no longer repeats a contract per clause hit or counts hits as contracts, VERIFY-PENDING → DONE — (sha: pending)
 X52 — DONE — a card number, IBAN or SSN wrapped across a PDF line is redacted; single-line detection unchanged, cross-line only for value-shaped groups near a card or bank word; adversarial review — (sha: pending)
 X53 — DONE — the chat's redline tool takes the section the user names, and a miss lists the contract's clauses (openings redacted) to retry with; adversarial review — (sha: pending)
+X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same user's later tokens, never resend a request as another user, and sign out only on a refused refresh; storage keeps the newer session; tokens carry a session id; same-second refreshes both succeed; sign-out ends the session after an idle pause — (sha: pending)
 
 ---
 
