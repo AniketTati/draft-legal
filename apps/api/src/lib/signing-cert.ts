@@ -16,6 +16,7 @@
 import forge from 'node-forge'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { isStrict } from './runtime-mode.js'
 
 export interface SigningP12 {
   p12: Buffer
@@ -64,10 +65,12 @@ export function getSigningP12(): SigningP12 {
     return cached
   }
 
-  if (process.env.NODE_ENV === 'production') {
+  // Y5 — required in any NODE_ENV but development and test: a staging or
+  // preview install signed with a self-signed certificate.
+  if (isStrict()) {
     throw new Error(
-      '[signing-cert] SIGNING_CERT_P12_BASE64 + SIGNING_CERT_PASSPHRASE are required in ' +
-      'production to apply tamper-evident e-signatures. Generate a signing cert and store ' +
+      '[signing-cert] SIGNING_CERT_P12_BASE64 + SIGNING_CERT_PASSPHRASE are required outside ' +
+      'development and tests to apply tamper-evident e-signatures. Generate a signing cert and store ' +
       'it in Secret Manager.'
     )
   }

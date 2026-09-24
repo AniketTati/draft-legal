@@ -15,6 +15,7 @@ import { Writable } from 'node:stream'
 import pino, { type DestinationStream } from 'pino'
 import pinoPretty from 'pino-pretty'
 import { maskTokenPaths } from './log-redact.js'
+import { environmentName } from './runtime-mode.js'
 
 /** A logger's destination: each line goes through process.stdout, as console's do. */
 export function stdoutStream(): Writable {
@@ -68,7 +69,7 @@ export function productionLoggerOptions() {
     level: process.env.LOG_LEVEL ?? 'info',
     base: {
       pid: process.pid,
-      env: process.env.NODE_ENV ?? 'production',
+      env: environmentName(),
       commit: process.env.GIT_COMMIT_SHA ?? 'unknown',
       service: 'clm-api',
     },

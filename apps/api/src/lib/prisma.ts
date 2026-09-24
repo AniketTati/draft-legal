@@ -14,6 +14,7 @@
  */
 import { PrismaClient } from '@prisma/client'
 import { moduleLogger } from './logger.js'
+import { isDevelopment, isStrict } from './runtime-mode.js'
 import { tenantGuardExtension } from './tenant-guard.js'
 import { tenantRlsExtension, tenantTransaction } from './tenant-rls.js'
 
@@ -37,7 +38,7 @@ function makeClient() {
   const tunedUrl = withPoolLimit(process.env.DATABASE_URL)
   const client = new PrismaClient({
     log:
-      process.env.NODE_ENV === 'development'
+      isDevelopment()
         ? ['query', 'error', 'warn']
         : [
             { emit: 'event', level: 'query' },
@@ -50,7 +51,7 @@ function makeClient() {
   // Production: structured slow-query log + error / warn surfacing.
   // In development we keep Prisma's default raw SQL output (more
   // useful when debugging an actual query).
-  if (process.env.NODE_ENV !== 'development') {
+  if (!isDevelopment()) {
     client.$on('query', (e: { query: string; params: string; duration: number; target: string }) => {
       if (e.duration >= SLOW_QUERY_MS) {
         log.warn({
@@ -97,6 +98,8 @@ export function usePrismaMiddleware(middleware: Parameters<PrismaClient['$use']>
   globalForPrisma.prismaBase!.$use(middleware)
 }
 
-if (process.env.NODE_ENV !== 'production') {
+// One client across module reloads (a developer's watch mode, the test run's
+// files, which share it).
+if (!isStrict()) {
   globalForPrisma.prisma = prisma
 }

@@ -13,6 +13,7 @@
  * line whole.
  */
 import { maskTokenPaths } from './log-redact.js'
+import { isDevelopment } from './runtime-mode.js'
 
 const RULES: Array<[RegExp, string]> = [
   // A private key: the whole block, in a JSON line's escaped newlines too.
@@ -90,7 +91,7 @@ export function installLogScrub(): void {
  * scrubber, and the only one: keep it greppable.
  */
 export function devPrint(line: string): void {
-  if (process.env.NODE_ENV !== 'development') {
+  if (!isDevelopment()) {
     console.info(scrub(line))
     return
   }

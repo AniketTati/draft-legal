@@ -43,6 +43,7 @@ import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { bareAddress, extractContractTag } from '../lib/email-address.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
+import { devFlag, isStrict } from '../lib/runtime-mode.js'
 
 const InboundEmailSchema = z.object({
   to: z.string().min(1),
@@ -237,17 +238,9 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
     // INBOUND_EMAIL_ALLOW_ALL switches off sender validation entirely, which
     // would let anyone holding the shared secret inject a document into ANY
     // contract in ANY org — the one genuine cross-tenant path on this route.
-    // It is a dev convenience, so refuse to honour it in production even when
-    // it is set, rather than trusting the env to be configured correctly.
-    // Same fail-closed posture as the signing-cert dev fallback.
-    const isProduction = process.env.NODE_ENV === 'production'
-    const allowAllRequested = process.env.INBOUND_EMAIL_ALLOW_ALL === '1'
-    if (allowAllRequested && isProduction) {
-      req.log.error(
-        '[inbound-email] INBOUND_EMAIL_ALLOW_ALL is set in production and is being IGNORED — sender validation remains enforced',
-      )
-    }
-    const allowAll = allowAllRequested && !isProduction
+    // Y5 — a development-only relaxation: it never applies in a strict
+    // environment, where it stops the boot instead (lib/runtime-mode.ts).
+    const allowAll = devFlag('INBOUND_EMAIL_ALLOW_ALL')
 
     let allowed = allowAll
     let senderReason = allowAll ? 'allow_all_dev' : 'unknown'
@@ -281,8 +274,8 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
     }
     if (!allowed) {
       return reply.status(403).send({
-        // Don't advertise the dev-only bypass to external callers in production.
-        error: isProduction
+        // Don't advertise the dev-only bypass outside development and tests.
+        error: isStrict()
           ? `Sender ${senderEmail} is not authorised on this contract.`
           : `Sender ${senderEmail} is not authorised on this contract. Add them as the counterparty or set INBOUND_EMAIL_ALLOW_ALL=1 (dev only).`,
         sender_reason: senderReason,

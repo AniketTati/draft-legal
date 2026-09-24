@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { isStrict } from './runtime-mode.js'
 
 /**
  * X41 — the password prisma/seed.ts gives its demo users.
@@ -11,7 +12,9 @@ import { randomBytes } from 'node:crypto'
  * print once.
  */
 export function seedPassword(env: NodeJS.ProcessEnv = process.env): { password: string; generated: boolean } {
-  const production = env.NODE_ENV === 'production'
+  // Y5 — any NODE_ENV but development and test: a staging install's first
+  // admin got the demo password too.
+  const production = isStrict(env)
   const given = env.SEED_ADMIN_PASSWORD
   if (given) {
     // X64 — the demo password first, and anywhere in the value: checked

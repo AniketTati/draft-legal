@@ -22,6 +22,7 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { environmentName, isStrict } from './runtime-mode.js'
 
 const MIN_LEN = 32
 
@@ -43,9 +44,9 @@ const INSECURE_VALUES = new Set([
   'integration-internal-service-secret',
 ])
 
-function isProd(): boolean {
-  return process.env.NODE_ENV === 'production'
-}
+// Y5 — "production" is any NODE_ENV but development and test: a placeholder
+// passed on staging and previews (X38).
+const isProd = isStrict
 
 function looksInsecure(value: string): boolean {
   // X38 — the example files' placeholders in any spelling: `change-me…`
@@ -102,13 +103,13 @@ export function resolveSecret(name: string): string {
   if (value && value.length > 0) {
     if (isProd() && value.length < MIN_LEN) {
       throw new Error(
-        `[secrets] ${name} is too short (${value.length} chars); require >= ${MIN_LEN} in production. ` +
+        `[secrets] ${name} is too short (${value.length} chars); require >= ${MIN_LEN} with NODE_ENV=${environmentName()}. ` +
         `Generate one: node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`
       )
     }
     if (isProd() && looksInsecure(value)) {
       throw new Error(
-        `[secrets] ${name} is set to a known-insecure placeholder. Refusing to boot in production. ` +
+        `[secrets] ${name} is set to a known-insecure placeholder. Refusing to boot with NODE_ENV=${environmentName()}. ` +
         `Generate one: node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"`
       )
     }
@@ -123,7 +124,7 @@ export function resolveSecret(name: string): string {
 
   if (isProd()) {
     throw new Error(
-      `[secrets] ${name} is not set. Refusing to boot in production with an insecure default. ` +
+      `[secrets] ${name} is not set. Refusing to boot with NODE_ENV=${environmentName()} on an insecure default. ` +
       `Generate one: node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))" ` +
       `and set ${name}.`
     )
@@ -161,12 +162,12 @@ function checkInternalSecret(): void {
     return
   }
   if (looksInsecure(value)) {
-    if (isProd()) throw new Error(`[secrets] ${name} is set to a known-insecure placeholder. Refusing to boot in production. ${fix}`)
+    if (isProd()) throw new Error(`[secrets] ${name} is set to a known-insecure placeholder. Refusing to boot with NODE_ENV=${environmentName()}. ${fix}`)
     console.warn(`[secrets] ${name} is a placeholder — fine for dev, but production will refuse to boot with it.`)
     return
   }
   if (value.length < MIN_LEN) {
-    if (isProd()) throw new Error(`[secrets] ${name} is too short (${value.length} chars); require >= ${MIN_LEN} in production. ${fix}`)
+    if (isProd()) throw new Error(`[secrets] ${name} is too short (${value.length} chars); require >= ${MIN_LEN} with NODE_ENV=${environmentName()}. ${fix}`)
     console.warn(`[secrets] ${name} is short (${value.length} chars) — fine for dev, but production will refuse to boot with it.`)
   }
 }

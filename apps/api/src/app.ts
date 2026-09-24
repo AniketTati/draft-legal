@@ -62,14 +62,18 @@ import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
 import { devLogger, productionLoggerOptions } from './lib/logger.js'
+import { assertNoDevOnlyFlags, devFlag, globalRateLimitPerMinute, isDevelopment } from './lib/runtime-mode.js'
 import { runInTenantStore } from './lib/tenant-context.js'
 import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
 import { routePermission } from './middleware/permissions.js'
 
 export async function buildApp() {
+  // Y5 — a development-only relaxation (BULL_BOARD_OPEN, INBOUND_EMAIL_ALLOW_ALL)
+  // left on in a strict environment stops the boot, before anything opens.
+  assertNoDevOnlyFlags()
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === 'development'
+      isDevelopment()
         ? devLogger()
         : {
             // Production observability: JSON lines, masked as the
@@ -156,7 +160,8 @@ export async function buildApp() {
   // skew. `skip`'s req is typed explicitly to keep that callback safe.
   await app.register(rateLimit as any, {
     redis,
-    max: process.env.NODE_ENV === 'production' ? 1000 : 10_000,
+    // Y5 — 1000 in any NODE_ENV but development and test; staging had 10,000.
+    max: globalRateLimitPerMinute(),
     timeWindow: '1 minute',
     // Wave 1.4 (2026-07): key the global limiter on the client IP, NOT
     // the attacker-controlled `x-org-id` header. The header is only
@@ -192,13 +197,13 @@ export async function buildApp() {
   // X35 — the internal secret in every environment. "Open in dev" also
   // opened it on staging and previews (job payloads; add, retry, remove).
   // A developer's own stack can opt in with BULL_BOARD_OPEN=true, which
-  // production ignores. The hook is scoped to Bull Board's own routes by
+  // stops a strict boot (Y5, lib/runtime-mode.ts). The hook is scoped to Bull Board's own routes by
   // registering both in one plugin: a check on req.url (the raw request
   // line) was skipped by `/%61dmin/queues/…` or an absolute-form URL, which
   // the router still matched.
   await app.register(async board => {
     board.addHook('onRequest', async (req, reply) => {
-      if (process.env.BULL_BOARD_OPEN === 'true' && process.env.NODE_ENV !== 'production') return
+      if (devFlag('BULL_BOARD_OPEN')) return
       const expected = process.env.INTERNAL_SERVICE_SECRET
       if (!expected || req.headers['x-internal-secret'] !== expected) {
         return reply.status(401).send({ error: 'Unauthorized' })

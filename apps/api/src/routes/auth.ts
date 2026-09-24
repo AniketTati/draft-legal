@@ -9,6 +9,7 @@ import { seedOrgDefaults } from '../lib/org-seed.js'
 import { DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { LoginSchema, RegisterSchema, RefreshTokenSchema, AcceptInviteSchema, ChangePasswordSchema } from '@clm/types'
 import { AuditAction } from '@clm/types'
+import { isTest } from '../lib/runtime-mode.js'
 
 // P20 — per-email login throttle. The Fastify rate-limit hook fires
 // before body parsing, so it can't see the email; we apply it manually
@@ -36,7 +37,7 @@ export async function authRoutes(app: FastifyInstance) {
   // hour. Genuine users register once; anything beyond that is a bot.
   app.post('/register', {
     config: {
-      rateLimit: process.env.NODE_ENV === 'test' ? false : {
+      rateLimit: isTest() ? false : {
         max: 5,
         timeWindow: '1 hour',
         keyGenerator: (req) => `register:${req.ip}`,
@@ -150,7 +151,7 @@ export async function authRoutes(app: FastifyInstance) {
   // thousands of logins back-to-back.
   app.post('/login', {
     config: {
-      rateLimit: process.env.NODE_ENV === 'test' ? false : {
+      rateLimit: isTest() ? false : {
         // 200 attempts per 15 min per IP. Generous enough for real
         // user sessions (auto-retry on stale tokens, multiple tabs)
         // and the probe runner; tight enough to slow a one-IP brute-
@@ -174,7 +175,7 @@ export async function authRoutes(app: FastifyInstance) {
     // email exists. We also DON'T leak whether they hit the throttle
     // before reaching auth — same "Too many login attempts" message
     // either way.
-    if (process.env.NODE_ENV !== 'test') {
+    if (!isTest()) {
       const { tooMany } = await emailThrottleHit(body.email)
       if (tooMany) {
         return reply.status(429).send({
@@ -213,7 +214,7 @@ export async function authRoutes(app: FastifyInstance) {
     // Reset the per-email throttle on a successful login. A user
     // who's been locked out can fix their typo and get back in
     // without waiting the full 15-min window.
-    if (process.env.NODE_ENV !== 'test') await emailThrottleReset(body.email)
+    if (!isTest()) await emailThrottleReset(body.email)
 
     await prisma.user.update({
       where: { id: user.id },

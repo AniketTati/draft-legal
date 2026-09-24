@@ -2583,28 +2583,43 @@ Each class below recurred during this run, and each occurrence was fixed where i
     - 4 met: the existing log tests and the whole suite pass (typecheck, lint, unit 367, web 62, integration 385).
   - **Out of scope:** the agents service (Python) and the web app's browser console print through their own channels.
 
-- **Y5 — Security relaxations only by explicit opt-in (High). — TODO.**
+- **Y5 — Security relaxations only by explicit opt-in (High). — DONE.**
   - **Problem:**
     - Security checks keyed on `NODE_ENV !== 'production'` were open on staging and previews: X31, X35, X39 (SSRF).
     - A placeholder secret passed outside production (X38).
-    - The global rate limit is still ten times looser everywhere that isn't `production`.
-    - The API reads `NODE_ENV` in about a dozen places, each with its own idea of what is safe.
-  - **Approach:**
-    1. **One reader of `NODE_ENV`.** `lib/runtime-mode.ts` is strict unless `NODE_ENV` is exactly `development` or `test`, so staging, previews and an unset value are strict.
-    2. **Dev-only flags in one registry:** `BULL_BOARD_OPEN`, `WEBHOOK_ALLOW_PRIVATE_URLS`, `INBOUND_EMAIL_ALLOW_ALL`, and the like. The API refuses to start in strict mode when any of them is set, as X38 does for placeholder secrets.
-    3. **Every existing check moves to the module:** rate limits, Bull Board, secrets, the seed, the signing certificate, printed links, the inbound-email bypass and the logger format.
-    4. **A source tripwire:** `NODE_ENV` is read nowhere else in `apps/api/src`, except test setup.
+    - The global rate limit was still ten times looser everywhere that isn't `production`.
+    - The API read `NODE_ENV` in about a dozen places, each with its own idea of what is safe.
+  - **What changed:**
+    1. **One reader of `NODE_ENV`:** `lib/runtime-mode.ts`. `runtimeMode()` is `development` or `test` only when `NODE_ENV` is exactly that, and `strict` otherwise: staging, a preview, a typo (`Production`, `dev`) and an unset value.
+    2. **Development-only relaxations in one registry,** each with the value that turns it on: `BULL_BOARD_OPEN=true` and `INBOUND_EMAIL_ALLOW_ALL=1`.
+       - `devFlag()` never applies in strict mode.
+       - `buildApp()` refuses to start in strict mode with one of them on, naming what it relaxes, as X38 does for placeholder secrets.
+       - A deviation from the plan: `WEBHOOK_ALLOW_PRIVATE_URLS` is not in the registry. The SSRF guard documents it as the self-host opt-out, for an install that posts webhooks to its own network, so it stays an explicit opt-in in any mode. The guard is on unless it is set, in every mode (X35).
+    3. **Every check moved to the module:**
+       - placeholder and short secrets (JWT, portal, internal service), whose boot errors now name the `NODE_ENV`;
+       - the global rate limit (1,000 a minute in strict mode);
+       - Bull Board, and the inbound-email bypass (whose 403 no longer advertises it outside development and tests);
+       - the seed's admin password, and the signing certificate (required in strict mode);
+       - printed links (`devPrint`), the logger format, Prisma's query logging and client reuse, the auth routes' test-only throttle exemptions;
+       - the env label in logs and `/health`.
+    4. **A tripwire** in `lib/runtime-mode.test.ts`: `NODE_ENV` is read only in `lib/runtime-mode.ts` and the integration test setup. It looks for reads, `.NODE_ENV`, `['NODE_ENV']` or destructuring, not for messages that name it. A probe file reading it both ways failed it.
+  - **Verification:**
+    - `routes/strict-mode.integration.test.ts` (13), booting the real app with `NODE_ENV` set to `staging`, to `preview` and unset, over strong secrets:
+      - a placeholder `JWT_SECRET` or `INTERNAL_SERVICE_SECRET` stops the boot;
+      - `BULL_BOARD_OPEN=true` or `INBOUND_EMAIL_ALLOW_ALL=1` stops the boot;
+      - Bull Board answers 401 without the internal secret, and the rate limit is 1,000;
+      - the seed gets a generated password, the SSRF guard is on, and a printed signing link is masked.
+      - With `NODE_ENV=development` and both flags on, it boots as before: Bull Board open, 10,000 a minute, the demo seed password, the link whole.
+      - Before the change, all 12 strict cases failed: the app booted with the placeholder and with the flags on, applied 10,000 a minute, and seeded `password123`. The development case passed.
+    - `lib/runtime-mode.test.ts` (6): the mode for 10 values of `NODE_ENV`, the flags in each mode, the rate limit, and the tripwire.
+    - The existing secrets and seed tests pass unchanged.
+    - Live: the running dev API is healthy and reports `development`. A real `buildApp()` with `NODE_ENV=staging BULL_BOARD_OPEN=true` refused to start, with the message naming the flag and how to fix it.
   - **Acceptance criteria:**
-    1. With `NODE_ENV=staging`, or unset:
-       - placeholder secrets are refused;
-       - Bull Board stays closed, and a set `BULL_BOARD_OPEN` stops the boot;
-       - the production rate limits apply;
-       - the SSRF guard is on;
-       - the inbound-email bypass is refused;
-       - printed links are masked.
-    2. With `NODE_ENV=development` and the flags set, behaviour is unchanged.
-    3. The tripwire fails when a new file reads `NODE_ENV`.
-    4. The whole suite passes.
+    - 1 met, for staging, a preview and unset: placeholder secrets refused; Bull Board closed, and a set `BULL_BOARD_OPEN` stops the boot; the production rate limit; the SSRF guard on; the inbound-email bypass refused; printed links masked.
+    - 2 met: with `NODE_ENV=development` and the flags set, behaviour is unchanged.
+    - 3 met: the tripwire fails when a new file reads `NODE_ENV`.
+    - 4 met: the whole suite passes (typecheck, lint, unit 373, web 62, integration 398). `.env.example` says what strict mode does with each flag.
+  - **Deploy:** a staging or preview environment is now strict. It needs strong secrets and a signing certificate (`SIGNING_CERT_P12_BASE64`, `SIGNING_CERT_PASSPHRASE`) to sign, must not set `BULL_BOARD_OPEN` or `INBOUND_EMAIL_ALLOW_ALL`, and gets production's rate limit. The Dockerfiles and the self-host compose file already set `NODE_ENV=production`; CI runs with `test`.
 
 - **Y6 — The model can't present what no tool returned (Medium). — TODO.**
   - **Problem:**
