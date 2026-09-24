@@ -2314,6 +2314,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The hub, the page titles, the summaries and the SEO/sitemap descriptions call these guides, with downloads to follow.
     - The "lawyer-reviewed" claim is gone: nothing in the repo supports it. Writing the templates themselves is content work for the team.
   - **Verification:** the H1 copy tripwire (`apps/api/src/lib/marketing-claims.test.ts`) +1 case: every `downloadFile` exists under `apps/marketing/public`, and the download and "lawyer-reviewed" claims are gone. It fails on the old site (`/templates/${slug}.docx` missing); 11/11 pass. Marketing typecheck passes.
+  - **Follow-up (found by the QA document update):** the nav's menu heading, the footer and each template page's badge still said "Free templates" / "Free template". They say "Template guides" / "Template guide" now, with the menu items "NDA guide" etc. The tripwire also refuses "free template(s)"; it fails on the old labels, 12/12 pass.
 
 - **X72 — The marketing site and docs lagged behind the code (Low). — DONE.** Found while writing the QA test cases (TC-WEB-01, TC-WEB-06).
   - H1 fixed the audit card's text but kept "Append-only audit log" as its title and on the trust strip. Nothing enforces append-only; the log is hash-chained. The same card called the in-app audit viewer planned, but X3 shipped it (Admin → Organization → Audit Log).
@@ -2499,6 +2500,7 @@ X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto va
 X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — (sha: pending)
 X77 — DONE — the share-link email's log line masks the portal token outside development (found by this round's review) — (sha: pending)
 X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — (sha: pending)
+X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — (sha: pending)
 
 ---
 

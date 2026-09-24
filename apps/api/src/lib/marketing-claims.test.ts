@@ -39,6 +39,7 @@ describe('marketing claims', () => {
     expect(site).not.toMatch(/download is live/i)
     expect(site).not.toMatch(/free downloads?/i)
     expect(site).not.toMatch(/lawyer-reviewed/i)
+    expect(site).not.toMatch(/free templates?\b/i)   // X71 follow-up: the nav, footer and page badge
   })
 
   // X72 — H1 corrected the audit card's text but kept "append-only" in its

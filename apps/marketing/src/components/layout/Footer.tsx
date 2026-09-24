@@ -38,7 +38,7 @@ const cols = [
     title: 'Resources',
     links: [
       ['Learn', '/learn'],
-      ['Free templates', '/templates'],
+      ['Template guides', '/templates'],
       ['Contact', '/contact'],
     ],
   },

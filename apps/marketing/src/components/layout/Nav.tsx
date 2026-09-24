@@ -106,12 +106,12 @@ export function Nav() {
                 </div>
                 <div>
                   <div className="px-3 pb-2 pt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Free templates
+                    Template guides
                   </div>
-                  <MegaItem to="/templates/nda" label="NDA template" blurb="Mutual or one-way" />
-                  <MegaItem to="/templates/msa" label="MSA template" blurb="B2B SaaS / services" />
-                  <MegaItem to="/templates/dpa" label="DPA template" blurb="GDPR-aligned" />
-                  <MegaItem to="/templates" label="All templates →" />
+                  <MegaItem to="/templates/nda" label="NDA guide" blurb="Mutual or one-way" />
+                  <MegaItem to="/templates/msa" label="MSA guide" blurb="B2B SaaS / services" />
+                  <MegaItem to="/templates/dpa" label="DPA guide" blurb="GDPR-aligned" />
+                  <MegaItem to="/templates" label="All template guides →" />
                 </div>
               </div>
             </div>

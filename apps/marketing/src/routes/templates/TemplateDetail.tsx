@@ -47,10 +47,10 @@ export default function TemplateDetail() {
           <div className="mx-auto grid max-w-6xl gap-12 lg:grid-cols-5">
             <div className="lg:col-span-3">
               <Link to="/templates" className="text-sm font-medium text-slate-500 hover:text-emerald-700">
-                ← All templates
+                ← All template guides
               </Link>
               <div className="mt-4 inline-flex rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-800">
-                Free template
+                Template guide
               </div>
               <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-900 sm:text-5xl">
                 {t.title}
