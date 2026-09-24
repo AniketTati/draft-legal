@@ -287,7 +287,7 @@ export function FocusedReviewDrawer({
           {matchedPositions.length === 0 ? (
             <p className="text-dense text-ink-400 italic">
               No playbook position defined for {labelClauseType(clause.clauseType)}.
-              Add one in Admin → Playbook to compare this clause automatically.
+              Add one under Library → Playbook to compare this clause automatically.
             </p>
           ) : (
             <div className="space-y-2">

@@ -2321,6 +2321,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Edit mode, by button, shortcut or clause drawer, needs `edit:contract`. The server checks are unchanged.
   - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; the browser check is in the run log.
 
+- **X76 — Three messages sent users to menu items that don't exist (Low). — DONE.** Found while writing the QA test cases (smoke cases SMK). A sweep of the web app's "X → Y" directions found two more.
+  - The Send for Review dialog, with no workflows, said to create one "via Admin → Approvals". There is no such item; workflows are created under Approvals → Manage Workflows.
+  - The clause review drawer said to add a playbook position "in Admin → Playbook". Playbook is under Library.
+  - The login page's Google and Microsoft sign-in notes said to "enable it in Organization → Single Sign-On". No such setting exists; the notes already say it's coming in v1.1.
+  - **What changed:** the first two name the real place. The sign-in notes say the admin will be able to link the workspace, without pointing to a setting.
+  - **Verification:** web typecheck passes. Every other "X → Y" direction in `apps/web/src` names a real place (Organization → AI Config, Approvals → Manage Workflows).
+
 ---
 
 ## Run log
@@ -2449,6 +2456,7 @@ X72 — DONE — marketing calls the audit log tamper-evident with a shipped vie
 X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — (sha: pending)
 X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — (sha: pending)
 X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — (sha: pending)
+X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — (sha: pending)
 
 ---
 

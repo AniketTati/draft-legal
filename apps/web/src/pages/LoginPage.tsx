@@ -26,12 +26,13 @@ type StubKind = 'sso-google' | 'sso-microsoft' | 'sso-saml'
 const STUB_COPY: Record<StubKind, { title: string; body: string; eta: string }> = {
   'sso-google': {
     title: 'Sign in with Google',
-    body: 'Your admin can link your workspace to Google Workspace for one-click sign-in. Tell them to enable it in Organization → Single Sign-On.',
+    // X76 — no Single Sign-On setting exists yet, so there is nothing to point an admin at.
+    body: 'Your admin will be able to link your workspace to Google Workspace for one-click sign-in.',
     eta: 'Available in v1.1',
   },
   'sso-microsoft': {
     title: 'Sign in with Microsoft',
-    body: 'Your admin can link your workspace to Microsoft Entra ID (formerly Azure AD) for one-click sign-in. Tell them to enable it in Organization → Single Sign-On.',
+    body: 'Your admin will be able to link your workspace to Microsoft Entra ID (formerly Azure AD) for one-click sign-in.',
     eta: 'Available in v1.1',
   },
   'sso-saml': {

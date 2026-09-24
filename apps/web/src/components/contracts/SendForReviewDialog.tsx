@@ -129,7 +129,8 @@ export function SendForReviewDialog({
               <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
               <div>
                 <p className="font-medium">No workflows configured</p>
-                <p className="text-dense mt-1 leading-relaxed">An admin needs to create a workflow first via Admin → Approvals.</p>
+                {/* X76 — workflows live under Approvals → Manage Workflows; there is no "Admin → Approvals". */}
+                <p className="text-dense mt-1 leading-relaxed">An admin needs to create one first, under Approvals → Manage Workflows.</p>
               </div>
             </div>
           ) : (
