@@ -9,7 +9,7 @@
  * Before this, "send for review to the other party" was clipboard-only — the
  * user copied a URL and pasted it into their own mail client.
  */
-import { maskTokenPaths } from './log-redact.js'
+import { devPrint } from './log-scrub.js'
 
 interface SendShareLinkEmailArgs {
   to: string
@@ -37,10 +37,10 @@ export function sendShareLinkEmail(args: SendShareLinkEmailArgs): void {
   // recover the link without reopening the dialog.
   // X77 — the link carries the portal token, a credential that opens the
   // contract for up to 30 days: whole only in development, as X18 does for
-  // signing links. It was printed in every environment.
-  const shownUrl = process.env.NODE_ENV === 'development' ? args.portalUrl : maskTokenPaths(args.portalUrl)
-  console.info(
-    `[share] ✉  ${args.to}  →  ${shownUrl}` +
+  // signing links. It was printed in every environment. Y4 — devPrint is the
+  // scrubber's one exception, for exactly this.
+  devPrint(
+    `[share] ✉  ${args.to}  →  ${args.portalUrl}` +
     `  (${args.contractType} "${args.contractTitle}", expires ${args.expiresAt.toISOString().slice(0, 10)})`,
   )
 

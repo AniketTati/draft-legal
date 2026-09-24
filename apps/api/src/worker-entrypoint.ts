@@ -13,6 +13,7 @@
  * Cloud Run still requires the container to listen on $PORT for its health
  * check, so we expose a tiny HTTP endpoint alongside the workers.
  */
+import './lib/log-scrub-install.js'   // Y4 — first: every line this process prints is scrubbed
 import http from 'node:http'
 import './workers/index.js' // starts every BullMQ worker as an import side effect
 

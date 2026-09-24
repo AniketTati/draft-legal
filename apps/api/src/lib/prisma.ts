@@ -13,14 +13,14 @@
  * "everything is slow but we don't know why" tickets.
  */
 import { PrismaClient } from '@prisma/client'
-import pino from 'pino'
+import { moduleLogger } from './logger.js'
 import { tenantGuardExtension } from './tenant-guard.js'
 import { tenantRlsExtension, tenantTransaction } from './tenant-rls.js'
 
 const SLOW_QUERY_MS = Number(process.env.SLOW_QUERY_MS ?? 250)
 const POOL_LIMIT    = Number(process.env.PRISMA_POOL_LIMIT ?? 20)
 
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info', name: 'prisma' })
+const log = moduleLogger('prisma')
 
 // Apply the pool limit by appending ?connection_limit=N to the URL if
 // not already specified. This is the documented way per Prisma docs.

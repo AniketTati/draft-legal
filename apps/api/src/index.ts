@@ -1,3 +1,4 @@
+import './lib/log-scrub-install.js'   // Y4 — first: every line this process prints is scrubbed
 import { buildApp } from './app.js'
 import { startCollabServer } from './lib/collab-server.js'
 

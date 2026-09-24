@@ -61,7 +61,7 @@ import { slackRoutes } from './routes/slack.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
-import { devLogger, LOG_REDACT, LOG_SERIALIZERS } from './lib/logger.js'
+import { devLogger, productionLoggerOptions } from './lib/logger.js'
 import { runInTenantStore } from './lib/tenant-context.js'
 import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
 import { routePermission } from './middleware/permissions.js'
@@ -72,20 +72,9 @@ export async function buildApp() {
       process.env.NODE_ENV === 'development'
         ? devLogger()
         : {
-            level: process.env.LOG_LEVEL ?? 'info',
-            // Production observability — pino's default JSON output
-            // is the right shape for ingest into DataDog / Loki /
-            // CloudWatch. Add the commit SHA so we can correlate logs
-            // to a release; the deploy script sets GIT_COMMIT_SHA.
-            base: {
-              pid: process.pid,
-              env: process.env.NODE_ENV ?? 'production',
-              commit: process.env.GIT_COMMIT_SHA ?? 'unknown',
-              service: 'clm-api',
-            },
-            // Masking shared with the development logger (lib/logger.ts).
-            redact: LOG_REDACT,
-            serializers: LOG_SERIALIZERS,
+            // Production observability: JSON lines, masked as the
+            // development logger's are, through the log scrubber (lib/logger.ts).
+            ...productionLoggerOptions(),
             // Request-id propagation: trust an upstream X-Request-Id
             // (set by load balancer / CDN) so traces correlate across
             // services. Otherwise Fastify generates one.

@@ -2551,19 +2551,37 @@ Each class below recurred during this run, and each occurrence was fixed where i
     - Own-scope ownership, which the server keeps deciding per record; the client blocks only a permission the user lacks entirely.
     - The chat's streaming and action calls use `fetch` directly, not the API client, so they aren't refused ahead of time. The server refuses them, and the chat shows its answer.
 
-- **Y4 — One scrubber for every log line (Medium). — TODO.**
+- **Y4 — One scrubber for every log line (Medium). — DONE.**
   - **Problem:**
     - Secrets reached logs four times: X3, X18, X69, X77. Each fix masked one line or one logger.
     - The API prints through pino and through about 146 `console.*` calls, and only pino masks anything.
-  - **Approach:**
-    1. **One scrubber:** `lib/log-scrub.ts` exports `scrub(text)`. It masks token-bearing links (`/sign/`, `/portal/`, `/invites/`), credential query parameters, `Bearer` values, JWTs, the API's own keys (`clm_…`), provider keys (`sk-…`, `AIza…`, `xox…-`), passwords in URLs, private-key blocks and the internal service secret.
-    2. **Applied to every channel at startup:** both pino loggers, `console.*` (in the API, the worker entrypoint and the collab server) and the error reporter.
-    3. **One deliberate exception:** the development delivery channel. `devPrint()` prints a signing or share link whole, only in development. It is the one greppable exception.
+  - **What changed:**
+    1. **One scrubber:** `lib/log-scrub.ts`, `scrub(text)`. It masks:
+       - token-bearing links (`/sign/`, `/portal/`, `/invites/`) and credential query parameters, as `maskTokenPaths` did for request URLs;
+       - `Bearer` and `Basic` values, JWTs, the API's own keys (`clm_live_…`) and webhook secrets (`whsec_…`);
+       - provider keys (`sk-…`, `sk-ant-…`, Stripe, `AIza…`, `xox…-`, `ghp_…`, SendGrid);
+       - passwords in URLs, and private-key blocks;
+       - the value of any secret environment variable (a name ending in SECRET, PASSWORD, TOKEN, API_KEY and the like, 12 characters or more), the internal service secret included.
+    2. **One choke point per process.** Each entrypoint (`index.ts`, `worker-entrypoint.ts`) imports `lib/log-scrub-install.ts` first, which wraps `process.stdout` and `process.stderr`. Everything prints through them:
+       - `console.*`, the error reporter and the collab server, which runs in the API process;
+       - every pino logger, which `lib/logger.ts` now makes. pino's default destination writes to the file descriptor directly, past the wrap, so the Fastify loggers (JSON and pretty) and the module loggers (`moduleLogger`: prisma, tenant guard, model boundary) all write through `process.stdout`.
+    3. **One exception:** `devPrint()`, which prints the signing and share emails' link lines. In development, where the console is how the link is found, a line passes whole; in any other mode it is masked. The two call sites' own `NODE_ENV` checks are gone.
+    4. `maskTokenPaths` now ends a token at whitespace, a quote or a backslash. It was written for bare URLs: in a whole log line it took the text up to the next `/` with it.
+  - **Verification:**
+    - `lib/log-scrub.test.ts` (6):
+      - one secret of each of 11 kinds is masked, while ordinary text (a title, a cuid, an email, a timestamp, an ordinary URL) is untouched, and a masked line stays as it is;
+      - with the scrubber on stdout and stderr, the same secrets go through every channel: a module logger, the Fastify production logger (a request with a token path, a code and a Bearer header, then an error line), the pretty development logger, `console.log`/`info`/`warn`/`error`, and the error reporter. Each channel is shown to have printed, and none printed a secret;
+      - `devPrint` prints a signing link whole in development, and masks it in production, test and staging;
+      - a tripwire: `pino(` is called only in `lib/logger.ts`. A stray logger in another file failed it.
+    - Before: with a no-op scrubber, three tests failed; the channel test found `tok-sign-7731` in the JSON log line.
+    - A real process that imports the install module first, as the entrypoints do, printed nothing secret through console, pino, stderr or the internal secret, in production and in development. Only `devPrint`'s link was whole, and only in development.
+    - The existing log tests (`log-redact`, `share-email`, `error-reporter`, `signing-tokens`) pass unchanged.
   - **Acceptance criteria:**
-    1. A test pushes one secret of each kind through each channel (pino in both formats, `console.log`/`info`/`warn`/`error`, the error reporter) and none appears.
-    2. Ordinary text is untouched (titles, ids, emails, dates). Scrubbing an already masked line changes nothing.
-    3. A signing link printed in development through `devPrint` stays whole; in any other mode it is masked.
-    4. The existing log tests and the whole suite pass.
+    - 1 met: one secret of each kind through each channel, none appears.
+    - 2 met: ordinary text is untouched; scrubbing a masked line changes nothing.
+    - 3 met: `devPrint` whole in development, masked otherwise.
+    - 4 met: the existing log tests and the whole suite pass (typecheck, lint, unit 367, web 62, integration 385).
+  - **Out of scope:** the agents service (Python) and the web app's browser console print through their own channels.
 
 - **Y5 — Security relaxations only by explicit opt-in (High). — TODO.**
   - **Problem:**

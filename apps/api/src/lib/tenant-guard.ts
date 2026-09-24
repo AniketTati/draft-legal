@@ -26,7 +26,7 @@
  * (sign-in, public token routes, background jobs).
  */
 import { EventEmitter } from 'node:events'
-import pino from 'pino'
+import { moduleLogger } from './logger.js'
 import { Prisma, type PrismaClient } from '@prisma/client'
 import { currentTenant } from './tenant-context.js'
 
@@ -60,7 +60,7 @@ export interface TenantGuardBlock { model: string; operation: string; tenant: st
 
 const g = globalThis as unknown as { __clmTenantGuard?: { enabled: boolean; events: EventEmitter } }
 const state = (g.__clmTenantGuard ??= { enabled: true, events: new EventEmitter() })
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info', name: 'tenant-guard' })
+const log = moduleLogger('tenant-guard')
 
 /** Tests only: the route crawl's first pass checks the routes' own scoping. */
 export function setTenantGuardEnabled(on: boolean): void {

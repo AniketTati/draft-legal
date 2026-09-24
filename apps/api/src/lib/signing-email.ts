@@ -16,6 +16,7 @@
  */
 import type { Signer } from '@prisma/client'
 import { sendEmail } from './mailer.js'
+import { devPrint } from './log-scrub.js'
 
 interface SendSigningEmailArgs {
   to: string
@@ -37,12 +38,10 @@ export function sendSigningEmail(args: SendSigningEmailArgs): void {
     ? ` · expires ${args.expiresAt.toISOString().slice(0, 10)}`
     : ''
   // X18 — the link IS the signer's credential. Print it whole only in
-  // development, where the console is the delivery channel.
-  const shownUrl = process.env.NODE_ENV === 'development'
-    ? args.signingUrl
-    : args.signingUrl.replace(/\/sign\/[^/?#]+/, '/sign/[REDACTED]')
-  console.info(
-    `[signing] ✉  ${args.to}  →  ${shownUrl}` +
+  // development, where the console is the delivery channel: Y4's devPrint,
+  // the scrubber's one exception.
+  devPrint(
+    `[signing] ✉  ${args.to}  →  ${args.signingUrl}` +
     `  (${args.contractType} "${args.contractTitle}", signer "${args.signerName}"${expiresStr})`,
   )
 

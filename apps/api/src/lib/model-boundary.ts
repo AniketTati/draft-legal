@@ -27,13 +27,13 @@
  * this one and a list of calls that send no contract text to a model.
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
-import pino from 'pino'
+import { moduleLogger } from './logger.js'
 import { AuditAction } from '@clm/types'
 import { backstopJson, getOrgPiiMode, type BackstopResult } from './pii-policy.js'
 import type { PiiMode } from './pii-redactor.js'
 import { createAuditEvent } from './audit.js'
 
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info', name: 'model-boundary' })
+const log = moduleLogger('model-boundary')
 
 export interface ModelCall {
   orgId: string
