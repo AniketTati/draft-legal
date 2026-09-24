@@ -2254,6 +2254,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - The final signature and a void can race. The X28 follow-up made the stored outcome right: the request flips only from PENDING, so the void wins and the contract isn't executed. But when the void landed between the signature and the completing transaction, the sign call still answered 200 `{ allSigned: true }`. The signer portal showed "signed", and an API client would read the request as complete.
   - **What changed:** when every signer has signed but this call didn't complete the request, the route re-reads it. If a simultaneous final signature completed it, the answer is 200 `allSigned: true` as before. Otherwise (voided or expired meanwhile) it answers 409, "This signing request changed meanwhile. Reload the page.", the same answer as a void that lands just before the signature.
   - **Verification:** `routes/signing-turn.integration.test.ts` +1 case: a void injected just before the completing transaction gives a 409; the request stays VOIDED, the contract isn't executed and no COMPLETED event is written. It fails on the old route (200). Two final signatures at once still both get 200 and complete the request once; 4/4 pass, and `signing-tokens.integration.test.ts` 6/6.
+  - **Adversarial review (combined, see X67):** the 409 path holds, and the test's injection lands exactly between the signature and completion (the handler's only transaction).
+    - The signature a void overtakes stays SIGNED, but nothing acts on it: the portal answers 410, nothing reactivates a voided request, and no webhook reports single signatures.
+    - **Low, a nearby path:** in a SEQUENTIAL request, a non-final signature that a void or decline overtook still emailed the next group their signing links. It also logged a SENT event on the voided request, because the next group was chosen without checking the request's status.
+    - The choice is now `nextSignersToNotify` (`lib/signing-order.ts`), which returns nobody unless the request is still PENDING.
+    - **Verification:** `lib/signing-order.test.ts` (3): the next group only once the signer's group is done; nobody while a sibling is pending; nobody once the request is VOIDED, EXPIRED or COMPLETED. The last case is the missing check. The signing and own-scope suites pass (39).
 
 - **X66 — An email whose only document was too large was told it had none (Low). — DONE.** A gap in X14, found while writing the QA test cases (TC-DOC-09).
   - `POST /inbound/email` answers 413 "Attachment too large (25MB limit)" when every document is over the limit. That check measured the attachment's content. Providers post multipart, and the multipart reader stops reading a file part at the limit and keeps no content, so the check saw an empty attachment. The email got 400 "No PDF or DOCX attachment found". The JSON form, the only one where the check worked, can't carry a file that large anyway: the API's 1 MiB body limit refuses it first.
@@ -2475,6 +2480,7 @@ X74 — DONE — /metrics takes its token only as a bearer token, as documented 
 X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — 173ea83
 X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — 7791f95
 X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — (sha: pending)
+X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — (sha: pending)
 
 ---
 
