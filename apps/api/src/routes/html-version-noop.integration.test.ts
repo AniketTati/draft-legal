@@ -106,6 +106,6 @@ describe('saving a contract\'s HTML', () => {
     const res = await save(id, '<p>Employee SSN 219-09-<strong>9999</strong>.</p><p>Paid monthly.</p>')
     expect(res.statusCode).toBe(201)
     const { plainText } = await prisma.contractVersion.findUniqueOrThrow({ where: { id: res.json().id } })
-    expect(plainText).toBe('Employee SSN 219-09-9999. Paid monthly.')
+    expect(plainText).toBe('Employee SSN 219-09-9999.\nPaid monthly.')
   })
 })

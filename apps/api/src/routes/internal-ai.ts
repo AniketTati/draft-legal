@@ -23,6 +23,7 @@ import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -3372,7 +3373,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         ? `${template.name} — ${body.counterpartyName}`
         : `Draft — ${template.name}`)
     const contractType = body.contractType ?? template.contractType ?? 'OTHER'
-    const plainText = htmlToPlainText(generated.html)
+    // X67 review — as the editor's saves: its own converter glued table cells
+    // (`<td>SSN</td><td>219-09-9999</td>` → `SSN219-09-9999`), out of the
+    // PII patterns' reach.
+    const plainText = htmlToText(generated.html)
 
     const created = await prisma.$transaction(async (tx) => {
       const contract = await tx.contract.create({
@@ -4722,22 +4726,4 @@ export async function internalAiRoutes(app: FastifyInstance) {
       stepDecision:   body.decision,
     })
   })
-}
-
-// Minimal HTML → plaintext helper for storing the generated body as
-// searchable text. A heavier sanitiser (striptags + list bullets) isn't
-// needed today — later D.5 phases (F.2 structural extractor) will
-// replace this with a proper tree walker.
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/(li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
 }

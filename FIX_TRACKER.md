@@ -2266,6 +2266,23 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** `lib/html-text.ts` (`htmlToText`) reads HTML as a browser renders it. Inline markup (bold, italics, links, spans…) joins what it wraps; blocks, cells and line breaks separate. Comments, attributes (including a quoted `>`) and non-breaking spaces are handled. All four paths use it.
   - Versions saved before this keep their stored text until they are next saved. There is no backfill: an analysed draft's clause positions point into that text.
   - **Verification:** `lib/html-text.test.ts` (3): a partly bolded SSN and card number come out whole and are redacted; blocks and cells still separate. `routes/html-version-noop.integration.test.ts` +1 case: saving `219-09-<strong>9999</strong>` stores `219-09-9999`. It fails on the old conversion (`219-09- 9999 .`); 5/5 pass. The drafting paths' tests (`api-key-create`, 10) and `pii-outbound` (14) pass.
+  - **Adversarial review (combined with X61, X65, X69, X74, X75):** four findings, all fixed.
+    - **Medium:** the tag patterns took quadratic time on crafted markup. `<a` repeated over 160 KB blocked the API for about 60 s; the old conversion took about 30 s. The patterns now never scan past the next `<`, and comments are cut by position: linear.
+    - **Medium:** a fifth path kept its own converter. `contract_create_from_template` glued table cells (`<td>SSN</td><td>219-09-9999</td>` became `SSN219-09-9999`), out of the patterns' reach. It uses `htmlToText` now.
+    - **Low, a regression:** joining glued a label onto a value when only markup separated them, and the old spaces had caught these:
+      - `<b>SSN</b>219-09-9999`;
+      - `Card<b>4111 …</b>`;
+      - a footnote `<sup>1</sup>` after a number.
+      Markup between a letter and a digit now leaves a space. Superscripts and subscripts separate.
+    - **Low:** `<br>` inside a value (`219-09-<br>9999`, the editor's Shift+Enter) stored a space. Blocks and line breaks now become line breaks, which X52's cross-line detection reads as one wrapped value. Cells stay side by side. Numeric and named entities are decoded (`219&#45;09&#45;9999`).
+    - The same quadratic pattern in `htmlTextForms` (`lib/pii-policy.ts`) is linear now too.
+    - Not changed, since it is the redactor's reach, not this conversion's: non-breaking hyphens, soft hyphens and zero-width characters inside a value.
+    - **Verification:** `lib/html-text.test.ts` now has 7 cases:
+      - labels are kept apart; a footnote is kept apart;
+      - a `<br>` value is redacted;
+      - entities are decoded;
+      - it takes linear time on four backtracking shapes.
+      The four behaviour cases fail on the first version. `routes/draft-plan.integration.test.ts` +1 case: a template's table cells are stored apart. It fails on the old converter (`SSN219-09-9999Card4111…`). `pii-outbound` 14, `pii-surfaces` 16 and `pii-token-boundaries` pass.
 
 - **X68 — An action card's "Review" dropped the edit, and Apply sent the original (Medium). — DONE.** Found while writing the QA test cases (TC-PII-06).
   - The chat's Apply / Edit / Cancel card (`ActionPreview`, used on `/agent` and in the side rail) read the edited arguments only while the editor was open. After an edit, "Review" closed the editor. Apply then sent the proposal's original arguments, and reopening Edit still showed the edit, so nothing on the card said it had been dropped.
@@ -2435,28 +2452,29 @@ X53 — DONE — the chat's redline tool takes the section the user names, and a
 X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same user's later tokens, never resend a request as another user, and sign out only on a refused refresh; storage keeps the newer session; tokens carry a session id; same-second refreshes both succeed; sign-out ends the session after an idle pause — 0bdad37
 C3, C10, C12, V1, X2, X23, X27, X33 (live checks) — DONE — verified with the agents service and Gemini on the local stack; the PII round trip through a counting proxy (models saw tokens only); VERIFY-PENDING → DONE — this commit
 X54 — BLOCKED — chat usage is recorded from the message and reply only, so the daily cost cap barely counts chat; the fix changes what the cap counts, a product decision — this commit
-X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — (sha: pending)
-X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — (sha: pending)
-X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — (sha: pending)
-X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — (sha: pending)
-X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — (sha: pending)
-X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — (sha: pending)
-X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — (sha: pending)
-X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — (sha: pending)
-X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — (sha: pending)
-X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — (sha: pending)
-X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — (sha: pending)
-X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — (sha: pending)
-X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — (sha: pending)
-X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — (sha: pending)
-X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — (sha: pending)
-X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — (sha: pending)
-X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — (sha: pending)
-X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — (sha: pending)
-X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — (sha: pending)
-X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — (sha: pending)
-X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — (sha: pending)
-X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — (sha: pending)
+X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — de0115c
+X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — ca22652
+X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — b837fb0
+X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — 9d75ba9
+X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — 45ad05f
+X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — b4e64ef
+X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — 1db0b9b
+X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — eee75c6
+X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — 42f421e
+X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — 2514ae9
+X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — 85c905f
+X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — 3ef40e9
+X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — 0528672
+X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — 2eb8291
+X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — 2641afa
+X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — 98d0b3b
+X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — b8d97db
+X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — 36420f6
+X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — 61e8a66
+X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — 7df843c
+X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — 173ea83
+X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — 7791f95
+X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — (sha: pending)
 
 ---
 

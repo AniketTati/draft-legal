@@ -395,7 +395,9 @@ export function plainSpacesHtml(html: string): string {
  */
 export function htmlTextForms(html: string): string[] {
   const h = plainSpacesHtml(html)
-  return [h, h.replace(/<[^>]*>/g, ''), h.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')]
+  // `[^<>]`, not `[^>]`: from every `<` with no `>` after it, `[^>]*` scanned
+  // to the end of the document (quadratic; X67 review).
+  return [h, h.replace(/<[^<>]*>/g, ''), h.replace(/<[^<>]*>/g, ' ').replace(/\s+/g, ' ')]
 }
 
 /**

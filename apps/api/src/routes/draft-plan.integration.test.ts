@@ -156,3 +156,21 @@ describe('confirm → apply → undo', () => {
     expect((await prisma.contract.findUnique({ where: { id: result.contractId } }))?.deletedAt).not.toBeNull()
   })
 })
+
+// X67 review — the tool stored its text through its own converter, which glued
+// table cells: `<td>SSN</td><td>219-09-9999</td>` became `SSN219-09-9999`,
+// which the PII patterns don't match.
+describe('a draft made from a template', () => {
+  it('stores its text as it reads, cells apart', async () => {
+    const tpl = await template('Employee Details', 'EMPLOYMENT',
+      '<table><tr><td>SSN</td><td>{{ssn}}</td></tr><tr><td>Card</td><td>{{card}}</td></tr></table>')
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_create_from_template',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, userId: owner, templateId: tpl, title: 'X67 table', variables: { ssn: '219-09-9999', card: '4111 1111 1111 1111' } },
+    })
+    expect(res.statusCode).toBe(200)
+    const version = await prisma.contractVersion.findFirstOrThrow({ where: { contractId: res.json().contractId } })
+    expect(version.plainText).toContain('SSN 219-09-9999\nCard 4111 1111 1111 1111')
+  })
+})
