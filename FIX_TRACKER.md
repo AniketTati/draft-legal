@@ -2212,6 +2212,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Analysis stages still mark the analysis FAILED. Nothing changes while retries remain.
   - **Verification:** `lib/agent-job-failure.integration.test.ts` (4). The redline and follow-on cases fail on the old handler's logic; all pass now.
 
+- **X58 — Apply on a redline card in `/agent` did nothing (Medium). — DONE.** Found while writing the QA test cases (TC-AI-04).
+  - The redline card's "Apply variant" dispatched the rail's `rail-inject-action` event. The side rail listens for it, but the rail isn't mounted on `/agent` (`AppShell` hides it there), so on the main AI page nothing heard the event and no Apply / Edit / Cancel card appeared.
+  - **What changed:** `/agent` adds the proposed `redline_apply` action to the card's own message, where the existing Apply / Edit / Cancel card takes over and applies it through `POST /agent/threads/:id/actions/apply` (which already allowed `redline_apply`). The rail is unchanged.
+  - **Verification:** web typecheck and lint pass. The web app has no component tests; the browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2322,6 +2327,7 @@ X54 — BLOCKED — chat usage is recorded from the message and reply only, so t
 X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — (sha: pending)
 X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — (sha: pending)
 X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — (sha: pending)
+X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — (sha: pending)
 
 ---
 

@@ -1043,6 +1043,16 @@ export function AgentHomePage() {
   // orgId/authorId from the JWT, records a ToolCall row, and fires the
   // AGENT_TOOL_APPLIED audit event. Undo targets the returned toolCallId
   // within the 15-min server-side window.
+  // X58 — a card that proposes an action itself (a redline variant's Apply)
+  // adds it to its own message, where the Apply / Edit / Cancel card above
+  // takes over. It used to go through the rail's 'rail-inject-action'
+  // event, which nothing hears on /agent: the rail isn't mounted here.
+  const proposeAction = (msgId: string, action: PendingAction) => {
+    setMessages(prev => prev.map(m => m.id === msgId
+      ? { ...m, pendingActions: [...(m.pendingActions ?? []), action] }
+      : m))
+  }
+
   const patchAction = (msgId: string, actionId: string, patch: Partial<PendingAction>) => {
     setMessages(prev => prev.map(m => {
       if (m.id !== msgId) return m
@@ -1420,6 +1430,7 @@ export function AgentHomePage() {
                     if (!streaming) send(text)
                   }}
                   onActionApply={(actionId, args) => applyAction(m.id, actionId, args)}
+                  onActionPropose={(action) => proposeAction(m.id, action)}
                   onActionCancel={(actionId) => cancelAction(m.id, actionId)}
                   onActionUndo={(actionId) => undoAction(m.id, actionId)}
                   onRetry={(prompt) => { if (!streaming && prompt) send(prompt) }}
@@ -1650,6 +1661,7 @@ function MessageBubble({
   onChipSelect,
   streaming,
   onActionApply,
+  onActionPropose,
   onActionCancel,
   onActionUndo,
   onRetry,
@@ -1658,6 +1670,7 @@ function MessageBubble({
   onChipSelect?: (text: string) => void
   streaming?:   boolean
   onActionApply?:  (actionId: string, args: Record<string, unknown>) => void | Promise<void>
+  onActionPropose?: (action: PendingAction) => void
   onActionCancel?: (actionId: string) => void
   onActionUndo?:   (actionId: string) => void | Promise<void>
   onRetry?:        (prompt: string) => void
@@ -1701,9 +1714,7 @@ function MessageBubble({
                   <RedlinePreview
                     key={tc.id}
                     proposal={tc.redlineProposal as RedlineProposal}
-                    onApplyVariant={(_variant, action) => {
-                      window.dispatchEvent(new CustomEvent('rail-inject-action', { detail: action }))
-                    }}
+                    onApplyVariant={(_variant, action) => onActionPropose?.(action)}
                   />
                 )
               }
