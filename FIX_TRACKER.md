@@ -2389,6 +2389,146 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 
 ---
 
+## Systemic hardening (2026-09-24)
+
+Each class below recurred during this run, and each occurrence was fixed where it was found. Nothing structural stops the next occurrence. These tasks add that structure: a mechanism that covers every current and future instance of the class, plus a test that fails when a new instance appears. The ground rules above still apply: one task at a time, a test that fails before and passes after, full checks, one commit per task.
+
+| Task | Class | Where it recurred |
+|---|---|---|
+| Y1 | Tenant scoping | S2, X6, X7, X9, X10, X19, X20, X21, X25, X44 |
+| Y2 | PII reaching a model | X23, X27, X36, X37, X40, X52, X55, X67 |
+| Y3 | UI actions the server refuses | X61, X75 (and its review and follow-up); the Actions menu |
+| Y4 | Secrets in logs | X3, X18, X69, X77 |
+| Y5 | Security checks keyed on the environment | X31, X35, X38, X39 |
+| Y6 | The model presenting what no tool returned | V2, X78 |
+
+- **Y1 — Enforce tenant isolation below the routes (High). — TODO.**
+  - **Problem:**
+    - Org scoping is enforced only by each query's own `where: { orgId }`, so ten cross-org defects were found and fixed one route at a time.
+    - A new route, or a changed query, can leak again, and no test looks across all routes.
+    - The marketing Security page claims "Postgres row-level security (RLS)", which does not exist; no migration creates a policy.
+  - **Approach:**
+    1. **Request tenant context:** each request carries its tenant in an `AsyncLocalStorage` context. It is set when authentication succeeds: a user's JWT, an API key, the agents service with `x-org-id`, or an internal tool call's `orgId`. Public token routes, sign-in and workers have no tenant.
+    2. **A Prisma query extension on every model that has an `orgId`.** The list is read from Prisma's schema metadata, so a new model is covered automatically. Inside a tenant context, every query on those models is limited to the tenant: reads, counts, aggregates, updates, deletes, upserts and creates. For Role and Skill, whose built-in rows have no org, the limit is "the tenant's rows or built-in rows".
+    3. **Blocked access is visible.** A read or write by id that the limit turned into a miss, where the row exists in another org, is logged as `tenant_guard_blocked` (model, operation, route; no data). A write the limit refused answers 404, because Prisma's "record not found" now maps to 404.
+    4. **One explicit escape hatch:** `withoutTenantGuard()`, for code that must cross orgs.
+    5. **A route crawl test:**
+       - It gives Org B one record of each kind a route can name, with a marker string in its text fields.
+       - It lists every registered route with a path parameter and calls it as an Org A admin with Org B's ids.
+       - It posts every internal tool with Org B's ids in the body.
+       - It runs twice: once without the guard, which tests the routes' own scoping, and once with it.
+    6. **Truthful copy:** the Security page and trust strip describe the isolation that exists, and the H1 copy tripwire refuses the RLS claim.
+  - **Acceptance criteria:**
+    1. In an Org A request, an unscoped read of an Org B row returns nothing, and an unscoped update or delete by id changes nothing. Both answer 404, and `tenant_guard_blocked` is logged. Shown by tests against a deliberately unscoped query.
+    2. Counts and lists are limited too: an unscoped count in an Org A request counts only Org A's rows.
+    3. Built-in roles and skills stay readable by every org.
+    4. Outside a tenant context (workers, sign-in, public token routes) nothing changes.
+    5. The crawl covers every registered route that has a path parameter, and every internal tool, and prints how many it called. In both passes:
+       - no response contains an Org B marker;
+       - no Org B row changes;
+       - no row is created that references an Org B record.
+    6. With the guard on, the crawl logs no `tenant_guard_blocked`, so no route relies on the guard.
+    7. The crawl fails against a deliberately reintroduced defect: one route's `orgId` filter removed, with the guard off.
+    8. The whole suite passes unchanged; the guard is transparent to correct code.
+    9. The marketing copy no longer claims RLS, and the tripwire refuses the claim.
+  - **Out of scope:** raw SQL (`$queryRaw`) and nested relation rows, which the extension doesn't see (the crawl still covers their routes); workers, which run without a tenant; Postgres RLS itself, recorded as a later option with its costs (a connection-per-tenant setting on every query).
+
+- **Y2 — One boundary for text that leaves for a model (High). — TODO.**
+  - **Problem:**
+    - Contract text reaches the agents service or a model provider from about 25 call sites across 12 files, and each site redacts for itself.
+    - Eight leak paths were found one at a time. A new call site that forgets to redact sends raw SSNs, card numbers and IBANs, and nothing notices.
+  - **Approach:**
+    1. **One outbound gate.** `lib/model-boundary.ts` exports `modelFetch(url, init, { orgId, surface, userAuthored })`, the only way the API calls the agents service or a model provider.
+       - Before sending, every string in the JSON body is checked with the org's redaction policy, except ids and URLs and the fields the caller names as typed by the user. The user's own chat message stays as typed, so a value they ask for can be applied (X23).
+       - A raw value still present is replaced by its marker.
+       - A `PII_BOUNDARY_REDACTED` audit event and a warning record the surface and counts, never values.
+       - Round-trip tokens pass unchanged. In `off` mode nothing is touched.
+    2. **The same check on internal tool responses.** Responses from `/api/internal/ai/tools/*`, which the agents service hands to the model, get the same backstop in an `onSend` hook. `/resolve`, which returns provider credentials, is not a tool route and is untouched.
+    3. **A source tripwire:** no `fetch` to the agents service or a model provider anywhere in `apps/api/src` outside the boundary. An explicit allowlist, each entry with a reason, covers key-validation calls that send no contract text.
+  - **Acceptance criteria:**
+    1. Every existing model-bound call goes through `modelFetch`. The tripwire test passes, and fails when a direct call is added.
+    2. In redact mode, a body with a raw SSN reaches the provider as `[REDACTED:SSN]`, with a `PII_BOUNDARY_REDACTED` audit row naming the surface. In `off` mode the body is untouched. User-authored fields and round-trip tokens are untouched.
+    3. An internal tool response containing a raw SSN reaches the agents service redacted, with the audit row.
+    4. The existing PII suites pass and record no `PII_BOUNDARY_REDACTED` events. The upstream redaction is complete; the boundary is a backstop that logs when it has to act.
+    5. The whole suite passes.
+  - **Out of scope:** the agents service's own calls to providers. It only ever receives text through the two paths above.
+
+- **Y3 — UI actions follow the server's route permissions (Medium). — TODO.**
+  - **Problem:**
+    - The web app decides which actions to show with its own checks, button by button: X61, then X75 three times.
+    - The contract page's Actions menu still offers Share (`configure:contract`) and Create amendment (`create:contract`) to anyone.
+    - Every missed button sends a request the server refuses with a 403, which the page shows as a failure.
+  - **Approach:**
+    1. **The server's permission table.** `requirePermission` records its action and resource on the route. A route registry built at startup lists every route's required permission. `pnpm --filter api gen:route-permissions` writes the table to `apps/web/src/lib/route-permissions.gen.ts`, and a test fails when the committed table is stale.
+    2. **The web app reads that table:**
+       - `canRequest(method, path)` and `useCanRequest` resolve any API path to its permission.
+       - `<Can request="POST /contracts/:id/share">` hides an action the user can't take.
+       - The API client refuses, before sending, a write the user has no permission for, with one clear message ("You don't have permission to share contracts"). This covers every button, gated or not.
+    3. **Gates moved onto the table:** the Actions menu is gated, and the X61 and X75 gates move to the table.
+  - **Acceptance criteria:**
+    1. The generated table matches the server's routes; the test fails when a route's permission changes without regenerating.
+    2. Every write path the web source calls resolves to a route in the table. A test fails on an unknown path, which also catches a mistyped path.
+    3. A user without a route's permission never sends that write: the client refuses it and shows the message. Covered by web unit tests of the decision.
+    4. The Actions menu shows Share and Create amendment only with `configure:contract` / `create:contract`. Checked in the browser as a simulated viewer and as admin.
+    5. Typecheck, lint and the whole suite pass.
+  - **Out of scope:** own-scope ownership, which the server keeps deciding per record; the client blocks only a permission the user lacks entirely.
+
+- **Y4 — One scrubber for every log line (Medium). — TODO.**
+  - **Problem:**
+    - Secrets reached logs four times: X3, X18, X69, X77. Each fix masked one line or one logger.
+    - The API prints through pino and through about 146 `console.*` calls, and only pino masks anything.
+  - **Approach:**
+    1. **One scrubber:** `lib/log-scrub.ts` exports `scrub(text)`. It masks token-bearing links (`/sign/`, `/portal/`, `/invites/`), credential query parameters, `Bearer` values, JWTs, the API's own keys (`clm_…`), provider keys (`sk-…`, `AIza…`, `xox…-`), passwords in URLs, private-key blocks and the internal service secret.
+    2. **Applied to every channel at startup:** both pino loggers, `console.*` (in the API, the worker entrypoint and the collab server) and the error reporter.
+    3. **One deliberate exception:** the development delivery channel. `devPrint()` prints a signing or share link whole, only in development. It is the one greppable exception.
+  - **Acceptance criteria:**
+    1. A test pushes one secret of each kind through each channel (pino in both formats, `console.log`/`info`/`warn`/`error`, the error reporter) and none appears.
+    2. Ordinary text is untouched (titles, ids, emails, dates). Scrubbing an already masked line changes nothing.
+    3. A signing link printed in development through `devPrint` stays whole; in any other mode it is masked.
+    4. The existing log tests and the whole suite pass.
+
+- **Y5 — Security relaxations only by explicit opt-in (High). — TODO.**
+  - **Problem:**
+    - Security checks keyed on `NODE_ENV !== 'production'` were open on staging and previews: X31, X35, X39 (SSRF).
+    - A placeholder secret passed outside production (X38).
+    - The global rate limit is still ten times looser everywhere that isn't `production`.
+    - The API reads `NODE_ENV` in about a dozen places, each with its own idea of what is safe.
+  - **Approach:**
+    1. **One reader of `NODE_ENV`.** `lib/runtime-mode.ts` is strict unless `NODE_ENV` is exactly `development` or `test`, so staging, previews and an unset value are strict.
+    2. **Dev-only flags in one registry:** `BULL_BOARD_OPEN`, `WEBHOOK_ALLOW_PRIVATE_URLS`, `INBOUND_EMAIL_ALLOW_ALL`, and the like. The API refuses to start in strict mode when any of them is set, as X38 does for placeholder secrets.
+    3. **Every existing check moves to the module:** rate limits, Bull Board, secrets, the seed, the signing certificate, printed links, the inbound-email bypass and the logger format.
+    4. **A source tripwire:** `NODE_ENV` is read nowhere else in `apps/api/src`, except test setup.
+  - **Acceptance criteria:**
+    1. With `NODE_ENV=staging`, or unset:
+       - placeholder secrets are refused;
+       - Bull Board stays closed, and a set `BULL_BOARD_OPEN` stops the boot;
+       - the production rate limits apply;
+       - the SSRF guard is on;
+       - the inbound-email bypass is refused;
+       - printed links are masked.
+    2. With `NODE_ENV=development` and the flags set, behaviour is unchanged.
+    3. The tripwire fails when a new file reads `NODE_ENV`.
+    4. The whole suite passes.
+
+- **Y6 — The model can't present what no tool returned (Medium). — TODO.**
+  - **Problem:**
+    - V2: answers overstated their coverage.
+    - X78: after an empty result, the model invented a clause list with ids and text the contract doesn't have.
+    - Each fix changed one tool's result. The next tool that returns nothing is back to trusting the model.
+  - **Approach:**
+    1. **Classify every tool result.** In the agents service's orchestrator, one function classifies every result as found, empty or not-found. An empty or not-found result gets a platform note, outside the untrusted-data frame, saying nothing was found, telling the model to tell the user so, and never to supply ids, names, clauses, figures or quotes no tool returned. This covers every tool, current and future.
+    2. **A grounding check on the finished answer.** Record ids the answer cites (the database's cuid-style ids and UUIDs) that appear in no tool result of the conversation are listed in a notice appended to the answer, and the event is logged.
+    3. **A new orchestrator rule, A13,** states the same.
+    4. **The logic is testable in isolation.** It lives in a dependency-free module, `app/grounding.py`. Its standard-library tests run in CI's agents job.
+  - **Acceptance criteria:**
+    1. These are classified empty: empty lists, zero totals, `found: false`, and 404 or not-found errors. Ordinary results are not.
+    2. Every empty result the model sees carries the note.
+    3. An answer citing an id no tool returned ends with the notice. An id a tool did return doesn't trigger it.
+    4. CI's agents job runs these tests.
+    5. Live check, one model call: X78's request on a contract with no extracted clauses gets "nothing to redline yet", not invented clauses.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.
