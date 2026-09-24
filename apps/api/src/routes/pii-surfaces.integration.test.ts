@@ -45,6 +45,12 @@ beforeAll(async () => {
       return new Response(JSON.stringify({ data: [{ index: 0, embedding: Array.from({ length: DIM }, (_, i) => (i === 0 ? 1 : 0)) }] }))
     }
     const route = url.replace(/^https?:\/\/[^/]+/, '')
+    // X55 — like the real agents service (main.py), refuse a call without the
+    // shared secret: this mock used to answer anything, which hid a route
+    // that never sent it.
+    if (new Headers(init?.headers).get('x-internal-secret') !== process.env.INTERNAL_SERVICE_SECRET) {
+      return new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
+    }
     sent[route] = body
     const echo = (JSON.stringify(JSON.parse(body || '{}')).match(TOKEN) ?? [''])[0]
     // A selection marked MANGLE gets its token back without the brackets (a

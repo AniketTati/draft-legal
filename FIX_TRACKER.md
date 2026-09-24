@@ -2182,6 +2182,12 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The relay (which forwards bytes undecoded) keeps the stream's tail, reads the `done` frame, and records real tokens, the resolved model, `isByok` from the key source, and a per-model price.
   - **Why it isn't done:** counting chat properly makes it count far more against the daily cap. Orgs that never hit the cap could start getting 429s. The cap value, and whether chat should count toward it at all, is a product decision. A narrower first step that changes no gate is to fix only the recorded numbers and `isByok` in `org_usage_daily`, and keep the cap counter as it is.
 
+- **X55 — The per-contract Q&A never reached the model (Medium). — DONE.** Found while writing the QA test cases (`docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md`).
+  - `POST /contracts/:id/ask` called the agents service's `/agent/ask` without the `x-internal-secret` header. The agents service refuses every call without it (401), so every question answered "Agent unavailable — showing relevant clauses". The portfolio-level `/search/ask` sends the header and worked.
+  - The integration test's fetch mock answered any call, which is why this passed. An audit of every API call to the agents service found no other call missing the header.
+  - **What changed:** the route sends the header. The mock in `routes/pii-surfaces.integration.test.ts` now refuses calls without the secret, as the real service does, so every agents call that file exercises is checked.
+  - **Verification:** with the old route, both per-contract ask tests fail (the answer comes back null). All 16 pass now.
+
 ---
 
 ## Run log
@@ -2289,6 +2295,7 @@ X53 — DONE — the chat's redline tool takes the section the user names, and a
 X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same user's later tokens, never resend a request as another user, and sign out only on a refused refresh; storage keeps the newer session; tokens carry a session id; same-second refreshes both succeed; sign-out ends the session after an idle pause — 0bdad37
 C3, C10, C12, V1, X2, X23, X27, X33 (live checks) — DONE — verified with the agents service and Gemini on the local stack; the PII round trip through a counting proxy (models saw tokens only); VERIFY-PENDING → DONE — this commit
 X54 — BLOCKED — chat usage is recorded from the message and reply only, so the daily cost cap barely counts chat; the fix changes what the cap counts, a product decision — this commit
+X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — (sha: pending)
 
 ---
 

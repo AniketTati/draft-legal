@@ -1523,7 +1523,9 @@ export async function contractRoutes(app: FastifyInstance) {
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        // X55 — the agents service refuses any call without the shared secret,
+        // so without it every question here answered "Agent unavailable".
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
         body: JSON.stringify({ question, orgId, contractId: id, clauseMatches: sent }),
       },
     ).catch(() => null)
