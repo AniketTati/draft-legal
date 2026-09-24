@@ -102,6 +102,9 @@ describe('GET /api/v1/metrics', () => {
     await list('')
     expect((await app.inject({ method: 'GET', url: '/api/v1/metrics' })).statusCode).toBe(401)
     expect((await app.inject({ method: 'GET', url: '/api/v1/metrics', headers: { authorization: 'Bearer wrong' } })).statusCode).toBe(401)
+    // X74 — only as a bearer token, as documented: the bare token was accepted too.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/metrics', headers: { authorization: 'it-metrics-token' } })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/v1/metrics', headers: { authorization: 'bearer it-metrics-token' } })).statusCode).toBe(200)
     const res = await app.inject({ method: 'GET', url: '/api/v1/metrics', headers: { authorization: 'Bearer it-metrics-token' } })
     expect(res.statusCode).toBe(200)
     expect(res.headers['content-type']).toContain('text/plain')

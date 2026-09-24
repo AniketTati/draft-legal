@@ -2308,6 +2308,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** `issueSessionTokens` (`lib/jwt.ts`) signs the pair and reports the access token's lifetime read off the token itself (`exp - iat`). Sign-in, registration and refresh use it.
   - **Verification:** `lib/jwt-session.test.ts` (2): with `JWT_ACCESS_EXPIRES_IN=1h` the response says 3600, matching the token; the default says 900. The first fails on the old constant; `auth-refresh.integration.test.ts` 7/7.
 
+- **X74 — `/metrics` also took its token without the Bearer scheme (Low). — DONE.** Found while writing the QA test cases (TC-OPS).
+  - The route stripped an optional `Bearer ` prefix before comparing, so a bare `Authorization: <token>` passed as well. The deployment docs say a scraper sends the token as a bearer token. Accepting both is looser than documented, and the lowercase scheme `bearer`, which RFC 7235 allows, was refused.
+  - **What changed:** the token is accepted only as `Bearer <token>`, with the scheme matched case-insensitively. The comparison stays constant-time.
+  - **Verification:** `routes/admin-audit.integration.test.ts` (the X3 metrics case) now also checks that the bare token gets 401 and `bearer <token>` gets 200. It fails on the old route (200 for the bare token); 9/9 pass.
+
 ---
 
 ## Run log
@@ -2434,6 +2439,7 @@ X70 — DONE — the marketing contact form posts to the local API from the dev 
 X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — (sha: pending)
 X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — (sha: pending)
 X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — (sha: pending)
+X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — (sha: pending)
 
 ---
 

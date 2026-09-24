@@ -28,7 +28,9 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', { config: { rateLimit: false } }, async (req, reply) => {
     const token = process.env.METRICS_TOKEN
     if (!token) return reply.status(404).send({ detail: 'Not found' })
-    const given = Buffer.from((req.headers.authorization ?? '').replace(/^Bearer /, ''))
+    // X74 — a bearer token only, as documented; the scheme name is
+    // case-insensitive (RFC 7235). The bare token used to pass too.
+    const given = Buffer.from(/^Bearer (.+)$/i.exec(req.headers.authorization ?? '')?.[1] ?? '')
     const expected = Buffer.from(token)
     if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
       return reply.status(401).send({ detail: 'Unauthorized' })
