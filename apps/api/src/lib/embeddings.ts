@@ -23,6 +23,7 @@
  */
 
 import { redactJson } from './pii-policy.js'
+import { modelFetch, type ModelCall } from './model-boundary.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 
@@ -50,6 +51,13 @@ export function activeEmbedProvider(): EmbedProvider {
 
 const PG_VECTOR_DIMS = 1536
 
+/**
+ * Y2 — the org and surface an embedding or rerank call is made for: the text
+ * goes to a model provider, through the model boundary. A query is the
+ * user's own words, sent as typed; a clause was redacted by its caller.
+ */
+export type EmbedCall = Pick<ModelCall, 'orgId' | 'surface'>
+
 /** Right-pad a shorter vector with zeros so it fits the schema's pgvector column. */
 function padTo(vec: number[], dims: number): number[] {
   if (vec.length >= dims) return vec.slice(0, dims)
@@ -58,7 +66,7 @@ function padTo(vec: number[], dims: number): number[] {
 
 // ─── Voyage AI embeddings ───────────────────────────────────────────────────
 
-async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
+async function voyageEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.VOYAGE_API_KEY!
   // Voyage caps at 128 inputs and ~10k tokens per call. Slice each
   // input down to a safe length first; chunk over the inputs as needed.
@@ -68,7 +76,7 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
   const all: number[][] = []
   for (const batch of chunks) {
-    const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+    const res = await modelFetch('https://api.voyageai.com/v1/embeddings', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -76,7 +84,7 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
         input: batch,
         input_type: inputType,
       }),
-    })
+    }, { ...call, userAuthored: inputType === 'query' ? ['input'] : [] })
     if (!res.ok) {
       const err = await res.text()
       throw new Error(`Voyage embeddings error: ${res.status} ${err}`)
@@ -91,9 +99,9 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
 // ─── OpenAI embeddings (legacy default) ─────────────────────────────────────
 
-async function openaiEmbed(texts: string[]): Promise<number[][]> {
+async function openaiEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.OPENAI_API_KEY!
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
+  const res = await modelFetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -101,7 +109,7 @@ async function openaiEmbed(texts: string[]): Promise<number[][]> {
       input: texts.map(t => t.slice(0, 8192)),
       dimensions: 1536,
     }),
-  })
+  }, { ...call, userAuthored: inputType === 'query' ? ['input'] : [] })
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`OpenAI embeddings error: ${res.status} ${err}`)
@@ -116,7 +124,7 @@ async function openaiEmbed(texts: string[]): Promise<number[][]> {
 // document/query split: RETRIEVAL_DOCUMENT for indexing, RETRIEVAL_QUERY for
 // search. Endpoint caps batches at 100 inputs per call.
 
-async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
+async function geminiEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.GOOGLE_API_KEY!
   const taskType = inputType === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT'
   // gemini-embedding-001 cap: 2048 tokens per input. Be generous — char-trim
@@ -127,7 +135,7 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
   const all: number[][] = []
   for (const batch of chunks) {
-    const res = await fetch(
+    const res = await modelFetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key=${apiKey}`,
       {
         method: 'POST',
@@ -141,6 +149,7 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
           })),
         }),
       },
+      { ...call, userAuthored: inputType === 'query' ? ['requests'] : [] },
     )
     if (!res.ok) {
       const err = await res.text()
@@ -154,18 +163,18 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
 // ─── Public embed API — routes to the active provider ───────────────────────
 
-export async function embedText(text: string): Promise<number[]> {
+export async function embedText(text: string, call: EmbedCall): Promise<number[]> {
   const provider = activeEmbedProvider()
-  if (provider === 'voyage') return (await voyageEmbed([text], 'query'))[0]
-  if (provider === 'google') return (await geminiEmbed([text], 'query'))[0]
-  return (await openaiEmbed([text]))[0]
+  if (provider === 'voyage') return (await voyageEmbed([text], 'query', call))[0]
+  if (provider === 'google') return (await geminiEmbed([text], 'query', call))[0]
+  return (await openaiEmbed([text], 'query', call))[0]
 }
 
-async function embedTexts(texts: string[]): Promise<number[][]> {
+async function embedTexts(texts: string[], call: EmbedCall): Promise<number[][]> {
   const provider = activeEmbedProvider()
-  if (provider === 'voyage') return voyageEmbed(texts, 'document')
-  if (provider === 'google') return geminiEmbed(texts, 'document')
-  return openaiEmbed(texts)
+  if (provider === 'voyage') return voyageEmbed(texts, 'document', call)
+  if (provider === 'google') return geminiEmbed(texts, 'document', call)
+  return openaiEmbed(texts, 'document', call)
 }
 
 // ─── Voyage reranker (P7.7.1) ───────────────────────────────────────────────
@@ -190,6 +199,7 @@ export interface RerankOutput<T> {
 export async function rerankClauses<T = unknown>(
   query: string,
   candidates: Array<RerankInput & { ref: T }>,
+  call: EmbedCall,
   topK = candidates.length,
 ): Promise<Array<RerankOutput<T>>> {
   if (candidates.length === 0) return []
@@ -203,7 +213,7 @@ export async function rerankClauses<T = unknown>(
     }))
   }
 
-  const res = await fetch('https://api.voyageai.com/v1/rerank', {
+  const res = await modelFetch('https://api.voyageai.com/v1/rerank', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -213,7 +223,7 @@ export async function rerankClauses<T = unknown>(
       top_k: topK,
       return_documents: false,
     }),
-  })
+  }, { ...call, userAuthored: ['query'] })
   if (!res.ok) {
     const err = await res.text()
     // Don't blow up the search — log + fall back to identity.
@@ -300,7 +310,7 @@ export async function embedContractVersion(versionId: string): Promise<void> {
     const outbound = await redactJson(version.contract.orgId, texts, {
       surface: 'embeddings', contractId: version.contractId, roundTrip: version.contractId, valuesFrom: [texts, version.plainText ?? ''],
     })
-    vectors = await embedTexts(outbound)
+    vectors = await embedTexts(outbound, { orgId: version.contract.orgId, surface: 'embeddings' })
   } catch (err) {
     console.error('[embeddings] batch embed failed for versionId=%s:', versionId, (err as Error).message)
     if (version?.contractId) {
@@ -408,7 +418,7 @@ export async function searchClauses(
     diligenceRoomId?: string
   } = {},
 ): Promise<ClauseMatch[]> {
-  const vec = await embedText(queryText)
+  const vec = await embedText(queryText, { orgId, surface: 'clause_search' })
   const vectorLiteral = `[${vec.join(',')}]`
   const ownerFilter = ownerId ? Prisma.sql`AND c."ownerId" = ${ownerId}` : Prisma.empty
   // C11 — one version per contract: its current version, or — when that has

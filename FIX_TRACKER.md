@@ -2480,25 +2480,42 @@ Each class below recurred during this run, and each occurrence was fixed where i
     - A new table with tenant data needs its policy: the RLS test fails until it has one.
   - **Out of scope:** background jobs run without a tenant, so neither layer applies to them.
 
-- **Y2 — One boundary for text that leaves for a model (High). — TODO.**
+- **Y2 — One boundary for text that leaves for a model (High). — DONE.**
   - **Problem:**
     - Contract text reaches the agents service or a model provider from about 25 call sites across 12 files, and each site redacts for itself.
     - Eight leak paths were found one at a time. A new call site that forgets to redact sends raw SSNs, card numbers and IBANs, and nothing notices.
-  - **Approach:**
-    1. **One outbound gate.** `lib/model-boundary.ts` exports `modelFetch(url, init, { orgId, surface, userAuthored })`, the only way the API calls the agents service or a model provider.
-       - Before sending, every string in the JSON body is checked with the org's redaction policy, except ids and URLs and the fields the caller names as typed by the user. The user's own chat message stays as typed, so a value they ask for can be applied (X23).
-       - A raw value still present is replaced by its marker.
-       - A `PII_BOUNDARY_REDACTED` audit event and a warning record the surface and counts, never values.
-       - Round-trip tokens pass unchanged. In `off` mode nothing is touched.
-    2. **The same check on internal tool responses.** Responses from `/api/internal/ai/tools/*`, which the agents service hands to the model, get the same backstop in an `onSend` hook. `/resolve`, which returns provider credentials, is not a tool route and is untouched.
-    3. **A source tripwire:** no `fetch` to the agents service or a model provider anywhere in `apps/api/src` outside the boundary. An explicit allowlist, each entry with a reason, covers key-validation calls that send no contract text.
+  - **What changed:**
+    1. **One outbound gate:** `lib/model-boundary.ts`, `modelFetch(url, init, { orgId, surface, userAuthored, contractId, userId })`.
+       - All 22 calls that send text to a model now go through it: 18 to the agents service (the chat, drafting, the editor's assist, complete and classify calls, redline proposals, compare, ask, portfolio query, compliance, obligations, renewal advice, the playbook judge, and every background job), and 4 to providers (embeddings from Voyage, OpenAI or Gemini, and Voyage reranking).
+       - Before a body leaves, every string is checked under the org's policy (`backstopJson` in `lib/pii-policy.ts`). A raw value still there is replaced by its marker (in tokenize mode, the org's token).
+       - Left as they are: ids, URLs (an IP pattern would otherwise take a callback URL's host), tokens and markers, and the fields the caller names as the user's own words: the chat message, drafting instructions and form, questions and queries, redline instructions, search queries sent for embedding or reranking (X23).
+       - When it acts, it records a `PII_BOUNDARY_REDACTED` audit event and a `pii_boundary_redacted` warning: the surface, mode and counts, never a value. In `off` mode nothing is read or changed.
+       - The embedding and rerank helpers now take the org, which they didn't have.
+    2. **Tool responses:** `/api/internal/ai/tools/*` responses, which the agents service hands to the model, get the same check. `/resolve`, which returns provider credentials, is not a tool and is untouched.
+       - A value the model already has passes: one the tool's request carried (the agents service sent it), or one a model wrote during the call. X23's redline proposal carries a new value the user asked for in the chat, which the model wrote; redacting it would have put the marker in the contract. `modelFetch` keeps what a model returns inside a tool call, in a per-call record.
+       - A value counts as carried when that text contains it, not when it was detected there: a card number is only recognised near the word "card", and `contract_create_from_template`'s request carries the variable bare (`draft-plan` caught this).
+       - The check is prepared in a preHandler (the org's mode, the request's values), and the `onSend` hook itself is synchronous. A first version awaited the mode in `onSend`: routes that call `reply.send()` and then `return` without the reply were sent twice while it waited ("Cannot write headers after they are sent").
+    3. **A tripwire**, `lib/model-boundary.test.ts`: every `fetch` in `apps/api/src` is either the boundary's or listed with its reason as sending no contract text to a model. There are 16 such calls: the agents service's model list and its file parser (local OCR), admin key tests, the API's own tool routes, Langfuse, Gotenberg, email, Slack and webhooks. A listed call that no longer exists fails too.
+  - **Verification:**
+    - `lib/model-boundary.integration.test.ts` (7):
+      - a body with a raw SSN in two places leaves with `[REDACTED:SSN]`, keeping its id and a URL with an IP host, and one audit row names the surface, `{ SSN: 2 }`, and no value;
+      - the user's own words and round-trip tokens leave as they are, with no row;
+      - tokenize mode gives the org's token; off mode sends the body as it is;
+      - `matter_list` with a raw SSN in a matter's description returns it redacted, with the row;
+      - a value the tool's request carried comes back as it is (an SSN, and a card number sent without the word "card"), while another value next to it is redacted;
+      - in off mode the tool's response is untouched.
+    - Before the change, the three redaction tests failed on the raw SSN. The tripwire failed, listing the 22 direct calls.
+    - Live: the running dev API answers an agents-service call to `matter_list` through the new hook (200, the demo org's 14 matters).
+    - The PII suites (`pii-outbound`, `pii-surfaces`, `chat-tool-cuts`, `agent-scope`, `retrieval-scope`, `redline-internal`, `redline-propose-target`; 71 tests) pass, and across the whole integration suite the boundary acted only in the Y2 test's own cases.
   - **Acceptance criteria:**
-    1. Every existing model-bound call goes through `modelFetch`. The tripwire test passes, and fails when a direct call is added.
-    2. In redact mode, a body with a raw SSN reaches the provider as `[REDACTED:SSN]`, with a `PII_BOUNDARY_REDACTED` audit row naming the surface. In `off` mode the body is untouched. User-authored fields and round-trip tokens are untouched.
-    3. An internal tool response containing a raw SSN reaches the agents service redacted, with the audit row.
-    4. The existing PII suites pass and record no `PII_BOUNDARY_REDACTED` events. The upstream redaction is complete; the boundary is a backstop that logs when it has to act.
-    5. The whole suite passes.
-  - **Out of scope:** the agents service's own calls to providers. It only ever receives text through the two paths above.
+    - 1 met: every model-bound call goes through `modelFetch`; the tripwire passes, and failed while any call was direct.
+    - 2 and 3 met, by the tests above.
+    - 4 met, with one design change: tool responses keep the values the model already has, or X23's proposals and template drafts would have been redacted (`pii-outbound` and `draft-plan` caught it).
+    - 5 met: the whole suite passes (typecheck, lint, unit 361, web 51, integration 383). `pii-pseudonym`'s source check, that background jobs redact before calling the agents service, now looks for `modelFetch(`.
+  - **Cost:** each call to a model scans its body's strings once more, in the order of milliseconds for a whole contract. A tool call reads the org's mode once (cached for a minute). Nothing is written unless the boundary acts.
+  - **Out of scope:**
+    - The agents service's own calls to providers. It receives text only through these two paths, plus an uploaded file for parsing with local OCR.
+    - Response bodies of the calls above, beyond what a tool call returns to the agents service: what a model sends back comes from what was sent.
 
 - **Y3 — UI actions follow the server's route permissions (Medium). — TODO.**
   - **Problem:**

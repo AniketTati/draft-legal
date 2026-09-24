@@ -11,6 +11,7 @@
 import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
 import { findCategoryForClauseType } from './clause-category.js'
+import { modelFetch } from './model-boundary.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -151,7 +152,7 @@ export async function proposeClauseAlternatives(args: {
     surface: 'redline_propose', contractId: contract.id, roundTrip: contract.id, valuesFrom: source,
   })
 
-  const pyRes = await fetch(`${AGENTS_URL}/redline_propose`, {
+  const pyRes = await modelFetch(`${AGENTS_URL}/redline_propose`, {
     method:  'POST',
     headers: {
       'content-type':      'application/json',
@@ -171,7 +172,7 @@ export async function proposeClauseAlternatives(args: {
       instructions,
       orgId,                       // per-org BYOK key + Langfuse tracing
     }),
-  })
+  }, { orgId, surface: 'redline_propose', contractId, userAuthored: ['instructions'] })
   if (!pyRes.ok) {
     const err = await pyRes.text().catch(() => '')
     return { ok: false, status: 502, detail: 'redline_propose failed', upstream: err.slice(0, 300) }

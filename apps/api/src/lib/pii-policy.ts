@@ -615,3 +615,68 @@ export async function redactJsonAgainst<T>(orgId: string, value: T, document: st
   let i = 0
   return mapStrings(value, () => pieces[i++]?.[0] ?? '[text withheld: PII redaction unavailable]') as T
 }
+
+// ─── Y2 — the model boundary's backstop ─────────────────────────────────────
+
+export interface BackstopResult<T> {
+  value: T
+  mode: PiiMode
+  counts: Partial<Record<PiiKind, number>>
+  total: number
+}
+
+export interface BackstopOptions {
+  /** Keys left alone, with their depth (0 for the top level). */
+  skip?: (key: string, depth: number) => boolean
+  /** Values left alone wherever they appear. */
+  allow?: (value: string) => boolean
+}
+
+// Values under these keys are ids; a string that is a URL is an address (an
+// IP pattern would otherwise match its host). Neither carries personal data.
+const ID_KEY = /^ids?$|Ids?$|_ids?$/
+const URL_VALUE = /^https?:\/\//i
+
+/**
+ * Y2 — the org's policy over every string of a JSON value bound for a model,
+ * as a backstop for its caller's own redaction (lib/model-boundary.ts). Ids,
+ * URLs, tokens and markers are left alone, as are the keys and values `opts`
+ * names. Returns the same value when nothing was replaced. Given the org's
+ * mode, synchronous; it records nothing itself.
+ */
+export function backstopJson<T>(orgId: string, mode: PiiMode, value: T, opts: BackstopOptions = {}): BackstopResult<T> {
+  const counts: Partial<Record<PiiKind, number>> = {}
+  let total = 0
+  if (mode === 'off') return { value, mode, counts, total }
+  const token = orgToken(orgId, mode)
+  const replace = (kind: PiiKind, v: string) => {
+    if (opts.allow?.(v)) return v
+    counts[kind] = (counts[kind] ?? 0) + 1
+    total++
+    return token ? token(kind, v) : `[REDACTED:${kind}]`
+  }
+  const walk = (v: unknown, depth: number): unknown => {
+    if (typeof v === 'string') {
+      if (URL_VALUE.test(v)) return v
+      const before = total
+      const { text } = redactPii(v, mode, { token: replace })
+      return total === before ? v : text
+    }
+    if (Array.isArray(v)) {
+      const out = v.map(x => walk(x, depth + 1))
+      return out.some((x, i) => x !== v[i]) ? out : v
+    }
+    if (v && typeof v === 'object' && !(v instanceof Date)) {
+      let changed = false
+      const out = Object.fromEntries(Object.entries(v).map(([k, x]) => {
+        if (ID_KEY.test(k) || opts.skip?.(k, depth)) return [k, x]
+        const y = walk(x, depth + 1)
+        if (y !== x) changed = true
+        return [k, y]
+      }))
+      return changed ? out : v
+    }
+    return v
+  }
+  return { value: walk(value, 0) as T, mode, counts, total }
+}

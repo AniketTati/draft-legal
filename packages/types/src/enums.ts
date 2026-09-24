@@ -191,6 +191,8 @@ export enum AuditAction {
   AGENT_TOOL_UNDONE = 'AGENT_TOOL_UNDONE',
   // Security / governance (P7.5)
   PII_REDACTED = 'PII_REDACTED',
+  // Y2 — the model boundary replaced a value a call site's own redaction missed.
+  PII_BOUNDARY_REDACTED = 'PII_BOUNDARY_REDACTED',
   // Portal-side actions (P7.6.2) — counterparty does something via the
   // tokenized share link.
   PORTAL_UPLOADED_VERSION = 'PORTAL_UPLOADED_VERSION',

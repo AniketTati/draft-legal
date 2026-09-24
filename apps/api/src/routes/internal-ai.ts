@@ -13,7 +13,7 @@
  *   - Cache resolution per (orgId, tier) for ~30s in Redis
  *   - Audit-log every resolution call
  */
-import type { FastifyInstance, FastifyReply } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
@@ -25,6 +25,7 @@ import { queueClassifyDocument, queueParseDocument, queueNotification, notificat
 import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { setTenant } from '../lib/tenant-context.js'
+import { modelFetch, recordingModelOutput, toolCheck, toolResponseBackstop, type ToolCheck } from '../lib/model-boundary.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -789,6 +790,16 @@ async function redlineSource(contractId: string, clauseIds: string[]): Promise<s
   return [version?.plainText ?? '', ...clauses.map(cl => cl.content)]
 }
 
+/** The tool an internal call is to, from its URL; none for /resolve. */
+const toolOf = (req: FastifyRequest) => /^\/api\/internal\/ai\/tools\/([^/?]+)/.exec(req.url)?.[1]
+
+/** The org an internal call acts for: the one its body names, or x-org-id. */
+function internalCallOrg(req: FastifyRequest): string | undefined {
+  const bodyOrg = (req.body as { orgId?: unknown } | undefined)?.orgId
+  const headerOrg = (req.headers['x-org-id'] as string | undefined)?.trim()
+  return typeof bodyOrg === 'string' ? bodyOrg : headerOrg || undefined
+}
+
 export async function internalAiRoutes(app: FastifyInstance) {
   // S2 — the caller's view scope, resolved from their roles (never from the
   // body). Sends 403 and returns null when they may not view `resource`.
@@ -804,6 +815,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     return scope
   }
 
+  // Y2 — what each tool call's response is checked against (onSend below),
+  // and the record of what a model wrote during the call, which it may carry.
+  const toolChecks = new WeakMap<FastifyRequest, ToolCheck>()
+  app.addHook('preHandler', (req, _reply, done) => { if (toolOf(req)) recordingModelOutput(done); else done() })
+
   // ── x-internal-secret guard for every route in this plugin ─────────────────
   app.addHook('preHandler', async (req, reply) => {
     const secret = req.headers['x-internal-secret']
@@ -812,9 +828,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     // Y1 — these calls act for the org their body (or x-org-id) names: limit
     // every query to it, as for a user's request.
-    const bodyOrg = (req.body as { orgId?: unknown } | undefined)?.orgId
-    const headerOrg = (req.headers['x-org-id'] as string | undefined)?.trim()
-    setTenant(typeof bodyOrg === 'string' ? bodyOrg : headerOrg)
+    const org = internalCallOrg(req)
+    setTenant(org)
+    const check = toolOf(req) ? await toolCheck(org, req.body) : undefined
+    if (check) toolChecks.set(req, check)
+  })
+
+  // Y2 — the agents service hands what a tool returns to the model, so the
+  // org's PII policy is checked once more over it (lib/model-boundary.ts).
+  // Only the tools: /resolve returns provider credentials to the agents
+  // service itself. Callback-style and synchronous: see ToolCheck.
+  app.addHook('onSend', (req, _reply, payload, done) => {
+    const tool = toolOf(req)
+    done(null, tool ? toolResponseBackstop(toolChecks.get(req), tool, payload) : payload)
   })
 
   // ── POST /internal/ai/resolve ──────────────────────────────────────────────
@@ -2371,7 +2397,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           ?.find(p => p.positionType === 'preferred')
         if (!preferredPos || !pos?.rules) return ck
         try {
-          const judgeRes = await fetch(`${AGENTS_URL}/playbook_judge`, {
+          const judgeRes = await modelFetch(`${AGENTS_URL}/playbook_judge`, {
             method: 'POST',
             headers: {
               'content-type': 'application/json',
@@ -2383,7 +2409,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
               rules: pos.rules,
               orgId: body.orgId,   // per-org BYOK key + Langfuse tracing
             }),
-          })
+          }, { orgId: body.orgId, surface: 'playbook_judge' })
           if (!judgeRes.ok) return ck
           const judged = await judgeRes.json() as {
             bestMatchPositionType?: string

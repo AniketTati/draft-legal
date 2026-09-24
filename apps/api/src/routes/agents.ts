@@ -17,6 +17,7 @@ import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededE
 import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
 import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
+import { modelFetch } from '../lib/model-boundary.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -188,7 +189,7 @@ export async function agentRoutes(app: FastifyInstance) {
       }
     }
 
-    const upstream = await fetch(`${AGENTS_URL}/agent/chat`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/agent/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
       body: JSON.stringify({
@@ -219,7 +220,7 @@ export async function agentRoutes(app: FastifyInstance) {
         // before the actual message.
         mentions: body.mentions ?? null,
       }),
-    })
+    }, { orgId, surface: 'agent_chat', userId, contractId: body.contractId, userAuthored: ['message'] })
 
     if (!upstream.ok) {
       const err = await upstream.text()
@@ -375,7 +376,7 @@ export async function agentRoutes(app: FastifyInstance) {
     const ctx: Record<string, unknown> = { ...(body.context ?? {}) }
     if (body.templateId) ctx.template_id = body.templateId
 
-    const upstream = await fetch(`${AGENTS_URL}/draft`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/draft`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -387,7 +388,7 @@ export async function agentRoutes(app: FastifyInstance) {
         user_id: userId,
         context: ctx,
       }),
-    }).catch(err => {
+    }, { orgId, surface: 'draft', userId, userAuthored: ['user_message', 'context'] }).catch(err => {
       app.log.error({ err }, 'Draft agent unreachable')
       return null
     })
@@ -527,7 +528,7 @@ export async function agentRoutes(app: FastifyInstance) {
     // Cut to the agents service's 6,000-character limit here, where a cut
     // can't split a token.
     const selected = sliceOutsideTokens(await redactJson(orgId, body.selectedText, { surface: 'assist_stream', roundTrip: scope }), 0, 6000)
-    const upstream = await fetch(`${AGENTS_URL}/assist_stream`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/assist_stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -540,7 +541,7 @@ export async function agentRoutes(app: FastifyInstance) {
         governing_law: body.governingLaw ?? 'Delaware',
         orgId:         req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
-    }).catch(() => null)
+    }, { orgId, surface: 'assist_stream' }).catch(() => null)
     if (!upstream || !upstream.ok || !upstream.body) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
@@ -621,7 +622,7 @@ export async function agentRoutes(app: FastifyInstance) {
     const clauseText = body.clauseText
     const scope = randomUUID()
     const sent = sliceOutsideTokens(await redactJson(req.user.orgId, clauseText, { surface: 'classify_clause', roundTrip: scope }), 0, 2400)
-    const upstream = await fetch(`${AGENTS_URL}/classify_clause`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/classify_clause`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -632,7 +633,7 @@ export async function agentRoutes(app: FastifyInstance) {
         contractType: body.contractType ?? 'general commercial',
         sectionHint:  body.sectionHint ?? null,
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'classify_clause' }).catch(() => null)
     if (!upstream?.ok) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '', error: 'upstream_unavailable' })
     }
@@ -671,7 +672,7 @@ export async function agentRoutes(app: FastifyInstance) {
     }
     const before = sliceOutsideTokens(fullBefore, fullBefore.length - 1400, fullBefore.length)
     const after = sliceOutsideTokens(fullAfter, 0, 400)
-    const upstream = await fetch(`${AGENTS_URL}/complete`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/complete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -683,7 +684,7 @@ export async function agentRoutes(app: FastifyInstance) {
         contractType:  body.contractType ?? 'general commercial',
         maxChars:      Math.max(40, Math.min(body.maxChars ?? 160, 320)),
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'complete' }).catch(() => null)
     if (!upstream?.ok) {
       return reply.send({ completion: '', error: 'upstream_unavailable' })
     }
@@ -710,7 +711,7 @@ export async function agentRoutes(app: FastifyInstance) {
       })
     }
 
-    const upstream = await fetch(`${AGENTS_URL}/assist`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/assist`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -725,7 +726,7 @@ export async function agentRoutes(app: FastifyInstance) {
         model_id: body.modelId,
         orgId: req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'assist' }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
@@ -775,7 +776,7 @@ export async function agentRoutes(app: FastifyInstance) {
     }
 
     const scope = randomUUID()
-    const upstream = await fetch(`${AGENTS_URL}/compare`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/compare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -784,7 +785,7 @@ export async function agentRoutes(app: FastifyInstance) {
       // X27 — the clause goes to the model under the org's PII policy.
       // Cut to the agents service's 2,000-character limit without splitting a token.
       body: JSON.stringify({ clauseText: sliceOutsideTokens(await redactJson(orgId, clauseText, { surface: 'compare', roundTrip: scope }), 0, 2000), positions }),
-    }).catch(() => null)
+    }, { orgId, surface: 'compare' }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })

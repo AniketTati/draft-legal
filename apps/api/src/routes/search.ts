@@ -7,6 +7,7 @@ import { searchContracts, advancedSearch, getContractFacets } from '../lib/elast
 import { searchClauses, rerankClauses } from '../lib/embeddings.js'
 import { redactJson, restorePii } from '../lib/pii-policy.js'
 import { fuseRRF } from '../lib/rrf.js'
+import { modelFetch } from '../lib/model-boundary.js'
 
 const SearchSchema = z.object({
   q: z.string().min(1).max(500),
@@ -260,6 +261,7 @@ export async function searchRoutes(app: FastifyInstance) {
     const reranked = await rerankClauses(
       question,
       dense.map((d, i) => ({ ref: d, text: sent[i] })),
+      { orgId, surface: 'search_ask' },
       limit,
     )
     const clauseMatches = reranked.map((r, i) => ({
@@ -271,7 +273,7 @@ export async function searchRoutes(app: FastifyInstance) {
     }))
 
     // Forward to agents for LLM answer generation
-    const agentRes = await fetch(
+    const agentRes = await modelFetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
         method: 'POST',
@@ -281,6 +283,7 @@ export async function searchRoutes(app: FastifyInstance) {
           clauseMatches: reranked.map((r, i) => ({ ...clauseMatches[i], content: sentOf.get(r.ref as typeof dense[number]) })),
         }),
       },
+      { orgId, surface: 'search_ask', userAuthored: ['question'] },
     ).catch(() => null)
 
     if (!agentRes?.ok) {
@@ -302,13 +305,14 @@ export async function searchRoutes(app: FastifyInstance) {
       return reply.status(403).send({ detail: 'Portfolio queries need access to all contracts. Use search to find your own.' })
     }
 
-    const agentRes = await fetch(
+    const agentRes = await modelFetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/portfolio-query`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
         body: JSON.stringify({ query, orgId, userId }),
       },
+      { orgId, surface: 'portfolio_query', userId, userAuthored: ['query'] },
     ).catch(() => null)
 
     if (!agentRes?.ok) {

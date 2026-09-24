@@ -29,7 +29,8 @@ describe('background jobs apply the policy on the way out, and restore on the wa
     const src = readFileSync(join(process.cwd(), 'src', 'workers', 'agent.worker.ts'), 'utf8')
     const start = src.indexOf('async function callAgents(')
     const fn = src.slice(start, src.indexOf('\n}\n', start))
-    const fetchAt = fn.indexOf('fetch(')
+    const fetchAt = fn.indexOf('modelFetch(')   // Y2 — the call to the agents service
+    expect(fetchAt).toBeGreaterThan(-1)
     expect(fn.indexOf('redactJson(')).toBeGreaterThan(-1)
     expect(fn.indexOf('redactJson(')).toBeLessThan(fetchAt)
     expect(fn.indexOf('restorePii(')).toBeGreaterThan(fetchAt)

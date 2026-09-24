@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { randomUUID } from 'node:crypto'
 import { redactJson, restorePii, sliceOutsideTokens } from '../lib/pii-policy.js'
+import { modelFetch } from '../lib/model-boundary.js'
 
 const POSITION_TYPES = ['preferred', 'acceptable', 'fallback', 'walkaway'] as const
 
@@ -185,7 +186,7 @@ export async function playbookRoutes(app: FastifyInstance) {
       // to the model under the org's PII policy; the comparison comes back
       // with the values.
       const scope = randomUUID()
-      const agentRes = await fetch(`${agentUrl}/compare`, {
+      const agentRes = await modelFetch(`${agentUrl}/compare`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -193,7 +194,7 @@ export async function playbookRoutes(app: FastifyInstance) {
         },
         // Cut to the agents service's 2,000-character limit without splitting a token.
         body: JSON.stringify({ clauseText: sliceOutsideTokens(await redactJson(orgId, clauseText, { surface: 'playbook_test', roundTrip: scope }), 0, 2000), positions }),
-      })
+      }, { orgId, surface: 'playbook_test' })
 
       if (!agentRes.ok) {
         const err = await agentRes.text()

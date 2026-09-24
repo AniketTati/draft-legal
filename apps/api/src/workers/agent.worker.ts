@@ -21,6 +21,7 @@ import { AuditAction } from '@clm/types'
 import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
+import { modelFetch } from '../lib/model-boundary.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -75,7 +76,7 @@ async function callAgents(
     init = { ...init, body: JSON.stringify(redacted) }
   }
 
-  const res = await fetch(`${AGENTS_URL}${path}`, init)
+  const res = await modelFetch(`${AGENTS_URL}${path}`, init, { orgId: meta.orgId, surface: `worker:${meta.toolName}`, contractId: meta.contractId })
 
   // Size-based estimate, the same heuristic the chat path uses. Recorded even
   // on a non-2xx: a failed generation still burned tokens upstream.

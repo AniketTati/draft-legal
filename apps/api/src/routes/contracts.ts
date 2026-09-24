@@ -41,6 +41,7 @@ import {
   AuditAction,
   normalizeRiskScore,
 } from '@clm/types'
+import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
 // the row happens to hold, so a client never has to guess which one it got.
@@ -1530,7 +1531,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const sent = await redactJson(orgId, clauseMatches, {
       surface: 'contract_ask', contractId: id, roundTrip: scope, valuesFrom: [clauseMatches.map(m => m.content), documents],
     })
-    const agentRes = await fetch(
+    const agentRes = await modelFetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
         method: 'POST',
@@ -1539,6 +1540,7 @@ export async function contractRoutes(app: FastifyInstance) {
         headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
         body: JSON.stringify({ question, orgId, contractId: id, clauseMatches: sent }),
       },
+      { orgId, surface: 'contract_ask', contractId: id, userAuthored: ['question'] },
     ).catch(() => null)
 
     if (!agentRes?.ok) {
@@ -2884,7 +2886,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
 
     const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
-    const pyRes = await fetch(`${agentsUrl}/renewal_advice`, {
+    const pyRes = await modelFetch(`${agentsUrl}/renewal_advice`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -2901,7 +2903,7 @@ export async function contractRoutes(app: FastifyInstance) {
         obligations:   obligations.slice(0, 10),
         orgId,   // Wave 3.5 — lets the agents service resolve the org's BYOK key
       }),
-    })
+    }, { orgId, surface: 'renewal_advice', contractId: contract.id, userId: req.user.sub })
     if (!pyRes.ok) {
       const err = await pyRes.text()
       return reply.status(502).send({ detail: 'renewal advisor failed', upstream: err.slice(0, 300) })

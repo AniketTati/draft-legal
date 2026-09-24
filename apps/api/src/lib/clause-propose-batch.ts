@@ -22,6 +22,7 @@
 import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
 import { matchCategory } from './clause-category.js'
+import { modelFetch } from './model-boundary.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -134,7 +135,7 @@ export async function proposeClauseBatch(args: {
   }))?.plainText ?? ''
   const source = [items, document]
 
-  const res = await fetch(`${AGENTS_URL}/redline_propose_batch`, {
+  const res = await modelFetch(`${AGENTS_URL}/redline_propose_batch`, {
     method:  'POST',
     headers: {
       'content-type':      'application/json',
@@ -150,7 +151,7 @@ export async function proposeClauseBatch(args: {
       instructions,
       orgId,
     }),
-  })
+  }, { orgId, surface: 'redline_propose_batch', contractId, userAuthored: ['instructions'] })
   if (!res.ok) {
     const upstream = await res.text().catch(() => '')
     return { ok: false, status: 502, detail: 'redline_propose_batch failed', upstream: upstream.slice(0, 300) }

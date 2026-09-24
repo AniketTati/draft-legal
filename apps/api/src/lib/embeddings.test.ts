@@ -41,6 +41,7 @@ describe('activeEmbedProvider', () => {
 
 describe('rerankClauses fallback', () => {
   const original = process.env.VOYAGE_API_KEY
+  const CALL = { orgId: 'org-1', surface: 'test' }
 
   beforeEach(() => { delete process.env.VOYAGE_API_KEY })
   afterEach(() => {
@@ -56,6 +57,7 @@ describe('rerankClauses fallback', () => {
         { ref: 'b', text: 'banana text' },
         { ref: 'c', text: 'cherry text' },
       ],
+      CALL,
     )
     expect(r.map(x => x.ref)).toEqual(['a', 'b', 'c'])
     // Scores should be monotonically decreasing
@@ -71,13 +73,14 @@ describe('rerankClauses fallback', () => {
         { ref: 2, text: 'b' },
         { ref: 3, text: 'c' },
       ],
+      CALL,
       2,
     )
     expect(r.length).toBe(2)
   })
 
   it('handles empty input gracefully', async () => {
-    const r = await rerankClauses('q', [])
+    const r = await rerankClauses('q', [], CALL)
     expect(r).toEqual([])
   })
 })
