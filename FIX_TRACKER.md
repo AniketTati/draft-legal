@@ -2523,7 +2523,8 @@ X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add 
 X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — 7e3335a
 X55–X77 (QA document and summary) — DONE — `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` covers the third round: 134 test cases, every changed id traced, each fixed issue with the case that verifies it; closing summary updated — this commit
 X75 (browser check + follow-up) — DONE — checked as viewer and admin in the browser; the header's Send for Review, status buttons and Send for Signature follow edit:contract and sign:contract — d389614
-X78 — DONE — redline_propose tells the model when a contract's version has no extracted clauses (it answered a bare "Clause not found" and the model invented clauses) — (sha: pending)
+X78 — DONE — redline_propose tells the model when a contract's version has no extracted clauses (it answered a bare "Clause not found" and the model invented clauses) — b80ad15
+X75, X78 (QA document and summary) — DONE — the QA document covers the browser-check follow-ups (TC-SMK-03 N6, TC-AI-13 N10); closing summary updated — this commit
 
 ---
 
@@ -2532,24 +2533,24 @@ X78 — DONE — redline_propose tells the model when a contract's version has n
 Every task in the main list and in Stretch has a terminal status. None turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
 
 - **Main list (21):** 20 DONE, 1 VERIFY-PENDING (S2).
-- **Stretch (77):** 75 DONE, 1 VERIFY-PENDING (X30), and 1 BLOCKED on your decision (X54, chat usage and the daily cost cap).
+- **Stretch (78):** 76 DONE, 1 VERIFY-PENDING (X30), and 1 BLOCKED on your decision (X54, chat usage and the daily cost cap).
 - **Three rounds came after this summary was first written:**
   - **First, in the browser.** They passed C1, C5 and X1 and found X47–X49.
   - **Second, with the agents service and a model, with your OK.** They passed C3, C8, C10, C12, V1, V2, X2, X16, X23, X27 and X33. They also found and fixed the C8/X15 prompts, X51–X53, and follow-ups to X16, V2 and X49. Two more reviews of X50 led to further fixes. See below.
-  - **Third, the QA test-case pass (24 September).** Writing `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` turned up 22 issues, fixed as X55–X76. A review of the sensitive ones found X77 and led to follow-ups to X65, X67 and X75. Updating the document found one more for X71. See below.
+  - **Third, the QA test-case pass (24 September).** Writing `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` turned up 22 issues, fixed as X55–X76. A review of the sensitive ones found X77 and led to follow-ups to X65, X67 and X75. Updating the document found one more for X71. Their browser check found X78 and one more for X75. See below.
 
-The work is on branch `fix/audit-2026-09-22`: 136 commits from this run (from `cca7b19`), one per task or per review follow-up, plus the summary updates, this one included. The third round's 28 commits, this one included, are authored as Neelam Dalwani, as you asked.
+The work is on branch `fix/audit-2026-09-22`: 140 commits from this run (from `cca7b19`), one per task or per review follow-up, plus the summary updates, this one included. The third round's 32 commits, this one included, are authored as Neelam Dalwani, as you asked.
 - **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them.
   - The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs.
   - Merge `feat/langfuse-integration` first, or together with this branch.
 - Nothing is pushed, no PR is open, nothing is merged.
 
-**Final verification on the branch** (run on `7e3335a`, the code this summary describes; the summary commit adds only this file and the QA document):
+**Final verification on the branch** (run on `b80ad15`, the code this summary describes; the summary commit changes only this file and the QA document):
 - `db:generate` succeeds, and the test database is up to date with all 40 migrations. The later rounds added none.
 - Typecheck: 0 errors.
 - Lint: 0 errors (warnings unchanged from the baseline: web 22, api 11).
 - api unit: 358/358 (52 files). web unit: 51/51 (9 files).
-- api integration: 354/354 (54 files, Docker stack up), none skipped.
+- api integration: 355/355 (54 files, Docker stack up), none skipped.
 - The tracker cites 103 distinct test files: 41 api unit, 53 integration, 9 web. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
 - X34's tests pass: no audit event was lost, and no serialization conflict surfaced as an error.
 - **Adversarial subagent reviews:**
@@ -2692,6 +2693,9 @@ You asked for manual test cases covering every change on the branch. Writing the
   - **X75:** four more entry points were still offered to viewers: the Dashboard's upload, "+ Add related", the defined-term apply, and the clause drawer's actions. All gated.
   - **Found alongside X69: X77 (Medium).** The share-link email logged the portal link's token in production. Fixed. See the deploy checklist.
 - **Found while updating the QA document:** the marketing nav, footer and template badge still said "Free templates". Fixed as an X71 follow-up.
+- **Found by the browser check:**
+  - **X78:** asked to redline a contract whose current version had no extracted clauses, the chat got a bare "Clause not found" and invented a clause list. Fixed: the tool says there is nothing to redline yet.
+  - **X75 follow-up:** the contract header still offered viewers Send for Review, the status buttons and Send for Signature. Fixed.
 - **Browser checks** (after you signed in again as admin; other roles were simulated by changing only the cached `user.roles`, then restored):
   - Passed: X58 (Apply on a redline card in `/agent`, with Gemini), X59, X60, X61, X62, X68, X75 and X76's sign-in notes. Each is recorded in its entry.
   - The X75 check found the contract header still offering viewers Send for Review, the status buttons and Send for Signature. Fixed and checked again.
@@ -2718,11 +2722,11 @@ You asked for manual test cases covering every change on the branch. Writing the
   - **PII to models:** X23, X27, X33, X36, X37, X40, X52. The round trip was verified live: models saw tokens only, and stored text reads with the real values.
   - **Agent features verified live:** X2 (custom-field backfill), X16 (a long binder is split where its agreements start).
   - **Reliability and data:** X3, X4, X8, X32 (version diffs off the request thread), X34 (audit events no longer lost in bursts).
-  - **Found writing the QA test cases (third round):** X55–X77.
+  - **Found writing the QA test cases (third round):** X55–X78.
     - PII and secrets: X67, X69, X77.
     - Access: X61, X74, X75.
     - Workflows and data: X56, X57, X63, X65, X66.
-    - Agent features: X55, X58, X68.
+    - Agent features: X55, X58, X68, X78.
     - Settings and sign-in: X59, X64, X73.
     - UI: X60, X62, X76.
     - Marketing and docs: X70–X72.
@@ -2832,6 +2836,8 @@ You asked for manual test cases covering every change on the branch. Writing the
   - A chat redline's preview shows the PII tokens themselves; the applied text has the real values (X23).
   - The portfolio query's search is a keyword ranking and can return near matches: "Stark Industries" for "Ironbridge Industrial Group" (X15).
 - **Permission-gated buttons appear a moment late** (X75): `usePermission` is false until the roles load, so permitted users see create and edit buttons after a beat.
+- **The contract page's Actions menu still shows items a viewer can't use** (X75): its items need different permissions, and some only read.
+- **The chat model can still invent specifics when a tool finds nothing:** X78 closes one path, the redline tool with no clauses. Other tools' empty results rely on the prompt's grounding rules.
 - **Small wording issues seen in the checks:** the Playbook review summary counts findings as deviations (V1). The contract header says "Edited just now" after an analysis writes its results.
 - **Audit volume:** every `GET /contracts/:id` writes a `CONTRACT_VIEWED` event, so the page's polling during an analysis wrote 33 in 40 minutes for one contract. Worth a look before the audit log grows.
 - **Audit writes follow their change outside its transaction**, as PATCH's already did. If the audit store fails, the change stands and the client gets a 500. X5 moved the org-settings audit inside its transaction; the others weren't.

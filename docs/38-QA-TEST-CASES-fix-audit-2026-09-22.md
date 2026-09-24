@@ -1,11 +1,11 @@
 # QA test cases — branch `fix/audit-2026-09-22`
 
-Manual test cases for every change made on branch `fix/audit-2026-09-22`: 135 commits on 23–24 September 2026,
-`cca7b19` … `7e3335a`. Each change is recorded in [`FIX_TRACKER.md`](../FIX_TRACKER.md) under its id (S1, C8, X50…);
+Manual test cases for every change made on branch `fix/audit-2026-09-22`, 23–24 September 2026: the commits from
+`cca7b19` to `b80ad15`. Each change is recorded in [`FIX_TRACKER.md`](../FIX_TRACKER.md) under its id (S1, C8, X50…);
 the **Covers** line of every test case names those ids, and the matrix at the end maps each id to its test cases.
-The last 27 commits (24 September) fix the issues found while writing this document (X55–X76), a log leak the
-review of those fixes found (X77), and follow-ups to X65, X67, X71 and X75. They are listed in "Issues found while
-writing these test cases", each with the test case that verifies it.
+The commits of 24 September fix the issues found while writing this document (X55–X76), a log leak the review of
+those fixes found (X77), a gap their browser check found (X78), and follow-ups to X65, X67, X71 and X75. They are
+listed in "Issues found while writing these test cases", each with the test case that verifies it.
 
 Every test case has:
 
@@ -138,10 +138,10 @@ pnpm --filter web test              # expect 51/51 (9 files)
 # Integration tests need Postgres/Redis/MinIO from docker compose and a migrated test database:
 DATABASE_URL=postgresql://<user>:<password>@localhost:5433/clm_test pnpm --filter api exec prisma migrate deploy
 DATABASE_URL=postgresql://<user>:<password>@localhost:5433/clm_test REDIS_URL=redis://localhost:6380 \
-  S3_ENDPOINT=http://localhost:9100 pnpm --filter api test:integration   # expect 354/354 (54 files)
+  S3_ENDPOINT=http://localhost:9100 pnpm --filter api test:integration   # expect 355/355 (54 files)
 ```
 
-The counts are those of `7e3335a`. A failing automated test points to the same area as the manual cases below.
+The counts are those of `b80ad15`. A failing automated test points to the same area as the manual cases below.
 
 ## Contents
 
@@ -4572,7 +4572,7 @@ Note: page placement is proportional to the text, because extracted text keeps n
 
 ### TC-AI-13 · "Redline section 4" in chat finds the clause by its section number; a miss lists the contract's clauses to retry with
 
-**Covers:** X53, X53 (adversarial-review fixes) · **Priority:** P2 · **Surface:** UI, API (internal) · **Roles:** legal-a, viewer-a
+**Covers:** X53, X53 (adversarial-review fixes), X78 · **Priority:** P2 · **Surface:** UI, API (internal) · **Roles:** legal-a, viewer-a
 
 **Preconditions**
 - Needs: agents service + LLM key.
@@ -4602,8 +4602,9 @@ Note: page placement is proportional to the text, because extracted text keeps n
 | N7 | API: `"userId":"<VIEWER_A_ID>"` with `"sectionRef":"4"`. | 403 `{"detail":"The user in this conversation does not have edit:contract permission"}`. No clause list is returned. |
 | N8 | In the rail, send "Redline section 99 of this contract." | No proposal card for an unrelated clause. The `redline_propose` chip's Result shows `"error":"redline_propose_failed","status":404` with the N1 clause list, and the reply names the sections the contract has or asks which one to use (wording varies). |
 | N9 | Known limitation: API `"sectionRef":"Article IV"` on a contract whose sections are numbered with digits. | 404 with the clause list. Roman numerals are not converted. |
+| N10 | X78 — a contract with no extracted clauses: create one with `curl -s -X POST $API/contracts -H "Authorization: Bearer $LEGAL_A" -H 'Content-Type: application/json' -d '{"title":"QA X78 no clauses","type":"NDA"}'` (note `id`), save a body once with `curl -s -X POST $API/contracts/<id>/html-version -H "Authorization: Bearer $LEGAL_A" -H 'Content-Type: application/json' -d '{"htmlContent":"<p>3. Fees. USD 1,000 a month.</p>"}'`, then call the API with that `contractId` and `"sectionRef":"3"`. In the rail of that contract, send "Redline section 3." | API: 404, `detail` "This contract's current version has no extracted clauses, so there is none to redline yet. Tell the user; don't guess clause ids or text." and no `clauses` list. Chat: the reply says there is nothing to redline yet; it lists no clauses (before X78 the tool answered a bare "Clause not found" and the model invented a clause list). |
 
-**Automated coverage:** `apps/api/src/routes/redline-propose-target.integration.test.ts` (6: the section forms; the miss list with a redacted SSN and a retry by id; a section the contract lacks; an empty reference; the type fallback; a 73-clause contract that lists 90.x first and says the list is cut), `apps/api/src/lib/agents-redline-propose-tool.test.ts` (2, source tripwire for the Python tool's `section_ref`).
+**Automated coverage:** `apps/api/src/routes/redline-propose-target.integration.test.ts` (7, X78 adds a version with no extracted clauses; the other 6: the section forms; the miss list with a redacted SSN and a retry by id; a section the contract lacks; an empty reference; the type fallback; a 73-clause contract that lists 90.x first and says the list is cut), `apps/api/src/lib/agents-redline-propose-tool.test.ts` (2, source tripwire for the Python tool's `section_ref`).
 
 **Not covered here**
 - C8: the partial-failure paths. The amber "Part of the analysis failed: …" note and the red "The analysis could not be completed: …" box need a model call to fail part-way through a run, which a tester cannot trigger on demand. TC-AI-02 N1 exercises the same red failure box through the identical-versions case.
@@ -5891,11 +5892,11 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 | N4 | The server still refuses a viewer's upload: `curl -s -w ' HTTP %{http_code}\n' -X POST "$API/contracts/upload" -H "Authorization: Bearer $VIEWER_A" -F "file=@F-PII.pdf;type=application/pdf" -F "title=QA X75 viewer upload"` | ` HTTP 403`, `{"detail":"Missing permission: create:contract"}`. No contract "QA X75 viewer upload" exists (search the Contracts list as legal-a). |
 | N5 | Optional, needs an organization with no contracts and a Viewer in it (e.g. a new org from `$WEB/register` whose admin invites a Viewer): sign in as that Viewer and open **Contracts**. | The empty list reads "No contracts yet" / "Contracts appear here once your team adds them", with no **Upload Contract** button (its admin sees "Upload your first contract to get started" and the button). |
 
-**Automated coverage:** none recorded in the tracker for the journey as a whole; its parts are covered in the upload and analysis sections of this plan. X75 and its review have no automated test (the web app has no component tests); N2–N5 are its check.
+**Automated coverage:** none recorded in the tracker for the journey as a whole; its parts are covered in the upload and analysis sections of this plan. X75, its review and its follow-up have no automated test (the web app has no component tests); N2–N6 are its check.
 
 ### TC-SMK-03 · Smoke: opening a contract saves nothing; one edit saves exactly one version, on the record
 
-**Covers:** Regression smoke (open, edit, save; X47 in normal use), X75, X75 (review: the clause drawer is read-only, "Apply defined term everywhere", no saves from a viewer's page) · **Priority:** P1 · **Surface:** UI, API · **Roles:** legal-a, viewer-a, admin-a
+**Covers:** Regression smoke (open, edit, save; X47 in normal use), X75, X75 (review: the clause drawer is read-only, "Apply defined term everywhere", no saves from a viewer's page), X75 (follow-up: the header's workflow actions) · **Priority:** P1 · **Surface:** UI, API · **Roles:** legal-a, viewer-a, admin-a
 
 **Preconditions**
 - `$C_NEW` from TC-SMK-02 (analysis DONE, status DRAFT), or any DRAFT contract in Org A with an uploaded document. Browser tabs reloaded after the deploy of this build (an old bundle still saves phantom versions).
@@ -5919,8 +5920,9 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 | N3 | Still as viewer-a, with the window at least 1280 px wide: in the **Styled** view (risk markers on, the default "Risks: Full") click a clause with a risk underline to open the clause review drawer. Then do the same as legal-a. | viewer-a (X75 review): the drawer shows the clause and its comments, but no **Alternative language** section (no **Suggest alternative language**, no **Apply to document**) and none of **Accept clause as-is**, **Edit manually**, **Reject** or **Mark reviewed**. In their place: "Read-only: accepting, rejecting or changing this clause needs edit access to the contract." (`data-testid="review-read-only"`). legal-a: the Alternative language section and all four buttons, and no read-only note. |
 | N4 | Still as viewer-a, DevTools Network open: in the right rail open **Defined terms** (it lists the contract's defined terms and "N inconsistent usage(s)", which after P2 include `agreement → Agreement`). Keep the page open for 60 seconds. Then look at the same section as legal-a. | viewer-a (X75 review): the inconsistent usages are listed but there is no **Apply defined term everywhere** (`data-testid="defined-terms-normalize-btn"`), and no `POST …/html-version` is sent while the page is open: the page never saves a change on a viewer's behalf (before the review, that button changed the document and the viewer got "Save failed"). legal-a sees the button. If the section doesn't appear (the document has no defined terms), skip this step. |
 | N5 | The server still refuses a viewer's save: `curl -s -w ' HTTP %{http_code}\n' -X POST "$API/contracts/$C_NEW/html-version" -H "Authorization: Bearer $VIEWER_A" -H 'Content-Type: application/json' -d '{"htmlContent":"<p>QA X75 viewer edit</p>"}'` | ` HTTP 403`, `{"detail":"Missing permission: edit:contract"}`. Command A (as legal-a) still prints `n + 1`. |
+| N6 | X75 follow-up — still as viewer-a, open a DRAFT contract and look at the header, then open its **Approval** tab. Then open the same contract as legal-a. | viewer-a: no **Send for Review**, no **Send for Signature** (`send-for-signature-btn`) and no status buttons; the Approval tab reads "Not yet in review" and "Someone with edit access can send it for review." with no button. legal-a: all of them are there (the header's Send for Review, Send for Signature, and the tab's "Send this contract to the approval workflow to start the review." with its button). The server refuses a viewer either way (`POST …/submit-approval` 403 `Missing permission: edit:contract`). |
 
-**Automated coverage:** `apps/api/src/routes/html-version-noop.integration.test.ts`, `apps/web/src/lib/canvas-update.test.ts` (X47). X75 and its review have no automated test (the web app has no component tests); N2–N5 are its check.
+**Automated coverage:** `apps/api/src/routes/html-version-noop.integration.test.ts`, `apps/web/src/lib/canvas-update.test.ts` (X47). X75, its review and its follow-up have no automated test (the web app has no component tests); N2–N6 are its check.
 
 ### TC-SMK-04 · Smoke: send a contract for review and approve it
 
@@ -6062,7 +6064,7 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 
 ## Issues found while writing these test cases
 
-Found by reading the code while writing the steps. Each has since been fixed on this branch (X55–X76, 24 September 2026, and X77, found by the review of those fixes); the test cases named with it verify the fix.
+Found by reading the code while writing the steps. Each has since been fixed on this branch (X55–X76, 24 September 2026; X77, found by the review of those fixes; X78, found by their browser check); the test cases named with it verify the fix.
 
 | # | Issue as found | Fixed in | Now | Verify with |
 |---|---|---|---|---|
@@ -6086,9 +6088,10 @@ Found by reading the code while writing the steps. Each has since been fixed on 
 | 18 | **Development logs weren't masked.** | X69 (`2641afa`) | Both log formats mask tokens and credentials. | TC-OPS-04 |
 | 19 | **Sign-in and refresh** always said `expiresIn: 900`. | X73 (`61e8a66`) | The access token's real lifetime. | TC-SES-01 |
 | 20 | **`/metrics`** accepted its token without `Bearer `. | X74 (`7df843c`) | Only `Bearer <token>` (any case). | TC-OPS-03 |
-| 21 | **A viewer saw Upload and Edit buttons** the server refuses. | X75 (`173ea83`), review `88818e9` | Create and edit actions show only with the permission, the clause drawer included. | TC-SMK-02, TC-SMK-03 |
+| 21 | **A viewer saw Upload and Edit buttons** the server refuses. | X75 (`173ea83`), review `88818e9`, follow-up `d389614` | Create, edit and workflow actions show only with the permission, the clause drawer and the contract header included. | TC-SMK-02, TC-SMK-03 |
 | 22 | **The approvals dialog pointed to "Admin → Approvals"**, which doesn't exist. | X76 (`7791f95`) | "Approvals → Manage Workflows"; the playbook and sign-in notes corrected too. | TC-SMK-08 |
 | 23 | *Found by the review of these fixes:* the share-link email logged the portal link's token in production. | X77 (`9a0a5e2`) | Masked outside development. | TC-OPS-04 |
+| 24 | *Found in the browser check of these fixes:* asked to redline a contract whose version had no extracted clauses, the chat got a bare "Clause not found" and invented a clause list. | X78 (`b80ad15`) | The tool says the version has no extracted clauses and not to guess. | TC-AI-13 |
 
 ## Traceability: tracker ids → test cases
 
@@ -6193,6 +6196,7 @@ Every id in `FIX_TRACKER.md` that changed code, and the test cases that verify i
 | X75 | TC-SMK-02, TC-SMK-03 |
 | X76 | TC-SMK-08 |
 | X77 | TC-OPS-04 |
+| X78 | TC-AI-13 |
 
 ## Appendix A — Generating the fixtures
 
