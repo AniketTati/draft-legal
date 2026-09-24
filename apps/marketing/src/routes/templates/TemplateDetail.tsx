@@ -101,33 +101,43 @@ export default function TemplateDetail() {
 
               {t.publishedComingSoon && (
                 <div className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
-                  Full clause-by-clause guide is being written. The template download is live —
-                  the explainer will follow shortly.
+                  The full clause-by-clause guide is being written.
                 </div>
               )}
             </div>
 
             <aside className="lg:col-span-2">
               <div className="sticky top-24 space-y-5">
+                {/* X71 — a download link only for a file that ships. Every
+                    link pointed at a .docx that was never committed, and
+                    hosting answered with the site's index.html. */}
                 <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                   <div className="flex items-center gap-2">
                     <span className="grid h-8 w-8 place-items-center rounded-md bg-emerald-700 text-white">
                       <Download className="h-4 w-4" />
                     </span>
                     <h3 className="text-base font-semibold text-slate-900">
-                      Download the template
+                      {t.downloadFile ? 'Download the template' : 'Template download coming soon'}
                     </h3>
                   </div>
-                  <p className="mt-3 text-xs leading-5 text-slate-600">
-                    Free to use. No email required.
-                  </p>
-                  <a
-                    href={t.downloadFile}
-                    download
-                    className="mt-4 block rounded-md bg-emerald-700 px-4 py-2.5 text-center text-sm font-medium text-white hover:bg-emerald-800"
-                  >
-                    Download the .docx →
-                  </a>
+                  {t.downloadFile ? (
+                    <>
+                      <p className="mt-3 text-xs leading-5 text-slate-600">
+                        Free to use. No email required.
+                      </p>
+                      <a
+                        href={t.downloadFile}
+                        download
+                        className="mt-4 block rounded-md bg-emerald-700 px-4 py-2.5 text-center text-sm font-medium text-white hover:bg-emerald-800"
+                      >
+                        Download the .docx →
+                      </a>
+                    </>
+                  ) : (
+                    <p className="mt-3 text-xs leading-5 text-slate-600">
+                      We haven't published a .docx of this template yet.
+                    </p>
+                  )}
                 </div>
 
                 <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-700 to-emerald-600 p-6 text-white">

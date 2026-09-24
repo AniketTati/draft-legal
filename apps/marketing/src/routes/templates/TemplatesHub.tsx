@@ -8,8 +8,8 @@ export default function TemplatesHub() {
   return (
     <>
       <SEO
-        title="Free Contract Templates"
-        description="Lawyer-reviewed NDA, MSA, DPA, BAA, SOW, and other contract templates. Free download. Or generate one in 30 seconds with Draft Legal."
+        title="Contract Template Guides"
+        description="Plain-English guides to NDA, MSA, DPA, BAA, SOW and other contracts, with the key clauses explained. Or generate one in 30 seconds with Draft Legal."
         path="/templates"
       />
 
@@ -17,13 +17,13 @@ export default function TemplatesHub() {
         <div className="container-page">
           <div className="mx-auto max-w-3xl text-center">
             <div className="text-sm font-semibold uppercase tracking-wide text-emerald-700">
-              Free templates
+              Template guides
             </div>
             <h1 className="mt-3 heading-display text-slate-900">
-              Lawyer-reviewed contract templates.
+              Contract templates, explained.
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-              Free downloads. Plain-English clause guides. Or — once you have one — generate a
+              Plain-English clause guides, with downloadable templates to follow. Or generate a
               tailored draft in 30 seconds with Draft Legal.
             </p>
             <p className="mx-auto mt-3 max-w-xl text-xs leading-6 text-slate-500">
@@ -54,7 +54,7 @@ export default function TemplatesHub() {
                   </p>
                   <p className="mt-3 text-sm leading-6 text-slate-600 line-clamp-3">{t.tldr}</p>
                   <div className="mt-5 inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
-                    Get the template <ArrowRight className="h-3 w-3" />
+                    Read the guide <ArrowRight className="h-3 w-3" />
                   </div>
                 </Link>
               </li>

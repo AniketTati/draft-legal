@@ -31,6 +31,16 @@ describe('marketing claims', () => {
     expect(site).not.toMatch(pattern)
   })
 
+  // X71 — every template page linked a .docx that was never in the repo;
+  // hosting answered each with the site's index.html.
+  it('links a template download only when the file ships, and promises none otherwise', () => {
+    const links = [...site.matchAll(/downloadFile:\s*[`'"]([^`'"]+)[`'"]/g)].map(m => m[1])
+    for (const href of links) expect(existsSync(join(ROOT, '..', 'public', href)), href).toBe(true)
+    expect(site).not.toMatch(/download is live/i)
+    expect(site).not.toMatch(/free downloads?/i)
+    expect(site).not.toMatch(/lawyer-reviewed/i)
+  })
+
   it('has no email capture that reports success without sending anything', () => {
     expect(existsSync(join(ROOT, 'components', 'sections', 'EmailCapture.tsx'))).toBe(false)
     expect(site).not.toMatch(/we sent it/i)

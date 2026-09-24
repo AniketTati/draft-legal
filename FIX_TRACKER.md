@@ -2285,6 +2285,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the form posts to `API_ORIGIN` (`apps/marketing/src/lib/utils.ts`). A production build uses the app site, as before. The dev server uses the local API through its existing `/api` proxy. `VITE_API_ORIGIN` overrides both. `src/vite-env.d.ts` types it.
   - **Verification:** marketing typecheck passes. A production build still posts to the production origin (checked in the built bundle).
 
+- **X71 — The marketing site's template downloads served the site's HTML (Low). — DONE.** A gap in H1, found while writing the QA test cases (TC-WEB-01).
+  - H1 made "Download the .docx" the template pages' main action. Every link pointed at a file under `/templates/` that has never been in the repo. Hosting rewrites any unknown path to `index.html`, so the "download" was the site's HTML saved as `.docx`. The copy around it promised what didn't exist: "the download is live", "Free downloads", and "lawyer-reviewed" templates.
+  - **What changed:**
+    - A template names a download only when its file ships (`downloadFile` is optional, and none is set). The page shows "Template download coming soon" otherwise.
+    - The hub, the page titles, the summaries and the SEO/sitemap descriptions call these guides, with downloads to follow.
+    - The "lawyer-reviewed" claim is gone: nothing in the repo supports it. Writing the templates themselves is content work for the team.
+  - **Verification:** the H1 copy tripwire (`apps/api/src/lib/marketing-claims.test.ts`) +1 case: every `downloadFile` exists under `apps/marketing/public`, and the download and "lawyer-reviewed" claims are gone. It fails on the old site (`/templates/${slug}.docx` missing); 11/11 pass. Marketing typecheck passes.
+
 ---
 
 ## Run log
@@ -2408,6 +2416,7 @@ X67 — DONE — HTML versions (editor saves, saved drafts) store their text as 
 X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — (sha: pending)
 X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — (sha: pending)
 X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — (sha: pending)
+X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — (sha: pending)
 
 ---
 
