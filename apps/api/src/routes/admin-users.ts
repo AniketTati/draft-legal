@@ -10,6 +10,7 @@ import { requireUser, requireUserOrAdminKey } from '../middleware/auth.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { invalidatePermissionCache, DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { InviteUserSchema, AssignRoleSchema, BulkImportUserSchema, AuditAction } from '@clm/types'
+import { withoutTenantGuard } from '../lib/tenant-context.js'
 
 export async function adminUserRoutes(app: FastifyInstance) {
   const adminGuard = requirePermission('configure', 'user')
@@ -26,10 +27,12 @@ export async function adminUserRoutes(app: FastifyInstance) {
     // P7.0.1 — Email is now globally unique (one user per email across all
     // orgs). Check across the entire DB, not just this org, so we surface a
     // useful error before the DB constraint fires with an opaque P2002.
-    const existing = await prisma.user.findUnique({
+    // Y1 — deliberately across orgs, so outside the tenant isolation (the
+    // answer names no other org and shows none of its data).
+    const existing = await withoutTenantGuard(() => prisma.user.findUnique({
       where: { email: body.email },
       select: { id: true, orgId: true, deletedAt: true },
-    })
+    }))
     if (existing && !existing.deletedAt) {
       const sameOrg = existing.orgId === orgId
       return reply.status(409).send({

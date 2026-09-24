@@ -2402,36 +2402,83 @@ Each class below recurred during this run, and each occurrence was fixed where i
 | Y5 | Security checks keyed on the environment | X31, X35, X38, X39 |
 | Y6 | The model presenting what no tool returned | V2, X78 |
 
-- **Y1 — Enforce tenant isolation below the routes (High). — TODO.**
+- **Y1 — Enforce tenant isolation below the routes (High). — DONE.**
   - **Problem:**
-    - Org scoping is enforced only by each query's own `where: { orgId }`, so ten cross-org defects were found and fixed one route at a time.
-    - A new route, or a changed query, can leak again, and no test looks across all routes.
-    - The marketing Security page claims "Postgres row-level security (RLS)", which does not exist; no migration creates a policy.
-  - **Approach:**
-    1. **Request tenant context:** each request carries its tenant in an `AsyncLocalStorage` context. It is set when authentication succeeds: a user's JWT, an API key, the agents service with `x-org-id`, or an internal tool call's `orgId`. Public token routes, sign-in and workers have no tenant.
-    2. **A Prisma query extension on every model that has an `orgId`.** The list is read from Prisma's schema metadata, so a new model is covered automatically. Inside a tenant context, every query on those models is limited to the tenant: reads, counts, aggregates, updates, deletes, upserts and creates. For Role and Skill, whose built-in rows have no org, the limit is "the tenant's rows or built-in rows".
-    3. **Blocked access is visible.** A read or write by id that the limit turned into a miss, where the row exists in another org, is logged as `tenant_guard_blocked` (model, operation, route; no data). A write the limit refused answers 404, because Prisma's "record not found" now maps to 404.
-    4. **One explicit escape hatch:** `withoutTenantGuard()`, for code that must cross orgs.
-    5. **A route crawl test:**
-       - It gives Org B one record of each kind a route can name, with a marker string in its text fields.
-       - It lists every registered route with a path parameter and calls it as an Org A admin with Org B's ids.
-       - It posts every internal tool with Org B's ids in the body.
-       - It runs twice: once without the guard, which tests the routes' own scoping, and once with it.
-    6. **Truthful copy:** the Security page and trust strip describe the isolation that exists, and the H1 copy tripwire refuses the RLS claim.
-  - **Acceptance criteria:**
-    1. In an Org A request, an unscoped read of an Org B row returns nothing, and an unscoped update or delete by id changes nothing. Both answer 404, and `tenant_guard_blocked` is logged. Shown by tests against a deliberately unscoped query.
-    2. Counts and lists are limited too: an unscoped count in an Org A request counts only Org A's rows.
-    3. Built-in roles and skills stay readable by every org.
-    4. Outside a tenant context (workers, sign-in, public token routes) nothing changes.
-    5. The crawl covers every registered route that has a path parameter, and every internal tool, and prints how many it called. In both passes:
-       - no response contains an Org B marker;
-       - no Org B row changes;
-       - no row is created that references an Org B record.
-    6. With the guard on, the crawl logs no `tenant_guard_blocked`, so no route relies on the guard.
-    7. The crawl fails against a deliberately reintroduced defect: one route's `orgId` filter removed, with the guard off.
-    8. The whole suite passes unchanged; the guard is transparent to correct code.
-    9. The marketing copy no longer claims RLS, and the tripwire refuses the claim.
-  - **Out of scope:** raw SQL (`$queryRaw`) and nested relation rows, which the extension doesn't see (the crawl still covers their routes); workers, which run without a tenant; Postgres RLS itself, recorded as a later option with its costs (a connection-per-tenant setting on every query).
+    - Org scoping was enforced only by each query's own `where: { orgId }`, so ten cross-org defects were found and fixed one route at a time.
+    - A new route, or a changed query, could leak again, and no test looked across all routes.
+    - The Security page claimed "Postgres row-level security (RLS)"; no migration created a policy.
+    - The database login the app uses (`clm`) is a superuser with `BYPASSRLS`, so policies alone would change nothing.
+  - **Direction (your call, mid-task):** build the RLS the site claimed rather than soften the claim, then describe on the site what was built.
+  - **What changed — two layers, both keyed on a request tenant context:**
+    1. **Tenant context:** `lib/tenant-context.ts`.
+       - Each request runs in an `AsyncLocalStorage` store, opened by the app's first preHandler (after body parsing, which would drop an earlier one).
+       - Authentication fills it in: a user's JWT, an API key, the agents service with `x-org-id`, or an internal tool's `orgId`.
+       - Sign-in, the public signing and share links, Slack and inbound-email callbacks, and background jobs have no tenant, and nothing changes for them.
+    2. **Database layer, Postgres row-level security:**
+       - Migration `20260924100000_tenant_row_level_security` creates the role `clm_tenant_access` (no login, not a superuser, no `BYPASSRLS`, table rights only).
+       - It enables and forces a `tenant_isolation` policy on every table that holds tenant data:
+         - the 28 tables with an `orgId`;
+         - roles and skills, whose built-in rows every tenant reads and none can write;
+         - 10 child tables (versions, clauses, template sections, signers, signature events, agent messages, tool calls, webhook deliveries, diff cache, user roles), through their parent;
+         - the organization row itself.
+       - The tenant role is kept out of the two tables that aren't tenant data (marketing contacts, collaboration state).
+       - The policies bind only that role; every other role keeps its access. The migration was generated from the schema.
+       - `lib/tenant-rls.ts` runs every query made for a tenant as that role, with `app.tenant_id` set with `set_config(…, true)`, which ends with the transaction:
+         - a lone query becomes a two-statement transaction (Prisma's documented RLS pattern);
+         - `$transaction(fn)` sets both when it begins;
+         - a batch gets them as its first statement;
+         - queries already inside a transaction pass through, read from Prisma's `__internalParams.transaction`.
+       - The client's `$transaction` is set as its own property, not through a client extension. Prisma describes a property an extension adds without its value, so the tests that stub `$transaction` (X5, X65) restored it as `undefined`, and every test file after them failed.
+       - This covers what no Prisma rewrite can: raw SQL (pgvector search, org-settings merges, the audit chain) and rows reached through relations.
+    3. **Application layer, the tenant guard** (`lib/tenant-guard.ts`), a Prisma query extension on every model with an `orgId`:
+       - The list of models is read from the schema, so new models are covered.
+       - Reads, counts, aggregates, updates, deletes and upserts are limited to the tenant; creates naming another org are refused (403).
+       - A lookup by id that the limit turned into a miss, where the row exists elsewhere, is logged as `tenant_guard_blocked`: the route relied on the guard.
+       - `withoutTenantGuard()` is the one explicit way across, and turns off both layers.
+    4. **Error answers:** Prisma's "record not found" answers 404 (it was a 500); a write the policies refuse answers 403; a unique conflict answers 409 (it was a 500).
+    5. **The one cross-org lookup:** the invite's global email check (email is unique across orgs) uses `withoutTenantGuard`, so an email another workspace uses still gets its specific 409.
+    6. **The route list:** `lib/route-registry.ts` records every route as it is registered. Y3 reuses it.
+    7. **References to another org's row:**
+       - Under the policies, a required relation to another org's row no longer loads. A query that includes it fails instead of showing that row.
+       - X25's repair migration leaves one kind of such reference on purpose: a matter owner from another org, where the matter's creator isn't in its org either. The views were meant to hide those owners, but the matter view and list failed with a 500 instead (`matter-org-links` caught it). Both routes now load owners separately, limited to the org.
+       - `scripts/check-cross-org-links.ts` is a read-only preflight: it checks every required reference from one org's row (23 today) and exits 1 on any that crosses orgs, apart from those matter owners. The dev database has none. A contract whose owner was set to another org's user, planted in the test database, was reported, then reverted.
+    8. **Tests:** `usePrismaMiddleware()` replaces `prisma.$use`, which extended clients drop, in the two race tests of `auth-refresh`.
+    9. **Marketing:** the Security page now says what exists: RLS policies on every tenant table, raw SQL included; the API guard; and the crawl on every build. The trust strip reads "Postgres row-level security".
+  - **Verification:**
+    - `lib/tenant-rls.integration.test.ts` (8):
+      - every tenant table and child table has row-level security enabled, forced, with the policy;
+      - a tenant query runs as `clm_tenant_access` with its tenant, alone, in a batch and in a transaction;
+      - with the Prisma guard off:
+        - raw SQL with no org filter sees only the tenant's contracts, versions and organization;
+        - a relation to another tenant's counterparty (a pre-X25 link) loads as nothing;
+        - unscoped updates reach nothing (P2025; a raw `UPDATE` changes 0 rows);
+        - planting a row in another tenant fails the policy;
+      - built-in roles are readable, and no tenant can create one;
+      - the tenant's own work, in and out of transactions, is unaffected;
+      - stubbing `$transaction` and restoring it leaves the tenant's own in place. This failed with `$transaction` installed through a client extension.
+    - `lib/tenant-guard.integration.test.ts` (10):
+      - unscoped reads by id, lists, counts, group-bys, updates, deletes and creates are all held to the tenant;
+      - a real Fastify route that forgets the org is stopped by each layer alone and leaks only with both off;
+      - the invite's cross-org email check still answers "…another workspace" (without the bypass: a 400).
+    - `routes/tenant-isolation-crawl.integration.test.ts` (3), the route crawl:
+      - Org B gets one record of each of 30 kinds, each with a marker. Every route (268 calls) is called as an Org A admin with Org B's ids in the path, the query and the body; internal tools get them in the body. Public token, sign-in, webhook and Bull Board routes are excluded, each with its reason.
+      - Both passes are clean: with both layers off (the routes' own scoping) and with both on. No marker leaks, no Org B row changes, no row elsewhere points at an Org B record, and the guard never had to act.
+      - Criterion 7: with `GET /matters/:id`'s org filter removed, the first pass catches the leak and the second catches the guard's `tenant_guard_blocked`. The defect was reverted.
+    - Live: after the migration was applied to the dev database (backup: `clm_dev-before-rls.dump` in the session scratchpad), your signed-in dev app loads its contracts (384), dashboard, roles, skills, approvals and organization as before.
+  - **Acceptance criteria, as planned in 397ef36:**
+    - 1–3 met, by the guard tests. An unscoped read, update or delete by id of another org's row finds and changes nothing, answers 404 and logs `tenant_guard_blocked`. Counts and lists see only the tenant. Built-in roles and skills stay readable.
+    - 4 met. Outside a tenant context both orgs' rows are there, in both test files. Sign-in, public links and jobs set no tenant.
+    - 5 and 6 met, by the crawl: every route with a path parameter and every internal tool (268 calls), clean in both passes, and the guard never had to act.
+    - 7 met: the reintroduced `GET /matters/:id` defect was caught.
+    - 8 met: the whole suite passes (typecheck, lint, unit 358, web 51, integration 376). It surfaced two fixes on the way: the stubbed `$transaction`, and the matter owners.
+    - 9 changed at your direction: rather than withdraw the RLS claim, RLS was built, and the copy describes it.
+  - **Cost:** a query made for a tenant now runs in its own short transaction, one extra statement, whose round trips add up on a busy page. Queries inside a transaction pay nothing extra.
+  - **Deploy:**
+    - First run `scripts/check-cross-org-links.ts` against the database. Repair anything it lists before migrating.
+    - The migration creates a role, so the migrating user needs `CREATEROLE` (Cloud SQL's `postgres` user has it).
+    - If the app logs in as a different user from the one that migrates, run `GRANT clm_tenant_access TO <app login>`.
+    - A new table with tenant data needs its policy: the RLS test fails until it has one.
+  - **Out of scope:** background jobs run without a tenant, so neither layer applies to them.
 
 - **Y2 — One boundary for text that leaves for a model (High). — TODO.**
   - **Problem:**

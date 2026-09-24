@@ -6,7 +6,7 @@ const sections = [
   {
     icon: Database,
     title: 'Architecture & data isolation',
-    body: 'Every tenant lives in its own logical partition with Postgres row-level security (RLS). On Cloud Enterprise, single-tenant infrastructure is available. On self-host, the only walls are the ones you build — but the schema and policies ship with the code.',
+    body: 'Each organization\'s data is kept apart twice. In the database, Postgres row-level security (RLS) policies on every table that holds tenant data confine an organization\'s queries to its own rows, raw SQL included. In the API, a data-layer guard limits every query to the caller\'s organization before it runs. On every build, an automated test calls each signed-in API endpoint with another organization\'s records and fails if anything is read, changed or linked across. On Cloud Enterprise, single-tenant infrastructure is available. On self-host, the policies ship with the schema migrations.',
   },
   {
     icon: KeyRound,

@@ -24,6 +24,7 @@ import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/e
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
+import { setTenant } from '../lib/tenant-context.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -809,6 +810,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
       return reply.status(401).send({ detail: 'Internal endpoint — bad secret' })
     }
+    // Y1 — these calls act for the org their body (or x-org-id) names: limit
+    // every query to it, as for a user's request.
+    const bodyOrg = (req.body as { orgId?: unknown } | undefined)?.orgId
+    const headerOrg = (req.headers['x-org-id'] as string | undefined)?.trim()
+    setTenant(typeof bodyOrg === 'string' ? bodyOrg : headerOrg)
   })
 
   // ── POST /internal/ai/resolve ──────────────────────────────────────────────

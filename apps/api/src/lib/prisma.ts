@@ -14,6 +14,8 @@
  */
 import { PrismaClient } from '@prisma/client'
 import pino from 'pino'
+import { tenantGuardExtension } from './tenant-guard.js'
+import { tenantRlsExtension, tenantTransaction } from './tenant-rls.js'
 
 const SLOW_QUERY_MS = Number(process.env.SLOW_QUERY_MS ?? 250)
 const POOL_LIMIT    = Number(process.env.PRISMA_POOL_LIMIT ?? 20)
@@ -29,7 +31,7 @@ function withPoolLimit(url: string | undefined): string | undefined {
   return `${url}${sep}connection_limit=${POOL_LIMIT}`
 }
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient; prismaBase?: PrismaClient }
 
 function makeClient() {
   const tunedUrl = withPoolLimit(process.env.DATABASE_URL)
@@ -69,7 +71,31 @@ function makeClient() {
   return client
 }
 
-export const prisma = globalForPrisma.prisma ?? makeClient()
+// Y1 — tenant isolation in two layers, for every query made for a tenant:
+//   - lib/tenant-guard.ts limits each Prisma query on a model with an `orgId`
+//     to the tenant, whatever its `where` says;
+//   - lib/tenant-rls.ts runs it as the role Postgres's row-level security
+//     policies confine to the tenant's rows, raw SQL and relations included.
+// The extensions leave the model API unchanged, so the client keeps its type.
+function makeGuardedClient(): PrismaClient {
+  const base = makeClient()
+  globalForPrisma.prismaBase = base
+  const guarded = base.$extends(tenantGuardExtension(base)) as unknown as PrismaClient
+  const client = guarded.$extends(tenantRlsExtension(guarded)) as unknown as PrismaClient
+  client.$transaction = tenantTransaction(guarded)
+  return client
+}
+
+export const prisma = globalForPrisma.prisma ?? makeGuardedClient()
+
+/**
+ * Register Prisma middleware (the deprecated `$use`), which an extended client
+ * no longer offers. Middleware on the base client still runs for every query
+ * the guarded client makes. For tests that hold a query to stage a race.
+ */
+export function usePrismaMiddleware(middleware: Parameters<PrismaClient['$use']>[0]): void {
+  globalForPrisma.prismaBase!.$use(middleware)
+}
 
 if (process.env.NODE_ENV !== 'production') {
   globalForPrisma.prisma = prisma

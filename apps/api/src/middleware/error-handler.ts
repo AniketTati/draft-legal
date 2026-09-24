@@ -16,6 +16,7 @@
  */
 import type { FastifyError, FastifyRequest, FastifyReply } from 'fastify'
 import { ZodError } from 'zod'
+import { Prisma } from '@prisma/client'
 import { reportError } from '../lib/error-reporter.js'
 import { maskTokenPaths } from '../lib/log-redact.js'
 
@@ -50,6 +51,42 @@ export function errorHandler(
       status: 422,
       detail: 'Request body failed validation',
       errors: error.errors,
+      reqId:  req.id,
+    })
+  }
+  // Y1 — "record not found" from Prisma: an update or delete of a row that
+  // doesn't exist, or that the tenant guard kept to the caller's org. A 404,
+  // not a 500 (which also hides whether the id exists elsewhere).
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+    req.log.warn(ctx, 'record not found (P2025)')
+    return reply.status(404).send({
+      type:   'https://httpstatuses.com/404',
+      title:  'Not Found',
+      status: 404,
+      detail: 'Not found',
+      reqId:  req.id,
+    })
+  }
+  // Y1 — a write Postgres's row-level security refused: it named another
+  // tenant's row. A 403, not a 500.
+  if (/violates row-level security policy/.test(error.message ?? '')) {
+    req.log.warn(ctx, 'row-level security refused a write')
+    return reply.status(403).send({
+      type:   'https://httpstatuses.com/403',
+      title:  'Forbidden',
+      status: 403,
+      detail: 'Forbidden',
+      reqId:  req.id,
+    })
+  }
+  // A unique constraint (a name already taken, say): 409, not a 500.
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    req.log.warn(ctx, 'unique constraint (P2002)')
+    return reply.status(409).send({
+      type:   'https://httpstatuses.com/409',
+      title:  'Conflict',
+      status: 409,
+      detail: 'A record with these details already exists',
       reqId:  req.id,
     })
   }

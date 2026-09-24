@@ -62,6 +62,8 @@ import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
 import { devLogger, LOG_REDACT, LOG_SERIALIZERS } from './lib/logger.js'
+import { runInTenantStore } from './lib/tenant-context.js'
+import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
 
 export async function buildApp() {
   const app = Fastify({
@@ -99,6 +101,12 @@ export async function buildApp() {
     // X30 — resolve req.ip through the trusted proxy hop(s) (lib/trust-proxy.ts).
     trustProxy: trustProxyHops(),
   })
+
+  // Y1 — the list of every route, for the cross-org route crawl. Before any
+  // route is registered, so it sees them all.
+  const routes: RegisteredRoute[] = []
+  app.decorate('registeredRoutes', routes)
+  app.addHook('onRoute', route => { recordRoute(routes, { method: route.method, url: route.url }) })
 
   // Echo the request id back on every response so the client can log
   // it alongside its own error reports.
@@ -220,6 +228,13 @@ export async function buildApp() {
 
   // X3 — request counters for GET /api/v1/metrics.
   app.addHook('onResponse', async (req, reply) => { recordRequest(req, reply) })
+
+  // Y1 — each request runs in its own tenant store, which authentication fills
+  // in (middleware/auth.ts). The first preHandler, after the body is parsed:
+  // a store opened earlier would be lost across the body parser's stream
+  // events. Registered before the routes so it runs ahead of their own
+  // preHandlers.
+  app.addHook('preHandler', (_req, _reply, done) => { runInTenantStore(done) })
 
   // Routes
   await app.register(healthRoutes)

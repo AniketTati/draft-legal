@@ -62,6 +62,21 @@ async function foreignReference(orgId: string, ids: { counterpartyId?: string | 
   return null
 }
 
+/**
+ * X25, Y1 — a matter's owners, only those in its org. The repair migration
+ * leaves a foreign owner it has no creator to fall back on, for the views to
+ * hide. Loaded apart from the matter: the owner is a required relation, and
+ * under row-level security another org's user doesn't load, which would fail
+ * the whole query rather than hide the owner.
+ */
+async function matterOwners(orgId: string, ids: string[]) {
+  const users = await prisma.user.findMany({
+    where:  { orgId, id: { in: [...new Set(ids)] } },
+    select: { id: true, name: true, email: true, avatarUrl: true },
+  })
+  return new Map(users.map(u => [u.id, u]))
+}
+
 export async function matterRoutes(app: FastifyInstance) {
 
   // ── GET /api/v1/matters ────────────────────────────────────────────────
@@ -89,7 +104,6 @@ export async function matterRoutes(app: FastifyInstance) {
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
       take: q.limit,
       include: {
-        owner: { select: { id: true, name: true, email: true, orgId: true } },
         counterparty: { select: { id: true, name: true, orgId: true } },
         _count: {
           select: {
@@ -102,6 +116,7 @@ export async function matterRoutes(app: FastifyInstance) {
         },
       },
     })
+    const owners = await matterOwners(orgId, matters.map(m => m.ownerId))
     return reply.send({
       items: matters.map(m => ({
         id:               m.id,
@@ -113,7 +128,7 @@ export async function matterRoutes(app: FastifyInstance) {
         // counterparty or user; their names aren't this org's to see.
         counterpartyName: m.counterpartyName ?? (m.counterparty?.orgId === orgId ? m.counterparty.name : null),
         ownerId:          m.ownerId,
-        ownerName:        m.owner?.orgId === orgId ? m.owner.name : null,
+        ownerName:        owners.get(m.ownerId)?.name ?? null,
         tags:             m.tags,
         contractCount:    m._count.contracts,
         requestCount:     m._count.requests,
@@ -136,7 +151,6 @@ export async function matterRoutes(app: FastifyInstance) {
     const matter = await prisma.matter.findFirst({
       where: { id, orgId, deletedAt: null },
       include: {
-        owner: { select: { id: true, name: true, email: true, avatarUrl: true, orgId: true } },
         counterparty: { select: { id: true, name: true, website: true, orgId: true } },
         // X7 — an own-scope caller sees only their own contracts in the matter,
         // and only their own chat threads (a thread id is a way into its content).
@@ -176,10 +190,10 @@ export async function matterRoutes(app: FastifyInstance) {
     if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
     // X25 — a reference stored before the org check (until the repair
     // migration runs) must not show another org's user or counterparty.
-    const { owner, counterparty, ...rest } = matter
+    const { counterparty, ...rest } = matter
     return reply.send({
       ...rest,
-      owner:        owner && owner.orgId === orgId ? { id: owner.id, name: owner.name, email: owner.email, avatarUrl: owner.avatarUrl } : null,
+      owner:        (await matterOwners(orgId, [matter.ownerId])).get(matter.ownerId) ?? null,
       counterparty: counterparty && counterparty.orgId === orgId ? { id: counterparty.id, name: counterparty.name, website: counterparty.website } : null,
     })
   })

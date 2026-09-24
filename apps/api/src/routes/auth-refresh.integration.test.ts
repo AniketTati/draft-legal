@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import bcrypt from 'bcryptjs'
 import { signRefreshToken } from '../lib/jwt.js'
+import { usePrismaMiddleware } from '../lib/prisma.js'
 import { getApp, closeApp, makeOrg, makeUser, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
@@ -35,7 +36,7 @@ const refresh = (refreshToken: string) =>
  * of the token is held until both have read it (inject would otherwise run
  * them in turn). Then both mint in the same second or, with `acrossASecond`,
  * the second waits until the first has rotated the token and a new second
- * has begun, so their tokens differ. (A $use hook can't be removed and the
+ * has begun, so their tokens differ. (Prisma middleware can't be removed and the
  * integration files share one client, so it switches itself off after.)
  */
 async function race(token: string, acrossASecond: boolean) {
@@ -48,7 +49,7 @@ async function race(token: string, acrossASecond: boolean) {
   let rotated!: () => void
   const firstRotated = new Promise<void>(r => { rotated = r })
   let resumeAt: number | undefined
-  prisma.$use(async (params, next) => {
+  usePrismaMiddleware(async (params, next) => {
     const result = await next(params)
     if (!active || params.model !== 'User') return result
     const where = params.args?.where ?? {}
@@ -91,7 +92,7 @@ const stored = async () => (await prisma.user.findUniqueOrThrow({ where: { id: u
  */
 async function whileLookupHeld(token: string, meanwhile: () => Promise<void>, request: () => ReturnType<typeof refresh>) {
   let active = true
-  prisma.$use(async (params, next) => {
+  usePrismaMiddleware(async (params, next) => {
     const result = await next(params)
     if (active && result && params.model === 'User' && params.action === 'findFirst' && params.args?.where?.refreshToken === token) {
       active = false

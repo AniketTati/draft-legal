@@ -7,7 +7,7 @@ const items = [
   { icon: FileSearch, label: 'Tamper-evident audit log' },
   { icon: KeyRound, label: 'JWT (HS256) sessions · SSO on the roadmap' },
   { icon: ScrollText, label: 'AI plans gated by human approval' },
-  { icon: Database, label: 'Postgres row-level isolation' },
+  { icon: Database, label: 'Postgres row-level security' },
 ]
 
 export function TrustStrip() {

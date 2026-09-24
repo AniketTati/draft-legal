@@ -5,6 +5,7 @@ import { verifyToken, type JwtPayload } from '../lib/jwt.js'
 import { prisma } from '../lib/prisma.js'
 import { resolveApiScopePermissions } from '../lib/permissions.js'
 import { keyMaker } from '../lib/acting-user.js'
+import { setTenant } from '../lib/tenant-context.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -46,6 +47,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
       roles: ['ADMIN'],
       type: 'access',
     } as any
+    setTenant(orgIdHeader)   // Y1 — none without x-org-id (the legacy 'system' scope)
     return
   }
 
@@ -101,6 +103,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
         apiPermissions: resolveApiScopePermissions(key.scopes),
         keyMakerId,
       }
+      setTenant(key.orgId)   // Y1
       return
     } catch {
       return reply.status(401).send({ title: 'Unauthorized', detail: 'API key auth failed', status: 401 })
@@ -112,6 +115,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
     const payload = verifyToken(token)
     if (payload.type !== 'access') throw new Error('Not an access token')
     req.user = payload
+    setTenant(payload.orgId)   // Y1
   } catch {
     return reply.status(401).send({
       type: 'https://httpstatuses.com/401',
