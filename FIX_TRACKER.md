@@ -2235,6 +2235,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the page's gate is `configure:organization`, the permission its routes enforce. LEGAL_OPS now gets the page's "Admin access required" notice. The routes are unchanged: widening them would let LEGAL_OPS create admin-scope keys.
   - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. The browser check is in the run log.
 
+- **X62 — A matter's header ignored its linked counterparty (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
+  - The header read only the name typed on the matter. A matter linked to a counterparty by id alone (the API allows it) showed no counterparty, although the Matters list showed one. A renamed counterparty showed its old name. A link stored before X25 pointed at another org's counterparty id, a page that 404s.
+  - **What changed:** the header shows the linked record by its current name, as a link, and falls back to the typed name as plain text. The API sends that record only when it is the org's own, so a pre-X25 foreign link shows no link.
+  - **Verification:** web typecheck passes. The browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2349,6 +2354,7 @@ X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cance
 X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — (sha: pending)
 X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — (sha: pending)
 X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — (sha: pending)
+X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — (sha: pending)
 
 ---
 

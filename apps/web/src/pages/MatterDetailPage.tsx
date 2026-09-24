@@ -155,16 +155,21 @@ export function MatterDetailPage() {
           <div className="text-[12px] text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
             {/* Both of these used to be dead text on the one page whose job is
                 to be the hub of a negotiation. */}
-            {data.counterpartyName && (
+            {/* X62 — the linked counterparty record first, by its current
+                name; the name typed on the matter otherwise. Only the typed
+                name was read, so a matter linked by id alone showed no
+                counterparty, and a renamed one its old name. The API gives
+                `counterparty` only when it is this org's. */}
+            {(data.counterparty || data.counterpartyName) && (
               <span>
                 Counterparty:{' '}
-                {data.counterpartyId ? (
+                {data.counterparty ? (
                   <Link
-                    to={`/counterparties/${data.counterpartyId}`}
+                    to={`/counterparties/${data.counterparty.id}`}
                     className="text-ink-950 font-medium hover:underline underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                     data-testid="matter-counterparty-link"
                   >
-                    {data.counterpartyName}
+                    {data.counterparty.name}
                   </Link>
                 ) : (
                   <span className="text-ink-950">{data.counterpartyName}</span>
