@@ -2188,6 +2188,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the route sends the header. The mock in `routes/pii-surfaces.integration.test.ts` now refuses calls without the secret, as the real service does, so every agents call that file exercises is checked.
   - **Verification:** with the old route, both per-contract ask tests fail (the answer comes back null). All 16 pass now.
 
+- **X56 — Retyping an approved contract kept it Approved (Medium). — DONE.** A gap in X42, found while writing the QA test cases (TC-WF-04 N6).
+  - X42 sends an approved contract back to DRAFT when its type, value, currency or document changes. It applied on PATCH, uploads, editor saves, clause applies and Extraction Queue corrections, but not on the two retype paths:
+    - the contract page's type chip, `POST /contracts/:id/retype`;
+    - the agent's `contract_update` `retype` action.
+  - Both changed the type with no reset. The REST route also wrote no audit event.
+  - **What changed:**
+    - Both paths apply `statusAfterTermsChange` when the type actually changes.
+    - Both write a `CONTRACT_UPDATED` audit row: `{action: 'retype', typeFrom, typeTo}`, plus `statusFrom`/`statusTo` when the approval is reset. The agent's row adds `source: 'agent'`.
+    - The agent's diff lists the status change, so the confirm card shows it.
+    - Retyping to the same type changes and records nothing.
+  - **Verification:** `routes/contract-status-approval.integration.test.ts` +2 cases: page and agent retype reset an approval, with its audit row; the same type changes nothing; a retyped draft stays a draft, with its row. Both fail on the old routes; 13/13 pass.
+
 ---
 
 ## Run log
@@ -2296,6 +2308,7 @@ X50 (reviews) — DONE — two more adversarial reviews: tabs take only the same
 C3, C10, C12, V1, X2, X23, X27, X33 (live checks) — DONE — verified with the agents service and Gemini on the local stack; the PII round trip through a counting proxy (models saw tokens only); VERIFY-PENDING → DONE — this commit
 X54 — BLOCKED — chat usage is recorded from the message and reply only, so the daily cost cap barely counts chat; the fix changes what the cap counts, a product decision — this commit
 X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — (sha: pending)
+X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — (sha: pending)
 
 ---
 

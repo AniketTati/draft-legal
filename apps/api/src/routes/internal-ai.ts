@@ -35,7 +35,7 @@ import { findTopic } from '../lib/clause-topic.js'
 import { planDraft } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
-import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal } from '../lib/contract-status.js'
+import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -2825,14 +2825,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (body.action === 'retype') {
       const nextType = String(body.payload.type ?? '')
       if (!nextType) return reply.status(400).send({ detail: 'payload.type required' })
-      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType } })
+      // X56 — as REST: a new type on an approved contract returns it to DRAFT
+      // for approval again, on the record.
+      const retyped = nextType !== existing.type
+      const status = retyped ? statusAfterTermsChange(existing.status) : undefined
+      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType, ...(status && { status }) } })
+      if (retyped) {
+        await createAuditEvent({
+          orgId: body.orgId, userId: body.userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: existing.id,
+          metadata: { action: 'retype', source: 'agent', typeFrom: existing.type, typeTo: nextType, ...(status && { statusFrom: existing.status, statusTo: status }) },
+        })
+      }
       await reanalyze()  // best-effort re-analysis; retype still succeeds without a version
       return reply.send({
         ok: true,
         reversible: false,
         action: 'retype',
         contractId: existing.id,
-        diff: [{ field: 'type', before: existing.type, after: nextType }],
+        diff: [
+          { field: 'type', before: existing.type, after: nextType },
+          ...(status ? [{ field: 'status', before: existing.status, after: status }] : []),
+        ],
       })
     }
 

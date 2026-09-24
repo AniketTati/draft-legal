@@ -161,6 +161,50 @@ describe('X42 — an approval covers the terms it approved', () => {
     expect(await statusOf(id)).toBe('APPROVED')
   })
 
+  it('X56 — retyping from the contract page or through the agent returns it to DRAFT, on the record', async () => {
+    const withText = async () => {
+      const id = await approved()
+      await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, plainText: 'Mutual NDA.', htmlContent: '<p>Mutual NDA.</p>', createdById: user } })
+      return id
+    }
+    const audited = (id: string) => prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })
+
+    const viaPage = await withText()
+    const res = await app.inject({
+      method: 'POST', url: `/api/v1/contracts/${viaPage}/retype`, headers: auth(org, ['LEGAL_OPS'], user), payload: { contractType: 'MSA' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(await statusOf(viaPage)).toBe('DRAFT')
+    expect((await audited(viaPage)).metadata).toEqual({ action: 'retype', typeFrom: 'NDA', typeTo: 'MSA', statusFrom: 'APPROVED', statusTo: 'DRAFT' })
+
+    const viaAgent = await withText()
+    const applied = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_update',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, userId: user, contractId: viaAgent, action: 'retype', payload: { type: 'MSA' } },
+    })
+    expect(applied.statusCode).toBe(200)
+    expect(applied.json().diff).toContainEqual({ field: 'status', before: 'APPROVED', after: 'DRAFT' })
+    expect(await statusOf(viaAgent)).toBe('DRAFT')
+    expect((await audited(viaAgent)).metadata).toMatchObject({ action: 'retype', source: 'agent', statusFrom: 'APPROVED', statusTo: 'DRAFT' })
+  })
+
+  it('X56 — the same type again changes nothing, and retyping a draft keeps it a draft', async () => {
+    const id = await approved()
+    await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, plainText: 'Mutual NDA.', htmlContent: '<p>Mutual NDA.</p>', createdById: user } })
+    const retype = (contractType: string) => app.inject({
+      method: 'POST', url: `/api/v1/contracts/${id}/retype`, headers: auth(org, ['LEGAL_OPS'], user), payload: { contractType },
+    })
+    expect((await retype('NDA')).statusCode).toBe(200)
+    expect(await statusOf(id)).toBe('APPROVED')
+    expect(await prisma.auditEvent.count({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })).toBe(0)
+    await prisma.contract.update({ where: { id }, data: { status: 'DRAFT' } })
+    expect((await retype('MSA')).statusCode).toBe(200)
+    expect(await statusOf(id)).toBe('DRAFT')
+    expect((await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })).metadata)
+      .toEqual({ action: 'retype', typeFrom: 'NDA', typeTo: 'MSA' })
+  })
+
   it('a new document returns it to DRAFT', async () => {
     const id = await approved()
     const res = await app.inject({

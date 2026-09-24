@@ -1455,11 +1455,21 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(422).send({ detail: 'No extracted text available.' })
     }
 
-    // Update type immediately so UI shows it
+    // Update type immediately so UI shows it. X56 — X42's rule: a new type
+    // changes what was approved, so an approved contract goes back to DRAFT
+    // for approval again, and the change is on the record.
+    const retyped = contractType !== contract.type
+    const status = retyped ? statusAfterTermsChange(contract.status) : undefined
     await prisma.contract.update({
       where: { id },
-      data: { type: contractType, analysisStatus: 'ANALYZING' },
+      data: { type: contractType, analysisStatus: 'ANALYZING', ...(status && { status }) },
     })
+    if (retyped) {
+      await createAuditEvent({
+        orgId, userId: req.user.sub, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: id,
+        metadata: { action: 'retype', typeFrom: contract.type, typeTo: contractType, ...(status && { statusFrom: contract.status, statusTo: status }) },
+      })
+    }
 
     queueExtractAi({
       contractId: id,
