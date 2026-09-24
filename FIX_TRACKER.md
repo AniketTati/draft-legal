@@ -2267,6 +2267,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - Versions saved before this keep their stored text until they are next saved. There is no backfill: an analysed draft's clause positions point into that text.
   - **Verification:** `lib/html-text.test.ts` (3): a partly bolded SSN and card number come out whole and are redacted; blocks and cells still separate. `routes/html-version-noop.integration.test.ts` +1 case: saving `219-09-<strong>9999</strong>` stores `219-09-9999`. It fails on the old conversion (`219-09- 9999 .`); 5/5 pass. The drafting paths' tests (`api-key-create`, 10) and `pii-outbound` (14) pass.
 
+- **X68 — An action card's "Review" dropped the edit, and Apply sent the original (Medium). — DONE.** Found while writing the QA test cases (TC-PII-06).
+  - The chat's Apply / Edit / Cancel card (`ActionPreview`, used on `/agent` and in the side rail) read the edited arguments only while the editor was open. After an edit, "Review" closed the editor. Apply then sent the proposal's original arguments, and reopening Edit still showed the edit, so nothing on the card said it had been dropped.
+  - **What changed:**
+    - An edit stands once made. Apply sends the edited arguments whether or not the editor is open (`lib/action-args.ts`).
+    - With the editor closed, the card says "Arguments edited: Apply uses your version.", with a "Discard edit" link.
+    - A draft that isn't a JSON object is refused before anything is sent, and the editor reopens on it.
+  - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. The browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2387,6 +2395,7 @@ X64 — DONE — the seed refuses a production password containing password123 w
 X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — (sha: pending)
 X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — (sha: pending)
 X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — (sha: pending)
+X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — (sha: pending)
 
 ---
 

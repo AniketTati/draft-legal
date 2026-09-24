@@ -24,6 +24,7 @@
  * (comment_add). Every subsequent write tool plugs in the same card.
  */
 import { useEffect, useState } from 'react'
+import { argsJson, argsToApply } from '@/lib/action-args'
 import { Loader2, Check, Pencil, X, AlertTriangle, Undo2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { AssistMark } from '@/components/ui/assist'
@@ -72,7 +73,7 @@ const UNDO_WINDOW_MS = 15 * 60 * 1000  // 15 minutes — matches server-side gat
 
 export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPreviewProps) {
   const [editing, setEditing] = useState(false)
-  const [draftJson, setDraftJson] = useState(() => JSON.stringify(action.args, null, 2))
+  const [draftJson, setDraftJson] = useState(() => argsJson(action.args))
   const [jsonError, setJsonError] = useState<string | null>(null)
   // D.3.5 — tick every 10s so the "Undo" button disappears once the window
   // closes without requiring a parent re-render.
@@ -97,13 +98,17 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
     action.appliedAt && (Date.now() - action.appliedAt) < UNDO_WINDOW_MS
   )
 
+  // X68 — an edit stands once made; "Review" only closes the editor.
+  const edited = draftJson !== argsJson(action.args)
+
   function apply() {
     try {
-      const parsed = editing ? JSON.parse(draftJson) : action.args
+      const parsed = argsToApply(action.args, draftJson)
       setJsonError(null)
       void onApply(parsed)
     } catch (e) {
       setJsonError((e as Error).message)
+      setEditing(true)   // show the draft that failed
     }
   }
 
@@ -223,6 +228,20 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
             {jsonError && (
               <div className="text-[10.5px] text-risk-700 mt-1">Invalid JSON: {jsonError}</div>
             )}
+          </div>
+        )}
+
+        {!editing && edited && (
+          <div className="text-[10.5px] text-ink-700" data-testid="action-preview-edited">
+            Arguments edited: Apply uses your version.{' '}
+            <button
+              type="button"
+              onClick={() => { setDraftJson(argsJson(action.args)); setJsonError(null) }}
+              data-testid="action-preview-discard-edit"
+              className="underline underline-offset-2 hover:text-ink-950 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            >
+              Discard edit
+            </button>
           </div>
         )}
 
