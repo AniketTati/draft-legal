@@ -12,6 +12,7 @@ import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
+import { onAgentJobFailed } from '../lib/agent-job-failure.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
@@ -828,19 +829,8 @@ agentWorker.on('completed', (job) => {
 agentWorker.on('failed', async (job, err) => {
   console.error('[worker:agents] ✗ job failed name=%s id=%s attempt=%d/%d err=%s',
     job?.name, job?.id, job?.attemptsMade ?? 0, job?.opts?.attempts ?? 2, err.message)
-  const contractId = (job?.data as { contractId?: string })?.contractId
-  // playbook-review is a supplementary pass that runs AFTER extraction has
-  // already succeeded. Failing it (no model key, provider error) must not mark
-  // the contract's analysis FAILED — the document is extracted and perfectly
-  // usable; only the playbook scoring is missing.
-  if (job?.name === 'playbook-review') {
-    console.warn('[worker:agents] playbook-review failed for contractId=%s — leaving analysisStatus untouched', contractId)
-    return
-  }
-  if (contractId && job && job.attemptsMade >= (job.opts.attempts ?? 2)) {
-    await prisma.contract.update({
-      where: { id: contractId },
-      data: { analysisStatus: 'FAILED', analysisError: err.message.slice(0, 500) },
-    }).catch(() => {})
-  }
+  // Follow-on jobs (playbook review and redline, redline analysis, approval
+  // summary) run after extraction succeeded: they record their own failure,
+  // never the contract's analysis (lib/agent-job-failure.ts, X57).
+  await onAgentJobFailed(job, err)
 })

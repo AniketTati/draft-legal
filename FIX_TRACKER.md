@@ -2200,6 +2200,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - Retyping to the same type changes and records nothing.
   - **Verification:** `routes/contract-status-approval.integration.test.ts` +2 cases: page and agent retype reset an approval, with its audit row; the same type changes nothing; a retyped draft stays a draft, with its row. Both fail on the old routes; 13/13 pass.
 
+- **X57 — A failed redline job left the Negotiate panel spinning and marked the contract's analysis failed (Medium). — DONE.** Found while writing the QA test cases (TC-AI-02).
+  - When the redline-analysis job itself failed (agents service unreachable, cost cap reached), the worker's failure handler did two things wrong:
+    - It marked the contract's whole analysis FAILED, although extraction had succeeded.
+    - It left `_redlineStatus` on ANALYZING, so the panel showed "Analyzing redlines…" forever.
+  - A failed approval summary also marked the analysis failed. Only playbook review was exempt.
+  - **What changed:**
+    - The handler moved to `lib/agent-job-failure.ts` (`onAgentJobFailed`) so it can be tested without starting the worker.
+    - Follow-on jobs (playbook review and redline, redline analysis, approval summary) no longer touch the analysis status.
+    - A failed redline analysis records `_redlineStatus: FAILED` and `_redlineError` ("The redline analysis could not run: …"), which the panel's failure box shows. Other metadata stays.
+    - Analysis stages still mark the analysis FAILED. Nothing changes while retries remain.
+  - **Verification:** `lib/agent-job-failure.integration.test.ts` (4). The redline and follow-on cases fail on the old handler's logic; all pass now.
+
 ---
 
 ## Run log
@@ -2309,6 +2321,7 @@ C3, C10, C12, V1, X2, X23, X27, X33 (live checks) — DONE — verified with the
 X54 — BLOCKED — chat usage is recorded from the message and reply only, so the daily cost cap barely counts chat; the fix changes what the cap counts, a product decision — this commit
 X55 — DONE — the per-contract Q&A sends the agents service's secret (it answered "Agent unavailable" every time); the test mock now refuses calls without it — (sha: pending)
 X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — (sha: pending)
+X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — (sha: pending)
 
 ---
 
