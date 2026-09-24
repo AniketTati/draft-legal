@@ -1033,7 +1033,7 @@ After (Phase 3.3):
 - [x] Bulk CSV import: upload → validate → preview → confirm → per-row results (`POST /contracts/bulk-import`, `lib/csv.ts`, `BulkImportDialog.tsx`; verified by probe P59)
 - [~] RBAC manager: admin UI to create roles, assign permissions (`AdminRolesPage.tsx`, `routes/admin-users.ts`; verified by probe P60) — *(2026-09-23, FIX_TRACKER H3: assigning roles to users works; the roles page is read-only — creating or editing roles is not built.)*
 - [x] Onboarding setup wizard (`OnboardingWizard.tsx` — industry pack + first contract; invites via dashboard WelcomeChecklist)
-- [~] Admin settings panel (`AdminOrgPage.tsx` — General / Alert Rules / AI Config / System Dashboard / Data Management; flags in `organization.settings` JSONB) — *(2026-09-23, FIX_TRACKER H3: General and AI Config are real; Alert Rules, System Dashboard and Data Management are "Coming soon" placeholders.)*
+- [~] Admin settings panel (`AdminOrgPage.tsx` — General / Alert Rules / AI Config / Audit Log / System Dashboard / Data Management; flags in `organization.settings` JSONB) — *(2026-09-23, FIX_TRACKER H3: General and AI Config are real; Alert Rules, System Dashboard and Data Management are "Coming soon" placeholders. FIX_TRACKER X3 added the Audit Log tab: search, filters and chain verification.)*
 - [x] Team workload view (`TeamPage.tsx`, `GET /team/workload`)
 - [~] Performance: targeted indexes (orgId+status, versionId+isSubChunk, pgvector IVFFlat) + Redis caching for cost caps & agent session memory — no systematic query-plan pass yet
 

@@ -41,6 +41,13 @@ describe('marketing claims', () => {
     expect(site).not.toMatch(/lawyer-reviewed/i)
   })
 
+  // X72 — H1 corrected the audit card's text but kept "append-only" in its
+  // title and on the trust strip, and X3 has since shipped the viewer.
+  it('calls the audit log what it is, and its viewer shipped', () => {
+    expect(site).not.toMatch(/append-only audit log/i)
+    expect(site).not.toMatch(/audit viewer[^.']*planned/i)
+  })
+
   it('has no email capture that reports success without sending anything', () => {
     expect(existsSync(join(ROOT, 'components', 'sections', 'EmailCapture.tsx'))).toBe(false)
     expect(site).not.toMatch(/we sent it/i)

@@ -20,8 +20,8 @@ const sections = [
   },
   {
     icon: FileSearch,
-    title: 'Append-only audit log',
-    body: 'State-changing actions — by humans or agents — are recorded with actor, IP, timestamp, payload, and a chained hash, so altering a past entry is detectable. Agent actions are recorded with the arguments that were applied. An in-app audit viewer, audit export, and database-level append-only enforcement are planned.',
+    title: 'Tamper-evident audit log',
+    body: 'State-changing actions — by humans or agents — are recorded with actor, IP, timestamp, payload, and a chained hash, so altering a past entry is detectable. Agent actions are recorded with the arguments that were applied. Admins can search the log and re-check its hash chain in the app (Admin → Organization → Audit Log); audit export and database-level append-only enforcement are planned.',
   },
   {
     icon: Lock,

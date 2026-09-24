@@ -2293,6 +2293,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The "lawyer-reviewed" claim is gone: nothing in the repo supports it. Writing the templates themselves is content work for the team.
   - **Verification:** the H1 copy tripwire (`apps/api/src/lib/marketing-claims.test.ts`) +1 case: every `downloadFile` exists under `apps/marketing/public`, and the download and "lawyer-reviewed" claims are gone. It fails on the old site (`/templates/${slug}.docx` missing); 11/11 pass. Marketing typecheck passes.
 
+- **X72 — The marketing site and docs lagged behind the code (Low). — DONE.** Found while writing the QA test cases (TC-WEB-01, TC-WEB-06).
+  - H1 fixed the audit card's text but kept "Append-only audit log" as its title and on the trust strip. Nothing enforces append-only; the log is hash-chained. The same card called the in-app audit viewer planned, but X3 shipped it (Admin → Organization → Audit Log).
+  - The README called jump-to-page planned; X1 shipped it for PDFs. Its headline example asked whether a vendor's quote was "fair", which reads as a market-rate verdict. What the agent does, and the README's screenshot shows, is compare the quote with the org's own signed SOWs.
+  - BUILD_TRACKER listed five admin settings tabs; there are six, including Audit Log.
+  - **What changed:**
+    - Marketing: "Tamper-evident audit log" (trust strip and Security card). The card says admins can search the log and re-check its chain in the app; export and database-level append-only enforcement are still planned.
+    - README: a PDF citation opens the original at its page. The example asks how the quote compares with the SOWs the org has signed.
+    - BUILD_TRACKER: the tab list includes Audit Log (X3).
+  - **Verification:** the H1 and H3 tripwires (`lib/marketing-claims.test.ts`, `lib/docs-claims.test.ts`) +1 case and +3 assertions. All fail on the old copy; 16/16 pass.
+
 ---
 
 ## Run log
@@ -2417,6 +2427,7 @@ X68 — DONE — an action card's edit is what Apply sends, even after "Review" 
 X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — (sha: pending)
 X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — (sha: pending)
 X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — (sha: pending)
+X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — (sha: pending)
 
 ---
 

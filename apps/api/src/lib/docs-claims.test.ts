@@ -16,6 +16,10 @@ describe('docs claims', () => {
     expect(readme).not.toMatch(/on a LangGraph orchestrator/)
     expect(readme).not.toMatch(/cited to the source page/)
     expect(readme).not.toMatch(/pricing benchmarks/i)
+    // X72 — X1 shipped page jumps; and the portfolio example asks what the
+    // agent answers (your own contracts), not a market-rate verdict.
+    expect(readme).not.toMatch(/jump-to-page is planned/)
+    expect(readme).not.toMatch(/Is that fair\?/)
   })
 
   it('CHANGELOG keeps its history and corrects the collab claim in place', () => {
@@ -31,6 +35,7 @@ describe('docs claims', () => {
     expect(bt).not.toMatch(/^- \[x\] Admin settings panel/m)
     expect(bt).not.toMatch(/^- \[x\] ContractDetailPage: "Ask AI" tab/m)
     expect(bt).not.toMatch(/^- \[ \] X\.509 \/ PAdES cryptographic signing \(deferred to V1\.5\)/m)
+    expect(bt).toMatch(/Admin settings panel \(`AdminOrgPage\.tsx` — General \/ Alert Rules \/ AI Config \/ Audit Log \//)   // X72
   })
 
   it('the evals README matches what CI runs', () => {
