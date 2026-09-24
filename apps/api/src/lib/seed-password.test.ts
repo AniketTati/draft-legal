@@ -22,7 +22,11 @@ describe('seedPassword', () => {
 
   it('takes SEED_ADMIN_PASSWORD, refusing a weak one in production', () => {
     expect(seedPassword({ NODE_ENV: 'production', SEED_ADMIN_PASSWORD: 'a-long-chosen-passphrase' })).toEqual({ password: 'a-long-chosen-passphrase', generated: false })
-    expect(() => seedPassword({ NODE_ENV: 'production', SEED_ADMIN_PASSWORD: 'password123' })).toThrow(/SEED_ADMIN_PASSWORD/)
+    // X64 — the demo password is named as such. The length rule used to
+    // refuse it first, so this message never showed, and `Password123!`
+    // (12 characters) passed both rules.
+    expect(() => seedPassword({ NODE_ENV: 'production', SEED_ADMIN_PASSWORD: 'password123' })).toThrow(/must not contain password123/)
+    expect(() => seedPassword({ NODE_ENV: 'production', SEED_ADMIN_PASSWORD: 'Password123!' })).toThrow(/must not contain password123/)
     expect(() => seedPassword({ NODE_ENV: 'production', SEED_ADMIN_PASSWORD: 'short' })).toThrow(/12 characters/)
     expect(seedPassword({ NODE_ENV: 'development', SEED_ADMIN_PASSWORD: 'short' }).password).toBe('short')
   })

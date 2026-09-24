@@ -2245,6 +2245,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the audit event is written only when the update closed the obligation.
   - **Verification:** `routes/invoice-link.integration.test.ts` +1 case: reconciling the first invoice records one completion; reconciling a second invoice matched to the now-completed obligation records none. It fails on the old route (2 rows); 10/10 pass, and the X45 reconcile cases in `api-key-create.integration.test.ts` still pass.
 
+- **X64 — The seed's password123 check could never fire, and `Password123!` passed it (Low). — DONE.** A gap in X41, found while writing the QA test cases (TC-SEC-03).
+  - In production, `seedPassword` refused a `SEED_ADMIN_PASSWORD` shorter than 12 characters, then one equal to `password123`. `password123` is 11 characters, so the length rule always refused it first and the second message never appeared. A 12-character variant such as `Password123!` passed both rules.
+  - **What changed:** the demo-password rule runs first and refuses any value containing `password123`, case-insensitively: "SEED_ADMIN_PASSWORD must not contain password123 in production". The length rule is unchanged, and so is development (any value is taken).
+  - **Verification:** `lib/seed-password.test.ts`: `password123` and `Password123!` are refused with the new message. It fails on the old order (the length message, then acceptance); 3/3 pass.
+
 ---
 
 ## Run log
@@ -2361,6 +2366,7 @@ X60 — DONE — the upload dialog's parent-contract search sends the parameter 
 X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — (sha: pending)
 X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — (sha: pending)
 X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — (sha: pending)
+X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — (sha: pending)
 
 ---
 

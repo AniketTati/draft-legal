@@ -7,15 +7,18 @@ import { randomBytes } from 'node:crypto'
  * it). But the self-host guide runs the seed to create an install's first
  * admin, and a password the seed prints and the README repeats is no
  * password. In production it comes from SEED_ADMIN_PASSWORD (12 characters or
- * more, and not password123), or a random one is generated for the seed to
+ * more, not containing password123), or a random one is generated for the seed to
  * print once.
  */
 export function seedPassword(env: NodeJS.ProcessEnv = process.env): { password: string; generated: boolean } {
   const production = env.NODE_ENV === 'production'
   const given = env.SEED_ADMIN_PASSWORD
   if (given) {
+    // X64 — the demo password first, and anywhere in the value: checked
+    // after the length rule it could never be reached (it is 11 characters),
+    // and `Password123!` passed both.
+    if (production && given.toLowerCase().includes('password123')) throw new Error('SEED_ADMIN_PASSWORD must not contain password123 in production')
     if (production && given.length < 12) throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters in production')
-    if (production && given.toLowerCase() === 'password123') throw new Error('SEED_ADMIN_PASSWORD must not be password123 in production')
     return { password: given, generated: false }
   }
   if (production) return { password: randomBytes(18).toString('base64url'), generated: true }
