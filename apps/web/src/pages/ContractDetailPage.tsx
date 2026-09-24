@@ -458,6 +458,7 @@ export function ContractDetailPage() {
   // X75 — a save needs edit:contract; a viewer was let into Edit mode and
   // every save failed (403) behind "Save failed".
   const canEdit = usePermission('edit', 'contract')
+  const canCreate = usePermission('create', 'contract')
 
   // B.5.9 — ⌘K command palette.
   // Single entry point for every AI interaction. Opens from anywhere on the
@@ -2476,12 +2477,15 @@ export function ContractDetailPage() {
                       <Link className="size-4 text-ink-400" />
                       <h3 className="text-section text-ink-950">Contract Family</h3>
                     </div>
-                    <button
-                      onClick={() => setShowAddRelated(true)}
-                      className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
-                    >
-                      + Add related
-                    </button>
+                    {/* X75 review — it opens the upload dialog, which creates a contract. */}
+                    {canCreate && (
+                      <button
+                        onClick={() => setShowAddRelated(true)}
+                        className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
+                      >
+                        + Add related
+                      </button>
+                    )}
                   </div>
 
                   {/* Parent */}
@@ -2798,7 +2802,9 @@ export function ContractDetailPage() {
               editable={isEditing}
               onReady={(editor) => { canvasEditorRef.current = editor; setCanvasEditor(editor) }}
               onChange={(html) => {
-                if (canvasState.kind !== 'ready') return
+                // X75 review — nothing a viewer changes is saved (the server
+                // refuses it): a view-mode command still changes the canvas.
+                if (canvasState.kind !== 'ready' || !canEdit) return
                 setSaveState('dirty')
                 dirtyHtmlRef.current = html
                 if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -3130,6 +3136,7 @@ export function ContractDetailPage() {
                 enterEdit()
               } : undefined}
               onClose={() => setFocusedClauseId(null)}
+              canEdit={canEdit}
             />
           )
         }
@@ -3541,7 +3548,7 @@ export function ContractDetailPage() {
             terms + any inconsistent author-typed variants + an
             "Apply defined term everywhere" action. Only renders when
             the doc has ≥1 defined term pattern. */}
-        <DefinedTermsRailSection editor={canvasEditor} />
+        <DefinedTermsRailSection editor={canvasEditor} canEdit={canEdit} />
 
         {/* P5.3 — Renewal advisor. Shows inside the 180-day expiry
             window; offers an LLM-backed recommendation + decision

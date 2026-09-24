@@ -23,7 +23,7 @@ import {
   type TermFlag,
 } from '@/components/editor/DefinedTermGuard'
 
-export function DefinedTermsRailSection({ editor }: { editor: Editor | null }) {
+export function DefinedTermsRailSection({ editor, canEdit = true }: { editor: Editor | null; canEdit?: boolean }) {
   const [state, setState] = useState<{ terms: DefinedTerm[]; flags: TermFlag[] }>({ terms: [], flags: [] })
 
   // Poll the plugin state — cheap (one object fetch). Avoids wiring
@@ -97,16 +97,19 @@ export function DefinedTermsRailSection({ editor }: { editor: Editor | null }) {
                 <li className="text-[10px] text-muted-foreground">…and {state.flags.length - 6} more</li>
               )}
             </ul>
-            <Button
-              size="sm"
-              variant="assistOutline"
-              onClick={handleNormalize}
-              data-testid="defined-terms-normalize-btn"
-              className="gap-1 text-[11px]"
-            >
-              <Wand2 className="size-3" />
-              Apply defined term everywhere
-            </Button>
+            {/* X75 review — it edits the document, which a viewer can't save. */}
+            {canEdit && (
+              <Button
+                size="sm"
+                variant="assistOutline"
+                onClick={handleNormalize}
+                data-testid="defined-terms-normalize-btn"
+                className="gap-1 text-[11px]"
+              >
+                <Wand2 className="size-3" />
+                Apply defined term everywhere
+              </Button>
+            )}
           </>
         )}
       </div>

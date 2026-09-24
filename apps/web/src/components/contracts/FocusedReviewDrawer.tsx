@@ -91,6 +91,7 @@ export function FocusedReviewDrawer({
   onEditManually,
   onMarkReviewed,
   onClose,
+  canEdit = true,
 }: {
   contractId: string
   clauses: FocusedClause[]
@@ -104,6 +105,11 @@ export function FocusedReviewDrawer({
   onEditManually?: (clauseId: string) => void
   onMarkReviewed: (clauseId: string) => void
   onClose: () => void
+  /**
+   * X75 review — without edit:contract the review is read-only: suggesting and
+   * applying language, and every verdict, are refused by the server (403).
+   */
+  canEdit?: boolean
 }) {
   const clause = clauses[currentIndex]
   const qc = useQueryClient()
@@ -316,155 +322,163 @@ export function FocusedReviewDrawer({
       )}
 
       {/* ── AI SUGGESTION ──────────────────────────────────────────────── */}
-      <Section title="Alternative language" icon={<BookOpen className="size-3.5 text-ink-400" />}>
-        {suggest.data ? (
-          <div className="space-y-2">
-            {suggest.data.variants.length === 0 ? (
-              <p className="text-dense text-ink-400 italic">
-                {suggest.data.error ?? 'No alternative language was returned for this clause.'}
-              </p>
-            ) : (
-              suggest.data.variants.map((v, i) => (
-                <div key={i} className="rounded-md border border-paper-200 p-2">
-                  {/* Everything in this card was drafted by the model, so the
-                      accent and the apply CTA both stay on assist. */}
-                  <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-chip bg-assist-50 text-assist-700">
-                    {v.aggression}
-                  </span>
-                  <p className="mt-1.5 text-dense text-ink-700 whitespace-pre-line">{v.proposedText}</p>
-                  {v.rationale && (
-                    <p className="mt-1 text-[11px] text-ink-400 italic">{v.rationale}</p>
-                  )}
-                  <Button
-                    variant="assist"
-                    size="xs"
-                    onClick={() => applyVariant.mutate(v)}
-                    disabled={applyVariant.isPending}
-                    data-testid={`apply-variant-${v.aggression}`}
-                    className="mt-2 w-full"
-                  >
-                    <FileEdit className="size-3.5" />
-                    {applyVariant.isPending ? 'Applying…' : 'Apply to document'}
-                  </Button>
+      {canEdit && (
+        <Section title="Alternative language" icon={<BookOpen className="size-3.5 text-ink-400" />}>
+          {suggest.data ? (
+            <div className="space-y-2">
+              {suggest.data.variants.length === 0 ? (
+                <p className="text-dense text-ink-400 italic">
+                  {suggest.data.error ?? 'No alternative language was returned for this clause.'}
+                </p>
+              ) : (
+                suggest.data.variants.map((v, i) => (
+                  <div key={i} className="rounded-md border border-paper-200 p-2">
+                    {/* Everything in this card was drafted by the model, so the
+                        accent and the apply CTA both stay on assist. */}
+                    <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-chip bg-assist-50 text-assist-700">
+                      {v.aggression}
+                    </span>
+                    <p className="mt-1.5 text-dense text-ink-700 whitespace-pre-line">{v.proposedText}</p>
+                    {v.rationale && (
+                      <p className="mt-1 text-[11px] text-ink-400 italic">{v.rationale}</p>
+                    )}
+                    <Button
+                      variant="assist"
+                      size="xs"
+                      onClick={() => applyVariant.mutate(v)}
+                      disabled={applyVariant.isPending}
+                      data-testid={`apply-variant-${v.aggression}`}
+                      className="mt-2 w-full"
+                    >
+                      <FileEdit className="size-3.5" />
+                      {applyVariant.isPending ? 'Applying…' : 'Apply to document'}
+                    </Button>
 
-                  {/*
-                    The server refuses when it can't find the original clause
-                    text — the clause was edited after this proposal was
-                    generated. Say that, and make the amendment an explicit
-                    choice rather than something that quietly happened.
-                  */}
-                  {applyVariant.isError && applyVariant.variables?.aggression === v.aggression && (
-                    // The splice failed and the next move is the reviewer's, so
-                    // this one really is "your turn".
-                    <div className="mt-2 rounded-chip border border-attention-200 bg-attention-50 px-2 py-1.5">
-                      {applyClauseErrorCode(applyVariant.error) === 'CLAUSE_TEXT_NOT_FOUND' ? (
-                        <>
+                    {/*
+                      The server refuses when it can't find the original clause
+                      text — the clause was edited after this proposal was
+                      generated. Say that, and make the amendment an explicit
+                      choice rather than something that quietly happened.
+                    */}
+                    {applyVariant.isError && applyVariant.variables?.aggression === v.aggression && (
+                      // The splice failed and the next move is the reviewer's, so
+                      // this one really is "your turn".
+                      <div className="mt-2 rounded-chip border border-attention-200 bg-attention-50 px-2 py-1.5">
+                        {applyClauseErrorCode(applyVariant.error) === 'CLAUSE_TEXT_NOT_FOUND' ? (
+                          <>
+                            <p className="text-[11px] text-attention-700">
+                              This clause has changed since the suggestion was written, so it can’t
+                              be replaced automatically. Regenerate the suggestion, or add this
+                              language to the end of the document as an amendment.
+                            </p>
+                            <button
+                              onClick={() => applyVariant.mutate({ ...v, allowAppendFallback: true })}
+                              disabled={applyVariant.isPending}
+                              data-testid={`append-variant-${v.aggression}`}
+                              className="mt-1.5 w-full inline-flex items-center justify-center gap-1.5 px-2 py-1 rounded-chip border border-attention-200 bg-card text-[11px] font-medium text-attention-700 hover:bg-attention-100 disabled:opacity-60"
+                            >
+                              Add as an amendment instead
+                            </button>
+                          </>
+                        ) : (
                           <p className="text-[11px] text-attention-700">
-                            This clause has changed since the suggestion was written, so it can’t
-                            be replaced automatically. Regenerate the suggestion, or add this
-                            language to the end of the document as an amendment.
+                            {applyClauseErrorDetail(applyVariant.error)}
                           </p>
-                          <button
-                            onClick={() => applyVariant.mutate({ ...v, allowAppendFallback: true })}
-                            disabled={applyVariant.isPending}
-                            data-testid={`append-variant-${v.aggression}`}
-                            className="mt-1.5 w-full inline-flex items-center justify-center gap-1.5 px-2 py-1 rounded-chip border border-attention-200 bg-card text-[11px] font-medium text-attention-700 hover:bg-attention-100 disabled:opacity-60"
-                          >
-                            Add as an amendment instead
-                          </button>
-                        </>
-                      ) : (
-                        <p className="text-[11px] text-attention-700">
-                          {applyClauseErrorDetail(applyVariant.error)}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
-            {!suggest.data.hasPlaybook && suggest.data.variants.length > 0 && (
-              // Say so plainly — otherwise this reads as playbook-approved
-              // language. It is a caveat about the model's grounding, not a task
-              // waiting on the reviewer, so it wears assist rather than amber.
-              <p className="text-[11px] text-assist-700 bg-assist-50 border border-assist-200 rounded-chip px-2 py-1">
-                No preferred playbook position exists for {labelClauseType(clause.clauseType)},
-                so this is general drafting practice rather than your playbook.
-              </p>
-            )}
-          </div>
-        ) : (
-          <>
-            <Button
-              variant="assistOutline"
-              size="md"
-              onClick={() => suggest.mutate(clause.id)}
-              disabled={suggest.isPending}
-              data-testid="suggest-alternative-btn"
-              className="w-full"
-            >
-              <Sparkles className="size-4" />
-              {suggest.isPending ? 'Drafting alternatives…' : 'Suggest alternative language'}
-            </Button>
-            {suggest.isError && (
-              <p className="mt-2 text-dense text-risk-700">
-                Could not draft alternatives right now. Try again{onEditManually ? ', or use Edit manually' : ''}.
-              </p>
-            )}
-          </>
-        )}
-      </Section>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+              {!suggest.data.hasPlaybook && suggest.data.variants.length > 0 && (
+                // Say so plainly — otherwise this reads as playbook-approved
+                // language. It is a caveat about the model's grounding, not a task
+                // waiting on the reviewer, so it wears assist rather than amber.
+                <p className="text-[11px] text-assist-700 bg-assist-50 border border-assist-200 rounded-chip px-2 py-1">
+                  No preferred playbook position exists for {labelClauseType(clause.clauseType)},
+                  so this is general drafting practice rather than your playbook.
+                </p>
+              )}
+            </div>
+          ) : (
+            <>
+              <Button
+                variant="assistOutline"
+                size="md"
+                onClick={() => suggest.mutate(clause.id)}
+                disabled={suggest.isPending}
+                data-testid="suggest-alternative-btn"
+                className="w-full"
+              >
+                <Sparkles className="size-4" />
+                {suggest.isPending ? 'Drafting alternatives…' : 'Suggest alternative language'}
+              </Button>
+              {suggest.isError && (
+                <p className="mt-2 text-dense text-risk-700">
+                  Could not draft alternatives right now. Try again{onEditManually ? ', or use Edit manually' : ''}.
+                </p>
+              )}
+            </>
+          )}
+        </Section>
+      )}
 
       {/* ── ACTIONS ─────────────────────────────────────────────────────── */}
-      <div className="px-5 py-4 border-b border-paper-200 space-y-2">
-        {/* A clause verdict is an approval act, so brand and danger are earned
-            here; Edit and Mark reviewed are ordinary moves and stay outlined. */}
-        <Button
-          variant="brand"
-          size="md"
-          onClick={() => onAccept(clause.id)}
-          title="Accept the clause as written and mark it resolved"
-          className="w-full"
-        >
-          {/* Named for what it does: this resolves the clause, it does not
-              write any text into the document. */}
-          <Circle className="size-4" /> Accept clause as-is
-        </Button>
-        {onEditManually && (
+      {canEdit ? (
+        <div className="px-5 py-4 border-b border-paper-200 space-y-2">
+          {/* A clause verdict is an approval act, so brand and danger are earned
+              here; Edit and Mark reviewed are ordinary moves and stay outlined. */}
           <Button
-            variant="outline"
+            variant="brand"
             size="md"
-            onClick={() => onEditManually(clause.id)}
+            onClick={() => onAccept(clause.id)}
+            title="Accept the clause as written and mark it resolved"
             className="w-full"
           >
-            <FileEdit className="size-4" /> Edit manually
+            {/* Named for what it does: this resolves the clause, it does not
+                write any text into the document. */}
+            <Circle className="size-4" /> Accept clause as-is
           </Button>
-        )}
-        <div className="flex gap-2">
-          <Button
-            variant="danger"
-            size="md"
-            onClick={() => onReject(clause.id)}
-            className="flex-1"
-          >
-            <XCircle className="size-4" /> Reject
-          </Button>
-          <Button
-            variant="outline"
-            size="md"
-            onClick={() => onMarkReviewed(clause.id)}
-            disabled={state === 'reviewed' || state === 'resolved'}
-            className={cn(
-              'flex-1',
-              (state === 'reviewed' || state === 'resolved') && 'opacity-60 cursor-not-allowed',
-            )}
-            title="Mark this clause as reviewed without changing it."
-          >
-            <Circle className="size-4" />
-            {state === 'unreviewed' ? 'Mark reviewed' : 'Reviewed'}
-          </Button>
+          {onEditManually && (
+            <Button
+              variant="outline"
+              size="md"
+              onClick={() => onEditManually(clause.id)}
+              className="w-full"
+            >
+              <FileEdit className="size-4" /> Edit manually
+            </Button>
+          )}
+          <div className="flex gap-2">
+            <Button
+              variant="danger"
+              size="md"
+              onClick={() => onReject(clause.id)}
+              className="flex-1"
+            >
+              <XCircle className="size-4" /> Reject
+            </Button>
+            <Button
+              variant="outline"
+              size="md"
+              onClick={() => onMarkReviewed(clause.id)}
+              disabled={state === 'reviewed' || state === 'resolved'}
+              className={cn(
+                'flex-1',
+                (state === 'reviewed' || state === 'resolved') && 'opacity-60 cursor-not-allowed',
+              )}
+              title="Mark this clause as reviewed without changing it."
+            >
+              <Circle className="size-4" />
+              {state === 'unreviewed' ? 'Mark reviewed' : 'Reviewed'}
+            </Button>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="px-5 py-4 border-b border-paper-200 text-dense text-ink-500" data-testid="review-read-only">
+          Read-only: accepting, rejecting or changing this clause needs edit access to the contract.
+        </div>
+      )}
 
       {/* ── COMMENTS ───────────────────────────────────────────────────── */}
       <Section title={`Comments on this clause`}>

@@ -2342,6 +2342,17 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The create buttons show only with `create:contract`. A viewer's empty list says contracts appear once the team adds them.
     - Edit mode, by button, shortcut or clause drawer, needs `edit:contract`. The server checks are unchanged.
   - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; the browser check is in the run log.
+  - **Adversarial review (combined, see X67):** no regression for permitted roles. `GET /admin/users/roles`, which `usePermission` reads, is open to every signed-in user:
+    - Legal Ops, Legal Counsel, Contract Manager and Procurement still see create and Edit.
+    - A sales rep sees create (own scope, which the server allows) and no Edit.
+  - Four more places still offered viewers an action the server refuses. All are gated now:
+    - **The Dashboard's "Upload Contract" and the contract page's "+ Add related":** both open the upload dialog. They now need `create:contract`.
+    - **"Apply defined term everywhere":** it changes the document from view mode, and the page saved any change, so a viewer got "Save failed". The button needs `edit:contract`, and the page no longer saves anything a viewer changes.
+    - **The clause review drawer:** a viewer no longer gets "Suggest alternative language", "Apply to document", Accept, Reject or Mark reviewed, which all need `edit:contract`. The drawer says the review is read-only.
+  - Left as is:
+    - `usePermission` is false until the roles load, so a permitted user sees the buttons a moment later.
+    - It ignores scope. Own-scope users can't open others' contracts (X7), so it doesn't matter.
+  - **Verification:** web typecheck passes, and lint is unchanged (7 warnings in these files before and after).
 
 - **X76 — Three messages sent users to menu items that don't exist (Low). — DONE.** Found while writing the QA test cases (smoke cases SMK). A sweep of the web app's "X → Y" directions found two more.
   - The Send for Review dialog, with no workflows, said to create one "via Admin → Approvals". There is no such item; workflows are created under Approvals → Manage Workflows.
@@ -2487,6 +2498,7 @@ X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes
 X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — (sha: pending)
 X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — (sha: pending)
 X77 — DONE — the share-link email's log line masks the portal token outside development (found by this round's review) — (sha: pending)
+X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — (sha: pending)
 
 ---
 
