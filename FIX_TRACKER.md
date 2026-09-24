@@ -2280,6 +2280,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the masking lives in `lib/logger.ts` (`LOG_REDACT`, `LOG_SERIALIZERS`), which both loggers use. The development logger keeps its readable output. Fastify merges its default request serializer under a custom logger's own, so the masking holds.
   - **Verification:** `lib/log-redact.test.ts` +2 cases: the development logger masks a signing token, a query credential, an authorization header, a password and a refresh token, both directly and as Fastify's logger for a real request. Both fail on the old development logger; 5/5 pass.
 
+- **X70 — The marketing site's contact form posted to production from a local run (Low). — DONE.** Found while writing the QA test cases (TC-WEB-02).
+  - `Contact.tsx` posted to `https://draftlegal-prod-13353.web.app/api/v1/marketing/contact`, hard-coded. Trying the form on the dev server filed a real enquiry in production. The local API's contact route could only be tested with curl.
+  - **What changed:** the form posts to `API_ORIGIN` (`apps/marketing/src/lib/utils.ts`). A production build uses the app site, as before. The dev server uses the local API through its existing `/api` proxy. `VITE_API_ORIGIN` overrides both. `src/vite-env.d.ts` types it.
+  - **Verification:** marketing typecheck passes. A production build still posts to the production origin (checked in the built bundle).
+
 ---
 
 ## Run log
@@ -2402,6 +2407,7 @@ X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (th
 X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — (sha: pending)
 X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — (sha: pending)
 X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — (sha: pending)
+X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — (sha: pending)
 
 ---
 
