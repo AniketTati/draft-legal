@@ -2215,7 +2215,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X58 — Apply on a redline card in `/agent` did nothing (Medium). — DONE.** Found while writing the QA test cases (TC-AI-04).
   - The redline card's "Apply variant" dispatched the rail's `rail-inject-action` event. The side rail listens for it, but the rail isn't mounted on `/agent` (`AppShell` hides it there), so on the main AI page nothing heard the event and no Apply / Edit / Cancel card appeared.
   - **What changed:** `/agent` adds the proposed `redline_apply` action to the card's own message, where the existing Apply / Edit / Cancel card takes over and applies it through `POST /agent/threads/:id/actions/apply` (which already allowed `redline_apply`). The rail is unchanged.
-  - **Verification:** web typecheck and lint pass. The web app has no component tests; not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** web typecheck and lint pass. The web app has no component tests. **Browser check (24 September, agents service and Gemini):** on `/agent`, a redline proposal for the Tailspin NDA's confidentiality clause showed its card. "Apply Moderate" added the "About to run redline_apply" card, with Cancel / Edit / Apply, to that message. It was cancelled, and the contract still has one version.
 
 - **X59 — An organization without a logo could not save its settings (Low). — DONE.** Found while writing the QA test cases. It predates this branch.
   - Admin → Organization → General sends what its fields hold, so an empty Logo URL field arrives as `''`. `PATCH /organization` required a URL there, so the save was refused (422): the org couldn't change its name or brand colour until it set a logo.
@@ -2224,22 +2224,23 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - The page sends null for an empty field.
     - A non-empty logo must still be a URL.
   - **Verification:** `routes/organization.integration.test.ts` +2 cases: a save with an empty logo and colour clears both and keeps the new name; a real URL saves; `not a url` is still refused (422) and changes nothing. The first fails on the old schema; 13/13 pass.
+  - **Browser check (24 September):** the demo org has no logo or colour. Admin → Organization → General → Save Changes sent `PATCH /organization` 200 and showed "Organization settings saved" (it answered 422 before). Its values are unchanged.
 
 - **X60 — The upload dialog's "Link to existing contract" search ignored what was typed (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
   - The search sent `q`, but the contracts list reads `search`, so it returned the first eight contracts whatever was typed, and the contract the user wanted was often not among them.
   - **What changed:** the dialog sends `search`. The other search boxes that call the contracts list already did; `/counterparties`, `/clauses` and `/templates` do read `q`.
-  - **Verification:** web typecheck passes. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** web typecheck passes. **Browser check (24 September):** typing "Tailspin" sends `GET /contracts?search=Tailspin&limit=8`, which lists only the Tailspin NDA. The old `q=` returned eight unrelated contracts. The dialog was cancelled.
 
 - **X61 — Legal Ops saw an empty API Keys tab instead of "Admin access required" (Low). — DONE.** Found while writing the QA test cases (TC-KEY).
   - Admin → Integrations let in anyone with `configure:integration`, which LEGAL_OPS has. Every route behind its tabs (API keys, webhooks, Slack, health) requires `configure:organization`, so every call was refused (403). The API Keys tab read the refusal as "No API keys yet.", suggesting the org had none.
   - **What changed:** the page's gate is `configure:organization`, the permission its routes enforce. LEGAL_OPS now gets the page's "Admin access required" notice. The routes are unchanged: widening them would let LEGAL_OPS create admin-scope keys.
-  - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. **Browser check (24 September):** as admin, all four tabs and the key list show. With Legal Ops simulated (only the cached `user.roles` changed), the page shows "Admin access required", with no tabs and no "No API keys yet.".
   - **Adversarial review (combined, see X67):** clean. All 17 routes behind the page need `configure:organization`, including `/events` and `/api-key-scopes`. Legal Ops loses nothing it could use, and reaches the page only by URL; the sidebar shows it only with `configure:user`.
 
 - **X62 — A matter's header ignored its linked counterparty (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
   - The header read only the name typed on the matter. A matter linked to a counterparty by id alone (the API allows it) showed no counterparty, although the Matters list showed one. A renamed counterparty showed its old name. A link stored before X25 pointed at another org's counterparty id, a page that 404s.
   - **What changed:** the header shows the linked record by its current name, as a link, and falls back to the typed name as plain text. The API sends that record only when it is the org's own, so a pre-X25 foreign link shows no link.
-  - **Verification:** web typecheck passes. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** web typecheck passes. **Browser check (24 September):** a test matter linked to Twilio's record by id alone (no typed name) shows "Counterparty: Twilio", linking to `/counterparties/<id>`; before, it showed nothing. The test matter was deleted afterwards.
 
 - **X63 — Reconciling an invoice recorded an obligation completion that didn't happen (Low). — DONE.** Found while writing the QA test cases (TC-ACC-18).
   - `POST /invoices/:id/reconcile` closes the matched obligation only if it is still open and on the invoice's contract. It wrote the `OBLIGATION_COMPLETED` audit event whenever the invoice had a match, including when that update changed nothing. A second invoice for an obligation already paid logged a second completion.
@@ -2296,7 +2297,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - An edit stands once made. Apply sends the edited arguments whether or not the editor is open (`lib/action-args.ts`).
     - With the editor closed, the card says "Arguments edited: Apply uses your version.", with a "Discard edit" link.
     - A draft that isn't a JSON object is refused before anything is sent, and the editor reopens on it.
-  - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. **Browser check (24 September):** on the X58 card, Edit, a changed `proposedText` and Review closed the editor and showed "Arguments edited: Apply uses your version." with "Discard edit". Discard edit removed the notice. The card was cancelled; nothing was applied.
 
 - **X69 — Development logs printed signing tokens and credentials unmasked (Low). — DONE.** Found while writing the QA test cases (TC-OPS-04).
   - X18 and X3 mask signing, portal and invitation tokens, and query-string credentials, in request log lines. Pino's redaction hides authorization headers, cookies, the internal secret and password or token fields. Both were configured only on the production (JSON) logger. With `NODE_ENV=development` the API used a separate pretty-printing logger with neither. The error handler's own lines were masked in both.
@@ -2351,7 +2352,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:**
     - The create buttons show only with `create:contract`. A viewer's empty list says contracts appear once the team adds them.
     - Edit mode, by button, shortcut or clause drawer, needs `edit:contract`. The server checks are unchanged.
-  - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; the browser check is below.
   - **Adversarial review (combined, see X67):** no regression for permitted roles. `GET /admin/users/roles`, which `usePermission` reads, is open to every signed-in user:
     - Legal Ops, Legal Counsel, Contract Manager and Procurement still see create and Edit.
     - A sales rep sees create (own scope, which the server allows) and no Edit.
@@ -2516,7 +2517,7 @@ X77 — DONE — the share-link email's log line masks the portal token outside 
 X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — 88818e9
 X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — 7e3335a
 X55–X77 (QA document and summary) — DONE — `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` covers the third round: 134 test cases, every changed id traced, each fixed issue with the case that verifies it; closing summary updated — this commit
-X75 (browser check + follow-up) — DONE — checked as viewer and admin in the browser; the header's Send for Review, status buttons and Send for Signature follow edit:contract and sign:contract — (sha: pending)
+X75 (browser check + follow-up) — DONE — checked as viewer and admin in the browser; the header's Send for Review, status buttons and Send for Signature follow edit:contract and sign:contract — d389614
 
 ---
 
@@ -2685,7 +2686,11 @@ You asked for manual test cases covering every change on the branch. Writing the
   - **X75:** four more entry points were still offered to viewers: the Dashboard's upload, "+ Add related", the defined-term apply, and the clause drawer's actions. All gated.
   - **Found alongside X69: X77 (Medium).** The share-link email logged the portal link's token in production. Fixed. See the deploy checklist.
 - **Found while updating the QA document:** the marketing nav, footer and template badge still said "Free templates". Fixed as an X71 follow-up.
-- **Browser checks:** the Google/Microsoft sign-in note was checked live (X76). The other web changes are verified by typecheck, lint and the new unit tests: X58, X59–X62, X68, X75 and the rest of X76. Their browser checks need you signed in at `localhost:5173`; the app had signed out before I could run them, and I don't sign in with passwords.
+- **Browser checks** (after you signed in again as admin; other roles were simulated by changing only the cached `user.roles`, then restored):
+  - Passed: X58 (Apply on a redline card in `/agent`, with Gemini), X59, X60, X61, X62, X68, X75 and X76's sign-in notes. Each is recorded in its entry.
+  - The X75 check found the contract header still offering viewers Send for Review, the status buttons and Send for Signature. Fixed and checked again.
+  - Test data: one matter, created and deleted; one chat thread; nothing applied.
+  - Not shown live: X76's drawer note (every clause type here has a playbook position) and its no-workflow dialog (the demo org has workflows). Both are copy changes, checked in the source.
 
 ### What landed (DONE)
 
