@@ -2275,6 +2275,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - A draft that isn't a JSON object is refused before anything is sent, and the editor reopens on it.
   - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. The browser check is in the run log.
 
+- **X69 — Development logs printed signing tokens and credentials unmasked (Low). — DONE.** Found while writing the QA test cases (TC-OPS-04).
+  - X18 and X3 mask signing, portal and invitation tokens, and query-string credentials, in request log lines. Pino's redaction hides authorization headers, cookies, the internal secret and password or token fields. Both were configured only on the production (JSON) logger. With `NODE_ENV=development` the API used a separate pretty-printing logger with neither. The error handler's own lines were masked in both.
+  - **What changed:** the masking lives in `lib/logger.ts` (`LOG_REDACT`, `LOG_SERIALIZERS`), which both loggers use. The development logger keeps its readable output. Fastify merges its default request serializer under a custom logger's own, so the masking holds.
+  - **Verification:** `lib/log-redact.test.ts` +2 cases: the development logger masks a signing token, a query credential, an authorization header, a password and a refresh token, both directly and as Fastify's logger for a real request. Both fail on the old development logger; 5/5 pass.
+
 ---
 
 ## Run log
@@ -2396,6 +2401,7 @@ X65 — DONE — a final signature that loses to a void answers 409 "changed mea
 X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — (sha: pending)
 X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — (sha: pending)
 X68 — DONE — an action card's edit is what Apply sends, even after "Review" closes the editor; the card says so and can discard it — (sha: pending)
+X69 — DONE — the development logger masks tokens, credentials and secrets as the production logger does (shared lib/logger.ts) — (sha: pending)
 
 ---
 

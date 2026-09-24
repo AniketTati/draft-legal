@@ -1,7 +1,5 @@
 import Fastify from 'fastify'
 import type { FastifyRequest } from 'fastify'
-import pino from 'pino'
-import pinoPretty from 'pino-pretty'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
@@ -63,12 +61,7 @@ import { slackRoutes } from './routes/slack.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
-import { maskTokenPaths } from './lib/log-redact.js'
-
-function devLogger() {
-  const stream = pinoPretty({ colorize: true })
-  return pino({ level: process.env.LOG_LEVEL ?? 'info' }, stream)
-}
+import { devLogger, LOG_REDACT, LOG_SERIALIZERS } from './lib/logger.js'
 
 export async function buildApp() {
   const app = Fastify({
@@ -87,31 +80,9 @@ export async function buildApp() {
               commit: process.env.GIT_COMMIT_SHA ?? 'unknown',
               service: 'clm-api',
             },
-            // Pino redacts these on every log line so headers/cookies
-            // never end up in the logs by accident.
-            redact: {
-              paths: [
-                'req.headers.authorization',
-                'req.headers.cookie',
-                'req.headers["x-internal-secret"]',
-                'res.headers["set-cookie"]',
-                '*.password',
-                '*.passwordHash',
-                '*.refreshToken',
-                '*.accessToken',
-              ],
-              censor: '[REDACTED]',
-            },
-            serializers: {
-              // Fastify's default request serializer, with the token masked.
-              req: (request: { method: string; url: string; hostname?: string; ip?: string; socket?: { remotePort?: number } }) => ({
-                method:        request.method,
-                url:           maskTokenPaths(request.url),
-                hostname:      request.hostname,
-                remoteAddress: request.ip,
-                remotePort:    request.socket?.remotePort,
-              }),
-            },
+            // Masking shared with the development logger (lib/logger.ts).
+            redact: LOG_REDACT,
+            serializers: LOG_SERIALIZERS,
             // Request-id propagation: trust an upstream X-Request-Id
             // (set by load balancer / CDN) so traces correlate across
             // services. Otherwise Fastify generates one.

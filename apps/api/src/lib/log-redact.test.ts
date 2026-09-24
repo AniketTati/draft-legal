@@ -19,3 +19,37 @@ describe('maskTokenPaths', () => {
     expect(maskTokenPaths(undefined)).toBeUndefined()
   })
 })
+
+// X69 — the development logger masked nothing: request lines printed signing,
+// portal and invite tokens, and any logged authorization header or password
+// appeared in full. It now masks what the production logger does.
+describe('the development logger', () => {
+  it('masks tokens, credentials and secrets as production does', async () => {
+    const { Writable } = await import('node:stream')
+    const { devLogger } = await import('./logger.js')
+    let out = ''
+    const sink = new Writable({ write(chunk, _enc, done) { out += String(chunk); done() } })
+    const log = devLogger(sink)
+    log.info({ req: { method: 'GET', url: '/api/v1/sign/tok-live-4821?code=otp-7731', headers: { authorization: 'Bearer eyJhbGciOi' } } }, 'incoming request')
+    log.info({ body: { password: 'hunter2-hunter2', refreshToken: 'rt-5509' } }, 'login')
+    expect(out).toContain('/api/v1/sign/[REDACTED]')
+    for (const secret of ['tok-live-4821', 'otp-7731', 'eyJhbGciOi', 'hunter2-hunter2', 'rt-5509']) expect(out).not.toContain(secret)
+  })
+})
+
+describe('the development logger inside Fastify', () => {
+  it('keeps its masking: Fastify\'s own request serializer does not replace it', async () => {
+    const { Writable } = await import('node:stream')
+    const { default: Fastify } = await import('fastify')
+    const { devLogger } = await import('./logger.js')
+    let out = ''
+    const sink = new Writable({ write(chunk, _enc, done) { out += String(chunk); done() } })
+    const app = Fastify({ logger: devLogger(sink) })
+    app.get('/api/v1/sign/:token', async () => ({ ok: true }))
+    await app.inject({ method: 'GET', url: '/api/v1/sign/tok-live-9917', headers: { authorization: 'Bearer eyJzZWNyZXQ' } })
+    await app.close()
+    expect(out).toContain('/api/v1/sign/[REDACTED]')
+    expect(out).not.toContain('tok-live-9917')
+    expect(out).not.toContain('eyJzZWNyZXQ')
+  })
+})
