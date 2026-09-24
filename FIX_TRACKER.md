@@ -2240,6 +2240,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the header shows the linked record by its current name, as a link, and falls back to the typed name as plain text. The API sends that record only when it is the org's own, so a pre-X25 foreign link shows no link.
   - **Verification:** web typecheck passes. The browser check is in the run log.
 
+- **X63 — Reconciling an invoice recorded an obligation completion that didn't happen (Low). — DONE.** Found while writing the QA test cases (TC-ACC-18).
+  - `POST /invoices/:id/reconcile` closes the matched obligation only if it is still open and on the invoice's contract. It wrote the `OBLIGATION_COMPLETED` audit event whenever the invoice had a match, including when that update changed nothing. A second invoice for an obligation already paid logged a second completion.
+  - **What changed:** the audit event is written only when the update closed the obligation.
+  - **Verification:** `routes/invoice-link.integration.test.ts` +1 case: reconciling the first invoice records one completion; reconciling a second invoice matched to the now-completed obligation records none. It fails on the old route (2 rows); 10/10 pass, and the X45 reconcile cases in `api-key-create.integration.test.ts` still pass.
+
 ---
 
 ## Run log
@@ -2355,6 +2360,7 @@ X59 — DONE — an organization with no logo can save its settings; a blank log
 X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — (sha: pending)
 X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — (sha: pending)
 X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — (sha: pending)
+X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — (sha: pending)
 
 ---
 

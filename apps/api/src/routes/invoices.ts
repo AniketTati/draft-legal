@@ -398,7 +398,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
 
     // Close the matched obligation if it's still open.
     if (inv.matchedObligationId) {
-      await prisma.obligation.updateMany({
+      const closed = await prisma.obligation.updateMany({
         // Bounded to this org and the invoice's own contract, so a bad link
         // can never close someone else's obligation.
         where: { id: inv.matchedObligationId, orgId, contractId: inv.contractId ?? undefined, status: { in: ['OPEN', 'OVERDUE'] } },
@@ -409,7 +409,9 @@ export async function invoiceRoutes(app: FastifyInstance) {
           completionNote: `Reconciled via invoice ${inv.id}${body.notes ? ` — ${body.notes.slice(0, 100)}` : ''}`,
         },
       })
-      if (inv.contractId) {
+      // X63 — only when this closed it: an obligation already completed (or
+      // a link that doesn't qualify) was recorded as completed again.
+      if (inv.contractId && closed.count > 0) {
         await createAuditEvent({
           orgId, userId,
           action: AuditAction.OBLIGATION_COMPLETED,

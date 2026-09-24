@@ -116,6 +116,29 @@ describe('linking an invoice to a contract', () => {
     expect((await prisma.obligation.findUniqueOrThrow({ where: { id: matched.matchedObligationId } })).status).toBe('COMPLETED')
   })
 
+  // X63 — reconcile wrote OBLIGATION_COMPLETED whenever the invoice had a
+  // match, even when the obligation was already closed and nothing changed.
+  it('reconciling records the obligation as completed only when it closed it', async () => {
+    const ob = await prisma.obligation.create({
+      data: { orgId: org, contractId: mine, type: 'payment', description: 'X63 obligation', quote: 'q', dueDate: DUE },
+    })
+    const invoice = () => prisma.invoice.create({
+      data: { orgId: org, contractId: mine, createdById: repA, vendorName: 'X63', amount: 1, invoiceDate: DUE, status: 'MATCHED', matchedObligationId: ob.id },
+    })
+    const reconcile = (id: string) =>
+      app.inject({ method: 'POST', url: `/api/v1/invoices/${id}/reconcile`, headers: auth(org, ['LEGAL_OPS'], repA), payload: {} })
+    const completions = () => prisma.auditEvent.count({
+      where: { orgId: org, action: 'OBLIGATION_COMPLETED', resourceId: mine, metadata: { path: ['obligationId'], equals: ob.id } },
+    })
+
+    expect((await reconcile((await invoice()).id)).statusCode).toBe(200)
+    expect(await completions()).toBe(1)
+
+    // A second invoice matched to the same obligation, now completed.
+    expect((await reconcile((await invoice()).id)).statusCode).toBe(200)
+    expect(await completions()).toBe(1)
+  })
+
   it('the repair migration unlinks invoices made before the fix that point at another org', async () => {
     const bad = await prisma.invoice.create({
       data: { orgId: org, contractId: foreign, createdById: repA, vendorName: 'Pre-fix', amount: 1, invoiceDate: DUE },
