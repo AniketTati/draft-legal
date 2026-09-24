@@ -2215,7 +2215,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X58 — Apply on a redline card in `/agent` did nothing (Medium). — DONE.** Found while writing the QA test cases (TC-AI-04).
   - The redline card's "Apply variant" dispatched the rail's `rail-inject-action` event. The side rail listens for it, but the rail isn't mounted on `/agent` (`AppShell` hides it there), so on the main AI page nothing heard the event and no Apply / Edit / Cancel card appeared.
   - **What changed:** `/agent` adds the proposed `redline_apply` action to the card's own message, where the existing Apply / Edit / Cancel card takes over and applies it through `POST /agent/threads/:id/actions/apply` (which already allowed `redline_apply`). The rail is unchanged.
-  - **Verification:** web typecheck and lint pass. The web app has no component tests; the browser check is in the run log.
+  - **Verification:** web typecheck and lint pass. The web app has no component tests; not yet checked in the browser: it needs a signed-in session (see the closing summary).
 
 - **X59 — An organization without a logo could not save its settings (Low). — DONE.** Found while writing the QA test cases. It predates this branch.
   - Admin → Organization → General sends what its fields hold, so an empty Logo URL field arrives as `''`. `PATCH /organization` required a URL there, so the save was refused (422): the org couldn't change its name or brand colour until it set a logo.
@@ -2228,17 +2228,18 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
 - **X60 — The upload dialog's "Link to existing contract" search ignored what was typed (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
   - The search sent `q`, but the contracts list reads `search`, so it returned the first eight contracts whatever was typed, and the contract the user wanted was often not among them.
   - **What changed:** the dialog sends `search`. The other search boxes that call the contracts list already did; `/counterparties`, `/clauses` and `/templates` do read `q`.
-  - **Verification:** web typecheck passes. The browser check is in the run log.
+  - **Verification:** web typecheck passes. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
 
 - **X61 — Legal Ops saw an empty API Keys tab instead of "Admin access required" (Low). — DONE.** Found while writing the QA test cases (TC-KEY).
   - Admin → Integrations let in anyone with `configure:integration`, which LEGAL_OPS has. Every route behind its tabs (API keys, webhooks, Slack, health) requires `configure:organization`, so every call was refused (403). The API Keys tab read the refusal as "No API keys yet.", suggesting the org had none.
   - **What changed:** the page's gate is `configure:organization`, the permission its routes enforce. LEGAL_OPS now gets the page's "Admin access required" notice. The routes are unchanged: widening them would let LEGAL_OPS create admin-scope keys.
-  - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. The browser check is in the run log.
+  - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
+  - **Adversarial review (combined, see X67):** clean. All 17 routes behind the page need `configure:organization`, including `/events` and `/api-key-scopes`. Legal Ops loses nothing it could use, and reaches the page only by URL; the sidebar shows it only with `configure:user`.
 
 - **X62 — A matter's header ignored its linked counterparty (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
   - The header read only the name typed on the matter. A matter linked to a counterparty by id alone (the API allows it) showed no counterparty, although the Matters list showed one. A renamed counterparty showed its old name. A link stored before X25 pointed at another org's counterparty id, a page that 404s.
   - **What changed:** the header shows the linked record by its current name, as a link, and falls back to the typed name as plain text. The API sends that record only when it is the org's own, so a pre-X25 foreign link shows no link.
-  - **Verification:** web typecheck passes. The browser check is in the run log.
+  - **Verification:** web typecheck passes. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
 
 - **X63 — Reconciling an invoice recorded an obligation completion that didn't happen (Low). — DONE.** Found while writing the QA test cases (TC-ACC-18).
   - `POST /invoices/:id/reconcile` closes the matched obligation only if it is still open and on the invoice's contract. It wrote the `OBLIGATION_COMPLETED` audit event whenever the invoice had a match, including when that update changed nothing. A second invoice for an obligation already paid logged a second completion.
@@ -2295,12 +2296,16 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - An edit stands once made. Apply sends the edited arguments whether or not the editor is open (`lib/action-args.ts`).
     - With the editor closed, the card says "Arguments edited: Apply uses your version.", with a "Discard edit" link.
     - A draft that isn't a JSON object is refused before anything is sent, and the editor reopens on it.
-  - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. The browser check is in the run log.
+  - **Verification:** `apps/web/src/lib/action-args.test.ts` (3): no edit sends the proposal; an edit is sent however the card shows it; invalid JSON, an array or null is refused. Web typecheck and lint pass. Not yet checked in the browser: it needs a signed-in session (see the closing summary).
 
 - **X69 — Development logs printed signing tokens and credentials unmasked (Low). — DONE.** Found while writing the QA test cases (TC-OPS-04).
   - X18 and X3 mask signing, portal and invitation tokens, and query-string credentials, in request log lines. Pino's redaction hides authorization headers, cookies, the internal secret and password or token fields. Both were configured only on the production (JSON) logger. With `NODE_ENV=development` the API used a separate pretty-printing logger with neither. The error handler's own lines were masked in both.
   - **What changed:** the masking lives in `lib/logger.ts` (`LOG_REDACT`, `LOG_SERIALIZERS`), which both loggers use. The development logger keeps its readable output. Fastify merges its default request serializer under a custom logger's own, so the masking holds.
   - **Verification:** `lib/log-redact.test.ts` +2 cases: the development logger masks a signing token, a query credential, an authorization header, a password and a refresh token, both directly and as Fastify's logger for a real request. Both fail on the old development logger; 5/5 pass.
+  - **Adversarial review (combined, see X67):** clean.
+    - Fastify 4.29 layers a custom logger's serializers over its own, and production's output is unchanged.
+    - The authorization-header assertion holds because the request serializer drops headers; the password and refresh-token assertions prove the redaction is wired.
+    - It found the share-link email logging portal tokens in production, which is fixed as X77.
 
 - **X70 — The marketing site's contact form posted to production from a local run (Low). — DONE.** Found while writing the QA test cases (TC-WEB-02).
   - `Contact.tsx` posted to `https://draftlegal-prod-13353.web.app/api/v1/marketing/contact`, hard-coded. Trying the form on the dev server filed a real enquiry in production. The local API's contact route could only be tested with curl.
@@ -2335,6 +2340,10 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - The route stripped an optional `Bearer ` prefix before comparing, so a bare `Authorization: <token>` passed as well. The deployment docs say a scraper sends the token as a bearer token. Accepting both is looser than documented, and the lowercase scheme `bearer`, which RFC 7235 allows, was refused.
   - **What changed:** the token is accepted only as `Bearer <token>`, with the scheme matched case-insensitively. The comparison stays constant-time.
   - **Verification:** `routes/admin-audit.integration.test.ts` (the X3 metrics case) now also checks that the bare token gets 401 and `bearer <token>` gets 200. It fails on the old route (200 for the bare token); 9/9 pass.
+  - **Adversarial review (combined, see X67):** clean.
+    - The comparison is still constant-time, and the pattern is linear.
+    - Tabs and double spaces after the scheme are refused; Prometheus and curl send one space.
+    - No config in the repo sends the bare token.
 
 - **X75 — A viewer was offered Upload, Draft new and Edit, each refused by the server (Low). — DONE.** Found while writing the QA test cases (smoke cases SMK).
   - The contracts list showed Bulk import, Upload PDF, Draft new and the empty state's Upload Contract to everyone. All four create a contract, which the server refuses without `create:contract` (403).
@@ -2342,7 +2351,7 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:**
     - The create buttons show only with `create:contract`. A viewer's empty list says contracts appear once the team adds them.
     - Edit mode, by button, shortcut or clause drawer, needs `edit:contract`. The server checks are unchanged.
-  - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; the browser check is in the run log.
+  - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; not yet checked in the browser: it needs a signed-in session (see the closing summary).
   - **Adversarial review (combined, see X67):** no regression for permitted roles. `GET /admin/users/roles`, which `usePermission` reads, is open to every signed-in user:
     - Legal Ops, Legal Counsel, Contract Manager and Procurement still see create and Edit.
     - A sales rep sees create (own scope, which the server allows) and no Edit.
@@ -2496,11 +2505,12 @@ X73 — DONE — sign-in and refresh report the access token's configured lifeti
 X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — 7df843c
 X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — 173ea83
 X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — 7791f95
-X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — (sha: pending)
-X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — (sha: pending)
-X77 — DONE — the share-link email's log line masks the portal token outside development (found by this round's review) — (sha: pending)
-X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — (sha: pending)
-X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — (sha: pending)
+X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — 5f17e45
+X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — 2f4fa66
+X77 — DONE — the share-link email's log line masks the portal token outside development (found by this round's review) — 9a0a5e2
+X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — 88818e9
+X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — 7e3335a
+X55–X77 (QA document and summary) — DONE — `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` covers the third round: 134 test cases, every changed id traced, each fixed issue with the case that verifies it; closing summary updated — this commit
 
 ---
 
@@ -2509,29 +2519,31 @@ X71 (follow-up) — DONE — the marketing nav, footer and template badge call t
 Every task in the main list and in Stretch has a terminal status. None turned out NOT-REPRODUCIBLE as a whole; one sub-claim of X27 did (`playbook_judge` already receives a redacted excerpt).
 
 - **Main list (21):** 20 DONE, 1 VERIFY-PENDING (S2).
-- **Stretch (54):** 52 DONE, 1 VERIFY-PENDING (X30), and 1 BLOCKED on your decision (X54, chat usage and the daily cost cap).
-- **Two rounds of live checks came after this summary was first written:**
+- **Stretch (77):** 75 DONE, 1 VERIFY-PENDING (X30), and 1 BLOCKED on your decision (X54, chat usage and the daily cost cap).
+- **Three rounds came after this summary was first written:**
   - **First, in the browser.** They passed C1, C5 and X1 and found X47–X49.
   - **Second, with the agents service and a model, with your OK.** They passed C3, C8, C10, C12, V1, V2, X2, X16, X23, X27 and X33. They also found and fixed the C8/X15 prompts, X51–X53, and follow-ups to X16, V2 and X49. Two more reviews of X50 led to further fixes. See below.
+  - **Third, the QA test-case pass (24 September).** Writing `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` turned up 22 issues, fixed as X55–X76. A review of the sensitive ones found X77 and led to follow-ups to X65, X67 and X75. Updating the document found one more for X71. See below.
 
-The work is on branch `fix/audit-2026-09-22`: 107 commits from this run (from `cca7b19`), one per task or per review follow-up, plus this summary.
+The work is on branch `fix/audit-2026-09-22`: 136 commits from this run (from `cca7b19`), one per task or per review follow-up, plus the summary updates, this one included. The third round's 28 commits, this one included, are authored as Neelam Dalwani, as you asked.
 - **Note:** the branch was cut from `feat/langfuse-integration`, so it also carries that branch's 18 commits (28 Aug to 1 Sep) that aren't on `main`. A PR from this branch to `main` would include them.
   - The fixes can't simply be rebased onto `main`: X22 (`ec82388`, `d13ba90`) fixes a defect in `lib/langfuse.ts`'s feedback scoring, which exists only on that branch, and H3 corrected its docs.
   - Merge `feat/langfuse-integration` first, or together with this branch.
 - Nothing is pushed, no PR is open, nothing is merged.
 
-**Final verification on the branch** (run on `0bdad37`, the code this summary describes; the summary commit changes only this file):
-- `db:generate` succeeds, and the test database is up to date with all 40 migrations. This round added none.
+**Final verification on the branch** (run on `7e3335a`, the code this summary describes; the summary commit adds only this file and the QA document):
+- `db:generate` succeeds, and the test database is up to date with all 40 migrations. The later rounds added none.
 - Typecheck: 0 errors.
 - Lint: 0 errors (warnings unchanged from the baseline: web 22, api 11).
-- api unit: 340/340 (48 files). web unit: 48/48 (8 files).
-- api integration: 340/340 (53 files, Docker stack up), none skipped.
-- The tracker cites 119 distinct test files. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
-- No audit event was lost (X34). Prisma logged 86 serialization conflicts during the integration run; each was retried to success and none surfaced as an error.
+- api unit: 358/358 (52 files). web unit: 51/51 (9 files).
+- api integration: 354/354 (54 files, Docker stack up), none skipped.
+- The tracker cites 103 distinct test files: 41 api unit, 53 integration, 9 web. Every one exists and ran in those suites, so the acceptance criteria they encode still hold.
+- X34's tests pass: no audit event was lost, and no serialization conflict surfaced as an error.
 - **Adversarial subagent reviews:**
   - They ran on S1, S2, S3, C11, X3, X5–X11, X17–X23, X25, X27, X31, X35, X36, X38, X40 and X44–X46.
   - One combined review covered the first post-summary fixes (X47–X49, the C5 follow-up).
   - X50 had three rounds, the last combined with X52 and X53.
+  - The third round had one combined review, of X61, X65, X67, X69, X74 and X75.
   - Their findings were fixed or filed.
 - **The final sweep also re-reviewed C1, X15, X24, X26, X28, X29 and X39.** These touch auth, tenancy or SSRF and had no review on record; see below.
 
@@ -2623,10 +2635,56 @@ You approved running the checks that needed a model, on the only key configured 
     - Chat threads from the checks.
   - Delete any of these whenever you like.
 
+### Third round: the QA test-case pass (24 September)
+
+You asked for manual test cases covering every change on the branch. Writing them (`docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md`, committed with this update) meant reading each path again, and that turned up 22 issues. You asked for all of them to be fixed, with commits authored as Neelam Dalwani. Each is its own commit and tracker entry, with a test that fails before the fix wherever the code has test support.
+
+- **Didn't work at all:**
+  - X55: the per-contract Q&A never reached a model, because it didn't send the agents secret.
+  - X58: Apply on a redline card in `/agent` did nothing.
+  - X59: an org without a logo couldn't save its settings.
+  - X71: the marketing template "downloads" were the site's HTML.
+- **Wrong state or a misleading answer:**
+  - X56: retyping kept an approval (a gap in X42).
+  - X57: a failed redline job spun forever and failed the whole analysis.
+  - X63: reconcile audited completions that didn't happen.
+  - X65: a final signature that lost to a void was told it completed.
+  - X66: an oversized emailed document was reported as "no PDF or DOCX".
+  - X68: an action card's Review dropped the user's edit, and Apply sent the original.
+  - X73: `expiresIn` was fixed at 900.
+- **Security and PII:**
+  - X67: an editor save could store an SSN split by bold markup, out of the redaction's reach.
+  - X69: development logs printed signing tokens and credentials.
+  - X74: `/metrics` took its token without the Bearer scheme.
+  - X64: the seed's password123 check never fired, and `Password123!` passed.
+- **Access and UI:**
+  - X61: Legal Ops saw an empty key list instead of "Admin access required".
+  - X75: a viewer was offered Upload, Draft new and Edit, all refused by the server.
+  - X60: the upload dialog's parent search ignored what was typed.
+  - X62: the matter header ignored the linked counterparty.
+  - X76: three messages pointed at menu items that don't exist.
+- **Marketing and docs:**
+  - X70: the contact form posted to production from a local run.
+  - X72: "append-only" claims, a viewer called planned, jump-to-page called planned, the "Is that fair?" example, and the BUILD_TRACKER tab list.
+- **The QA document** (`docs/38-…`) covers these too. Its issues section lists each with the test case that verifies it, and the affected test cases describe the fixed behaviour. Its traceability matrix now runs to X76.
+
+- **The review of this round** (one combined adversarial review of X61, X65, X67, X69, X74 and X75):
+  - Clean: X61, X69 and X74.
+  - **X67:**
+    - The new conversion took quadratic time on crafted markup: 160 KB blocked the API for about a minute.
+    - The template-create path still glued table cells.
+    - Joining could glue a label onto a value.
+    - Fixed in the X67 follow-up: linear, lines kept, labels apart, entities decoded, every path converted.
+  - **X65:** a sequential signature overtaken by a void still emailed the next signers. Fixed.
+  - **X75:** four more entry points were still offered to viewers: the Dashboard's upload, "+ Add related", the defined-term apply, and the clause drawer's actions. All gated.
+  - **Found alongside X69: X77 (Medium).** The share-link email logged the portal link's token in production. Fixed. See the deploy checklist.
+- **Found while updating the QA document:** the marketing nav, footer and template badge still said "Free templates". Fixed as an X71 follow-up.
+- **Browser checks:** the Google/Microsoft sign-in note was checked live (X76). The other web changes are verified by typecheck, lint and the new unit tests: X58, X59–X62, X68, X75 and the rest of X76. Their browser checks need you signed in at `localhost:5173`; the app had signed out before I could run them, and I don't sign in with passwords.
+
 ### What landed (DONE)
 
 - **Main list (20):** S1, S3, C1–C13, V1, V2, H1, H2, H3.
-- **Stretch (52), by theme:**
+- **Stretch (75), by theme:**
   - **Found in the live checks:**
     - First round: X47 (a view no longer saves a version or resets an approval), X48 (no logout on concurrent refreshes), X49 (the Original PDF view works), and X1 (citations open the PDF at their page), verified live on X49.
     - X50: tabs share one session, after three review rounds.
@@ -2643,6 +2701,14 @@ You approved running the checks that needed a model, on the only key configured 
   - **PII to models:** X23, X27, X33, X36, X37, X40, X52. The round trip was verified live: models saw tokens only, and stored text reads with the real values.
   - **Agent features verified live:** X2 (custom-field backfill), X16 (a long binder is split where its agreements start).
   - **Reliability and data:** X3, X4, X8, X32 (version diffs off the request thread), X34 (audit events no longer lost in bursts).
+  - **Found writing the QA test cases (third round):** X55–X77.
+    - PII and secrets: X67, X69, X77.
+    - Access: X61, X74, X75.
+    - Workflows and data: X56, X57, X63, X65, X66.
+    - Agent features: X55, X58, X68.
+    - Settings and sign-in: X59, X64, X73.
+    - UI: X60, X62, X76.
+    - Marketing and docs: X70–X72.
 
 ### What's left
 
@@ -2672,6 +2738,11 @@ You approved running the checks that needed a model, on the only key configured 
     - Only a refused refresh signs a tab out.
     - A refresh rotates atomically.
 11. **X53's clause list** (`lib/clause-propose.ts`, `routes/internal-ai.ts` `redline_propose`): a miss sends the contract's clause openings to the model, cut and redacted.
+12. **X67's HTML-to-text** (`lib/html-text.ts`): what every HTML version stores as text, which is what the PII redaction reads.
+    - Inline markup joins, except between a letter and a digit.
+    - Blocks become lines.
+    - It runs in linear time.
+13. **The third round's access changes:** X61 (the Integrations page's gate), X75 (what viewers are offered) and X74 (the metrics token).
 
 ### Deploy checklist
 
@@ -2710,6 +2781,9 @@ You approved running the checks that needed a model, on the only key configured 
    - The PDF viewer's worker now ships in the app bundle instead of loading from unpkg (X49). If a Content-Security-Policy is added, allow workers from `'self'`. Self-hosted installs need the updated `deploy/selfhost/nginx.conf`, which serves `.mjs` as JavaScript.
    - Ask users to reload open tabs (X47). A tab still running the old bundle saves a phantom version whenever it opens a contract, and the API ignores only saves identical to the current version.
    - Sessions need nothing (X50). Tokens issued before the deploy keep working and gain a session id at their next refresh, so nobody is signed out. Reloaded tabs also get the new multi-tab behaviour.
+   - **Portal links (X77):** every share link sent before this deploy had its token printed in production logs. Revoke and re-share the ones still active, or at least those whose logs were kept or exported.
+   - **Metrics (X74):** a scraper must send `METRICS_TOKEN` as `Authorization: Bearer <token>`; the bare token is now refused.
+   - **Stored text (X67):** versions saved before the deploy keep their old stored text until they are next saved.
 6. **Configuration:**
    - `MARKETING_CONTACT_EMAIL` plus an email provider (H1).
    - Optional: `PII_TOKEN_SECRET`, the same on API and worker (X23); `METRICS_TOKEN` (X3).
@@ -2721,6 +2795,7 @@ You approved running the checks that needed a model, on the only key configured 
 
 - **Model-dependent PII risk:** the PII round trip depends on models copying tokens verbatim. Where one doesn't, the result is refused (502, a stream error, 409 on apply) or logged, never stored raw.
 - **PII detection limits:**
+  - values written with non-breaking hyphens, soft hyphens or zero-width characters (X67 review);
   - excerpts that hold only part of a value;
   - card numbers stored as JSON numbers;
   - IBANs or cards that fail their checksum;
@@ -2728,7 +2803,7 @@ You approved running the checks that needed a model, on the only key configured 
 - **What an admin key configured outlives it** (X46): webhooks, Slack settings, share links. An admin key is full access by design; review them after revoking a leaked one.
 - **A demoted maker's keys are refused, not revoked** (X46): re-promoting the maker brings them back, and the key list shows them as live.
 - **No narrower scope than `admin` for reading the member list** (X44): add `users:read` if a customer needs it.
-- **Dev conveniences keyed on `NODE_ENV`** (logger masking, printed signing links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image.
+- **Dev conveniences keyed on `NODE_ENV`** (printed signing and share links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image. Logs are masked the same in every environment since X69.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **The Original PDF view has no selectable text** (X49): `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API. Fixing it means replacing the viewer. Keep the pdf.js ≥4.2.67 override, the fix for CVE-2024-4367.
 - **Sessions, left as is:**
@@ -2739,6 +2814,7 @@ You approved running the checks that needed a model, on the only key configured 
   - A card waiting for Apply isn't restored when its thread is reopened: the server doesn't keep the proposal's Apply arguments, so the user asks again (C12).
   - A chat redline's preview shows the PII tokens themselves; the applied text has the real values (X23).
   - The portfolio query's search is a keyword ranking and can return near matches: "Stark Industries" for "Ironbridge Industrial Group" (X15).
+- **Permission-gated buttons appear a moment late** (X75): `usePermission` is false until the roles load, so permitted users see create and edit buttons after a beat.
 - **Small wording issues seen in the checks:** the Playbook review summary counts findings as deviations (V1). The contract header says "Edited just now" after an analysis writes its results.
 - **Audit volume:** every `GET /contracts/:id` writes a `CONTRACT_VIEWED` event, so the page's polling during an analysis wrote 33 in 40 minutes for one contract. Worth a look before the audit log grows.
 - **Audit writes follow their change outside its transaction**, as PATCH's already did. If the audit store fails, the change stands and the client gets a 500. X5 moved the org-settings audit inside its transaction; the others weren't.
