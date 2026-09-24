@@ -37,6 +37,17 @@ export function signRefreshToken(payload: Omit<JwtPayload, 'type'>): string {
   } as jwt.SignOptions)
 }
 
+/**
+ * The tokens a sign-in or refresh returns. X73 — `expiresIn` is the access
+ * token's lifetime read off the token itself: it was always 900, whatever
+ * JWT_ACCESS_EXPIRES_IN set.
+ */
+export function issueSessionTokens(payload: Omit<JwtPayload, 'type'>) {
+  const accessToken = signAccessToken(payload)
+  const { iat, exp } = jwt.decode(accessToken) as { iat: number; exp: number }
+  return { accessToken, refreshToken: signRefreshToken(payload), expiresIn: exp - iat }
+}
+
 export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, secret()) as JwtPayload
 }

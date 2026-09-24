@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
-import { signAccessToken, signRefreshToken, verifyToken } from '../lib/jwt.js'
+import { issueSessionTokens, verifyToken } from '../lib/jwt.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { seedOrgDefaults } from '../lib/org-seed.js'
 import { DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
@@ -500,12 +500,7 @@ export async function authRoutes(app: FastifyInstance) {
 }
 
 function issueTokens(userId: string, orgId: string, roles: string[], sid: string) {
-  const base = { sub: userId, orgId, roles, sid }
-  return {
-    accessToken: signAccessToken(base),
-    refreshToken: signRefreshToken(base),
-    expiresIn: 900, // 15 min in seconds
-  }
+  return issueSessionTokens({ sub: userId, orgId, roles, sid })
 }
 
 function safeUser(user: { id: string; email: string; name: string; orgId: string; avatarUrl: string | null; status?: string }) {

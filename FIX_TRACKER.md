@@ -2303,6 +2303,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - BUILD_TRACKER: the tab list includes Audit Log (X3).
   - **Verification:** the H1 and H3 tripwires (`lib/marketing-claims.test.ts`, `lib/docs-claims.test.ts`) +1 case and +3 assertions. All fail on the old copy; 16/16 pass.
 
+- **X73 — Sign-in and refresh always said the access token lasts 15 minutes (Low). — DONE.** Found while writing the QA test cases (TC-SES).
+  - `issueTokens` in `routes/auth.ts` returned `expiresIn: 900` beside a token signed with `JWT_ACCESS_EXPIRES_IN`. With any other lifetime configured, a client timing its refresh by `expiresIn` refreshed too early or, worse, too late.
+  - **What changed:** `issueSessionTokens` (`lib/jwt.ts`) signs the pair and reports the access token's lifetime read off the token itself (`exp - iat`). Sign-in, registration and refresh use it.
+  - **Verification:** `lib/jwt-session.test.ts` (2): with `JWT_ACCESS_EXPIRES_IN=1h` the response says 3600, matching the token; the default says 900. The first fails on the old constant; `auth-refresh.integration.test.ts` 7/7.
+
 ---
 
 ## Run log
@@ -2428,6 +2433,7 @@ X69 — DONE — the development logger masks tokens, credentials and secrets as
 X70 — DONE — the marketing contact form posts to the local API from the dev server and to production only from a production build (VITE_API_ORIGIN overrides) — (sha: pending)
 X71 — DONE — the marketing template pages link a .docx only when the file ships (none did: hosting served index.html) and stop promising downloads; copy tripwire extended — (sha: pending)
 X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — (sha: pending)
+X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — (sha: pending)
 
 ---
 
