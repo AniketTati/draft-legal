@@ -2350,6 +2350,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the first two name the real place. The sign-in notes say the admin will be able to link the workspace, without pointing to a setting.
   - **Verification:** web typecheck passes. Every other "X → Y" direction in `apps/web/src` names a real place (Organization → AI Config, Approvals → Manage Workflows).
 
+- **X77 — The share-link email logged the portal link's token in production (Medium). — DONE.** Found by the adversarial review of this round's fixes (see X67, X69).
+  - `sendShareLinkEmail` (`lib/share-email.ts`) printed `${FRONTEND_URL}/portal/<token>` on every send, in every environment. The portal token is a credential: it opens the contract, and with upload rights accepts a new version, for up to 30 days (720 h). X18 masked the signing email's link the same way and missed this one.
+  - **What changed:** the link is printed whole only in development, where the console is how it is found without SMTP. Everywhere else it is masked (`/portal/[REDACTED]`, via `maskTokenPaths`). The dialog still shows the full link to its sender.
+  - **Verification:** `lib/share-email.test.ts` (2): with `NODE_ENV=production` the log line has `/portal/[REDACTED]` and not the token; in development it has the link. The first fails on the old helper; both pass. `portal-upload.integration.test.ts` 3/3.
+
 ---
 
 ## Run log
@@ -2481,6 +2486,7 @@ X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit
 X76 — DONE — the Send for Review dialog, the clause drawer and the SSO notes stop pointing at menu items that don't exist (Approvals → Manage Workflows, Library → Playbook) — 7791f95
 X67 (review) — DONE — HTML-to-text in linear time; labels never glue onto values; <br> and blocks become lines; entities decoded; the template-create path converted too — (sha: pending)
 X65 (review) — DONE — a sequential signature a void overtook no longer emails the next group or logs SENT on the voided request — (sha: pending)
+X77 — DONE — the share-link email's log line masks the portal token outside development (found by this round's review) — (sha: pending)
 
 ---
 
