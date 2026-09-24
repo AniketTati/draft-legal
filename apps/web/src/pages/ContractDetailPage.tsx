@@ -459,6 +459,9 @@ export function ContractDetailPage() {
   // every save failed (403) behind "Save failed".
   const canEdit = usePermission('edit', 'contract')
   const canCreate = usePermission('create', 'contract')
+  // X75 follow-up — the header's workflow actions: a status change and Send
+  // for Review need edit:contract, Send for Signature sign:contract.
+  const canSign = usePermission('sign', 'contract')
 
   // B.5.9 — ⌘K command palette.
   // Single entry point for every AI interaction. Opens from anywhere on the
@@ -1392,7 +1395,7 @@ export function ContractDetailPage() {
             ) : null}
 
             {/* Status transition buttons */}
-            {(STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
+            {canEdit && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
               <Button
                 key={tr.to}
                 variant={tr.variant ?? 'default'}
@@ -1410,7 +1413,7 @@ export function ContractDetailPage() {
               routes through the workflow engine (/submit-approval); the old
               "Send for Review" manual status-flip was removed.
             */}
-            {['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
+            {canEdit && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
               <Button
                 variant="default" size="sm"
                 onClick={() => setSendForReviewOpen(true)}
@@ -1437,7 +1440,7 @@ export function ContractDetailPage() {
                 an ink button.) So this takes the ink primary only when
                 Send-for-Review is absent; while both are on screen, review owns
                 the single primary slot and this one steps back to outline. */}
-            {!['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
+            {canSign && !['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
               <Button
                 variant={
                   ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
@@ -3012,10 +3015,12 @@ export function ContractDetailPage() {
               <div className="text-center py-10 border-2 border-dashed rounded-card border-paper-200 bg-paper-50">
                 <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
                 <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
-                <p className="text-dense text-ink-500 mb-4">Send this contract to the approval workflow to start the review.</p>
+                <p className="text-dense text-ink-500 mb-4">
+                  {canEdit ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
+                </p>
                 {/* Same action the header CTA already offers, so it doesn't
                     take a second ink fill. */}
-                <Button
+                {canEdit && <Button
                   variant="outline"
                   size="sm"
                   onClick={() => submitForApproval.mutate(undefined)}
@@ -3025,7 +3030,7 @@ export function ContractDetailPage() {
                   {submitForApproval.isPending
                     ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
                     : <>Send for Review</>}
-                </Button>
+                </Button>}
                 {submitForApproval.isError && (
                   <p className="text-dense text-risk-700 mt-2">
                     {(submitForApproval.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to submit'}

@@ -2363,6 +2363,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - `usePermission` is false until the roles load, so a permitted user sees the buttons a moment later.
     - It ignores scope. Own-scope users can't open others' contracts (X7), so it doesn't matter.
   - **Verification:** web typecheck passes, and lint is unchanged (7 warnings in these files before and after).
+  - **Browser check (24 September, admin signed in; other roles simulated by changing only the cached `user.roles`):**
+    - As a viewer: the contracts list has no Bulk import, Upload PDF or Draft new, and the Dashboard has no "Upload Contract". A contract has no Edit, and its clause drawer shows only the read-only notice.
+    - As admin all of them are back, the drawer included.
+    - **Follow-up it found:** the contract header still offered a viewer "Send for Review" (header and Approval tab), the status buttons and "Send for Signature". The server refuses them: the first two need `edit:contract`, and Send for Signature needs `sign:contract`. They now follow those permissions, and the Approval tab tells a viewer that someone with edit access can send it. Checked again in the browser for both roles.
+    - The Actions menu is left as is: its items need different permissions, and some only read.
 
 - **X76 — Three messages sent users to menu items that don't exist (Low). — DONE.** Found while writing the QA test cases (smoke cases SMK). A sweep of the web app's "X → Y" directions found two more.
   - The Send for Review dialog, with no workflows, said to create one "via Admin → Approvals". There is no such item; workflows are created under Approvals → Manage Workflows.
@@ -2511,6 +2516,7 @@ X77 — DONE — the share-link email's log line masks the portal token outside 
 X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add related", the defined-term apply or the clause drawer's verdicts; a viewer's canvas change is never saved — 88818e9
 X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — 7e3335a
 X55–X77 (QA document and summary) — DONE — `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` covers the third round: 134 test cases, every changed id traced, each fixed issue with the case that verifies it; closing summary updated — this commit
+X75 (browser check + follow-up) — DONE — checked as viewer and admin in the browser; the header's Send for Review, status buttons and Send for Signature follow edit:contract and sign:contract — (sha: pending)
 
 ---
 
