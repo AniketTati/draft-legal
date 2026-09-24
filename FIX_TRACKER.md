@@ -2230,6 +2230,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the dialog sends `search`. The other search boxes that call the contracts list already did; `/counterparties`, `/clauses` and `/templates` do read `q`.
   - **Verification:** web typecheck passes. The browser check is in the run log.
 
+- **X61 — Legal Ops saw an empty API Keys tab instead of "Admin access required" (Low). — DONE.** Found while writing the QA test cases (TC-KEY).
+  - Admin → Integrations let in anyone with `configure:integration`, which LEGAL_OPS has. Every route behind its tabs (API keys, webhooks, Slack, health) requires `configure:organization`, so every call was refused (403). The API Keys tab read the refusal as "No API keys yet.", suggesting the org had none.
+  - **What changed:** the page's gate is `configure:organization`, the permission its routes enforce. LEGAL_OPS now gets the page's "Admin access required" notice. The routes are unchanged: widening them would let LEGAL_OPS create admin-scope keys.
+  - **Verification:** web typecheck passes. `routes/organization.integration.test.ts` +1 case pins what the gate relies on: the four tabs' routes refuse LEGAL_OPS (403) and answer an admin. The browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2343,6 +2348,7 @@ X57 — DONE — a failed redline job records its own failure and reason (the pa
 X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — (sha: pending)
 X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — (sha: pending)
 X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — (sha: pending)
+X61 — DONE — Admin → Integrations admits the permission its routes need (configure:organization), so Legal Ops sees "Admin access required" instead of an empty key list — (sha: pending)
 
 ---
 

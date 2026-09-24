@@ -72,7 +72,11 @@ export function AdminIntegrationsPage() {
   // api-keys flood that surfaced in the rail console + felt broken.
   // Render a clean access-denied state instead — the route is reachable
   // by URL even though the sidebar hides the nav item for non-admins.
-  const canConfigureIntegrations = usePermission('configure', 'integration')
+  // X61 — gate on what every route behind these tabs requires,
+  // configure:organization. configure:integration (LEGAL_OPS has it) let
+  // them in to a page whose every call was refused, and the API Keys tab
+  // read the refusal as "No API keys yet."
+  const canConfigureIntegrations = usePermission('configure', 'organization')
 
   if (!canConfigureIntegrations) {
     return (

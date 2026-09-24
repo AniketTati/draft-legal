@@ -171,3 +171,17 @@ describe('PATCH /organization logo and brand colour', () => {
     expect((await stored()).logoUrl).toBe('https://cdn.example.com/new.png')
   })
 })
+
+// X61 — Admin → Integrations gates on configure:organization because every
+// route behind its tabs does. Legal Ops has configure:integration only.
+describe('Admin → Integrations routes need configure:organization', () => {
+  const urls = ['/api/v1/admin/integrations/api-keys', '/api/v1/admin/integrations/webhooks',
+    '/api/v1/admin/integrations/slack', '/api/v1/admin/integrations/health']
+
+  it('refuse Legal Ops, and answer an admin', async () => {
+    for (const url of urls) {
+      expect((await app.inject({ method: 'GET', url, headers: auth(org, ['LEGAL_OPS']) })).statusCode, url).toBe(403)
+      expect((await app.inject({ method: 'GET', url, headers: auth(org, ['ADMIN']) })).statusCode, url).toBe(200)
+    }
+  })
+})
