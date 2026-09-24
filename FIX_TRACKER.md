@@ -2225,6 +2225,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
     - A non-empty logo must still be a URL.
   - **Verification:** `routes/organization.integration.test.ts` +2 cases: a save with an empty logo and colour clears both and keeps the new name; a real URL saves; `not a url` is still refused (422) and changes nothing. The first fails on the old schema; 13/13 pass.
 
+- **X60 — The upload dialog's "Link to existing contract" search ignored what was typed (Low). — DONE.** Found while writing the QA test cases (TC-ACC-24).
+  - The search sent `q`, but the contracts list reads `search`, so it returned the first eight contracts whatever was typed, and the contract the user wanted was often not among them.
+  - **What changed:** the dialog sends `search`. The other search boxes that call the contracts list already did; `/counterparties`, `/clauses` and `/templates` do read `q`.
+  - **Verification:** web typecheck passes. The browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2337,6 +2342,7 @@ X56 — DONE — retyping an approved contract (the page's type chip, the agent'
 X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — (sha: pending)
 X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — (sha: pending)
 X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — (sha: pending)
+X60 — DONE — the upload dialog's parent-contract search sends the parameter the list reads, so it finds what was typed — (sha: pending)
 
 ---
 
