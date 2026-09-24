@@ -100,7 +100,8 @@ export function FocusedReviewDrawer({
   onNext: () => void
   onAccept: (clauseId: string) => void
   onReject: (clauseId: string) => void
-  onEditManually: (clauseId: string) => void
+  /** Omitted for a user who can't edit the contract (X75). */
+  onEditManually?: (clauseId: string) => void
   onMarkReviewed: (clauseId: string) => void
   onClose: () => void
 }) {
@@ -407,7 +408,7 @@ export function FocusedReviewDrawer({
             </Button>
             {suggest.isError && (
               <p className="mt-2 text-dense text-risk-700">
-                Could not draft alternatives right now. Try again, or use Edit manually.
+                Could not draft alternatives right now. Try again{onEditManually ? ', or use Edit manually' : ''}.
               </p>
             )}
           </>
@@ -429,14 +430,16 @@ export function FocusedReviewDrawer({
               write any text into the document. */}
           <Circle className="size-4" /> Accept clause as-is
         </Button>
-        <Button
-          variant="outline"
-          size="md"
-          onClick={() => onEditManually(clause.id)}
-          className="w-full"
-        >
-          <FileEdit className="size-4" /> Edit manually
-        </Button>
+        {onEditManually && (
+          <Button
+            variant="outline"
+            size="md"
+            onClick={() => onEditManually(clause.id)}
+            className="w-full"
+          >
+            <FileEdit className="size-4" /> Edit manually
+          </Button>
+        )}
         <div className="flex gap-2">
           <Button
             variant="danger"

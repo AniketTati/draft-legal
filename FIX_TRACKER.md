@@ -2313,6 +2313,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the token is accepted only as `Bearer <token>`, with the scheme matched case-insensitively. The comparison stays constant-time.
   - **Verification:** `routes/admin-audit.integration.test.ts` (the X3 metrics case) now also checks that the bare token gets 401 and `bearer <token>` gets 200. It fails on the old route (200 for the bare token); 9/9 pass.
 
+- **X75 — A viewer was offered Upload, Draft new and Edit, each refused by the server (Low). — DONE.** Found while writing the QA test cases (smoke cases SMK).
+  - The contracts list showed Bulk import, Upload PDF, Draft new and the empty state's Upload Contract to everyone. All four create a contract, which the server refuses without `create:contract` (403).
+  - The contract page's Edit button, ⌘E and a clause's "Edit manually" put a viewer into Edit mode, where every save failed ("Save failed", 403 `Missing permission: edit:contract`).
+  - **What changed:**
+    - The create buttons show only with `create:contract`. A viewer's empty list says contracts appear once the team adds them.
+    - Edit mode, by button, shortcut or clause drawer, needs `edit:contract`. The server checks are unchanged.
+  - **Verification:** web typecheck passes; lint unchanged (the same 8 warnings in these files before and after). The web app has no component tests; the browser check is in the run log.
+
 ---
 
 ## Run log
@@ -2440,6 +2448,7 @@ X71 — DONE — the marketing template pages link a .docx only when the file sh
 X72 — DONE — marketing calls the audit log tamper-evident with a shipped viewer; README: PDF citations jump to the page, the portfolio example compares with your own SOWs; BUILD_TRACKER lists the Audit Log tab — (sha: pending)
 X73 — DONE — sign-in and refresh report the access token's configured lifetime, read off the token, instead of a fixed 900 — (sha: pending)
 X74 — DONE — /metrics takes its token only as a bearer token, as documented (scheme case-insensitive) — (sha: pending)
+X75 — DONE — a viewer isn't offered Upload / Bulk import / Draft new or Edit mode, which the server refuses; the buttons follow create:contract and edit:contract — (sha: pending)
 
 ---
 

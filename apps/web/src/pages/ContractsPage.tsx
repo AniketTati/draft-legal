@@ -11,6 +11,7 @@ import { Chip, CountBadge, EmptyState, Eyebrow, RiskMeter } from '@/components/u
 import { UploadModal } from '@/components/contracts/UploadModal'
 import { BulkImportDialog } from '@/components/contracts/BulkImportDialog'
 import { NewContractFlow } from '@/components/contracts/NewContractFlow'
+import { usePermission } from '@/lib/permissions'
 import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw } from 'lucide-react'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -166,6 +167,9 @@ export function ContractsPage() {
       queryClient.invalidateQueries({ queryKey: ['contracts'] })
     },
   })
+  // X75 — importing, uploading and drafting all create a contract, which the
+  // server refuses without create:contract; a viewer was offered all three.
+  const canCreate = usePermission('create', 'contract')
   const [showUpload, setShowUpload] = useState(false)
   const [showBulkImport, setShowBulkImport] = useState(false)
   const [showNewContract, setShowNewContract] = useState(false)
@@ -391,32 +395,36 @@ export function ContractsPage() {
                 </CountBadge>
               )}
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowBulkImport(true)}
-              data-testid="bulk-import-button"
-              title="Bulk import contracts from CSV"
-              className="gap-2"
-            >
-              <Upload className="size-4" /> Bulk import
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowUpload(true)}
-              data-testid="upload-pdf-button"
-              title="Upload an existing signed or draft contract file"
-              className="gap-2"
-            >
-              <Upload className="size-4" /> Upload PDF
-            </Button>
-            <Button
-              onClick={() => setShowNewContract(true)}
-              data-testid="draft-new-button"
-              title="Start a new contract from a template"
-              className="gap-2"
-            >
-              <PenSquare className="size-4" /> Draft new
-            </Button>
+            {canCreate && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowBulkImport(true)}
+                  data-testid="bulk-import-button"
+                  title="Bulk import contracts from CSV"
+                  className="gap-2"
+                >
+                  <Upload className="size-4" /> Bulk import
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowUpload(true)}
+                  data-testid="upload-pdf-button"
+                  title="Upload an existing signed or draft contract file"
+                  className="gap-2"
+                >
+                  <Upload className="size-4" /> Upload PDF
+                </Button>
+                <Button
+                  onClick={() => setShowNewContract(true)}
+                  data-testid="draft-new-button"
+                  title="Start a new contract from a template"
+                  className="gap-2"
+                >
+                  <PenSquare className="size-4" /> Draft new
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -591,8 +599,10 @@ export function ContractsPage() {
                 className="w-full max-w-md"
                 icon={<FileText />}
                 title={hasFilters ? 'No contracts match your filters' : 'No contracts yet'}
-                description={hasFilters ? 'Try adjusting or clearing your filters' : 'Upload your first contract to get started'}
-                action={!hasFilters ? (
+                description={hasFilters ? 'Try adjusting or clearing your filters'
+                  : canCreate ? 'Upload your first contract to get started'
+                  : 'Contracts appear here once your team adds them'}
+                action={!hasFilters && canCreate ? (
                   <Button onClick={() => setShowUpload(true)} className="gap-2">
                     <Upload className="size-4" /> Upload Contract
                   </Button>

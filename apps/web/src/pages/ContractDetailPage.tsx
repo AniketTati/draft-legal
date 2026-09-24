@@ -66,6 +66,7 @@ import { SignatureStatusRailSection } from '@/components/contracts/SignatureStat
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
+import { usePermission } from '@/lib/permissions'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -454,6 +455,9 @@ export function ContractDetailPage() {
   // flips the TipTap editor to editable=true and debounces saves to the
   // existing /html-version endpoint. Exits on click, Esc, or Save.
   const [isEditing, setIsEditing] = useState(false)
+  // X75 — a save needs edit:contract; a viewer was let into Edit mode and
+  // every save failed (403) behind "Save failed".
+  const canEdit = usePermission('edit', 'contract')
 
   // B.5.9 — ⌘K command palette.
   // Single entry point for every AI interaction. Opens from anywhere on the
@@ -611,6 +615,7 @@ export function ContractDetailPage() {
   }
 
   const enterEdit = () => {
+    if (!canEdit) return   // the button, ⌘E and a clause's "Edit manually"
     // Edit requires Styled view (can't edit a PDF).
     if (docView !== 'styled') setDocView('styled')
     setIsEditing(true)
@@ -1372,7 +1377,7 @@ export function ContractDetailPage() {
                   <CheckCircle2 className="size-4" /> Done
                 </Button>
               </>
-            ) : (
+            ) : canEdit ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -1383,7 +1388,7 @@ export function ContractDetailPage() {
               >
                 <FileEdit className="size-4" /> Edit
               </Button>
-            )}
+            ) : null}
 
             {/* Status transition buttons */}
             {(STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
@@ -3118,12 +3123,12 @@ export function ContractDetailPage() {
                 setReviewStates((s) => ({ ...s, [cid]: 'reviewed' }))
                 updateReviewState.mutate({ clauseId: cid, state: 'reviewed' })
               }}
-              onEditManually={() => {
+              onEditManually={canEdit ? () => {
                 // Exit drawer, enter edit mode. A future commit will also
                 // scroll to and focus the specific clause in the editor.
                 setFocusedClauseId(null)
                 enterEdit()
-              }}
+              } : undefined}
               onClose={() => setFocusedClauseId(null)}
             />
           )
