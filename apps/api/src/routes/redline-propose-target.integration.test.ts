@@ -110,4 +110,17 @@ describe('redline_propose targets', () => {
     expect(body.clauses.slice(0, 2).map((c: { sectionRef: string }) => c.sectionRef)).toEqual(['90.1', '90.2'])
     expect(body.detail).toMatch(/60 of the contract's 73/)
   })
+
+  // X78 — a version with no extracted clauses answered a bare "Clause not
+  // found", and the chat model filled the gap by inventing a clause list
+  // (seen live on a re-uploaded SOW whose new version hadn't been analysed).
+  it('a version with no extracted clauses says so, instead of a bare miss', async () => {
+    const bare = await makeContract(org, owner, { title: 'Unanalysed upload' })
+    const v = await prisma.contractVersion.create({ data: { contractId: bare, versionNumber: 1, createdById: owner, plainText: FEES, htmlContent: `<p>${FEES}</p>` } })
+    await prisma.contract.update({ where: { id: bare }, data: { currentVersionId: v.id } })
+    const res = await propose({ contractId: bare, sectionRef: '3' })
+    expect(res.statusCode).toBe(404)
+    expect(res.json().detail).toBe("This contract's current version has no extracted clauses, so there is none to redline yet. Tell the user; don't guess clause ids or text.")
+    await prisma.contract.update({ where: { id: bare }, data: { currentVersionId: null } })
+  })
 })

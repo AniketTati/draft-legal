@@ -104,6 +104,14 @@ export async function proposeClauseAlternatives(args: {
       orderBy: { sortOrder: 'asc' },
       select:  { id: true, clauseType: true, sectionRef: true, content: true },
     })
+    // X78 — nothing to list: a version not (yet) analysed. A bare "Clause not
+    // found" left the chat model to fill the gap, and it invented a list.
+    if (all.length === 0) {
+      return {
+        ok: false, status: 404, clauses: [], totalClauses: 0,
+        detail: "This contract's current version has no extracted clauses, so there is none to redline yet. Tell the user; don't guess clause ids or text.",
+      }
+    }
     const head = wanted.split(/[.(]/)[0]
     const near = (c: TargetableClause) => !!head && !!c.sectionRef && sectionKey(c.sectionRef).split(/[.(]/)[0] === head
     const clauses = [...all.filter(near), ...all.filter(c => !near(c))].slice(0, LISTED_CLAUSES)

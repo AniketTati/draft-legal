@@ -2382,6 +2382,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the link is printed whole only in development, where the console is how it is found without SMTP. Everywhere else it is masked (`/portal/[REDACTED]`, via `maskTokenPaths`). The dialog still shows the full link to its sender.
   - **Verification:** `lib/share-email.test.ts` (2): with `NODE_ENV=production` the log line has `/portal/[REDACTED]` and not the token; in development it has the link. The first fails on the old helper; both pass. `portal-upload.integration.test.ts` 3/3.
 
+- **X78 — The chat invented a clause list when a contract had none to redline (Low). — DONE.** Found in the browser check of X58.
+  - Asked to redline section 8 of the Northwind SOW, `redline_propose` answered 404 "Clause not found" with no clauses. Its current version, the second upload, had no extracted clauses. X53 lists a contract's clauses on a miss, but with none to list it sent the bare message, and the model (Gemini 2.5 Flash) made up four clauses with ids and text the contract doesn't have.
+  - **What changed:** when the current version has no extracted clauses, the miss says so and tells the model not to guess: "This contract's current version has no extracted clauses, so there is none to redline yet. Tell the user; don't guess clause ids or text." Misses on analysed versions still list the clauses.
+  - **Verification:** `routes/redline-propose-target.integration.test.ts` +1 case: a contract whose version has no clauses gets that message. It fails on the old code ("Clause not found"); 7/7 pass. `redline-apply`, `pii-outbound`, `agent-tool-permissions` and `agent-scope` pass (46 in all).
+
 ---
 
 ## Run log
@@ -2518,6 +2523,7 @@ X75 (review) — DONE — viewers aren't offered the Dashboard's upload, "+ Add 
 X71 (follow-up) — DONE — the marketing nav, footer and template badge call them template guides, not free templates; tripwire extended — 7e3335a
 X55–X77 (QA document and summary) — DONE — `docs/38-QA-TEST-CASES-fix-audit-2026-09-22.md` covers the third round: 134 test cases, every changed id traced, each fixed issue with the case that verifies it; closing summary updated — this commit
 X75 (browser check + follow-up) — DONE — checked as viewer and admin in the browser; the header's Send for Review, status buttons and Send for Signature follow edit:contract and sign:contract — d389614
+X78 — DONE — redline_propose tells the model when a contract's version has no extracted clauses (it answered a bare "Clause not found" and the model invented clauses) — (sha: pending)
 
 ---
 
