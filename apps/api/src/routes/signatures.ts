@@ -558,6 +558,16 @@ export async function signatureRoutes(app: FastifyInstance) {
         })
         return true
       })
+      // X65 — everyone has signed but this call didn't complete the request:
+      // a simultaneous final signature did, or a void (or expiry) landed
+      // first and won. Only the first is fully signed; the second answered
+      // 200 with allSigned: true.
+      if (allSigned && !completed) {
+        const settled = await prisma.signatureRequest.findUnique({ where: { id: sr.id }, select: { status: true } })
+        if (settled?.status !== 'COMPLETED') {
+          return reply.status(409).send({ detail: 'This signing request changed meanwhile. Reload the page.' })
+        }
+      }
       if (completed) {
         await createAuditEvent({
           orgId: sr.orgId,

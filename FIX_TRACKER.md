@@ -2250,6 +2250,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the demo-password rule runs first and refuses any value containing `password123`, case-insensitively: "SEED_ADMIN_PASSWORD must not contain password123 in production". The length rule is unchanged, and so is development (any value is taken).
   - **Verification:** `lib/seed-password.test.ts`: `password123` and `Password123!` are refused with the new message. It fails on the old order (the length message, then acceptance); 3/3 pass.
 
+- **X65 — A sign call that lost to a void said the request was fully signed (Low). — DONE.** A gap in the X28 follow-up, found while writing the QA test cases (TC-SEC-12).
+  - The final signature and a void can race. The X28 follow-up made the stored outcome right: the request flips only from PENDING, so the void wins and the contract isn't executed. But when the void landed between the signature and the completing transaction, the sign call still answered 200 `{ allSigned: true }`. The signer portal showed "signed", and an API client would read the request as complete.
+  - **What changed:** when every signer has signed but this call didn't complete the request, the route re-reads it. If a simultaneous final signature completed it, the answer is 200 `allSigned: true` as before. Otherwise (voided or expired meanwhile) it answers 409, "This signing request changed meanwhile. Reload the page.", the same answer as a void that lands just before the signature.
+  - **Verification:** `routes/signing-turn.integration.test.ts` +1 case: a void injected just before the completing transaction gives a 409; the request stays VOIDED, the contract isn't executed and no COMPLETED event is written. It fails on the old route (200). Two final signatures at once still both get 200 and complete the request once; 4/4 pass, and `signing-tokens.integration.test.ts` 6/6.
+
 ---
 
 ## Run log
@@ -2367,6 +2372,7 @@ X61 — DONE — Admin → Integrations admits the permission its routes need (c
 X62 — DONE — a matter's header shows its linked counterparty by the record's current name, the typed name otherwise — (sha: pending)
 X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — (sha: pending)
 X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — (sha: pending)
+X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — (sha: pending)
 
 ---
 

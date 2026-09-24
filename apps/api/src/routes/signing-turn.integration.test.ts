@@ -99,4 +99,27 @@ describe('X28 follow-up — expiry and racing state changes', () => {
     expect((await prisma.signatureRequest.findUniqueOrThrow({ where: { id } })).status).toBe('COMPLETED')
     expect(await prisma.signatureEvent.count({ where: { signatureRequestId: id, kind: 'COMPLETED' } })).toBe(1)
   })
+
+  // X65 — the void wins, as it should, but the sign call answered 200 with
+  // allSigned: true, so the signer and any API client were told the request
+  // was fully signed.
+  it('a void landing just after the last signature wins, and the sign call says so', async () => {
+    const last = tok('last')
+    const id = await request([{ token: last, order: 1 }])
+    // The void lands after the signature, just before the transaction that
+    // would complete the request (the sign call's first transaction).
+    const transaction = prisma.$transaction.bind(prisma)
+    const spy = vi.spyOn(prisma, '$transaction').mockImplementationOnce((async (...args: Parameters<typeof transaction>) => {
+      await prisma.signatureRequest.update({ where: { id }, data: { status: 'VOIDED', voidedAt: new Date(), voidedReason: 'Voided by sender' } })
+      return transaction(...args)
+    }) as never)
+    const res = await app.inject({ method: 'POST', url: `/api/v1/sign/${last}/sign`, payload: { signedName: 'Last', consent: true } })
+    spy.mockRestore()
+    expect(res.statusCode).toBe(409)
+    expect(res.json().detail).toBe('This signing request changed meanwhile. Reload the page.')
+    const stored = await prisma.signatureRequest.findUniqueOrThrow({ where: { id } })
+    expect(stored.status).toBe('VOIDED')
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id: stored.contractId } })).status).not.toBe('EXECUTED')
+    expect(await prisma.signatureEvent.count({ where: { signatureRequestId: id, kind: 'COMPLETED' } })).toBe(0)
+  })
 })
