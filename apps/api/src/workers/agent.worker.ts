@@ -19,6 +19,7 @@ import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
@@ -758,7 +759,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
       contractId,
       versionNumber: nextVersion,
       htmlContent:   result.html,
-      plainText:     result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+      plainText:     htmlToText(result.html),
       mimeType:      'text/html',
       fileSize:      Buffer.byteLength(result.html),
       changeNote:    'AI-generated first draft',

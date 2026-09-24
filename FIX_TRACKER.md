@@ -2260,6 +2260,13 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** the multipart reader marks a file part over the limit as oversized, and the check counts it as too large. X14's behaviour stays: an oversized document is skipped for the next usable one.
   - **Verification:** `routes/inbound-email-attachments.integration.test.ts` +1 case: an email whose only attachment is a 26 MB PDF gets the 413 and no version is stored. It fails on the old reader (400); 4/4 pass, including X14's "oversized first document is skipped for the next one".
 
+- **X67 — An editor save could store an SSN in a form the PII redaction can't see (Medium). — DONE.** Found while writing the QA test cases. It was flagged as a possible gap there; confirmed here.
+  - An HTML version's stored text replaced every tag with a space. An SSN whose last group was bolded, `219-09-<strong>9999</strong>`, was stored as `219-09- 9999`. No PII pattern matches that, and the stored text is what the agents service reads, so the value could reach a model raw. X27 covers the HTML sent to models, not this stored text.
+  - Three other paths used the same conversion: the two places `/agents/draft` saves a draft, and the draft worker.
+  - **What changed:** `lib/html-text.ts` (`htmlToText`) reads HTML as a browser renders it. Inline markup (bold, italics, links, spans…) joins what it wraps; blocks, cells and line breaks separate. Comments, attributes (including a quoted `>`) and non-breaking spaces are handled. All four paths use it.
+  - Versions saved before this keep their stored text until they are next saved. There is no backfill: an analysed draft's clause positions point into that text.
+  - **Verification:** `lib/html-text.test.ts` (3): a partly bolded SSN and card number come out whole and are redacted; blocks and cells still separate. `routes/html-version-noop.integration.test.ts` +1 case: saving `219-09-<strong>9999</strong>` stores `219-09-9999`. It fails on the old conversion (`219-09- 9999 .`); 5/5 pass. The drafting paths' tests (`api-key-create`, 10) and `pii-outbound` (14) pass.
+
 ---
 
 ## Run log
@@ -2379,6 +2386,7 @@ X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when i
 X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — (sha: pending)
 X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — (sha: pending)
 X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — (sha: pending)
+X67 — DONE — HTML versions (editor saves, saved drafts) store their text as it reads, so inline markup no longer splits an SSN out of the PII patterns' reach — (sha: pending)
 
 ---
 

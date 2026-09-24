@@ -16,6 +16,7 @@ import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
 import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
 import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -428,7 +429,7 @@ export async function agentRoutes(app: FastifyInstance) {
               contractId,
               versionNumber: nextVersion,
               htmlContent: result.html,
-              plainText: result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+              plainText: htmlToText(result.html),
               changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
               createdById: userId,
             },
@@ -445,7 +446,7 @@ export async function agentRoutes(app: FastifyInstance) {
           // who made the key.)
           const owner = ownerId && { id: ownerId }
           if (owner) {
-            const plainText = result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+            const plainText = htmlToText(result.html)
             const contract = await prisma.contract.create({
               data: {
                 orgId,

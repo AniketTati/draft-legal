@@ -32,6 +32,7 @@ import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_T
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
+import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
@@ -873,7 +874,7 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(200).send(standing)
     }
 
-    const plainText = htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const plainText = htmlToText(htmlContent)
 
     const version = await prisma.contractVersion.create({
       data: {

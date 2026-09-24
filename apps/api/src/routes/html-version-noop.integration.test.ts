@@ -97,4 +97,15 @@ describe('saving a contract\'s HTML', () => {
     expect(same.json().id).toBe(again.json().id)
     expect(v2.id).not.toBe(again.json().id)
   })
+
+  // X67 — the stored text read every tag as a space, so an SSN whose last
+  // group was bolded was stored as `219-09- 9999`, which the PII patterns
+  // don't match, and reached models raw from there.
+  it('stores the text as it reads: inline markup doesn\'t split a value', async () => {
+    const id = await makeContract(org, user, { title: 'Employment agreement', status: 'DRAFT' })
+    const res = await save(id, '<p>Employee SSN 219-09-<strong>9999</strong>.</p><p>Paid monthly.</p>')
+    expect(res.statusCode).toBe(201)
+    const { plainText } = await prisma.contractVersion.findUniqueOrThrow({ where: { id: res.json().id } })
+    expect(plainText).toBe('Employee SSN 219-09-9999. Paid monthly.')
+  })
 })
