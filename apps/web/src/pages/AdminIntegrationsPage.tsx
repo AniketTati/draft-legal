@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { usePermission } from '@/lib/permissions'
+import { useCanRequest } from '@/lib/permissions'
 import {
   Plug, Plus, Loader2, Copy, Check, Trash2, X, Send, AlertCircle, Lock,
   Key, Webhook as WebhookIcon, ChevronRight, ChevronDown,
@@ -76,7 +76,8 @@ export function AdminIntegrationsPage() {
   // configure:organization. configure:integration (LEGAL_OPS has it) let
   // them in to a page whose every call was refused, and the API Keys tab
   // read the refusal as "No API keys yet."
-  const canConfigureIntegrations = usePermission('configure', 'organization')
+  // Y3 — by the route table: what the API keys tab's list needs.
+  const canConfigureIntegrations = useCanRequest('GET /admin/integrations/api-keys')
 
   if (!canConfigureIntegrations) {
     return (

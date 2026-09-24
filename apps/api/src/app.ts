@@ -64,6 +64,7 @@ import { assertSecretsConfigured } from './lib/secrets.js'
 import { devLogger, LOG_REDACT, LOG_SERIALIZERS } from './lib/logger.js'
 import { runInTenantStore } from './lib/tenant-context.js'
 import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
+import { routePermission } from './middleware/permissions.js'
 
 export async function buildApp() {
   const app = Fastify({
@@ -102,11 +103,14 @@ export async function buildApp() {
     trustProxy: trustProxyHops(),
   })
 
-  // Y1 — the list of every route, for the cross-org route crawl. Before any
-  // route is registered, so it sees them all.
+  // Y1 — the list of every route, for the cross-org route crawl, with the
+  // permission each needs (Y3: the web app's route table). Before any route
+  // is registered, so it sees them all.
   const routes: RegisteredRoute[] = []
   app.decorate('registeredRoutes', routes)
-  app.addHook('onRoute', route => { recordRoute(routes, { method: route.method, url: route.url }) })
+  app.addHook('onRoute', route => {
+    recordRoute(routes, { method: route.method, url: route.url, permission: routePermission(route.preHandler) })
+  })
 
   // Echo the request id back on every response so the client can log
   // it alongside its own error reports.

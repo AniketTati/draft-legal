@@ -66,7 +66,8 @@ import { SignatureStatusRailSection } from '@/components/contracts/SignatureStat
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
-import { usePermission } from '@/lib/permissions'
+import { useCanRequest } from '@/lib/permissions'
+import { Can } from '@/components/auth/Can'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -455,13 +456,14 @@ export function ContractDetailPage() {
   // flips the TipTap editor to editable=true and debounces saves to the
   // existing /html-version endpoint. Exits on click, Esc, or Save.
   const [isEditing, setIsEditing] = useState(false)
-  // X75 — a save needs edit:contract; a viewer was let into Edit mode and
-  // every save failed (403) behind "Save failed".
-  const canEdit = usePermission('edit', 'contract')
-  const canCreate = usePermission('create', 'contract')
-  // X75 follow-up — the header's workflow actions: a status change and Send
-  // for Review need edit:contract, Send for Signature sign:contract.
-  const canSign = usePermission('sign', 'contract')
+  // X75, Y3 — each action is offered only to a user who may make the request
+  // it sends, by the permission the server's route for it needs: a viewer was
+  // let into Edit mode, and every save failed (403) behind "Save failed".
+  const canEdit = useCanRequest('POST /contracts/:id/html-version')
+  const canChangeStatus = useCanRequest('PATCH /contracts/:id')
+  const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
+  const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
+  const canUpload = useCanRequest('POST /contracts/upload')
 
   // B.5.9 — ⌘K command palette.
   // Single entry point for every AI interaction. Opens from anywhere on the
@@ -1395,7 +1397,7 @@ export function ContractDetailPage() {
             ) : null}
 
             {/* Status transition buttons */}
-            {canEdit && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
+            {canChangeStatus && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
               <Button
                 key={tr.to}
                 variant={tr.variant ?? 'default'}
@@ -1413,7 +1415,7 @@ export function ContractDetailPage() {
               routes through the workflow engine (/submit-approval); the old
               "Send for Review" manual status-flip was removed.
             */}
-            {canEdit && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
+            {canSendForReview && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
               <Button
                 variant="default" size="sm"
                 onClick={() => setSendForReviewOpen(true)}
@@ -1528,14 +1530,20 @@ export function ContractDetailPage() {
                 <div className="2xl:hidden">
                   <DropdownMenuSeparator />
                 </div>
-                <DropdownMenuItem onSelect={() => setShowShareDialog(true)}>
-                  <Share2 className="size-4" /> Share
-                </DropdownMenuItem>
+                {/* Y3 — offered only to those who may: sharing needs
+                    configure:contract, an amendment create:contract. */}
+                <Can request="POST /contracts/:id/share">
+                  <DropdownMenuItem onSelect={() => setShowShareDialog(true)} data-testid="share-menu-item">
+                    <Share2 className="size-4" /> Share
+                  </DropdownMenuItem>
+                </Can>
                 {/* P8 Step 8 — spawn an amendment / SOW / order-form / renewal
                     that links back to this contract via parentContractId. */}
-                <DropdownMenuItem onSelect={() => setCreateAmendmentOpen(true)} data-testid="create-amendment-menu-item">
-                  <GitBranch className="size-4" /> Create amendment
-                </DropdownMenuItem>
+                <Can request="POST /contracts/:id/amendments">
+                  <DropdownMenuItem onSelect={() => setCreateAmendmentOpen(true)} data-testid="create-amendment-menu-item">
+                    <GitBranch className="size-4" /> Create amendment
+                  </DropdownMenuItem>
+                </Can>
                 {/* P9 Step 6 — bundle audit trail + signers + signed PDF into
                     a single auditor-ready compliance package. */}
                 {contract?.status === 'EXECUTED' && id && (
@@ -2481,7 +2489,7 @@ export function ContractDetailPage() {
                       <h3 className="text-section text-ink-950">Contract Family</h3>
                     </div>
                     {/* X75 review — it opens the upload dialog, which creates a contract. */}
-                    {canCreate && (
+                    {canUpload && (
                       <button
                         onClick={() => setShowAddRelated(true)}
                         className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
@@ -3016,11 +3024,11 @@ export function ContractDetailPage() {
                 <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
                 <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
                 <p className="text-dense text-ink-500 mb-4">
-                  {canEdit ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
+                  {canSendForReview ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
                 </p>
                 {/* Same action the header CTA already offers, so it doesn't
                     take a second ink fill. */}
-                {canEdit && <Button
+                {canSendForReview && <Button
                   variant="outline"
                   size="sm"
                   onClick={() => submitForApproval.mutate(undefined)}

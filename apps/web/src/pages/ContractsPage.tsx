@@ -11,7 +11,7 @@ import { Chip, CountBadge, EmptyState, Eyebrow, RiskMeter } from '@/components/u
 import { UploadModal } from '@/components/contracts/UploadModal'
 import { BulkImportDialog } from '@/components/contracts/BulkImportDialog'
 import { NewContractFlow } from '@/components/contracts/NewContractFlow'
-import { usePermission } from '@/lib/permissions'
+import { useCanRequest } from '@/lib/permissions'
 import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw } from 'lucide-react'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -167,9 +167,10 @@ export function ContractsPage() {
       queryClient.invalidateQueries({ queryKey: ['contracts'] })
     },
   })
-  // X75 — importing, uploading and drafting all create a contract, which the
-  // server refuses without create:contract; a viewer was offered all three.
-  const canCreate = usePermission('create', 'contract')
+  // X75, Y3 — importing, uploading and drafting all create a contract, which
+  // the server refuses without what POST /contracts needs; a viewer was
+  // offered all three.
+  const canCreate = useCanRequest('POST /contracts')
   const [showUpload, setShowUpload] = useState(false)
   const [showBulkImport, setShowBulkImport] = useState(false)
   const [showNewContract, setShowNewContract] = useState(false)

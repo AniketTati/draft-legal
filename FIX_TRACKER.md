@@ -2517,25 +2517,39 @@ Each class below recurred during this run, and each occurrence was fixed where i
     - The agents service's own calls to providers. It receives text only through these two paths, plus an uploaded file for parsing with local OCR.
     - Response bodies of the calls above, beyond what a tool call returns to the agents service: what a model sends back comes from what was sent.
 
-- **Y3 — UI actions follow the server's route permissions (Medium). — TODO.**
+- **Y3 — UI actions follow the server's route permissions (Medium). — DONE.**
   - **Problem:**
-    - The web app decides which actions to show with its own checks, button by button: X61, then X75 three times.
-    - The contract page's Actions menu still offers Share (`configure:contract`) and Create amendment (`create:contract`) to anyone.
-    - Every missed button sends a request the server refuses with a 403, which the page shows as a failure.
-  - **Approach:**
-    1. **The server's permission table.** `requirePermission` records its action and resource on the route. A route registry built at startup lists every route's required permission. `pnpm --filter api gen:route-permissions` writes the table to `apps/web/src/lib/route-permissions.gen.ts`, and a test fails when the committed table is stale.
-    2. **The web app reads that table:**
-       - `canRequest(method, path)` and `useCanRequest` resolve any API path to its permission.
-       - `<Can request="POST /contracts/:id/share">` hides an action the user can't take.
-       - The API client refuses, before sending, a write the user has no permission for, with one clear message ("You don't have permission to share contracts"). This covers every button, gated or not.
-    3. **Gates moved onto the table:** the Actions menu is gated, and the X61 and X75 gates move to the table.
+    - The web app decided which actions to show with its own checks, button by button: X61, then X75 three times.
+    - The contract page's Actions menu still offered Share (`configure:contract`) and Create amendment (`create:contract`) to anyone.
+    - Every missed button sent a request the server refused with a 403, which the page showed as a failure.
+  - **What changed:**
+    1. **The server's table.** `requirePermission` now carries what it checks, and the route list (Y1's `lib/route-registry.ts`) records each route's permission.
+       - `pnpm --filter api gen:route-permissions` writes every `/api/v1` route and its permission to `apps/web/src/lib/route-permissions.gen.ts`: 247 routes, 203 with a check and 44 without (sign-in, public links, and routes that check inside the handler).
+       - `routes/route-permissions.integration.test.ts` fails when the committed table differs from the routes the app registers.
+    2. **The web app reads it** (`lib/can-request.ts`):
+       - `routeFor(method, url)` finds the route a call reaches, as the server's router does: a static segment beats a parameter, and the `/api/v1` prefix and query are ignored.
+       - `useCanRequest("POST /contracts/:id/share")` and `<Can request="…">` gate an action on the permission its request needs, from the user's roles (ADMIN: everything).
+       - The API client refuses a write the user lacks the permission for before sending it, with one message ("You don't have permission to configure contracts."), as a 403 with that detail, so every screen shows it as it shows the server's refusals. This covers every button, gated or not. It acts only once the user's roles are known, and leaves reads, routes with no check, and own-scope decisions to the server.
+    3. **The gates:**
+       - The Actions menu offers Share and Create amendment only to users who may.
+       - The X75 gates on the contract page are now per request: Edit and its saves, a status change, Send for Review (header and approvals tab), Send for Signature, and "Add related" (an upload).
+       - The contracts list's import, upload and draft buttons follow `POST /contracts`, the dashboard's upload `POST /contracts/upload`, and the Integrations page (X61) its API keys list.
+       - The table shows why the draft button can't follow its own route: `POST /agent/draft` needs only `view:contract`, and saving the draft as a new contract is checked inside the handler.
+  - **Verification:**
+    - `can-request.test.ts` (6): calls resolve however they are written; `GET /approvals/all` (`configure:workflow`) wins over `/approvals/:instanceId` (`view:workflow`); unknown paths match nothing; what a viewer lacks for Share and amendments; wildcards, ADMIN, and routes with no check go through.
+    - `api-permissions.test.ts` (3): a viewer's Share and amendment writes are refused unsent, with the message; they are sent once the role holds `configure:contract`, or for ADMIN; reads, routes with no check, and anything before the roles are known go to the server. The first test failed with the API client as it was: the write was sent.
+    - `route-table.test.ts` (2): all 129 writes the web source makes (each with its path written out) are to routes the server has. A file calling `POST /contracts/${id}/shares` made it fail, naming the file.
+    - API: the freshness test passes, and fails with Share's permission edited in the table.
+    - Browser, on a draft contract: as admin, the Actions menu has Share and Create amendment, and the header has Send for Review and Send for Signature. As a simulated viewer (the stored roles set to `VIEWER`, then restored), the menu keeps only View original PDF, Risk markers, Compare versions and Download, and Edit and both Send buttons are gone.
   - **Acceptance criteria:**
-    1. The generated table matches the server's routes; the test fails when a route's permission changes without regenerating.
-    2. Every write path the web source calls resolves to a route in the table. A test fails on an unknown path, which also catches a mistyped path.
-    3. A user without a route's permission never sends that write: the client refuses it and shows the message. Covered by web unit tests of the decision.
-    4. The Actions menu shows Share and Create amendment only with `configure:contract` / `create:contract`. Checked in the browser as a simulated viewer and as admin.
-    5. Typecheck, lint and the whole suite pass.
-  - **Out of scope:** own-scope ownership, which the server keeps deciding per record; the client blocks only a permission the user lacks entirely.
+    - 1 met: the table matches the server's routes, and a stale one fails the test.
+    - 2 met: every write the web source makes resolves; a mistyped path fails.
+    - 3 met: a user without the permission never sends that write, and sees the one message.
+    - 4 met, in the browser, as admin and as a simulated viewer.
+    - 5 met: typecheck, lint and the whole suite pass (unit 361, web 62, integration 385).
+  - **Out of scope:**
+    - Own-scope ownership, which the server keeps deciding per record; the client blocks only a permission the user lacks entirely.
+    - The chat's streaming and action calls use `fetch` directly, not the API client, so they aren't refused ahead of time. The server refuses them, and the chat shows its answer.
 
 - **Y4 — One scrubber for every log line (Medium). — TODO.**
   - **Problem:**

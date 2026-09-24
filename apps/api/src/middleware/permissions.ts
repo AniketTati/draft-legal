@@ -14,16 +14,22 @@ declare module 'fastify' {
   }
 }
 
+/** The permission a route's requirePermission check needs. */
+export interface RoutePermission { action: string; resource: string }
+
 /**
  * Fastify preHandler that checks the current user has the required permission.
  * On success, attaches `req.permissionScope` for route handlers to use in query filtering.
+ * Y3 — the hook carries what it checks (`permission`), so the route list knows
+ * each route's permission (lib/route-registry.ts), and the web app with it.
  *
  * Usage:
  *   { preHandler: [requirePermission('view', 'contract')] }
  *   { preHandler: [requirePermission('configure', 'user')] }
  */
 export function requirePermission(action: string, resource: string) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
+  const permission: RoutePermission = { action, resource }
+  return Object.assign(async (req: FastifyRequest, reply: FastifyReply) => {
     // First ensure user is authenticated
     await requireAuth(req, reply)
     if (reply.sent) return
@@ -52,7 +58,16 @@ export function requirePermission(action: string, resource: string) {
 
     // Attach scope so route handlers can filter queries accordingly
     req.permissionScope = result.scope
+  }, { permission })
+}
+
+/** Y3 — the permission a route's preHandler(s) check, if one is requirePermission's. */
+export function routePermission(preHandler: unknown): RoutePermission | null {
+  for (const hook of [preHandler].flat()) {
+    const permission = (hook as { permission?: RoutePermission } | null | undefined)?.permission
+    if (permission) return permission
   }
+  return null
 }
 
 /**

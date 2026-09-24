@@ -1,6 +1,7 @@
-import axios from 'axios'
+import axios, { AxiosError } from 'axios'
 import { useAuthStore } from '@/store/auth'
 import { tokenClaims } from '@/lib/token-claims'
+import { heldPermissions, knownRoles, missingPermission, refusalMessage } from '@/lib/can-request'
 
 export const api = axios.create({
   baseURL: '/api/v1',
@@ -9,6 +10,24 @@ export const api = axios.create({
 
 /** Whether an access token hasn't expired yet (by this clock). */
 const live = (token: string) => (tokenClaims(token).exp ?? 0) * 1000 > Date.now()
+
+const WRITES = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+// Y3 — a write the user has no permission for is refused here, with one
+// message, rather than sent for a 403 that each screen showed its own way.
+// Judged by the permission the server's route needs (lib/can-request.ts),
+// once the user's roles are known; the server decides the rest, including
+// which records an own-scope user may change.
+api.interceptors.request.use((config) => {
+  const method = (config.method ?? 'get').toUpperCase()
+  if (!WRITES.has(method)) return config
+  const held = heldPermissions((useAuthStore.getState().user?.roles ?? []) as string[], knownRoles())
+  const missing = held === null ? null : missingPermission(held, method, config.url ?? '')
+  if (!missing) return config
+  const detail = refusalMessage(missing)
+  const response = { data: { detail, status: 403 }, status: 403, statusText: 'Forbidden', headers: {}, config }
+  return Promise.reject(new AxiosError(detail, 'ERR_PERMISSION', config, null, response as never))
+})
 
 // Attach access token to every request
 api.interceptors.request.use((config) => {

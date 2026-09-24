@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand, type Meaning } from '@/lib/status'
 import { UploadModal } from '@/components/contracts/UploadModal'
-import { usePermission } from '@/lib/permissions'
+import { useCanRequest } from '@/lib/permissions'
 import { NewRequestModal } from '@/components/requests/NewRequestModal'
 import { WelcomeChecklist } from '@/components/onboarding/WelcomeChecklist'
 // U.4.2 — HeroAgent deleted. The right Ask rail is the AI surface on dashboard.
@@ -131,7 +131,7 @@ export function DashboardPage() {
   // away. "Upload Contract" on the dashboard should upload a contract,
   // not take me on a detour through the list page first.
   const [showUpload, setShowUpload] = useState(false)
-  const canCreate = usePermission('create', 'contract')
+  const canUpload = useCanRequest('POST /contracts/upload')
   const [showNewRequest, setShowNewRequest] = useState(false)
 
   const { data: stats, isLoading } = useQuery<DashboardStats>({
@@ -249,8 +249,8 @@ export function DashboardPage() {
           land in the first eye-stop (was buried below the cards). Same
           three actions, same selectors — only the position moved. */}
       <div className="flex items-center gap-2" data-testid="dashboard-quick-actions">
-        {/* X75 review — uploading creates a contract, refused without create:contract. */}
-        {canCreate && (
+        {/* X75 review, Y3 — uploading creates a contract, refused without create:contract. */}
+        {canUpload && (
           <Button onClick={() => setShowUpload(true)} data-testid="quick-upload-contract">
             <Upload /> Upload Contract
           </Button>

@@ -19,7 +19,8 @@
     "backfill-es-index": "tsx --env-file=../../.env scripts/backfill-es-index.ts",
     "cleanup-broken-drafts": "tsx scripts/cleanup-broken-drafts.ts",
     "clean-demo": "tsx scripts/clean-demo.ts",
-    "backfill-unnamed-titles": "tsx scripts/backfill-unnamed-titles.ts"
+    "backfill-unnamed-titles": "tsx scripts/backfill-unnamed-titles.ts",
+    "gen:route-permissions": "tsx scripts/gen-route-permissions.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
