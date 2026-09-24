@@ -34,6 +34,7 @@ from app.tools import get_read_tools
 # framing does and does not buy us.
 from app.untrusted import sanitize_untrusted as _sanitize_untrusted
 from app.untrusted import wrap_untrusted_document
+from app import grounding
 
 
 def _chunk_text(chunk) -> str:
@@ -659,6 +660,12 @@ AGENT_SYSTEM_PROMPT += """
   contract_search. Plan the turn to fit. If you are close to the limit, stop
   calling tools and answer with what you have, saying plainly what you could
   not check.
+- A15 — NOTHING FOUND MEANS NOTHING FOUND (Y6). A tool result followed by a
+  `[PLATFORM NOTE — not document data]` found nothing: tell the user so, with
+  the reason if the result gives one. Never fill the gap with ids, names,
+  clauses, figures or quotes that no tool returned in this conversation, and
+  cite a record id only if a tool result, the user or the page context gave it
+  to you. An answer that cites an id from nowhere is marked as unreliable.
 """
 
 # How much of a tool result is PERSISTED for replay next turn, as opposed to
@@ -872,9 +879,11 @@ async def run_agent_chat_stream(
                 messages.append(ai_with_calls)
                 for tr in tool_results_persisted:
                     # Wave 3.10 — re-wrap replayed tool output as untrusted DATA.
+                    # Y6 — with the platform's note again when it found nothing.
+                    tr_name, tr_result = tr.get("name") or "tool", str(tr.get("result") or "")
                     messages.append(ToolMessage(
-                        content=_wrap_untrusted_tool_result(
-                            tr.get("name") or "tool", str(tr.get("result") or "")
+                        content=grounding.model_content(
+                            tr_name, tr_result, _wrap_untrusted_tool_result(tr_name, tr_result),
                         ),
                         tool_call_id=tr["id"],
                     ))
@@ -1231,10 +1240,13 @@ async def run_agent_chat_stream(
                 # unknown_tool / tool_raised strings told the agent to distrust
                 # its own runtime's error reports. Wrap what came from a
                 # document; state plainly what came from us.
+                #
+                # Y6 — a result that found nothing carries the platform's note,
+                # outside the frame: say so, and invent nothing (app/grounding.py).
                 messages.append(ToolMessage(
                     content=(
                         result_str if platform_error
-                        else _wrap_untrusted_tool_result(tc_name, result_str)
+                        else grounding.model_content(tc_name, result_str, _wrap_untrusted_tool_result(tc_name, result_str))
                     ),
                     tool_call_id=tc_id,
                 ))
@@ -1315,6 +1327,23 @@ async def run_agent_chat_stream(
             "This is usually transient; try asking again or rephrasing."
         )}
         return
+
+    # Y6 — an answer that cites record ids no tool returned (nor the user, nor
+    # the page context) ends with a notice saying so, and the event is logged.
+    # X78's invented clause list had ids the contract doesn't have.
+    answer = "".join(streamed_parts)
+    unknown_ids = grounding.ungrounded_ids(
+        answer, (str(m.content) for m in messages if not isinstance(m, AIMessage)),
+    )
+    if unknown_ids:
+        logger.warning(
+            "ungrounded record ids in answer: %s (session=%s tools=%s)",
+            unknown_ids, session_id, [tc.get("name") for tc in turn_tool_calls],
+        )
+        notice = grounding.ungrounded_notice(unknown_ids)
+        streamed_parts.append(notice)
+        final_text = (final_text or answer) + notice
+        yield {"type": "token", "delta": notice}
 
     # P64 audit (2026-05-02). Persist tool I/O alongside the assistant
     # turn. The previous decision to discard it broke multi-turn

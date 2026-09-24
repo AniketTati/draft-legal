@@ -2621,22 +2621,51 @@ Each class below recurred during this run, and each occurrence was fixed where i
     - 4 met: the whole suite passes (typecheck, lint, unit 373, web 62, integration 398). `.env.example` says what strict mode does with each flag.
   - **Deploy:** a staging or preview environment is now strict. It needs strong secrets and a signing certificate (`SIGNING_CERT_P12_BASE64`, `SIGNING_CERT_PASSPHRASE`) to sign, must not set `BULL_BOARD_OPEN` or `INBOUND_EMAIL_ALLOW_ALL`, and gets production's rate limit. The Dockerfiles and the self-host compose file already set `NODE_ENV=production`; CI runs with `test`.
 
-- **Y6 — The model can't present what no tool returned (Medium). — TODO.**
+- **Y6 — The model can't present what no tool returned (Medium). — DONE.**
   - **Problem:**
     - V2: answers overstated their coverage.
     - X78: after an empty result, the model invented a clause list with ids and text the contract doesn't have.
     - Each fix changed one tool's result. The next tool that returns nothing is back to trusting the model.
-  - **Approach:**
-    1. **Classify every tool result.** In the agents service's orchestrator, one function classifies every result as found, empty or not-found. An empty or not-found result gets a platform note, outside the untrusted-data frame, saying nothing was found, telling the model to tell the user so, and never to supply ids, names, clauses, figures or quotes no tool returned. This covers every tool, current and future.
-    2. **A grounding check on the finished answer.** Record ids the answer cites (the database's cuid-style ids and UUIDs) that appear in no tool result of the conversation are listed in a notice appended to the answer, and the event is logged.
-    3. **A new orchestrator rule, A13,** states the same.
-    4. **The logic is testable in isolation.** It lives in a dependency-free module, `app/grounding.py`. Its standard-library tests run in CI's agents job.
+  - **What changed** (agents service):
+    1. **Every tool result is classified** by `app/grounding.py`, a module with no dependencies beyond the standard library:
+       - `classify_result` sorts a result into found, empty or not found. Empty: an empty list, or lists all empty with totals zero (facets, coverage and paging are ignored). Not found: `found: false`, a 404, or an error saying not found. Anything else is found: a record, a list, and an error that isn't a miss, such as rate limiting.
+       - An empty or not-found result reaches the model with a `[PLATFORM NOTE — not document data]` after its untrusted-data frame: say nothing was found, and why if the result says, and supply no ids, names, clauses, figures or quotes no tool returned.
+       - The orchestrator applies it to every tool call in the turn and to earlier turns' results replayed from the session, so it covers every tool, current and future. Platform errors (an unknown tool, a tool that raised) are left as they were.
+    2. **The finished answer is checked.** Record ids it cites, cuids and UUIDs, that appear in nothing the model was given (tool results, the user's messages, the page context) are named in a notice at the end of the answer ("… may not exist"). The notice is streamed, saved with the answer, and the event is logged with the tools the turn used.
+    3. **Rule A15, NOTHING FOUND MEANS NOTHING FOUND,** says the same in the agent's system prompt. The plan said A13, but A13 was already taken twice (COVERAGE, NAMES ARE NOT IDS) and A14 by the tool budget.
+    4. **CI's agents job runs the unit tests** (`python -m unittest discover -s tests -t .`), and its comments no longer say there are none.
+  - **Verification:**
+    - `tests/test_grounding.py` (10), standard library only:
+      - 7 empty results classify as empty, including a search with facets and a coverage block, and a zero count;
+      - 5 misses classify as not found: X78's redline 404, `found: false`, "Clause not found" with its list, `NOT_FOUND`, and a plain-text 404;
+      - 7 ordinary results classify as found: a record whose child list is empty, an error that isn't a miss, and prose containing "not found";
+      - each empty or not-found result carries the note after its frame, never inside it, while a result with content carries none;
+      - an answer citing an id no tool returned is flagged and named in the notice, while ids a tool or the user gave are not; a 25-letter word isn't an id, and the notice names at most three.
+    - The orchestrator imports, and the prompt the agent runs on carries A15. The app imports as CI's step does (30 routes).
+    - Live, one chat turn (gemini-2.5-flash) with the agents service restarted on the new code: X78's request, "Redline section 8" of the Northwind Analytics SOW, whose current version has no extracted clauses. It made one `redline_propose` call and answered that it was "unable to redline section 8 because the contract has no extracted clauses yet", with no clauses invented.
   - **Acceptance criteria:**
-    1. These are classified empty: empty lists, zero totals, `found: false`, and 404 or not-found errors. Ordinary results are not.
-    2. Every empty result the model sees carries the note.
-    3. An answer citing an id no tool returned ends with the notice. An id a tool did return doesn't trigger it.
-    4. CI's agents job runs these tests.
-    5. Live check, one model call: X78's request on a contract with no extracted clauses gets "nothing to redline yet", not invented clauses.
+    - 1 met: empty lists, zero totals, `found: false`, and 404 or not-found errors are classified empty or not found; ordinary results are not.
+    - 2 met: every empty result the model sees, in the turn or replayed, carries the note.
+    - 3 met: an answer citing an id no tool returned ends with the notice; an id a tool returned doesn't trigger it.
+    - 4 met: CI's agents job runs these tests.
+    - 5 met: the live check above.
+  - **Out of scope:** checking figures, names and quotes in an answer against the tool results. The note tells the model not to supply them; only record ids are checked mechanically, since they can be matched exactly.
+
+
+- **Closing (2026-09-24).** All six are done, each with a test that failed before it and one commit, as Neelam, on `fix/audit-2026-09-22` (not pushed):
+
+  | Task | Commit | What stops the next occurrence |
+  |---|---|---|
+  | Y1 | bb7fc29 | Postgres row-level security under a Prisma tenant guard, and a crawl of every route across orgs |
+  | Y2 | 25be72c | One outbound boundary for model calls, the same check on tool responses, and a tripwire on `fetch` |
+  | Y3 | fb9483d | A generated route permission table: gates and the API client read it, and a test checks it is current |
+  | Y4 | 4cdb23a | One scrubber on stdout and stderr, every logger routed through it, and `devPrint` as the only exception |
+  | Y5 | f3a5f5c | One reader of `NODE_ENV`, strict unless development or test, and a registry of flags that stop a strict boot |
+  | Y6 | this entry's commit | Every empty tool result carries a note, and answers are checked for ids no tool returned |
+
+  - **Final verification** on the finished branch: typecheck, lint (no new warnings), unit 373, web 62, integration 398 (60 files); the agents service's 10 unit tests; the agents app imports.
+  - **Local state changed:** the dev database has Y1's migration (a dump was taken first). The agents service on :8003 was restarted on the new code with the old process's app settings.
+  - **Before deploying:** Y1 (run `scripts/check-cross-org-links.ts`; the migrating user needs `CREATEROLE`; grant the role to a separate app login) and Y5 (a staging or preview environment is now strict: strong secrets, a signing certificate, no development flags).
 
 ---
 
@@ -3061,7 +3090,7 @@ You asked for manual test cases covering every change on the branch. Writing the
    - Optional: `PII_TOKEN_SECRET`, the same on API and worker (X23); `METRICS_TOKEN` (X3).
    - Check `TRUST_PROXY_HOPS` (X30).
    - Inbound email needs `INBOUND_EMAIL_SECRET` in every environment (X35); without it the webhook answers 503, as production already did.
-   - For local development: `BULL_BOARD_OPEN=true` and `WEBHOOK_ALLOW_PRIVATE_URLS=true` are the explicit opt-ins (X35), and the seed takes `SEED_ADMIN_PASSWORD` (X41).
+   - For local development: `BULL_BOARD_OPEN=true` and `WEBHOOK_ALLOW_PRIVATE_URLS=true` are the explicit opt-ins (X35), and the seed takes `SEED_ADMIN_PASSWORD` (X41). Since Y5, `BULL_BOARD_OPEN` (and `INBOUND_EMAIL_ALLOW_ALL`) stop the boot outside development and tests.
 
 ### Known leftovers, not filed as tasks
 
@@ -3075,7 +3104,7 @@ You asked for manual test cases covering every change on the branch. Writing the
 - **What an admin key configured outlives it** (X46): webhooks, Slack settings, share links. An admin key is full access by design; review them after revoking a leaked one.
 - **A demoted maker's keys are refused, not revoked** (X46): re-promoting the maker brings them back, and the key list shows them as live.
 - **No narrower scope than `admin` for reading the member list** (X44): add `users:read` if a customer needs it.
-- **Dev conveniences keyed on `NODE_ENV`** (printed signing and share links, the self-signed signing certificate, relaxed rate limits). They only affect stacks run outside the production image. Logs are masked the same in every environment since X69.
+- ~~**Dev conveniences keyed on `NODE_ENV`**~~ Resolved by Y5 (f3a5f5c): they apply only when `NODE_ENV` is exactly `development` or `test`. Staging, previews and an unset value are strict, and a development-only flag stops their boot.
 - **Pre-existing:** two type errors in `prisma/seed.ts`'s role-permission code; the seed runs through tsx and isn't in the project typecheck.
 - **The Original PDF view has no selectable text** (X49): `@react-pdf-viewer` 3.12 predates pdf.js 4's text-layer API. Fixing it means replacing the viewer. Keep the pdf.js ≥4.2.67 override, the fix for CVE-2024-4367.
 - **Sessions, left as is:**
@@ -3087,8 +3116,8 @@ You asked for manual test cases covering every change on the branch. Writing the
   - A chat redline's preview shows the PII tokens themselves; the applied text has the real values (X23).
   - The portfolio query's search is a keyword ranking and can return near matches: "Stark Industries" for "Ironbridge Industrial Group" (X15).
 - **Permission-gated buttons appear a moment late** (X75): `usePermission` is false until the roles load, so permitted users see create and edit buttons after a beat.
-- **The contract page's Actions menu still shows items a viewer can't use** (X75): its items need different permissions, and some only read.
-- **The chat model can still invent specifics when a tool finds nothing:** X78 closes one path, the redline tool with no clauses. Other tools' empty results rely on the prompt's grounding rules.
+- ~~**The contract page's Actions menu still shows items a viewer can't use**~~ Resolved by Y3 (fb9483d): Share and Create amendment follow the server's route permissions, and the API client refuses a write the user can't make.
+- ~~**The chat model can still invent specifics when a tool finds nothing**~~ Resolved by Y6: every empty or not-found tool result carries the platform's note, and an answer citing a record id no tool returned ends with a notice. Figures, names and quotes are covered by the note, not checked mechanically.
 - **Small wording issues seen in the checks:** the Playbook review summary counts findings as deviations (V1). The contract header says "Edited just now" after an analysis writes its results.
 - **Audit volume:** every `GET /contracts/:id` writes a `CONTRACT_VIEWED` event, so the page's polling during an analysis wrote 33 in 40 minutes for one contract. Worth a look before the audit log grows.
 - **Audit writes follow their change outside its transaction**, as PATCH's already did. If the audit store fails, the change stands and the client gets a 500. X5 moved the org-settings audit inside its transaction; the others weren't.
