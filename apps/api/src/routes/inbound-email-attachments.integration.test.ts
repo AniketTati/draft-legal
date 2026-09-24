@@ -87,6 +87,18 @@ describe('inbound email attachments', () => {
     expect(await versions()).toBe(before + 1)
   })
 
+  // X66 — the size check that answers 413 saw only JSON attachments. A file
+  // part over the limit reached it empty, so an email whose only document
+  // was too large was told it had no PDF or DOCX.
+  it('an email whose only document is too large is told so (413)', async () => {
+    const before = await versions()
+    const huge = Buffer.concat([pdf('huge'), Buffer.alloc(26 * 1024 * 1024, 0x20)])
+    const res = await email([{ name: 'scan.pdf', type: 'application/pdf', body: huge }])
+    expect(res.statusCode).toBe(413)
+    expect(res.json().error).toBe('Attachment too large (25MB limit)')
+    expect(await versions()).toBe(before)
+  })
+
   it('with no usable document, the reply still names what was attached', async () => {
     const res = await email([{ name: 'photo.png', type: 'image/png', body: PNG }])
     expect(res.statusCode).toBe(400)

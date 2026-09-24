@@ -2255,6 +2255,11 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** when every signer has signed but this call didn't complete the request, the route re-reads it. If a simultaneous final signature completed it, the answer is 200 `allSigned: true` as before. Otherwise (voided or expired meanwhile) it answers 409, "This signing request changed meanwhile. Reload the page.", the same answer as a void that lands just before the signature.
   - **Verification:** `routes/signing-turn.integration.test.ts` +1 case: a void injected just before the completing transaction gives a 409; the request stays VOIDED, the contract isn't executed and no COMPLETED event is written. It fails on the old route (200). Two final signatures at once still both get 200 and complete the request once; 4/4 pass, and `signing-tokens.integration.test.ts` 6/6.
 
+- **X66 — An email whose only document was too large was told it had none (Low). — DONE.** A gap in X14, found while writing the QA test cases (TC-DOC-09).
+  - `POST /inbound/email` answers 413 "Attachment too large (25MB limit)" when every document is over the limit. That check measured the attachment's content. Providers post multipart, and the multipart reader stops reading a file part at the limit and keeps no content, so the check saw an empty attachment. The email got 400 "No PDF or DOCX attachment found". The JSON form, the only one where the check worked, can't carry a file that large anyway: the API's 1 MiB body limit refuses it first.
+  - **What changed:** the multipart reader marks a file part over the limit as oversized, and the check counts it as too large. X14's behaviour stays: an oversized document is skipped for the next usable one.
+  - **Verification:** `routes/inbound-email-attachments.integration.test.ts` +1 case: an email whose only attachment is a 26 MB PDF gets the 413 and no version is stored. It fails on the old reader (400); 4/4 pass, including X14's "oversized first document is skipped for the next one".
+
 ---
 
 ## Run log
@@ -2373,6 +2378,7 @@ X62 — DONE — a matter's header shows its linked counterparty by the record's
 X63 — DONE — reconciling an invoice records OBLIGATION_COMPLETED only when it closed the obligation — (sha: pending)
 X64 — DONE — the seed refuses a production password containing password123 with its own message (the length rule hid it, and Password123! passed) — (sha: pending)
 X65 — DONE — a final signature that loses to a void answers 409 "changed meanwhile", not 200 allSigned: true; a simultaneous final signature still gets 200 — (sha: pending)
+X66 — DONE — an emailed document over 25 MB gets the 413 it was meant to (the multipart reader dropped its content, so it read as "no PDF or DOCX") — (sha: pending)
 
 ---
 

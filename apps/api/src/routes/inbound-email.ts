@@ -53,6 +53,8 @@ const InboundEmailSchema = z.object({
     filename: z.string(),
     contentType: z.string(),
     contentBase64: z.string(),
+    // X66 — a file part over the size limit arrives without its content.
+    oversized: z.boolean().optional(),
   })).default([]),
 })
 
@@ -89,7 +91,7 @@ async function readInboundBody(req: FastifyRequest): Promise<unknown> {
   if (!isMultipart) return req.body
 
   const fields: Record<string, string> = {}
-  const attachments: Array<{ filename: string; contentType: string; contentBase64: string }> = []
+  const attachments: Array<{ filename: string; contentType: string; contentBase64: string; oversized?: boolean }> = []
   let totalBytes = 0
 
   const parts = (req as unknown as {
@@ -108,8 +110,14 @@ async function readInboundBody(req: FastifyRequest): Promise<unknown> {
         continue
       }
       const buf = await part.toBuffer()
-      // Over the per-file limit: skip it and let the next candidate be tried.
-      if (part.file.truncated || !checkUpload(buf, part.mimetype, PDF_OR_DOCX).ok) {
+      // Over the per-file limit: skip it and let the next candidate be tried,
+      // saying it was too large (X66: it reached the check below empty, so an
+      // email whose only document was too large got "no PDF or DOCX").
+      if (part.file.truncated) {
+        attachments.push({ ...listOnly, oversized: true })
+        continue
+      }
+      if (!checkUpload(buf, part.mimetype, PDF_OR_DOCX).ok) {
         attachments.push(listOnly)
         continue
       }
@@ -289,7 +297,7 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
     for (const a of body.attachments) {
       const bytes = Buffer.from(a.contentBase64, 'base64')
       // X14 — an oversized document is skipped, so the next one gets its turn.
-      if (bytes.length > MAX_ATTACHMENT_BYTES) { tooLarge = true; continue }
+      if (a.oversized || bytes.length > MAX_ATTACHMENT_BYTES) { tooLarge = true; continue }
       const checked = checkUpload(bytes, a.contentType, PDF_OR_DOCX)
       if (checked.ok) { pdfOrDocx = a; mimeType = checked.mimeType; break }
     }
