@@ -2217,6 +2217,14 @@ If Docker cannot run, do **not** block: finish the code and unit tests, mark the
   - **What changed:** `/agent` adds the proposed `redline_apply` action to the card's own message, where the existing Apply / Edit / Cancel card takes over and applies it through `POST /agent/threads/:id/actions/apply` (which already allowed `redline_apply`). The rail is unchanged.
   - **Verification:** web typecheck and lint pass. The web app has no component tests; the browser check is in the run log.
 
+- **X59 — An organization without a logo could not save its settings (Low). — DONE.** Found while writing the QA test cases. It predates this branch.
+  - Admin → Organization → General sends what its fields hold, so an empty Logo URL field arrives as `''`. `PATCH /organization` required a URL there, so the save was refused (422): the org couldn't change its name or brand colour until it set a logo.
+  - **What changed:**
+    - The API treats a blank logo or brand colour as "none" and stores null.
+    - The page sends null for an empty field.
+    - A non-empty logo must still be a URL.
+  - **Verification:** `routes/organization.integration.test.ts` +2 cases: a save with an empty logo and colour clears both and keeps the new name; a real URL saves; `not a url` is still refused (422) and changes nothing. The first fails on the old schema; 13/13 pass.
+
 ---
 
 ## Run log
@@ -2328,6 +2336,7 @@ X55 — DONE — the per-contract Q&A sends the agents service's secret (it answ
 X56 — DONE — retyping an approved contract (the page's type chip, the agent's retype) returns it to DRAFT like X42's other paths; type changes are audited — (sha: pending)
 X57 — DONE — a failed redline job records its own failure and reason (the panel stopped spinning) and follow-on jobs no longer mark the contract's analysis FAILED — (sha: pending)
 X58 — DONE — Apply on a redline card in /agent adds its Apply / Edit / Cancel card to that message (the rail's event had no listener there) — (sha: pending)
+X59 — DONE — an organization with no logo can save its settings; a blank logo or colour clears it, a non-URL logo is still refused — (sha: pending)
 
 ---
 

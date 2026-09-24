@@ -13,10 +13,15 @@ import { clearOrgPiiModeCache } from '../lib/pii-policy.js'
 import { mergeOrgSettings, addToOrgSettingsList, type OrgDb } from '../lib/org-settings.js'
 import { AuditAction } from '@clm/types'
 
+// X59 — the settings form sends what its fields hold, so "no logo" arrives as
+// ''. A blank clears the field; before, it failed the URL check and the org
+// could not save its name or colour without a logo.
+const blankToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v)
+
 const UpdateOrgSchema = z.object({
   name: z.string().min(1).optional(),
-  logoUrl: z.string().url().optional().nullable(),
-  brandColor: z.string().optional().nullable(),
+  logoUrl: z.preprocess(blankToNull, z.string().url().optional().nullable()),
+  brandColor: z.preprocess(blankToNull, z.string().optional().nullable()),
   settings: z.record(z.unknown()).optional(),
 })
 

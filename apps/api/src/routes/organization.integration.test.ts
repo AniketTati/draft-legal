@@ -148,3 +148,26 @@ describe('PATCH /organization protects piiRedactionMode', () => {
     expect((await patch(['ADMIN'], { hasOwnProperty: 'z' })).statusCode).toBe(200)
   })
 })
+
+// X59 — the General tab sends what its fields hold, and an empty logo field is
+// ''. The schema required a URL, so an org without a logo could not save its
+// name or colour at all.
+describe('PATCH /organization logo and brand colour', () => {
+  const patch = (payload: Record<string, unknown>) =>
+    app.inject({ method: 'PATCH', url: '/api/v1/organization', headers: auth(org, ['ADMIN']), payload })
+  const stored = () => prisma.organization.findUniqueOrThrow({ where: { id: org }, select: { name: true, logoUrl: true, brandColor: true } })
+
+  it('saves with an empty logo field, which clears the logo', async () => {
+    await prisma.organization.update({ where: { id: org }, data: { logoUrl: 'https://cdn.example.com/logo.png', brandColor: '#123456' } })
+    const res = await patch({ name: 'Org Settings Org Renamed', logoUrl: '', brandColor: '' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().logoUrl).toBeNull()
+    expect(await stored()).toEqual({ name: 'Org Settings Org Renamed', logoUrl: null, brandColor: null })
+  })
+
+  it('a real logo URL still saves, and anything else is still refused', async () => {
+    expect((await patch({ logoUrl: 'https://cdn.example.com/new.png' })).statusCode).toBe(200)
+    expect((await patch({ logoUrl: 'not a url' })).statusCode).toBe(422)
+    expect((await stored()).logoUrl).toBe('https://cdn.example.com/new.png')
+  })
+})

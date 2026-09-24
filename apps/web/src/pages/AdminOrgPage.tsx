@@ -72,7 +72,7 @@ export function AdminOrgPage() {
   }, [org])
 
   const saveOrg = useMutation({
-    mutationFn: (body: { name: string; logoUrl: string; brandColor: string }) =>
+    mutationFn: (body: { name: string; logoUrl: string | null; brandColor: string | null }) =>
       api.patch('/organization', body).then(r => r.data),
     onSuccess: () => {
       setSuccessMsg('Organization settings saved.')
@@ -91,7 +91,8 @@ export function AdminOrgPage() {
   const handleSave = () => {
     setErrorMsg('')
     setSuccessMsg('')
-    saveOrg.mutate({ name: orgName, logoUrl, brandColor })
+    // An empty field clears it (X59).
+    saveOrg.mutate({ name: orgName, logoUrl: logoUrl.trim() || null, brandColor: brandColor.trim() || null })
   }
 
   return (
