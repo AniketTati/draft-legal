@@ -28,7 +28,8 @@ import { seedBuiltInSkills } from './seed-skills.js'
 import { seedPlaybookRules } from './seed-playbook-rules.js'
 import { ensureBucket } from '../src/lib/storage.js'
 import { numberedSections } from '../src/lib/numbered-sections.js'
-import { legalChunkAndStore } from '../src/lib/legal-chunker.js'
+import { legalChunkAndStore, CLAUSES_INDEX } from '../src/lib/legal-chunker.js'
+import { es } from '../src/lib/elasticsearch.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURES = join(__dirname, 'fixtures/ai-demo')
@@ -395,6 +396,14 @@ async function clearAiDemoContracts(orgId: string) {
   await prisma.contract.updateMany({ where: { id: { in: ids } }, data: { currentVersionId: null } })
   await prisma.contractVersion.deleteMany({   where: { contractId: { in: ids } } })
   await prisma.contract.deleteMany({ where: { id: { in: ids } } })
+  // Z9 — and from search: a re-seed recreates these contracts under new ids,
+  // and the old documents stayed, so search listed each twice, once as a 404.
+  try {
+    await es.deleteByQuery({ index: 'contracts', body: { query: { ids: { values: ids } } }, refresh: true })
+    await es.deleteByQuery({ index: CLAUSES_INDEX, body: { query: { terms: { contractId: ids } } }, refresh: true })
+  } catch (e) {
+    console.warn(`  ⚠ search index not cleared (${(e as Error).message.slice(0, 80)}) — run backfill-es-index`)
+  }
   return ids.length
 }
 

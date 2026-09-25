@@ -2801,6 +2801,7 @@ Preparing the first-customer demo turned up screens that promise what the produc
     - The demo scripts looked the org up by the name that seed-ai-demo.ts gives it, which setup lets fail.
     - **The clause chunker never finished a clause over 2,000 characters** (`legal-chunker.ts`). The last window stepped back by the overlap and was cut again, forever, until the worker ran out of memory. It stops at the end now, with a test. This affected every long clause, not just the seed.
     - seed-ai-demo.ts couldn't re-seed once a demo contract had an approval or a signature request. Its cleanup now removes their steps, signers and events, and unlinks invoices and child contracts.
+    - A re-seed left the old contracts' search documents behind, so search listed each demo contract twice, once as a 404. The cleanup now removes them from both search indexes. The dev workspace had 29 such documents, which were deleted.
   - **What changed:**
     - **`lib/demo-workspace.ts` (moved from prisma/seed.ts) sets up:**
       - all nine roles;
