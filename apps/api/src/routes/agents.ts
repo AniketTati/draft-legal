@@ -18,6 +18,7 @@ import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfu
 import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { modelFetch } from '../lib/model-boundary.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
@@ -363,9 +364,12 @@ export async function agentRoutes(app: FastifyInstance) {
     if (body.saveAs?.contractId) {
       const target = await prisma.contract.findFirst({
         where:  { id: body.saveAs.contractId, orgId, deletedAt: null },
-        select: { id: true },
+        select: { id: true, externalEdit: true },
       })
       if (!target) return reply.status(404).send({ detail: 'Contract not found' })
+      // BB3 — no new version while a Google Docs copy is out.
+      const lock = lockOf(target.externalEdit)
+      if (lock) return reply.status(409).send(lockedBody(lock))
     }
     let counterparty: { id: string; name: string } | null = null
     if (body.saveAs?.counterpartyId && !body.saveAs.contractId) {

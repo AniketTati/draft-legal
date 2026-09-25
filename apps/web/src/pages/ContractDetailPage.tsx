@@ -20,7 +20,7 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, FileDown,
 } from 'lucide-react'
 import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
@@ -68,6 +68,10 @@ import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
 import { useCanRequest } from '@/lib/permissions'
 import { Can } from '@/components/auth/Can'
+import {
+  ExternalEditBanner, GoogleDocsStartDialog, RedlineNoticeBanner, downloadForCounterparty,
+  type ExternalEditLock, type RedlineNotice,
+} from '@/components/contracts/GoogleDocsEdit'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -383,6 +387,10 @@ export function ContractDetailPage() {
   const [pdfError, setPdfError] = useState<string | null>(null)
   // L6 #7 — Download had no error state at all; a 404 closed the menu silently.
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  // BB4 — Edit in Google Docs, and the counterparty's redline.
+  const [googleDocsOpen, setGoogleDocsOpen] = useState(false)
+  const [redlineNotice, setRedlineNotice] = useState<RedlineNotice | null>(null)
+  const [redlinePending, setRedlinePending] = useState(false)
   const [showAllFlags, setShowAllFlags] = useState(false)
   const [editingType, setEditingType] = useState(false)
   const [showFindings, setShowFindings] = useState(false)
@@ -468,7 +476,7 @@ export function ContractDetailPage() {
   // X75, Y3 — each action is offered only to a user who may make the request
   // it sends, by the permission the server's route for it needs: a viewer was
   // let into Edit mode, and every save failed (403) behind "Save failed".
-  const canEdit = useCanRequest('POST /contracts/:id/html-version')
+  const mayEdit = useCanRequest('POST /contracts/:id/html-version')
   const canChangeStatus = useCanRequest('PATCH /contracts/:id')
   const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
   const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
@@ -614,7 +622,15 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract', id] })
       qc.invalidateQueries({ queryKey: ['contract-versions', id] })
     },
-    onError: () => setSaveState('error'),
+    onError: (err) => {
+      setSaveState('error')
+      // BB4 — someone took a Google Docs copy while this was open for editing.
+      const data = (err as { response?: { data?: { code?: string; detail?: string } } })?.response?.data
+      if (data?.code === 'EDITING_IN_GOOGLE_DOCS') {
+        toast.error('Not saved: this contract is being edited in Google Docs', { description: data.detail, durationMs: 9000 })
+        qc.invalidateQueries({ queryKey: ['contract', id] })
+      }
+    },
   })
 
   const flushPendingSave = () => {
@@ -690,9 +706,16 @@ export function ContractDetailPage() {
         (s && IN_PROGRESS_STATUSES.includes(s)) ||
         rm === 'ANALYZING' ||
         pr === 'QUEUED' || pr === 'RUNNING'
-      return inFlight ? 4000 : false
+      // BB4 — a Google Docs copy is out: notice when it comes back.
+      return inFlight ? 4000 : q.state.data?.externalEdit ? 15000 : false
     },
   })
+  // BB4 — while a Google Docs copy is out, the document here is read-only.
+  const externalEdit = (contract?.externalEdit ?? null) as ExternalEditLock | null
+  const canEdit = mayEdit && !externalEdit
+  useEffect(() => {
+    if (externalEdit && isEditing) setIsEditing(false)
+  }, [externalEdit, isEditing])
 
   const { data: versionsData } = useQuery({
     queryKey: ['contract-versions', id],
@@ -1403,6 +1426,17 @@ export function ContractDetailPage() {
               >
                 <FileEdit className="size-4" /> Edit
               </Button>
+            ) : mayEdit && externalEdit ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                className="gap-1.5"
+                title={`${externalEdit.startedByName} is editing this contract in Google Docs`}
+                data-testid="edit-locked-btn"
+              >
+                <FileEdit className="size-4" /> In Google Docs
+              </Button>
             ) : null}
 
             {/* Status transition buttons */}
@@ -1553,6 +1587,32 @@ export function ContractDetailPage() {
                     <GitBranch className="size-4" /> Create amendment
                   </DropdownMenuItem>
                 </Can>
+                {/* BB4 — their Word file, round-tripped. */}
+                <Can request="POST /contracts/:id/external-edit/start">
+                  <DropdownMenuItem
+                    onSelect={() => setGoogleDocsOpen(true)}
+                    disabled={!!externalEdit}
+                    data-testid="edit-in-google-docs-menu-item"
+                  >
+                    <FileEdit className="size-4" /> Edit in Google Docs
+                  </DropdownMenuItem>
+                </Can>
+                <Can request="GET /contracts/:id/redline/counterparty">
+                  <DropdownMenuItem
+                    disabled={redlinePending}
+                    onSelect={async () => {
+                      if (!id) return
+                      setRedlinePending(true)
+                      setRedlineNotice(null)
+                      setRedlineNotice(await downloadForCounterparty(id))
+                      setRedlinePending(false)
+                    }}
+                    data-testid="download-for-counterparty-menu-item"
+                  >
+                    {redlinePending ? <Loader2 className="size-4 animate-spin" /> : <FileDown className="size-4" />}
+                    Download for counterparty (Word)
+                  </DropdownMenuItem>
+                </Can>
                 {/* P9 Step 6 — bundle audit trail + signers + signed PDF into
                     a single auditor-ready compliance package. */}
                 {contract?.status === 'EXECUTED' && id && (
@@ -1593,6 +1653,10 @@ export function ContractDetailPage() {
           </div>
         </div>
 
+        {externalEdit && id && (
+          <ExternalEditBanner contractId={id} lock={externalEdit} canPublish={mayEdit} />
+        )}
+        {redlineNotice && <RedlineNoticeBanner notice={redlineNotice} onDismiss={() => setRedlineNotice(null)} />}
         {downloadError && (
           <div
             role="alert"
@@ -3989,6 +4053,8 @@ export function ContractDetailPage() {
 
       {/* end of two-column body */}
       </div>
+
+      {id && <GoogleDocsStartDialog contractId={id} open={googleDocsOpen} onClose={() => setGoogleDocsOpen(false)} />}
 
       {/* Share dialog */}
       {showShareDialog && id && (

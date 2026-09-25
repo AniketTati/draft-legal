@@ -301,7 +301,11 @@ export async function generateCompliancePackage({ contractId, orgId }: Complianc
     }
   }
 
-  return await out.save()
+  // A classic cross-reference table rather than pdf-lib's default object
+  // streams: older readers (pdf.js 1.x, as pdf-parse bundles) misread the
+  // compressed table at some byte offsets and reported the package corrupt,
+  // about one save in forty. The file is an auditor's; any reader must open it.
+  return await out.save({ useObjectStreams: false })
 }
 
 function drawFooter(page: ReturnType<PDFDocument['addPage']>, font: ReturnType<PDFDocument['embedFont']> extends Promise<infer T> ? T : never, pageNum: number, orgName: string) {

@@ -9,6 +9,7 @@
  * schema is general — later orgs add rules to any category/position
  * they like.
  */
+import { pathToFileURL } from 'node:url'
 import { PrismaClient } from '@prisma/client'
 import { DEMO_ORG_SLUG } from '../src/lib/demo-workspace.js'
 
@@ -111,7 +112,7 @@ const LIABILITY_RULES = {
   ],
 }
 
-const isCli = import.meta.url === `file://${process.argv[1]}`
+const isCli = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 if (isCli) {
   seedPlaybookRules(p)
     .then(async () => { console.log('Done.'); await p.$disconnect() })

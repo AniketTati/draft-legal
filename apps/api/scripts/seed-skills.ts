@@ -12,6 +12,7 @@
  * Run:
  *   pnpm tsx --env-file=.env apps/api/scripts/seed-skills.ts
  */
+import { pathToFileURL } from 'node:url'
 import { PrismaClient } from '@prisma/client'
 
 interface BuiltIn {
@@ -48,24 +49,34 @@ const BUILT_INS: BuiltIn[] = [
       'You are running the "Review contract" skill. The user wants a grounded,',
       'non-fabricated review of the contract they are currently viewing.',
       '',
-      'Deliverable — structure your final answer as FOUR short sections in this',
-      'order, each no more than 3 bullets unless the user asks for more:',
+      'Deliverable — structure your final answer as FIVE short sections in this',
+      'order, each no more than 3 bullets unless the user asks for more. The',
+      'skill promises all five (summary, top risks, playbook deviations and',
+      'suggested redlines): a review that skips one is not the review offered.',
       '',
       '  1. SUMMARY — what this contract is, in plain English (2 sentences).',
       '  2. KEY TERMS — dates, value, term length, renewal, jurisdiction.',
       '  3. TOP RISKS — 3 highest-severity items only, each with a quote from',
       '     the clause and the clause reference (e.g. "§9.2").',
-      '  4. NEXT STEPS — 2-3 actions the user should consider (e.g. "propose',
-      '     a redline to §9.2 to add a carve-out for wilful misconduct").',
+      '  4. PLAYBOOK — call playbook_check and list the clauses that deviate',
+      '     from our playbook, worst first, with the position they miss. Only',
+      '     what the check reports as failing, or what the clause\'s own words',
+      '     plainly contradict (quote both). Never infer one: a cap written',
+      '     "each party\'s aggregate liability" is mutual. If the check covers',
+      '     none of the clauses, say the playbook has no position for them',
+      '     rather than calling the contract compliant.',
+      '  5. SUGGESTED REDLINES — for the one or two worst deviations, the change',
+      '     to ask for in one line each (e.g. "§3: raise the cap to 12 months of',
+      '     fees"). Offer to draft them with redline_propose; do not apply anything.',
       '',
       'Rules:',
-      ' • ALWAYS call contract_get first to pin down the facts. Never answer',
-      '   from the page title alone.',
+      ' • ALWAYS call contract_get first to pin down the facts, then',
+      '   playbook_check. Never answer from the page title alone.',
       ' • Quote directly from the contract when raising a risk. No paraphrase',
       '   that the user cannot verify at a glance.',
       ' • If the contract has no AI analysis yet, say so and stop — do not',
       '   guess at risks.',
-      ' • Keep the entire answer under 350 words unless the user asks you to',
+      ' • Keep the entire answer under 450 words unless the user asks you to',
       '   expand a section.',
     ].join('\n'),
   },
@@ -384,7 +395,7 @@ export async function seedBuiltInSkills(prisma: PrismaClient, log: (msg: string)
 }
 
 // CLI entrypoint — detect if we were run directly (node/tsx) vs imported.
-const isCli = import.meta.url === `file://${process.argv[1]}`
+const isCli = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 if (isCli) {
   const prisma = new PrismaClient()
   seedBuiltInSkills(prisma)

@@ -48,11 +48,57 @@ export async function findCategoryForClauseType(
   return matchCategory(categories, clauseType)
 }
 
+/**
+ * The extractor's clause types (apps/agents review_agent.py) and the words an
+ * org's category for each is named with. Playbooks name categories as people
+ * do ("Fees & Payment", "Term & Termination"), and an exact-name join left
+ * most clauses with no playbook at all: "payment" never met "Fees & Payment".
+ */
+const CATEGORY_WORDS: Record<string, string[]> = {
+  payment:                 ['payment', 'fees', 'pricing'],
+  price_adjustment:        ['fees', 'pricing', 'payment'],
+  termination:             ['termination', 'term'],
+  auto_renewal:            ['renewal', 'termination', 'term'],
+  renewal_term:            ['renewal', 'termination', 'term'],
+  limitation_of_liability: ['liability'],
+  uncapped_liability:      ['liability'],
+  liquidated_damages:      ['liability', 'damages'],
+  indemnification:         ['indemn'],
+  confidentiality:         ['confidential'],
+  data_protection:         ['data', 'privacy'],
+  ip_ownership:            ['intellectual property', 'ip'],
+  license_grant:           ['licen', 'intellectual property'],
+  warranty:                ['warrant', 'representation'],
+  governing_law:           ['governing law', 'law'],
+  dispute_resolution:      ['dispute', 'arbitration'],
+  assignment:              ['assignment'],
+  change_of_control:       ['change of control', 'assignment'],
+  force_majeure:           ['force majeure'],
+  notice:                  ['notice'],
+  insurance:               ['insurance'],
+  audit_rights:            ['audit'],
+  non_solicitation:        ['solicit'],
+  non_compete:             ['compet'],
+  exclusivity:             ['exclusiv'],
+  sla:                     ['service level', 'performance'],
+  acceptance:              ['acceptance'],
+}
+
 /** Pure form, for callers that already hold the org's categories. */
 export function matchCategory(
   categories: MatchedCategory[],
   clauseType: string,
 ): MatchedCategory | null {
   const key = normalisedKey(clauseType)
-  return categories.find(c => normalisedKey(c.name) === key) ?? null
+  const exact = categories.find(c => normalisedKey(c.name) === key)
+  if (exact) return exact
+  // Otherwise the category whose name carries the type's words, in the
+  // order they're listed (the likeliest first).
+  const words = CATEGORY_WORDS[key.replace(/ /g, '_')] ?? []
+  for (const w of words) {
+    const re = new RegExp(`(^|[^a-z])${w.replace(/ /g, '\\s+')}`, 'i')
+    const hit = categories.find(c => re.test(normalisedKey(c.name)))
+    if (hit) return hit
+  }
+  return null
 }

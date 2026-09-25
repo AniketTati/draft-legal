@@ -71,6 +71,36 @@ afterAll(async () => {
   await closeApp()
 })
 
+describe('CC5 — a template that names the parties by role', () => {
+  it('puts us in the customer role and the counterparty in the provider role, or the other way round for a sell-side template', async () => {
+    const orgName = (await prisma.organization.findUniqueOrThrow({ where: { id: org } })).name
+    const vars = [{ key: 'customerName', label: 'Customer Name' }, { key: 'providerName', label: 'Provider Name' }]
+    const buy = await template('CC5 services (Buy-Side)', null, '<p>{{customerName}} engages {{providerName}}.</p>', vars)
+    const sell = await template('CC5 services (Sell-Side)', null, '<p>{{providerName}} serves {{customerName}}.</p>', vars)
+
+    const b = (await plan({ userMessage: 'Draft an MSA with Initech', templateId: buy, counterpartyName: 'Initech' })).json()
+    expect(b.variables).toMatchObject({ customerName: orgName, providerName: 'Initech' })
+    expect(b.unfilledVariables).toEqual([])
+    const s = (await plan({ userMessage: 'Draft an MSA for Initech', templateId: sell, counterpartyName: 'Initech' })).json()
+    expect(s.variables).toMatchObject({ providerName: orgName, customerName: 'Initech' })
+  })
+})
+
+describe('CC5 — an NDA\'s term, and a venue that went with another law', () => {
+  it('sets how long confidentiality lasts from the term asked for, and leaves the venue to set when the law changed', async () => {
+    const nda = await template('CC5 duration and venue', null,
+      '<p>Confidentiality lasts {{confidentialityYears}} years. Governed by {{governingLaw}} law; courts of {{venueLocation}}.</p>',
+      [{ key: 'confidentialityYears', defaultValue: '3' }, { key: 'governingLaw', defaultValue: 'Delaware' }, { key: 'venueLocation', defaultValue: 'Wilmington, Delaware' }])
+    const p = (await plan({ userMessage: 'NDA with Initech, 5 years, New York law', templateId: nda, counterpartyName: 'Initech', governingLaw: 'New York', term: '5 years' })).json()
+    expect(p.variables).toMatchObject({ confidentialityYears: '5', governingLaw: 'New York' })
+    expect(p.variables.venueLocation).toBeUndefined()
+    expect(p.unfilledVariables).toContain('venueLocation')
+    // Same law as the template's: its venue stands.
+    const same = (await plan({ userMessage: 'NDA with Initech', templateId: nda, counterpartyName: 'Initech', governingLaw: 'Delaware' })).json()
+    expect(same.variables.venueLocation).toBe('Wilmington, Delaware')
+  })
+})
+
 describe('drafting plan', () => {
   it('fills the user\'s stated terms, the template\'s own defaults and our name — and creates nothing', async () => {
     const before = await prisma.contract.count({ where: { orgId: org } })

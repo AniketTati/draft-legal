@@ -30,6 +30,7 @@
  * the user's last choice.
  */
 import { useEffect, useRef, useState } from 'react'
+import { summarizeArgs } from '@/lib/tool-args-summary'
 import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 // One glyph for the machine: the diamond replaces every sparkle in the rail.
@@ -2645,48 +2646,6 @@ function formatRel(iso: string): string {
   return `${days}d`
 }
 
-/**
- * Turn an args object into a compact one-liner for the chip's closed state.
- * Knows about our four read tools' argument shapes so the summary is useful
- * at a glance; falls through to JSON for unknown tools.
- */
-function summarizeArgs(
-  args: Record<string, unknown>,
-  entityHint?: RailToolCall['entityHint'],
-): string {
-  const keys = Object.keys(args)
-  if (keys.length === 0 && !entityHint) return ''
-  const pick = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : undefined)
-
-  // A2/U5 — when the result hinted at a resolved entity title, lead with that.
-  // Truncate long titles so the chip stays a single line.
-  if (entityHint?.title) {
-    const title = entityHint.title.length > 36
-      ? entityHint.title.slice(0, 35) + '…'
-      : entityHint.title
-    const q = pick('query')
-    return q ? `${title} · "${q}"` : title
-  }
-
-  // contract_get / contract_summarize / clause_search
-  if (pick('contract_id')) {
-    const id = pick('contract_id')!.slice(0, 6)
-    const q = pick('query')
-    return q ? `${id}… · "${q}"` : `${id}…`
-  }
-  // contract_search
-  const bits: string[] = []
-  if (pick('query'))             bits.push(`"${pick('query')}"`)
-  if (pick('type'))              bits.push(`type=${pick('type')}`)
-  if (pick('status'))            bits.push(`status=${pick('status')}`)
-  if (pick('counterpartyName'))  bits.push(`cp=${pick('counterpartyName')}`)
-  if (typeof args.limit === 'number' && args.limit !== 10) bits.push(`limit=${args.limit}`)
-  if (bits.length > 0) return bits.join(' · ')
-
-  // Fallback — stringify; truncate.
-  const s = JSON.stringify(args)
-  return s.length > 60 ? s.slice(0, 60) + '…' : s
-}
 
 /**
  * TOOL TRANSPARENCY — what the tool actually found, from its real payload.

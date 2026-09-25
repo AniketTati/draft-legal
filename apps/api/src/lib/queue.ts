@@ -283,11 +283,11 @@ export function queuePlaybookRedline(payload: PlaybookRedlineJob): void {
     // One attempt. A retry re-runs every LLM call in the batch, and the job is
     // user-initiated — they can see it failed and press the button again.
     attempts: 1,
-    // Version-scoped like playbook-review, so a re-run against the SAME version
-    // is a no-op but the counterparty's next version gets its own run. Note
-    // BullMQ returns the existing job rather than throwing on a duplicate id,
-    // so the .catch below would never see that case.
-    jobId: `playbook-redline-${payload.contractId}-${payload.versionId}`,
+    // One job per press. A version-scoped id made "Try again" (and any second
+    // run on the same version) a silent no-op: BullMQ returns the kept job for
+    // a duplicate id, and the route had already marked the run QUEUED, so the
+    // rail waited forever. Two runs at once are refused by the route instead.
+    jobId: `playbook-redline-${payload.contractId}-${payload.versionId}-${Date.now()}`,
     removeOnComplete: 100,
     removeOnFail:     50,
   }).catch(err => console.warn('[queue] failed to enqueue playbook-redline:', err.message))

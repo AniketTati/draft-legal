@@ -145,3 +145,37 @@ describe('Z7 — no internal milestone codes in what users read', () => {
     expect(web('pages/ContractDetailPage.tsx')).toContain("onClick={() => setTab('comments')}")
   })
 })
+
+describe('BB4 — a file sent from the web app arrives as a file', () => {
+  /** The full argument list of each `api.post|put|patch(` call in `text`. */
+  const calls = (text: string) => [...text.matchAll(/api\.(?:post|put|patch)\(/g)].map(m => {
+    let depth = 0
+    for (let i = m.index! + m[0].length - 1; i < text.length; i++) {
+      if (text[i] === '(') depth++
+      else if (text[i] === ')' && --depth === 0) return text.slice(m.index!, i + 1)
+    }
+    return text.slice(m.index!)
+  })
+
+  it('every FormData posted goes as multipart: the client sends JSON unless told (publishing a Google Docs copy got "the request is not multipart")', () => {
+    let checked = 0
+    for (const { path, text } of webSources().filter(f => f.text.includes('new FormData()'))) {
+      const names = [...text.matchAll(/(?:const|let) (\w+) = new FormData\(\)/g)].map(m => m[1])
+      for (const call of calls(text).filter(c => names.some(n => new RegExp(`,\\s*${n}\\b`).test(c)))) {
+        expect(call, path).toContain('multipart/form-data')
+        checked++
+      }
+    }
+    expect(checked).toBeGreaterThan(3)
+  })
+})
+
+describe('CC6 — a conversation shows its own artifacts', () => {
+  it('starting a conversation, or opening another, clears the artifacts of the last one', () => {
+    const page = web('pages/AgentHomePage.tsx')
+    const start = page.slice(page.indexOf('const startNewConversation = () => {'), page.indexOf('// ── Send message'))
+    expect(start).toContain('setArtifacts([])')
+    const load = page.slice(page.indexOf('justStreamedThreadIdRef.current = null'), page.indexOf('api.get(`/agent/threads/${threadId}`)'))
+    expect(load).toContain('setArtifacts([])')
+  })
+})

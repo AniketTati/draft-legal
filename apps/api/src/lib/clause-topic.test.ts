@@ -86,3 +86,18 @@ describe('findTopic', () => {
     expect(hit?.index).toBe(0)
   })
 })
+
+describe('CC4 — how the assistant actually searches', () => {
+  const text = 'Thereafter, this Agreement will renew automatically for successive one (1) year terms unless either party gives notice of non-renewal.'
+
+  it('treats "A OR B", "A | B" and "A, B" as alternatives', () => {
+    expect(findTopic(text, 'auto-renew OR auto renew OR renewal')).not.toBeNull()
+    expect(findTopic(text, 'termination | auto-renew')).not.toBeNull()
+    expect(findTopic(text, '"notice period", renewal')).not.toBeNull()
+  })
+
+  it('finds a renewal written "renew automatically"', () => {
+    expect(findTopic('It will renew automatically each year.', 'auto-renew')?.matchedPhrase).toMatch(/renew/)
+    expect(findTopic('The term shall then renew automatically.', 'auto-renew')?.matchedPhrase).toBe('renew automatically')
+  })
+})

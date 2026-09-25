@@ -7,7 +7,7 @@
  * appending an amendment the user never approved) are legal, not technical.
  */
 import { describe, it, expect } from 'vitest'
-import { escapeHtml, __testing } from './clause-apply.js'
+import { escapeHtml, __testing, underHeading } from './clause-apply.js'
 
 const { spliceInto, findNormalizedSpan } = __testing
 const id = (s: string) => s
@@ -113,5 +113,105 @@ describe('a clause stored across line breaks', () => {
   it('is not matched across paragraphs', () => {
     const across = '8.1 Each party indemnifies the other.\n9. LIMITATION OF LIABILITY'
     expect(spliceInto(html, across, 'x'.repeat(30), escapeHtml).mode).toBe('none')
+  })
+})
+
+describe('a clause extracted with its section heading', () => {
+  const html = '<h1>2. FEES AND PAYMENT</h1><ol><li>Customer shall pay all invoices within <em>fifteen (15)</em> days of the invoice date.</li></ol>'
+    + '<h1>3. LIMITATION OF LIABILITY</h1><ol><li>Supplier’s liability shall not exceed one month of fees.</li></ol>'
+
+  it('is rewritten under its heading, which stays as it is', () => {
+    const under = underHeading(html,
+      '2. FEES AND PAYMENT Customer shall pay all invoices within fifteen (15) days of the invoice date.',
+      '2. FEES AND PAYMENT Customer shall pay all invoices within sixty (60) days of the invoice date.')
+    expect(under).toEqual({
+      clauseText: 'Customer shall pay all invoices within fifteen (15) days of the invoice date.',
+      proposed:   'Customer shall pay all invoices within sixty (60) days of the invoice date.',
+    })
+    const { text } = __testing.spliceInto(html, under!.clauseText, under!.proposed, escapeHtml)
+    expect(text).toContain('<h1>2. FEES AND PAYMENT</h1><ol><li>Customer shall pay all invoices within sixty (60) days of the invoice date.</li></ol>')
+  })
+
+  it('drops the heading from a rewrite that restates it, stop and all, or that left it out', () => {
+    expect(underHeading(html, '3. LIMITATION OF LIABILITY\nSupplier’s liability shall not exceed one month of fees.',
+      '3. LIMITATION OF LIABILITY. Each party’s liability shall not exceed twelve months of fees.')?.proposed)
+      .toBe('Each party’s liability shall not exceed twelve months of fees.')
+    expect(underHeading(html, '3. LIMITATION OF LIABILITY Supplier’s liability shall not exceed one month of fees.',
+      'Each party’s liability shall not exceed twelve months of fees.')?.proposed)
+      .toBe('Each party’s liability shall not exceed twelve months of fees.')
+  })
+
+  it('leaves a clause that does not start with a heading, or is only one, to the ordinary match', () => {
+    expect(underHeading(html, 'Customer shall pay all invoices within fifteen (15) days.', 'x')).toBeNull()
+    expect(underHeading(html, '2. FEES AND PAYMENT', 'x')).toBeNull()
+  })
+})
+
+describe('a clause that runs through formatting', () => {
+  it('is found, and replaced with the formatting around it kept balanced', () => {
+    const html = '<ol><li>Customer shall pay all invoices within <em>fifteen (15)</em> days of the invoice date.</li></ol>'
+    const { text, mode } = __testing.spliceInto(html, 'Customer shall pay all invoices within fifteen (15) days of the invoice date.', 'Customer shall pay all invoices within sixty (60) days.', escapeHtml)
+    expect(mode).not.toBe('none')
+    expect(text).toBe('<ol><li>Customer shall pay all invoices within sixty (60) days.</li></ol>')
+  })
+
+  it('closes formatting it starts inside of, and reopens formatting it ends inside of', () => {
+    const html = '<p>The <strong>Supplier Party</strong> shall deliver the Services on time, <em>subject to clause 9 and</em> the Order Form.</p>'
+    const { text } = __testing.spliceInto(html, 'Party shall deliver the Services on time, subject to clause 9', 'Party shall deliver the Services promptly', escapeHtml)
+    expect(text).toBe('<p>The <strong>Supplier </strong>Party shall deliver the Services promptly<em> and</em> the Order Form.</p>')
+  })
+})
+
+describe('a clause whose text runs across paragraphs', () => {
+  const { planEditsInBoth, applySpans } = __testing
+  const html = '<h1>3. LIMITATION OF LIABILITY</h1><ol><li>Supplier’s aggregate liability shall not exceed the fees paid in the one (1) month preceding the claim.</li>'
+    + '<li>Customer’s liability under this Agreement shall be unlimited.</li></ol><table><tr><td><p>Plan</p></td><td><p>USD 120,000</p></td></tr></table>'
+  const plain = '3. LIMITATION OF LIABILITY Supplier’s aggregate liability shall not exceed the fees paid in the one (1) month preceding the claim. Customer’s liability under this Agreement shall be unlimited. Plan USD 120,000'
+  const clause = '3. LIMITATION OF LIABILITY Supplier’s aggregate liability shall not exceed the fees paid in the one (1) month preceding the claim. Customer’s liability under this Agreement shall be unlimited. Plan USD 120,000'
+
+  it('applies the rewrite\'s own edits, each inside its paragraph, leaving the table as it is', () => {
+    const edits = planEditsInBoth(html, plain, clause, [
+      { before: 'one (1) month', after: 'twelve (12) months' },
+      { before: "Customer's liability under this Agreement shall be unlimited.", after: 'Each party’s liability is capped as above.' },
+    ])!
+    expect(edits).not.toBeNull()
+    expect(applySpans(html, edits.html, true)).toBe(
+      '<h1>3. LIMITATION OF LIABILITY</h1><ol><li>Supplier’s aggregate liability shall not exceed the fees paid in the twelve (12) months preceding the claim.</li>'
+      + '<li>Each party’s liability is capped as above.</li></ol><table><tr><td><p>Plan</p></td><td><p>USD 120,000</p></td></tr></table>')
+    expect(applySpans(plain, edits.plain, false)).toContain('twelve (12) months preceding the claim. Each party’s liability is capped as above. Plan')
+  })
+
+  it('applies none of them when one can\'t be placed', () => {
+    expect(planEditsInBoth(html, plain, clause, [
+      { before: 'one (1) month', after: 'twelve (12) months' },
+      { before: 'text that is not in the clause', after: 'x' },
+    ])).toBeNull()
+    expect(planEditsInBoth(html, plain, clause, [])).toBeNull()
+  })
+})
+
+describe('a rewrite\'s edit that runs across paragraphs', () => {
+  const { planEditsInBoth, applySpans } = __testing
+  const html = '<h1>2. FEES</h1><ol><li>Customer shall pay all invoices within fifteen (15) days of the invoice date.</li><li>Supplier may increase the fees by up to 12% a year.</li><li>Late payments bear interest at 2% per month.</li></ol>'
+    + '<h1>3. LIABILITY</h1><ol><li>Supplier’s aggregate liability shall not exceed one month of fees.</li><li>Customer’s liability shall be unlimited.</li></ol><table><tr><td><p>A</p></td><td><p>B</p></td></tr></table>'
+  const plain = '2. FEES Customer shall pay all invoices within fifteen (15) days of the invoice date. Supplier may increase the fees by up to 12% a year. Late payments bear interest at 2% per month. 3. LIABILITY Supplier’s aggregate liability shall not exceed one month of fees. Customer’s liability shall be unlimited. A B'
+
+  it('finds an edit in the whole document when the clause skips a paragraph that is another clause', () => {
+    const edits = planEditsInBoth(html, plain, '2. FEES Customer shall pay all invoices within fifteen (15) days of the invoice date. Late payments bear interest at 2% per month.',
+      [{ before: 'Customer shall pay all invoices within fifteen (15) days of the invoice date.', after: 'Customer shall pay undisputed invoices within sixty (60) days.' }])
+    expect(edits).not.toBeNull()
+    expect(applySpans(html, edits!.html, true)).toContain('<ol><li>Customer shall pay undisputed invoices within sixty (60) days.</li><li>Supplier may increase')
+  })
+
+  it('merges neighbouring list items an edit runs across, keeping its line breaks', () => {
+    const edits = planEditsInBoth(html, plain, '3. LIABILITY Supplier’s aggregate liability shall not exceed one month of fees. Customer’s liability shall be unlimited.',
+      [{ before: 'Supplier’s aggregate liability shall not exceed one month of fees. Customer’s liability shall be unlimited.', after: 'Each party’s liability is capped at twelve months of fees.\n\n"Excluded Claims" means fraud.' }])
+    expect(edits).not.toBeNull()
+    expect(applySpans(html, edits!.html, true)).toContain('<h1>3. LIABILITY</h1><ol><li>Each party’s liability is capped at twelve months of fees.<br /><br />"Excluded Claims" means fraud.</li></ol><table>')
+  })
+
+  it('does not merge across a table, a heading or out of a list', () => {
+    expect(planEditsInBoth(html, plain, 'x'.repeat(30), [{ before: 'Customer’s liability shall be unlimited. A B', after: 'x' }])).toBeNull()
+    expect(planEditsInBoth(html, plain, 'x'.repeat(30), [{ before: 'Late payments bear interest at 2% per month. 3. LIABILITY', after: 'x' }])).toBeNull()
   })
 })

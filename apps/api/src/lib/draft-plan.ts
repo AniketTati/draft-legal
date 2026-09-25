@@ -79,10 +79,24 @@ const ALIASES = {
   counterparty:  ['counterparty', 'counterpartyname', 'counterpartycompany', 'otherparty'],
   governingLaw:  ['governinglaw', 'jurisdiction', 'governingstate', 'lawstate', 'choiceoflaw'],
   term:          ['term', 'termlength', 'contractterm', 'duration', 'initialterm'],
-  termYears:     ['termyears', 'termyear', 'terminyears'],
+  // An NDA's term is how long confidentiality lasts ("a 3-year NDA").
+  termYears:     ['termyears', 'termyear', 'terminyears', 'confidentialityyears', 'confidentialityterm', 'ndaterm'],
   effectiveDate: ['effectivedate', 'startdate', 'commencementdate'],
   ourCompany:    ['ourcompany', 'ourorgname', 'ourname', 'ourcompanyname'],
+  // CC5 — templates that name the parties by role. Our side, and theirs:
+  // an offer letter goes to a candidate, a notice to its recipient.
+  ourRole:       ['companyname', 'sendername', 'partyaname', 'employername'],
+  theirRole:     ['contractorname', 'candidatename', 'recipientname', 'partybname', 'employeename', 'consultantname'],
 }
+
+/**
+ * Which of a customer/provider template's parties we are. 42 of the seeded
+ * templates name the parties so, and both were left blank on every chat
+ * draft ("Draft an NDA with Initech" came back with customerName and
+ * providerName to fill in). We are the customer, unless the template is
+ * written for the seller.
+ */
+const weSell = (templateName: string) => /\bsell[- ]side\b|\boutbound\b/i.test(templateName)
 
 function templateKeys(template: TemplateWithSections, clauseContents: string[]): string[] {
   const keys = new Set<string>()
@@ -169,17 +183,30 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
   fill(ALIASES.termYears, years)
   fill(ALIASES.effectiveDate, input.effectiveDate)
 
-  // 2. The template's own declared defaults (the org chose these).
+  // 2. The template's own declared defaults (the org chose these) — except a
+  // venue chosen for a governing law the user changed: New York law with the
+  // template's "Wilmington, Delaware" courts is left for the user to set.
   const declared = Array.isArray(template.variables) ? template.variables as Array<{ key?: string; defaultValue?: unknown }> : []
+  const lawKey = declared.find(d => d?.key && ALIASES.governingLaw.includes(norm(d.key)))
+  const lawChanged = !!input.governingLaw?.trim() && lawKey?.defaultValue != null
+    && norm(String(lawKey.defaultValue)) !== norm(input.governingLaw)
   for (const d of declared) {
+    if (lawChanged && d?.key && /venue|forum|courtlocation|courts/.test(norm(d.key))) continue
     if (d?.key && variables[d.key] === undefined && d.defaultValue != null && String(d.defaultValue).trim()) {
       variables[d.key] = String(d.defaultValue)
     }
   }
 
-  // 3. Our side is a fact, not a guess.
+  // 3. Our side is a fact, not a guess; the counterparty takes the other role.
   const org = await prisma.organization.findUnique({ where: { id: input.orgId }, select: { name: true } })
   fill(ALIASES.ourCompany, org?.name)
+  fill(ALIASES.ourRole, org?.name)
+  fill(ALIASES.theirRole, input.counterpartyName)
+  if (byNorm.has('customername') && byNorm.has('providername')) {
+    const [ours, theirs] = weSell(template.name) ? ['providername', 'customername'] : ['customername', 'providername']
+    fill([ours], org?.name)
+    fill([theirs], input.counterpartyName)
+  }
 
   const generated = generateDocument({ template, variables, clauseMap })
   const counterpartyName = input.counterpartyName?.trim() || null

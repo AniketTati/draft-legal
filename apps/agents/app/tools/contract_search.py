@@ -41,7 +41,10 @@ class ContractSearchArgs(BaseModel):
     )
     type: Optional[str] = Field(
         None,
-        description="Filter by contract type (e.g. 'NDA', 'MSA', 'SLA', 'SOW').",
+        description=(
+            "Filter by contract type (e.g. 'NDA', 'MSA', 'SLA', 'SOW'). ONLY when the user names a type: "
+            "\"our Airtable contract\" has no type, and guessing one hides the contracts of every other type."
+        ),
     )
     counterparty_name: Optional[str] = Field(
         None,

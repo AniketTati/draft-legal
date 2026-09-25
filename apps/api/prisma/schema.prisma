@@ -197,6 +197,11 @@ model Contract {
   overallConfidence Float? // Avg extraction confidence 0-1
   tags              String[]  @default([])
   metadata          Json      @default("{}") // Custom field values (field_key → value)
+  // BB3 — set while a working copy is out for editing in Google Docs; the
+  // contract's own document is read-only until it is published back or
+  // discarded (lib/external-edit.ts). Its own column so no metadata write
+  // can drop it.
+  externalEdit      Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   deletedAt         DateTime?

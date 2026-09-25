@@ -13,6 +13,7 @@ import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
+import { redlineTargets, type ReviewFinding } from '../lib/playbook-redline-targets.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
@@ -497,15 +498,23 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       checks?: Array<{ clauseId: string; clauseType: string; passed: boolean; failedCount: number; worstSeverity: string | null; excerpt?: string }>
     }
 
-    const deviating = (checked.checks ?? []).filter(c => c.failedCount > 0)
-    if (deviating.length === 0) {
+    // What the rail's playbook review flagged, as well as what the rules
+    // caught (lib/playbook-redline-targets.ts has why).
+    const row = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
+    const review = (row?.metadata as { _playbookReview?: { versionId?: string; findings?: ReviewFinding[]; clausesReviewed?: number } } | null)?._playbookReview
+    const { clauseIds: deviatingIds, hints, severity: bySeverity } = redlineTargets(checked.checks ?? [], review, versionId)
+    // "Could not be checked" means neither the rules nor the review judged it.
+    const uncoveredClauses = review?.versionId === versionId
+      ? Math.max(0, (await prisma.contractClause.count({ where: { versionId } })) - (review.clausesReviewed ?? 0))
+      : checked.summary?.uncoveredClauses ?? 0
+    if (deviatingIds.length === 0) {
       await setMeta({
         _playbookRedlineStatus: 'DONE',
         _playbookRedline: {
           versionId, aggression, proposals: [], deviationCount: 0,
           worstSeverity: checked.summary?.worstSeverity ?? null,
           truncated: checked.summary?.truncated ?? false,
-          uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+          uncoveredClauses,
           stagedAt: new Date().toISOString(),
           note: 'No clause deviated from the playbook.',
         },
@@ -516,8 +525,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     // 2. One batched rewrite for all of them.
     const proposed = await proposeClauseBatch({
       orgId, contractId,
-      clauseIds: deviating.map(c => c.clauseId),
+      clauseIds: deviatingIds,
       aggression,
+      hints,
     })
     if (!proposed.ok) {
       throw new Error(`${proposed.detail}${proposed.upstream ? `: ${proposed.upstream}` : ''}`)
@@ -527,11 +537,10 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     //    sees both sides without another round-trip, and so the apply step can
     //    verify it is replacing what the reviewer actually saw.
     const clauses = await prisma.contractClause.findMany({
-      where:  { id: { in: deviating.map(c => c.clauseId) } },
+      where:  { id: { in: deviatingIds } },
       select: { id: true, content: true, sectionRef: true },
     })
     const contentById = new Map(clauses.map(c => [c.id, c]))
-    const bySeverity = new Map(deviating.map(c => [c.clauseId, c.worstSeverity]))
 
     const proposals = proposed.data.proposals.map(p => ({
       clauseId:     p.clauseId,
@@ -540,6 +549,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       originalText: contentById.get(p.clauseId)?.content ?? '',
       proposedText: p.proposedText,
       rationale:    p.rationale,
+      // The rewrite's own edits: how a clause that runs across paragraphs is
+      // applied (lib/clause-apply.ts planEdits).
+      changes:      p.changes,
       severity:     bySeverity.get(p.clauseId) ?? null,
       // Present instead of proposedText when this clause could not be
       // rewritten. Reported rather than omitted: an omitted clause reads as
@@ -551,12 +563,12 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       _playbookRedlineStatus: 'DONE',
       _playbookRedline: {
         versionId, aggression, proposals,
-        deviationCount:   deviating.length,
+        deviationCount:   deviatingIds.length,
         proposedCount:    proposals.filter(p => p.proposedText).length,
         failedCount:      proposals.filter(p => p.error).length,
         worstSeverity:    checked.summary?.worstSeverity ?? null,
         truncated:        checked.summary?.truncated ?? false,
-        uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+        uncoveredClauses,
         stagedAt:         new Date().toISOString(),
       },
     })
@@ -566,7 +578,7 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       action:       AuditAction.AGENT_TOOL_APPLIED,
       resourceType: 'contract',
       resourceId:   contractId,
-      metadata: { via: 'playbook-redline', deviationCount: deviating.length, proposed: proposals.filter(p => p.proposedText).length },
+      metadata: { via: 'playbook-redline', deviationCount: deviatingIds.length, proposed: proposals.filter(p => p.proposedText).length },
     }).catch(() => {})
   } catch (err) {
     // Surface the reason. A run that fails silently looks identical to one

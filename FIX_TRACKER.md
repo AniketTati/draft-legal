@@ -2893,6 +2893,110 @@ Found by the product owner testing the third-party paper flow end to end: upload
 
 ---
 
+## Redline on their paper, with Google Docs (2026-09-25, night)
+
+The third-party paper flow, as decided with the product owner:
+- DraftLegal owns the redline engine.
+- Google Docs is a place to collaborate, with no dependency on Google's preview API.
+- While the contract is out, DraftLegal locks it.
+- The counterparty receives their own Word file with our changes as tracked changes, under the individual's name.
+- DraftLegal keeps the full provenance internally.
+- Comments written in the working copy are internal by default.
+
+- **BB1 — Word engine: read their file; write our changes into it as tracked changes. — DONE.**
+  - `lib/ooxml/docx-redline.ts` (JSZip, @xmldom/xmldom, no DTDs, zip-bomb check first), `sequence-diff.ts` (Myers, word edits), `html-blocks.ts` (our version's paragraphs).
+  - It aligns their paragraphs with ours (Myers, then pairing by likeness inside gaps) and writes word-level `w:ins` / `w:del` into their runs, in their formatting. A replaced bold term stays bold; words beyond it take the text that follows.
+  - New paragraphs copy the pPr of a neighbour of the same kind (list item, heading, body), and go after a table, not into it. Deleted paragraphs take their paragraph mark with them, except the last one or a section break.
+  - It edits around footnote markers. It leaves a paragraph with a field, their own tracked change or an embedded object alone, and reports it. `acceptExisting` accepts their tracked changes first, for a returned redline.
+  - It checks itself before returning: accepting everything reads as intended, and rejecting ours gives their file back (`stats.verified`). Word opens the file with Track Changes on.
+  - **Tests:** 22 in `docx-redline.test.ts` and `sequence-diff.test.ts`. They cover accept/reject equality, byte-identical untouched paragraphs, numbering, tables, bold, footnotes, fields, their own changes, typed bullets, 1,500 paragraphs, and bad files. A docx-library contract goes through our pipeline and back. LibreOffice (Gotenberg) renders the output.
+- **BB2 — "Download for counterparty". — DONE.**
+  - `GET /contracts/:id/redline/counterparty` returns their latest Word file (never a Google Docs return) with the current version's changes, authored by the person downloading.
+  - An audit event (`REDLINE_EXPORTED`) records the versions, author, counts and sha256. Counts and anything left out travel in `x-redline-stats`.
+  - Refusals: 409 `NO_WORD_ORIGINAL` (PDF or our paper), `NO_CHANGES`, and `EDITING_IN_GOOGLE_DOCS` while a copy is out.
+- **BB3 — Edit in Google Docs: lock, working copy, publish back. — DONE.**
+  - The lock is `contract.externalEdit`, its own column (migration `20260926000000_external_edit_lock`), so no metadata write can drop it. It is taken atomically: when two starts race, one gets a 409.
+  - Refused while locked: editor saves, version upload, clause apply and batch apply (the lib, so the agent too), both undo tools, and AI drafts into the contract.
+  - Publish checks the file is a Word file (415), that it is the right document (`DIFFERENT_DOCUMENT`) and that no version arrived meanwhile (`STALE_BASE`, then publish anyway with `force`).
+  - It then unlocks and creates the next version in one transaction (`metadata.source = 'google-docs'`, suggestions by author, sha256) and imports comments as internal comments, keeping threads and resolution. The parse pipeline re-runs.
+  - Discard unlocks. With no Word file of theirs, the working copy is a clean Word file of our text.
+  - **Tests:** 6 in `external-edit.integration.test.ts`.
+- **BB4 — The web flow. — DONE.**
+  - `components/contracts/GoogleDocsEdit.tsx`: Actions › "Edit in Google Docs" (steps dialog, working copy download) and "Download for counterparty (Word)", with a notice of counts and anything left out.
+  - While locked: a banner (Working copy, Publish from Google Docs, Discard), Edit shown as "In Google Docs", edit mode left, a refused save explained, and the page polling until it unlocks.
+  - Found in the end-to-end run: publish posted the file as JSON ("the request is not multipart"). It now goes as multipart, and `ui-promises.test.ts` checks every FormData post in the app.
+- **BB5 — "Redline against playbook" rewrote one clause of the six the review flagged, and applied two of seven. — DONE.**
+  - Found running the demo flow end to end on a third-party Word contract. The rail's playbook review flagged 6 clauses; the redline proposed 1, and that one failed ("[INSERT RELEVANT INDEMNIFICATION SECTION").
+  - Causes:
+    - The redline used only the rule check, and 16 of the playbook's 19 categories have prose positions with no rules.
+    - Clause types matched categories by exact name, so `payment` never met "Fees & Payment".
+    - The rewriter had no section numbers to cite.
+    - Accepting 7 applied 2, because clauses extracted with their heading, through `<em>`, or across list items and a table were "not found". The rail said "Applied as a new version" regardless.
+    - "Try again", or any second run on a version, was a silent no-op (job id per version), leaving the rail waiting forever.
+  - Fixes:
+    - `lib/playbook-redline-targets.ts`: redline what the review flagged, with its category and reason. `matchCategory` gains the extractor's words, and `playbook_check` shares it.
+    - The rewriter gets the section list, the defined terms and the section's other clauses. Clauses of one section are rewritten in turn, each seeing the last (two liability clauses had each restated the whole cap). It retries once on a placeholder.
+    - Apply matches through inline formatting and keeps tags balanced. A clause's heading stays and its text is rewritten under it. A clause across paragraphs is applied through the rewrite's own edits, each in its paragraph, or merging neighbouring list items; all edits or none. Overlapping changes are reported.
+    - One job per press, a "Run again" button, and the rail says what was applied and what wasn't.
+  - **Tests:** `playbook-redline-targets.test.ts` (4) and `clause-apply.test.ts` (+7). Live on five uploads of the same contract: 7 of 7 proposed, all applied, with one liability cap.
+
+## The assistant, tested end to end (2026-09-26, night)
+
+Asked after the Word round trip: test the assistant; it has bugs. Every item below was found by asking the assistant a real question on the demo workspace, in the browser, then checked against the data.
+
+- **CC1 — It didn't know today's date. — DONE.**
+  - Cause: "Which contracts expire in the next 60 days?" searched 2024-05-30 to 2024-07-29, the model's own idea of now, and found nothing. The prompt never said what day it is.
+  - Fix: `date_context()` gives every chat turn today's date and asks for exact dates in tool calls.
+  - Found in the same run: the tool chip showed only `limit=50`. It dropped every date, value and sort filter, and looked for `counterpartyName` where the tool sends `counterparty_name`. Now `lib/tool-args-summary.ts` handles both (tested).
+  - Live: 28 contracts, 2026-09-25 to 2026-11-24.
+- **CC2 — A list quoted as if it were all of it. — DONE.**
+  - Cause: "What's excluded from the liability cap?" was answered "(a) either party's indemnification obligations." `clause_search` returned a fixed window around the match, cut before (b).
+  - Fix: a match now comes with its whole paragraph, and what follows a bare heading, from the version's own paragraphs. It also returns the section it is under and `passageComplete`.
+  - Live: all five exclusions, quoted.
+- **CC3 — Our untrusted-data framing shown as the answer. — DONE.**
+  - Cause: asked to "quote the clause", the model pasted the tool result into its reply: `<<<UNTRUSTED_TOOL_DATA>>>`, the warning text and the JSON.
+  - Fix: `FramingFilter` removes any framed block from the stream and from what is saved, however the stream is split (tested). The prompt says to quote the contract's own sentences as a blockquote. `clause_search` results now stream whole, so the chip counts matches instead of showing ">800ch".
+- **CC4 — "auto-renew OR renewal" searched as one phrase. — DONE.**
+  - Cause: the assistant searches like a search engine. The topic matcher took "A OR B" as a single phrase, and knew "automatically renew" but not "renew automatically" or "will renew".
+  - Fix: `topicPhrases` splits on OR, `|` and commas, and knows those renewal wordings (tested).
+  - Live: renews for 1-year terms, 90 days' notice.
+- **CC5 — Drafts left both party names blank. — DONE.**
+  - Cause: 42 templates name the parties `customerName` and `providerName`, and the planner knew only `counterparty` and `ourCompany`. So "Draft an NDA with Initech" came back with both names to fill in.
+  - Fix: we take the customer role, or the provider role in a "Sell-Side" template, and the counterparty takes the other. `companyName`/`contractorName` and similar roles are mapped too.
+  - Also fixed: "a 3-year NDA" now sets `confidentialityYears`. It matched only because 3 is the template's default; 5 would have drafted 3.
+  - Also fixed: a venue chosen for the template's governing law is left blank to fill when the user changes the law (New York law had kept "Wilmington, Delaware" courts).
+  - Tests: `draft-plan.integration.test.ts` (+2).
+- **CC6 — The last conversation's artifacts listed under the next. — DONE.**
+  - Cause: "New conversation", and opening another thread, kept the artifacts. The Initech NDA draft showed under an unrelated question.
+  - Fix: both now clear them (tripwire in `ui-promises.test.ts`).
+- **CC7 — "Not found" when the answer was "no document on file". — DONE.**
+  - Cause: many demo records have no document text. "Compare the liability caps of Airtable and Snowflake" was answered "might be due to the specific phrasing of the clauses". "What does the Iron Mountain SOW cover" was answered with its dates.
+  - Fix: `portfolio_compare`, `clause_search` and `contract_get` now say when a contract has no document text (`documentOnFile`, `note`).
+  - `contract_search` says how many match without a type filter that emptied the search. The assistant adds `type=MSA` on its own; rule A16 asks it not to. It also no longer offers other counterparties' contracts for a company name that matches nothing ("did you mean Brightwave?").
+- **CC8 — Redline confirmation, and citations. — DONE.**
+  - Cause:
+    - The redline confirm card read "clause content: original → rewritten (moderate)" instead of showing the text.
+    - "Cite the sections" named a keyTerms field (`terminationRights`), and put indemnification in Section 3.
+  - Fix:
+    - The card shows the variant's edits, or the clause before and after (`redlineDiff`, tested).
+    - `contract_summarize` lists the document's section headings.
+    - Rule A7 says to cite the document's own places.
+  - Live: Sections 3, 3 and 4.
+- **CC9 — "Iron Mountain SOW" didn't find "Iron Mountain — SOW". — DONE.**
+  - Cause: `contract_search` matched the query as one phrase.
+  - Fix: every meaningful word must appear in the title, counterparty or summary, ignoring words like "our contract with" (tested).
+
+- **CC10 — "Review contract" skipped half of what its chip promises. — DONE.**
+  - The chip says "summary, top risks, playbook deviations, and suggested redlines". The skill's prompt asked for summary, key terms, risks and next steps, so it never ran the playbook check.
+  - Fix: it now calls `playbook_check`. It lists only the deviations the check reports, or that the clause's own words show (it had called a mutual cap "not mutual"), then suggests redlines for the worst ones and offers to draft them.
+  - Found on the way: `seed-skills.ts` and `seed-playbook-rules.ts` did nothing when run from a path with a space, "Code 2" included. They compared `import.meta.url` with an unencoded `file://` path; they now use `pathToFileURL`.
+
+Checked and fine: counts (391 contracts, 18 under negotiation), the approval queue (8, oldest first), a counterparty total ($5,907,957 across 9, matching the database), follow-up questions resolving "the Iron Mountain one", and a redline proposed, applied and undone from the contract panel.
+
+**Also found by the suite:** the compliance package failed to parse about one save in forty. pdf-parse's pdf.js 1.x misreads pdf-lib's compressed cross-reference table at some offsets; the files themselves were valid. It is now saved with a classic table: 0 failures in 150, and a deterministic test.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.

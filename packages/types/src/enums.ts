@@ -140,6 +140,12 @@ export enum AuditAction {
   // Versions
   VERSION_CREATED = 'VERSION_CREATED',
   VERSION_RESTORED = 'VERSION_RESTORED',
+  // BB2/BB3 — their Word file round-tripped: a working copy out to Google
+  // Docs and back, and a redline sent to the counterparty.
+  EXTERNAL_EDIT_STARTED = 'EXTERNAL_EDIT_STARTED',
+  EXTERNAL_EDIT_PUBLISHED = 'EXTERNAL_EDIT_PUBLISHED',
+  EXTERNAL_EDIT_DISCARDED = 'EXTERNAL_EDIT_DISCARDED',
+  REDLINE_EXPORTED = 'REDLINE_EXPORTED',
   // Requests
   REQUEST_CREATED = 'REQUEST_CREATED',
   REQUEST_ASSIGNED = 'REQUEST_ASSIGNED',

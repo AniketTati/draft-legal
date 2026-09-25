@@ -525,6 +525,9 @@ export function AgentHomePage() {
     // (rather than on the first guarded pass) keeps the double-run protection
     // the guard exists for, because that double-run is always same-threadId.
     justStreamedThreadIdRef.current = null
+    // Another conversation's artifacts don't belong to this one (CC6).
+    setArtifacts([])
+    setOpenArtifactId(null)
     api.get(`/agent/threads/${threadId}`).then(r => {
       // Backend stores content as Json — concretely an array of
       // `{ type: 'text', text: '...' }` blocks (Anthropic-style) so it
@@ -609,6 +612,10 @@ export function AgentHomePage() {
   const startNewConversation = () => {
     setThreadId(null)
     setMessages([])
+    // CC6 — a conversation's artifacts are its own: the last one's draft
+    // stayed listed under the next conversation's answers.
+    setArtifacts([])
+    setOpenArtifactId(null)
     setActiveThread(null)
     setSearchParams({}, { replace: true })
   }

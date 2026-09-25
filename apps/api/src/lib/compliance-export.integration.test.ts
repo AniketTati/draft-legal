@@ -49,3 +49,12 @@ describe('the compliance package\'s audit trail', () => {
     expect(text).not.toMatch(/hash chain: intact/)
   })
 })
+
+describe('the compliance package as a file', () => {
+  it('uses a classic cross-reference table, which every reader opens (pdf.js 1.x misread the compressed one about one save in forty)', async () => {
+    const pdf = Buffer.from(await generateCompliancePackage({ contractId: contract, orgId: org })).toString('latin1')
+    expect(pdf).toMatch(/\nxref\n0 \d+\n/)
+    expect(pdf).not.toContain('/ObjStm')
+    expect(pdf).not.toMatch(/\/Type\s*\/XRef/)
+  })
+})

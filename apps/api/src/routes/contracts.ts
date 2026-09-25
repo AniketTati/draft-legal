@@ -13,6 +13,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { generateRedlineDocx, generatePlainDocx } from '../lib/docx-export.js'
 import { resolveRevisionAuthors } from '../lib/revision-author.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { runComplianceCheck, COMPLIANCE_FRAMEWORKS } from '../lib/compliance-check.js'
 import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
@@ -763,6 +764,9 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    // BB3 — a Google Docs copy is out: publish it back (or discard it) instead.
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const parts = req.parts()
     let fileBuffer: Buffer | null = null
@@ -857,6 +861,9 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    // BB3 — read-only while a Google Docs copy is out.
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const lastVersion = await prisma.contractVersion.findFirst({
       where: { contractId: id },
@@ -2359,7 +2366,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const meta = (contract.metadata as Record<string, unknown> | null) ?? {}
     const staged = meta._playbookRedline as
-      { proposals?: Array<{ clauseId: string; proposedText?: string; rationale?: string }> } | undefined
+      { proposals?: Array<{ clauseId: string; proposedText?: string; rationale?: string; changes?: Array<{ before: string; after: string; reason?: string }> }> } | undefined
     if (!staged?.proposals?.length) {
       return reply.status(409).send({ detail: 'No staged redline to apply', code: 'NO_STAGED_REDLINE' })
     }
@@ -2370,7 +2377,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const changes = accepted
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
-      .map(p => ({ clauseId: p.clauseId, proposedText: p.proposedText!, rationale: p.rationale }))
+      .map(p => ({ clauseId: p.clauseId, proposedText: p.proposedText!, rationale: p.rationale, changes: p.changes }))
 
     if (changes.length === 0) {
       return reply.status(409).send({

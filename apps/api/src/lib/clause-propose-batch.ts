@@ -21,7 +21,8 @@
  */
 import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
-import { matchCategory } from './clause-category.js'
+import { matchCategory, normalisedKey } from './clause-category.js'
+import { htmlBlocks } from './ooxml/html-blocks.js'
 import { modelFetch } from './model-boundary.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
@@ -64,8 +65,14 @@ export async function proposeClauseBatch(args: {
   clauseIds:    string[]
   aggression?:  Aggression
   instructions?: string
+  /**
+   * Per clause, what the playbook review said: the category it judged the
+   * clause against (by name) and why it deviates. The category is used before
+   * the clause type's own match, and the reason goes to the rewriter.
+   */
+  hints?:       Record<string, { category?: string; issue?: string }>
 }): Promise<ProposeBatchOutcome> {
-  const { orgId, contractId, clauseIds, aggression = 'moderate', instructions } = args
+  const { orgId, contractId, clauseIds, aggression = 'moderate', instructions, hints = {} } = args
 
   if (clauseIds.length === 0) {
     return { ok: false, status: 400, detail: 'clauseIds is required' }
@@ -86,6 +93,20 @@ export async function proposeClauseBatch(args: {
     where:  { id: { in: clauseIds }, versionId: contract.currentVersionId },
     select: { id: true, clauseType: true, content: true, sectionRef: true },
   })
+  // Each clause is rewritten on its own, and two clauses of one section
+  // ("Supplier's liability is capped…", "Customer's liability is unlimited")
+  // each came back restating the whole liability regime: two caps, saying
+  // different things. Each rewriter now sees its section's other clauses.
+  const all = await prisma.contractClause.findMany({
+    where:   { versionId: contract.currentVersionId, isSubChunk: false },
+    orderBy: { sortOrder: 'asc' },
+    select:  { id: true, clauseType: true, content: true, sectionRef: true },
+  })
+  const siblingsOf = (cl: { id: string; sectionRef: string | null }) => cl.sectionRef
+    ? all.filter(o => o.sectionRef === cl.sectionRef && o.id !== cl.id)
+        .slice(0, 4)
+        .map(o => ({ clauseType: o.clauseType, text: o.content.slice(0, 600), alsoRewritten: clauseIds.includes(o.id) }))
+    : []
   if (clauses.length === 0) {
     return { ok: false, status: 404, detail: 'No matching clauses on the current version' }
   }
@@ -115,7 +136,9 @@ export async function proposeClauseBatch(args: {
   }
 
   const items = clauses.map(cl => {
-    const category = matchCategory(categories, cl.clauseType)
+    const named = hints[cl.id]?.category
+    const category = (named && categories.find(c => normalisedKey(c.name) === normalisedKey(named)))
+      || matchCategory(categories, cl.clauseType)
     const forClause = category ? (positionsByCategory.get(category.id) ?? []) : []
     return {
       clauseId:   cl.id,
@@ -127,13 +150,28 @@ export async function proposeClauseBatch(args: {
       // Rules come from the preferred position — they express the standard,
       // and the fallbacks are prose alternatives to it.
       rules:      (forClause.find(p => p.positionType === 'preferred')?.rules ?? null) as unknown,
+      issue:      hints[cl.id]?.issue ?? null,
+      siblings:   siblingsOf(cl),
+      sectionRef: cl.sectionRef,
     }
   })
 
-  const document = (await prisma.contractVersion.findUnique({
-    where: { id: contract.currentVersionId }, select: { plainText: true },
-  }))?.plainText ?? ''
+  const version = await prisma.contractVersion.findUnique({
+    where: { id: contract.currentVersionId }, select: { plainText: true, htmlContent: true },
+  })
+  const document = version?.plainText ?? ''
   const source = [items, document]
+  // The agreement's headings, so a rewrite that refers elsewhere in the
+  // agreement names the section ("Section 4 (Indemnification)") rather than
+  // leaving "[INSERT RELEVANT SECTION]", which the rewriter refuses.
+  // The agreement's own names for the parties and things ("Supplier",
+  // "Customer"): playbook language says "Provider" and "Client", and rewrites
+  // carried those into a contract that defines neither.
+  const definedTerms = [...new Set([...document.matchAll(/\(\s*(?:the\s+|each\s+a\s+)?["\u201c]([A-Z][A-Za-z&' -]{1,40})["\u201d]\s*\)/g)].map(m => m[1].trim()))].slice(0, 40)
+  const sections = htmlBlocks(version?.htmlContent ?? '')
+    .filter(b => /^h[1-6]$/.test(b.kind) || /^\d{1,2}\.\s+[A-Z]/.test(b.text))
+    .map(b => b.text.slice(0, 120))
+    .slice(0, 60)
 
   const res = await modelFetch(`${AGENTS_URL}/redline_propose_batch`, {
     method:  'POST',
@@ -150,6 +188,8 @@ export async function proposeClauseBatch(args: {
       contractType: contract.type,
       instructions,
       orgId,
+      sections: await redactJson(orgId, sections, { surface: 'redline_propose_batch', contractId, roundTrip: contractId, valuesFrom: source }),
+      definedTerms: await redactJson(orgId, definedTerms, { surface: 'redline_propose_batch', contractId, roundTrip: contractId, valuesFrom: source }),
     }),
   }, { orgId, surface: 'redline_propose_batch', contractId, userAuthored: ['instructions'] })
   if (!res.ok) {

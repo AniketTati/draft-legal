@@ -58,10 +58,13 @@ const TOPIC_ALIASES: Record<string, string[]> = {
   ],
   'termination for convenience': ['termination for convenience', 'terminate for convenience', 'without cause'],
   'auto-renew': [
-    'automatically renew', 'auto-renew', 'automatic renewal', 'renewal term',
-    'shall renew', 'unless either party gives',
+    'automatically renew', 'renew automatically', 'renews automatically', 'auto-renew', 'automatic renewal',
+    'renewal term', 'shall renew', 'will renew', 'non-renewal', 'unless either party gives',
   ],
-  'renewal': ['renewal term', 'automatically renew', 'automatic renewal', 'shall renew', 'renewal'],
+  'renewal': [
+    'renewal term', 'automatically renew', 'renew automatically', 'renews automatically', 'automatic renewal',
+    'shall renew', 'will renew', 'non-renewal', 'renewal',
+  ],
   'governing law': ['governing law', 'governed by the laws', 'choice of law', 'applicable law'],
   'confidentiality': ['confidential information', 'confidentiality', 'non-disclosure', 'nondisclosure'],
   'payment terms': [
@@ -110,6 +113,11 @@ const ALIASES_BY_KEY: Record<string, string[]> = Object.fromEntries(
  * this can only ever find MORE than the old behaviour, never less.
  */
 export function topicPhrases(topic: string): string[] {
+  // CC4 — the assistant searches as it would a search engine ("auto-renew OR
+  // renewal", "notice, termination"): each part is its own topic, not one
+  // phrase that no contract contains.
+  const parts = topic.split(/\s+OR\s+|\s*\|\s*|\s*,\s*/).map(p => p.replace(/^["'(]+|["')]+$/g, '').trim()).filter(Boolean)
+  if (parts.length > 1) return [...new Set(parts.flatMap(p => topicPhrases(p)))]
   const key = normalise(topic)
   const aliases = ALIASES_BY_KEY[key]
   if (aliases) return [...new Set([...aliases, key])]

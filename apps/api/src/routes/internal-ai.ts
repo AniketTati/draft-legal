@@ -33,12 +33,20 @@ import { CostCapExceededError } from '../lib/costCap.js'
 import { AuditAction, pickWorkflow } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
-import { normalisedKey } from '../lib/clause-category.js'
+import { normalisedKey, matchCategory } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
 import { planDraft } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
 import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
+import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
+
+/** Words in a contract search that say nothing about which contract ("our contract with Acme"). */
+const QUERY_STOPWORDS = new Set(['our', 'the', 'a', 'an', 'with', 'for', 'of', 'and', 'to', 'in', 'on', 'by', 'from', 'my', 'we', 'us', 'contract', 'contracts'])
+
+/** A numbered, capitalised line that heads a section ("3. LIMITATION OF LIABILITY"). */
+const SECTION_HEADING = /^\d{1,2}(?:\.\d+)*\.?\s+[A-Z][A-Z0-9 ,;:&'()/—-]{2,}$/
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -975,6 +983,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
       plainTextLength:  fullText.length,
       truncated,
       updatedAt:        contract.updatedAt,
+      // CC7 — asked what a contract covers, the assistant answered with its
+      // value and dates and left the question alone: the record has no text.
+      documentOnFile:   fullText.length > 0,
+      ...(!fullText && {
+        note: 'This contract has no document text on file, only the record above. For anything about its terms or scope, say the document is not on file and answer only from the record.',
+      }),
       // Surface mode + counts so the agent can mention "I redacted N
       // PII items" if it wants to be transparent. Optional — most
       // turns ignore this.
@@ -1023,11 +1037,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const rawQuery = body.query?.trim() ?? ''
     const isWildcard = ['*', '%', '.*', '.+', 'all', 'any', '*.*'].includes(rawQuery.toLowerCase())
     if (rawQuery && !isWildcard) {
-      (where as any).OR = [
-        { title:            { contains: rawQuery, mode: 'insensitive' } },
-        { counterpartyName: { contains: rawQuery, mode: 'insensitive' } },
-        { summary:          { contains: rawQuery, mode: 'insensitive' } },
-      ]
+      // CC9 — every word, anywhere in the title, counterparty or summary: as
+      // one phrase, "Iron Mountain SOW" never met the title "Iron Mountain —
+      // SOW", and the assistant said there was no such contract.
+      const words = rawQuery.split(/[\s—–,]+/).map(w => w.replace(/^["'(]+|["'),.]+$/g, ''))
+        .filter(w => w.length > 1 && !QUERY_STOPWORDS.has(w.toLowerCase()))
+      ;(where as any).AND = (words.length ? words : [rawQuery]).map(w => ({ OR: [
+        { title:            { contains: w, mode: 'insensitive' } },
+        { counterpartyName: { contains: w, mode: 'insensitive' } },
+        { summary:          { contains: w, mode: 'insensitive' } },
+      ] }))
     }
 
     // Build the sort clause. For `value` and `riskScore`, we need to
@@ -1070,7 +1089,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // semantically-related contracts exist.
     let usedFallback = false
     let fallbackResults: typeof contracts = []
-    if (contracts.length === 0 && rawQuery && !isWildcard) {
+    // CC7 — a company's name ("Globex Corporation") means that company. Its
+    // meaning-alike clauses belong to other counterparties, and offering
+    // their contracts ("did you mean Brightwave?") answered a question
+    // nobody asked. A name that matches nothing is reported as a miss.
+    const looksLikeAName = /\b(?:inc|llc|ltd|limited|corp|corporation|co|company|gmbh|plc|llp|lp|sa|ag|bv|pty)\b\.?$/i.test(rawQuery)
+      || /^[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*){1,3}$/.test(rawQuery)
+    if (contracts.length === 0 && rawQuery && !isWildcard && !looksLikeAName) {
       try {
         const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4, undefined, scopeOwnerId(scope))
         const seen = new Set<string>()
@@ -1115,6 +1140,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
     }
     const finalResults = usedFallback ? fallbackResults : contracts
+    // CC7 — a type filter the assistant added on a guess can hide the one
+    // contract asked for: say how many match without it.
+    let typeNote: string | undefined
+    if (finalResults.length === 0 && body.type) {
+      const withoutType = await prisma.contract.count({ where: { ...(where as Record<string, unknown>), type: undefined } as never })
+      if (withoutType > 0) {
+        typeNote = `No ${body.type} matched, but ${withoutType === 1 ? '1 contract matches' : `${withoutType} contracts match`} without the type filter. `
+          + `If the user did not ask for ${body.type}s, search again without "type".`
+      }
+    }
+    const nameNote = contracts.length === 0 && looksLikeAName && !usedFallback
+      ? `No contract has a title or counterparty matching "${rawQuery}". Say so; do not offer other counterparties' contracts as if they were it.`
+      : undefined
 
     return reply.send({
       // P63 — keep `total` as the page size for back-compat, but
@@ -1142,6 +1180,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Surface the fallback to the agent so it can mention "I broadened the
       // search" in its prose synthesis if it wants to be transparent.
       ...(usedFallback ? { searchMode: 'semantic-fallback', note: 'No keyword matches; expanded to clause-content semantic search.' } : {}),
+      ...((typeNote || nameNote) && { note: [typeNote, nameNote].filter(Boolean).join(' ') }),
     })
   })
 
@@ -1970,10 +2009,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const version = contract.currentVersionId
       ? await prisma.contractVersion.findUnique({
           where: { id: contract.currentVersionId },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
       : null
     const plainText = version?.plainText ?? ''
+    // CC8 — the document's own sections, so a summary's points can be cited
+    // to them. Without them, "cite the sections" put indemnification in
+    // Section 3 of a contract whose Section 4 is Indemnification.
+    const sections = htmlBlocks(version?.htmlContent ?? '')
+      .filter(b => /^h[1-6]$/.test(b.kind) || SECTION_HEADING.test(b.text))
+      .map(b => b.text.slice(0, 120))
+      .slice(0, 80)
 
     // P21 PII boundary. Both document-derived blobs this tool returns —
     // the AI summary (written from contract text) and the plainText
@@ -2017,6 +2063,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       plainTextSnippet: snippetOut,
+      sections:         await redactJsonAgainst(body.orgId, sections, plainText, { surface: 'contract_summarize.sections', contractId: contract.id }),
     })
   })
 
@@ -2048,17 +2095,47 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const version = contract.currentVersionId
       ? await prisma.contractVersion.findUnique({
           where: { id: contract.currentVersionId },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
       : await prisma.contractVersion.findFirst({
           where: { contractId: contract.id },
           orderBy: { versionNumber: 'desc' },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
 
-    const text = version?.plainText ?? ''
+    // The document's paragraphs, where the version has them: a match comes
+    // with the whole paragraph it's in. A fixed window around it cut a list
+    // of exclusions at "(a)", and the assistant answered as if that was all
+    // of it. (A Word file's plain text has no paragraph breaks to go by.)
+    const blocks = version?.htmlContent ? htmlBlocks(version.htmlContent) : []
+    const text = blocks.length ? blocks.map(b => b.text).join('\n') : version?.plainText ?? ''
     if (!text) {
-      return reply.send({ contractId: contract.id, title: contract.title, matches: [] })
+      // CC7 — say why there is nothing to find.
+      return reply.send({
+        contractId: contract.id, title: contract.title, matches: [], documentOnFile: false,
+        note: 'This contract has no document text on file (only its record), so nothing in it can be searched. Say so, and suggest uploading the document.',
+      })
+    }
+    const ranges: Array<{ start: number; end: number; heading: boolean }> = []
+    for (let at = 0, i = 0; i < blocks.length; at += blocks[i].text.length + 1, i++) {
+      ranges.push({ start: at, end: at + blocks[i].text.length, heading: /^h[1-6]$/.test(blocks[i].kind) || SECTION_HEADING.test(blocks[i].text) })
+    }
+    const PASSAGE_MAX = 1_600
+    /** The paragraph around a match (and what follows a bare heading), and whether all of it fits. */
+    const passage = (idx: number, len: number) => {
+      const bi = ranges.findIndex(r => idx < r.end + 1)
+      if (bi < 0) return null
+      let start = ranges[bi].start, end = ranges[bi].end
+      for (let j = bi; (ranges[j].heading || end - start < 160) && j + 1 < ranges.length && end - start < PASSAGE_MAX; j++) end = ranges[j + 1].end
+      let complete = true
+      if (end - start > PASSAGE_MAX) {
+        complete = false
+        start = Math.max(start, Math.min(idx - 300, end - PASSAGE_MAX))
+        end = Math.min(end, Math.max(start + PASSAGE_MAX, idx + len))
+      }
+      let k = bi
+      while (k >= 0 && !ranges[k].heading) k--
+      return { start, end, complete, section: k >= 0 ? blocks[k].text.slice(0, 120) : null }
     }
 
     // Case-insensitive sliding-window match. Not fancy — a real BM25 pass
@@ -2072,6 +2149,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       match: string
       afterContext: string
       sectionHint: string | null
+      /** False when the paragraph was longer than the passage returned: fetch more before quoting all of it. */
+      passageComplete?: boolean
     }> = []
 
     const windowCuts: Array<[number, number]> = []   // before, match, after of each match, for redaction (X36)
@@ -2084,22 +2163,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
       if (!hit) break
       const idx = hit.index
       const mLen = hit.matchedPhrase.length
+      const para = blocks.length ? passage(idx, mLen) : null
       const half = Math.floor(body.windowChars / 2)
-      const start = Math.max(0, idx - half)
-      const end   = Math.min(text.length, idx + mLen + half)
+      const start = para ? para.start : Math.max(0, idx - half)
+      const end   = para ? para.end   : Math.min(text.length, idx + mLen + half)
       const before = text.slice(start, idx)
       const match  = text.slice(idx, idx + mLen)
       const after  = text.slice(idx + mLen, end)
 
-      // Best-effort section heading detection: look backwards for a line
-      // starting with a digit + dot + optional dot (e.g. "9.2", "3.1.4").
-      const backscan = text.slice(Math.max(0, idx - 500), idx)
-      const sectionMatch = backscan.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
-      const sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
+      // The section it's under: its heading, or (plain text) the nearest
+      // "9.2"-style number above it.
+      let sectionHint = para?.section ?? null
+      if (!para) {
+        const backscan = text.slice(Math.max(0, idx - 500), idx)
+        const sectionMatch = backscan.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
+        sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
+      }
 
-      matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint })
+      matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint, ...(para && { passageComplete: para.complete }) })
       windowCuts.push([start, idx], [idx, idx + mLen], [idx + mLen, end])
-      cursor = idx + mLen
+      // One passage per paragraph: the next match starts after this one.
+      cursor = Math.max(idx + mLen, para ? end : 0)
     }
 
     // P7.5.1 — every window here is verbatim contract text going to the LLM:
@@ -2200,10 +2284,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { orgId: body.orgId },
       select: { id: true, name: true },
     })
-    const categoryByNormalisedName = new Map<string, { id: string; name: string }>()
-    for (const c of categories) {
-      categoryByNormalisedName.set(normalisedKey(c.name), { id: c.id, name: c.name })
-    }
 
     // Load every position for the contract's type (or type-agnostic).
     // We also pull `rules` (P1.2) — the structured playbook schema the
@@ -2239,8 +2319,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // because a redlining pipeline treats the first as done.
     const uncovered: Array<{ clauseId: string; clauseType: string; sectionRef: string | null; reason: string }> = []
     for (const cl of clauses) {
-      const key = normalisedKey(cl.clauseType)
-      const category = categoryByNormalisedName.get(key)
+      const category = matchCategory(categories, cl.clauseType)
       if (!category) { unmapped.add(cl.clauseType); continue }
       const matchingPositions = positionsByCategory.get(category.id) ?? []
       if (matchingPositions.length === 0) {
@@ -3241,9 +3320,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const contract = await prisma.contract.findFirst({
       where: { id: body.data.contractId, orgId: body.data.orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true },
+      select: { id: true, currentVersionId: true, externalEdit: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
     // Idempotency — if we've already been undone, return 409.
     if (contract.currentVersionId === body.data.previousVersionId) {
       return reply.status(409).send({ detail: 'Already reverted to previous version' })
@@ -3313,9 +3394,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true },
+      select: { id: true, currentVersionId: true, externalEdit: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const version = await prisma.contractVersion.findFirst({
       where:  { id: versionId, contractId },
@@ -4477,15 +4560,24 @@ export async function internalAiRoutes(app: FastifyInstance) {
       return reply.status(503).send({ detail: 'PII redaction is unavailable, so the comparison was withheld. Try again shortly.' })
     }
 
+    // CC7 — a contract with no document text can't be compared, and saying
+    // "no clause found" for it read as "the clause isn't there": the
+    // assistant blamed the clauses' wording for a file that was never read.
+    const withoutText = contracts.filter(c => !textByContract.get(c.id))
     return reply.send({
       contracts: contracts.map(c => ({
         id: c.id, title: c.title, type: c.type, status: c.status,
         counterpartyName: c.counterpartyName,
         value: c.value != null ? Number(c.value) : null,
         currency: c.currency,
+        documentOnFile: !!textByContract.get(c.id),
       })),
       topics: body.topics,
       matrix: redactedMatrix,
+      ...(withoutText.length && {
+        note: `${withoutText.map(c => c.title).join(', ')} ${withoutText.length === 1 ? 'has' : 'have'} no document text on file (only the contract record), `
+          + 'so no clause of theirs could be compared. Say so, and suggest uploading the signed document; do not suggest the clauses are worded differently.',
+      }),
     })
   })
 

@@ -28,6 +28,7 @@ import { clauseRoutes } from './routes/clauses.js'
 import { playbookRoutes } from './routes/playbook.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
+import { externalEditRoutes } from './routes/external-edit.js'
 import { portalRoutes } from './routes/portal.js'
 import { approvalRoutes } from './routes/approvals.js'
 import { dashboardRoutes } from './routes/dashboard.js'
@@ -151,6 +152,8 @@ export async function buildApp() {
       cb(Object.assign(new Error(`Origin ${origin} not allowed`), { statusCode: 403 }), false)
     },
     credentials: true,
+    // BB2 — the web reads a redline's counts from its download.
+    exposedHeaders: ['content-disposition', 'x-redline-stats'],
   })
 
   await app.register(helmet, { contentSecurityPolicy: false })
@@ -254,6 +257,7 @@ export async function buildApp() {
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })
+  await app.register(externalEditRoutes,    { prefix: '/api/v1/contracts' })
   await app.register(portalRoutes,          { prefix: '/api/v1/portal' })
   await app.register(approvalRoutes,        { prefix: '/api/v1/approvals' })
   await app.register(dashboardRoutes,      { prefix: '/api/v1/dashboard' })
