@@ -128,6 +128,26 @@ class FramingFilter:
         return rest
 
 
+# Text in a document addressed to an AI rather than to the parties. The model
+# is told not to obey it, and didn't; it also didn't mention it, and a lawyer
+# reading "no risks found" should know the document tried to say so.
+_INSTRUCTION_RE = re.compile(
+    r"(?i)(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:(?:previous|prior|above|earlier|your|the)\s+){1,2}(?:instructions|rules|prompts?)"
+    r"|\b(?:system|admin)\s+(?:override|mode|prompt)\b"
+    r"|\byou\s+are\s+now\s+(?:in\s+)?\w+"
+    r"|\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+)?(?:ai|assistant|llm|model|chatbot)s?\b"
+)
+
+
+def instruction_attempt(text: str) -> str | None:
+    """The first passage of `text` that addresses an AI, with a little context, or None."""
+    m = _INSTRUCTION_RE.search(text or "")
+    if not m:
+        return None
+    start, end = max(0, m.start() - 80), min(len(text), m.end() + 160)
+    return " ".join(text[start:end].split())
+
+
 def wrap_untrusted_document(text: str, *, source: str = "counterparty document") -> str:
     """
     Frame document text as clearly-labeled DATA that must never be read as
