@@ -3934,7 +3934,14 @@ export function ContractDetailPage() {
         >
           {commentCount ? (
             <p className="text-body text-ink-700">
-              {commentCount} comment{commentCount === 1 ? '' : 's'}. Full thread in the editor's inline comments (coming in B.3).
+              {commentCount} comment{commentCount === 1 ? '' : 's'}.{' '}
+              <button
+                onClick={() => setTab('comments')}
+                className="text-ink-700 hover:text-ink-950 underline underline-offset-2"
+                data-testid="rail-open-comments"
+              >
+                Open the thread
+              </button>
             </p>
           ) : (
             <p className="text-body text-ink-400 italic">No comments yet.</p>
@@ -4111,6 +4118,8 @@ export function ContractDetailPage() {
         <SendForReviewDialog
           contractId={id}
           contractType={contract?.type}
+          contractValue={contract?.value}
+          contractCurrency={contract?.currency}
           open={sendForReviewOpen}
           onClose={() => setSendForReviewOpen(false)}
           onSent={() => {

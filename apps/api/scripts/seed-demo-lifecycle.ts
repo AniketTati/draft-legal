@@ -83,8 +83,8 @@ async function main() {
       data: {
         orgId,
         name: 'Standard contract approval (3-step)',
-        description: 'Legal review → GC approval → Finance sign-off. Triggers on contracts ≥ $100k or non-standard liability terms.',
-        triggerRules: { contractTypes: ['MSA', 'SOW', 'VENDOR_AGREEMENT', 'LICENSE'], valueThreshold: 100000 },
+        description: 'Legal review → GC approval → Finance sign-off. For MSAs, SOWs, vendor agreements and licenses worth USD 100,000 or more.',
+        triggerRules: { contractTypes: ['MSA', 'SOW', 'VENDOR_AGREEMENT', 'LICENSE'], valueThreshold: 100000, currency: 'USD' },
         steps: [
           { order: 0, name: 'Legal Review',     roleRequired: 'LEGAL_COUNSEL', executionMode: 'sequential', requiredApprovals: 1, dueSoonHours: 48 },
           { order: 1, name: 'GC Approval',      roleRequired: 'ADMIN',         executionMode: 'sequential', requiredApprovals: 1, dueSoonHours: 72 },

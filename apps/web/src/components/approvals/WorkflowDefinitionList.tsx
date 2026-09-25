@@ -1,7 +1,8 @@
 /**
  * WorkflowDefinitionList — Phase 06
  * Table of org workflow definitions with Edit / Set Default / Delete actions.
- * Edit opens a Sheet with WorkflowBuilder.
+ * Edit opens a Sheet with WorkflowBuilder, and the rules for when the
+ * workflow is used (Z3, WorkflowRulesEditor).
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -9,6 +10,9 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { WorkflowBuilder, type WorkflowStepDef } from './WorkflowBuilder'
+import { WorkflowRulesEditor } from './WorkflowRulesEditor'
+import { describeRules, draftFromRules, rulesDraftError, rulesFromDraft, type RulesDraft } from '@/lib/workflow-rules-draft'
+import type { TriggerRules } from '@clm/types'
 import { StatusPill } from '@/components/ui/status-pill'
 import { Chip } from '@/components/ui/primitives'
 import { Pencil, Star, Trash2, Loader2, Plus } from 'lucide-react'
@@ -30,6 +34,7 @@ export function WorkflowDefinitionList() {
   const [draftDesc, setDraftDesc] = useState('')
   const [draftSteps, setDraftSteps] = useState<WorkflowStepDef[]>([])
   const [draftIsDefault, setDraftIsDefault] = useState(false)
+  const [draftRules, setDraftRules] = useState<RulesDraft>(() => draftFromRules({}))
   const [showNew, setShowNew] = useState(false)
 
   const { data: workflows, isLoading } = useQuery<WorkflowDef[]>({
@@ -38,7 +43,7 @@ export function WorkflowDefinitionList() {
   })
 
   const saveWorkflow = useMutation({
-    mutationFn: (payload: { id?: string; name: string; description: string; steps: WorkflowStepDef[]; isDefault: boolean }) => {
+    mutationFn: (payload: { id?: string; name: string; description: string; steps: WorkflowStepDef[]; isDefault: boolean; triggerRules: TriggerRules }) => {
       if (payload.id) {
         return api.patch(`/approvals/workflows/${payload.id}`, payload).then(r => r.data)
       }
@@ -67,6 +72,8 @@ export function WorkflowDefinitionList() {
     setDraftDesc(wf.description ?? '')
     setDraftSteps(wf.steps ?? [])
     setDraftIsDefault(wf.isDefault)
+    setDraftRules(draftFromRules(wf.triggerRules))
+    saveWorkflow.reset()
     setShowNew(false)
   }
 
@@ -76,17 +83,23 @@ export function WorkflowDefinitionList() {
     setDraftDesc('')
     setDraftSteps([])
     setDraftIsDefault(false)
+    setDraftRules(draftFromRules({}))
+    saveWorkflow.reset()
     setShowNew(true)
   }
 
+  const rulesError = rulesDraftError(draftRules)
+  const saveError = (saveWorkflow.error as { response?: { data?: { error?: string } } } | null)?.response?.data?.error
+
   function handleSave() {
-    if (!draftName.trim() || draftSteps.length === 0) return
+    if (!draftName.trim() || draftSteps.length === 0 || rulesError) return
     saveWorkflow.mutate({
-      id:          editingWorkflow?.id,
-      name:        draftName,
-      description: draftDesc,
-      steps:       draftSteps,
-      isDefault:   draftIsDefault,
+      id:           editingWorkflow?.id,
+      name:         draftName,
+      description:  draftDesc,
+      steps:        draftSteps,
+      isDefault:    draftIsDefault,
+      triggerRules: rulesFromDraft(draftRules),
     })
   }
 
@@ -114,6 +127,7 @@ export function WorkflowDefinitionList() {
             <thead className="bg-paper-50 border-b border-paper-200">
               <tr>
                 <th className="text-left px-4 py-2 text-eyebrow uppercase text-ink-500">Name</th>
+                <th className="text-left px-4 py-2 text-eyebrow uppercase text-ink-500">Used for</th>
                 <th className="text-left px-4 py-2 text-eyebrow uppercase text-ink-500">Steps</th>
                 <th className="text-left px-4 py-2 text-eyebrow uppercase text-ink-500">Status</th>
                 <th className="px-4 py-2" />
@@ -134,6 +148,9 @@ export function WorkflowDefinitionList() {
                       )}
                     </div>
                     {wf.description && <p className="text-[11px] text-ink-400 mt-0.5 truncate max-w-xs">{wf.description}</p>}
+                  </td>
+                  <td className="px-4 py-2 text-[12px] text-ink-700 max-w-[260px]" data-testid={`workflow-rules-${wf.id}`}>
+                    {describeRules(wf.triggerRules)}
                   </td>
                   <td className="px-4 py-2 text-ink-700 tabular-nums">
                     {Array.isArray(wf.steps) ? wf.steps.length : 0} step{(Array.isArray(wf.steps) ? wf.steps.length : 0) !== 1 ? 's' : ''}
@@ -217,6 +234,9 @@ export function WorkflowDefinitionList() {
                 />
                 Set as default workflow
               </label>
+              <p className="text-[11px] text-ink-500 -mt-2 ml-6">Used when no other workflow's rules fit a contract.</p>
+
+              <WorkflowRulesEditor draft={draftRules} onChange={setDraftRules} />
 
               <div>
                 <label className="block text-dense font-medium text-ink-700 mb-2">Approval steps *</label>
@@ -224,10 +244,15 @@ export function WorkflowDefinitionList() {
               </div>
             </div>
 
+            {(rulesError || saveError) && (
+              <p className="px-6 py-2 text-dense text-risk-700 bg-risk-50 border-t border-risk-200" role="alert">
+                {rulesError ?? saveError}
+              </p>
+            )}
             <div className="flex gap-2 px-6 py-4 border-t border-paper-200 bg-paper-50">
               <Button
                 onClick={handleSave}
-                disabled={saveWorkflow.isPending || !draftName.trim() || draftSteps.length === 0}
+                disabled={saveWorkflow.isPending || !draftName.trim() || draftSteps.length === 0 || !!rulesError}
               >
                 {saveWorkflow.isPending && <Loader2 className="animate-spin" />}
                 {editingWorkflow ? 'Save Changes' : 'Create Workflow'}

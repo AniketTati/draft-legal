@@ -173,7 +173,21 @@ export function ContractsPage() {
   const canCreate = useCanRequest('POST /contracts')
   const [showUpload, setShowUpload] = useState(false)
   const [showBulkImport, setShowBulkImport] = useState(false)
-  const [showNewContract, setShowNewContract] = useState(false)
+  // Z6 — Counterparties › New contract links here with new=1 and the
+  // counterparty: open "Draft new" with it filled in, once.
+  const [newFor] = useState(() => {
+    const id = searchParams.get('counterpartyId')
+    const name = searchParams.get('counterpartyName')
+    return searchParams.get('new') === '1' && id && name ? { id, name } : undefined
+  })
+  const [showNewContract, setShowNewContract] = useState(() => searchParams.get('new') === '1')
+  useEffect(() => {
+    if (!searchParams.has('new')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [showFacets, setShowFacets] = useState(false)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -844,8 +858,9 @@ export function ContractsPage() {
           onSuccess={() => queryClient.invalidateQueries({ queryKey: ['contracts'] })}
         />
       )}
-      {showNewContract && (
+      {showNewContract && canCreate && (
         <NewContractFlow
+          initialCounterparty={newFor}
           onClose={() => setShowNewContract(false)}
           onCreated={(id) => { setShowNewContract(false); navigate(`/contracts/${id}`) }}
         />

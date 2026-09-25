@@ -10,14 +10,15 @@
  * they like.
  */
 import { PrismaClient } from '@prisma/client'
+import { DEMO_ORG_SLUG } from '../src/lib/demo-workspace.js'
 
 /** Exported helper so seed-ai-demo can call this inline. */
 export async function seedPlaybookRules(
   prisma: PrismaClient,
   log: (m: string) => void = console.log,
 ) {
-  const org = await prisma.organization.findFirst({
-    where: { name: 'Demo Org, Inc.' },
+  const org = await prisma.organization.findUnique({
+    where: { slug: DEMO_ORG_SLUG },
     select: { id: true },
   })
   if (!org) return log('Demo Org not found — skipping playbook rules seed')

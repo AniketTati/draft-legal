@@ -30,7 +30,7 @@ import type { Prisma, AuditEvent } from '@prisma/client'
 import { prisma } from './prisma.js'
 import type { AuditAction } from '@clm/types'
 
-interface AuditParams {
+export interface AuditParams {
   orgId: string
   userId?: string
   action: AuditAction
@@ -40,6 +40,15 @@ interface AuditParams {
   ipAddress?: string
   userAgent?: string
 }
+
+/**
+ * Z4 — code that acts on what the log records, run once an event is stored.
+ * lib/contract-change-notice.ts registers from app.ts, so this module stays
+ * free of queues. A listener's failure is logged, never the caller's.
+ */
+type AuditListener = (event: AuditParams) => Promise<unknown> | unknown
+const listeners = new Set<AuditListener>()
+export function afterAuditEvent(listener: AuditListener): void { listeners.add(listener) }
 
 /**
  * Canonical-stringify an object so the hash is deterministic. JSON
@@ -162,6 +171,11 @@ export async function createAuditEvent(
         // strictly ordered. Audit volume is low; the perf cost is fine.
         isolationLevel: 'Serializable',
       })
+      for (const listener of listeners) {
+        Promise.resolve()
+          .then(() => listener(params))
+          .catch((err: Error) => console.warn('[audit] listener failed for %s: %s', params.action, err.message))
+      }
       return // success
     } catch (err) {
       const code = (err as { code?: string }).code
@@ -201,6 +215,40 @@ export interface ChainVerifyResult {
  * every read. Audit-log row counts grow slowly enough this stays
  * comfortable into the millions.
  */
+/** Z1 — what checking one event against the chain found. */
+export type AuditEventCheck = 'intact' | 'unhashed' | 'hash_mismatch' | 'prev_hash_mismatch'
+
+/**
+ * Z1 — check chosen events against the org's chain, by the same rules as
+ * verifyAuditChain: each event's own hash, and its link to the hashed event
+ * before it. For a report that lists some of an org's events, such as a
+ * contract's compliance package, without walking the whole log. One lookup
+ * per event.
+ */
+export async function checkAuditEvents(orgId: string, events: AuditEvent[]): Promise<Map<string, AuditEventCheck>> {
+  const checks = new Map<string, AuditEventCheck>()
+  for (const e of events) {
+    if (!e.hash) { checks.set(e.id, 'unhashed'); continue }
+    const expected = hashAuditRow({
+      id: e.id, orgId: e.orgId, userId: e.userId, action: e.action,
+      resourceType: e.resourceType, resourceId: e.resourceId, metadata: e.metadata,
+      ipAddress: e.ipAddress, userAgent: e.userAgent, createdAt: e.createdAt, prevHash: e.prevHash,
+    })
+    if (expected !== e.hash) { checks.set(e.id, 'hash_mismatch'); continue }
+    const before = await prisma.auditEvent.findFirst({
+      where: {
+        orgId,
+        hash: { not: null },
+        OR: [{ createdAt: { lt: e.createdAt } }, { createdAt: e.createdAt, id: { lt: e.id } }],
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { hash: true },
+    })
+    checks.set(e.id, e.prevHash === (before?.hash ?? null) ? 'intact' : 'prev_hash_mismatch')
+  }
+  return checks
+}
+
 export async function verifyAuditChain(
   orgId: string,
   opts: { sinceDate?: Date; limit?: number } = {},

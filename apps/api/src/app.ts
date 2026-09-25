@@ -66,6 +66,8 @@ import { assertNoDevOnlyFlags, devFlag, globalRateLimitPerMinute, isDevelopment 
 import { runInTenantStore } from './lib/tenant-context.js'
 import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
 import { routePermission } from './middleware/permissions.js'
+import { afterAuditEvent } from './lib/audit.js'
+import { noticeContractChange } from './lib/contract-change-notice.js'
 
 export async function buildApp() {
   // Y5 — a development-only relaxation (BULL_BOARD_OPEN, INBOUND_EMAIL_ALLOW_ALL)
@@ -95,6 +97,9 @@ export async function buildApp() {
     // X30 — resolve req.ip through the trusted proxy hop(s) (lib/trust-proxy.ts).
     trustProxy: trustProxyHops(),
   })
+
+  // Z4 — tell a contract's owner when someone else changes it.
+  afterAuditEvent(noticeContractChange)
 
   // Y1 — the list of every route, for the cross-org route crawl, with the
   // permission each needs (Y3: the web app's route table). Before any route

@@ -28,6 +28,7 @@ import {
   X, Loader2,
 } from 'lucide-react'
 import { StatusPill } from '@/components/ui/status-pill'
+import { PrivacyModeSection } from '@/components/admin/PrivacyModeSection'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -260,6 +261,9 @@ export function AiConfigTab() {
       </section>
 
       {/* ─── Section: API keys (BYOK) — D.0.8b ────────────────────────── */}
+      {/* Z8 — how personal data is handled before any AI call. */}
+      <PrivacyModeSection />
+
       <ApiKeysSection />
 
       {/* ─── Section: Cost cap — D.0.8c ──────────────────────────────── */}
@@ -384,7 +388,7 @@ function AuditLogSection() {
       {data && data.events.length >= 50 && (
         <div className="text-center py-2">
           <span className="text-[11px] text-ink-400">
-            Showing the most recent 50 events. Export is coming in the first post-D0 iteration.
+            Showing the 50 most recent AI changes. Every event, with a check of the chain, is on the Audit Log tab.
           </span>
         </div>
       )}

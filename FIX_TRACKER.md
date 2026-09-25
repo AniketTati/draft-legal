@@ -2669,6 +2669,180 @@ Each class below recurred during this run, and each occurrence was fixed where i
 
 ---
 
+## Truthful UI and demo readiness (2026-09-25)
+
+Preparing the first-customer demo turned up screens that promise what the product doesn't do, and a demo workspace that trips a live demo. Each item gets a test that fails before and passes after, full checks, a tracker update and a commit, as before.
+
+- **Z1 — The compliance package checks the audit chain it claims to (High). — DONE.**
+  - **Problem:** the PDF says "tamper-evident hash chain verified per row" but only prints hash prefixes.
+  - **What changed:**
+    - `checkAuditEvents` (lib/audit.ts) checks each listed event: its hash recomputed from the row, and its link to the organization's previous hashed event.
+    - The package prints "N events recorded · each checked against the organization's hash chain: intact", or, in red, "CHAIN CHECK FAILED at <time> UTC" with the reason. Each row reads "ok" or "FAILED" by its hash, and "— (no hash)" for events older than hashing.
+  - **Verification:** `compliance-export.integration.test.ts` (2), reading the generated PDF. An intact log reads as checked and intact. After one event's metadata is altered in SQL, the package names that event's time. Both failed before.
+  - **Acceptance:** met.
+- **Z2 — Industry packs install from Settings (Medium). — DONE.**
+  - **Problem:** onboarding says "you can install one later from Settings" and the dashboard links "Open Settings", but Settings has no installer.
+  - **What changed:**
+    - Settings › Industry packs lists the packs, marks the installed ones, and installs through the onboarding wizard's endpoint. It is shown to those allowed to call that endpoint.
+    - `/settings?tab=industry-packs` opens the tab, and the dashboard checklist links there.
+  - **Verification:** `apps/web/src/lib/ui-promises.test.ts` ties the wizard's promise and endpoint to the tab, and checks the checklist link. It failed before.
+  - **Acceptance:** met.
+- **Z3 — Approval routing the builder can set (Medium). — DONE.**
+  - **Problem:** the dashboard says approvals route "by value, type, or counterparty". The engine picks a workflow by contract type and auto-approves by type and maximum value, but neither can be set in the UI, and nothing routes by counterparty.
+  - **Also found:**
+    - The org's default workflow took every contract, ahead of one made for its type.
+    - `valueThreshold` was written by the seeds and read by nothing.
+    - A chosen workflow that was inactive was silently swapped for another.
+  - **What changed:**
+    - **One rule set, in `@clm/types` (`workflow-rules.ts`), used by the REST submit, the agent's `approval_route` and the Send for review dialog.**
+      - A workflow's rules: contract types, a value floor, their currency, and auto-approve limits.
+      - The choice: of the workflows that fit, one naming the contract's type before one for every type; then the highest value floor met; then the default. If none fits, the default.
+      - A contract with no value, or in another currency, counts as meeting a floor, and is never approved without a person.
+    - **The API refuses invalid rules on create and update (400, naming the field), and refuses an inactive chosen workflow (422).**
+    - **The builder has "When to use this workflow":**
+      - contract types;
+      - a minimum value with its currency;
+      - "Approve automatically" limits.
+      The list shows what each workflow is used for, and a refused save shows why.
+    - **The Send for review dialog:**
+      - preselects the workflow the server would choose;
+      - lists active workflows only;
+      - says before sending when the rules will approve the contract at once.
+    - **Wording:** the checklist says "by type and value, and approve small ones automatically". The seeded workflows' descriptions claim only what their rules do.
+  - **Verification:**
+    - `approval-routing.integration.test.ts` (3):
+      - eight invalid rule shapes are refused, and none is stored;
+      - a USD 5,000 NDA is approved at once;
+      - a larger NDA, one with no value, and one in EUR go to the NDA reviewer;
+      - a USD 250,000 MSA, and an MSA with no value, go to the deal desk;
+      - a USD 40,000 MSA and a SOW go to the default;
+      - an inactive chosen workflow gets 422, and no instance is created.
+      The first two tests failed before: invalid rules got 201, and the default took the NDA.
+    - `ui-promises` Z3 (3): what the builder saves passes the API's schema, and the checklist names only type and value.
+  - **Acceptance:** met. Counterparty routing isn't offered, and no longer claimed.
+- **Z4 — Notification settings do what they say (Medium). — DONE.**
+  - **Problem:** "Daily digest" emails in real time; "A contract I own is updated" and "Someone @mentions me" never fire; out-of-office delegates are stored but approvals still go to the absent approver.
+  - **What changed:**
+    - **Daily digest.**
+      - A chosen notification for someone on the digest is stored marked `emailDigest` (migration `20260925100000_notification_digest`).
+      - Every 15 minutes the scan worker runs `sendDueDigests` (`lib/notification-digest.ts`). From 9am in each person's Settings › General timezone, they get one email a day listing what is waiting. A missed run is caught up.
+      - Escalations and delegations still go at once.
+      - Choosing the digest saves the browser's timezone if none is saved, and the option names the zone.
+    - **"Someone else changes a contract I own".**
+      - `lib/contract-change-notice.ts` listens to the audit log (`afterAuditEvent`, registered in app.ts). It tells the owner when a colleague edits the contract, changes its status, or adds or restores a version.
+      - Not for the owner's own changes or the system's. At most one notice per contract per hour.
+      - A counterparty's returned version keeps its own `COUNTERPARTY_VERSION` notice.
+    - **"@mentions":** the toggle is removed with its `MENTION` type, which nothing sent.
+    - **Out of office:** `resolveApprovers` gives an approver's step to their active delegate while they are away. One hop.
+    - **Wording:** the renewal toggle's text states the real schedule: weekly from 90 days, before an auto-renewal notice deadline, and obligations a week ahead.
+  - **Verification:**
+    - `notification-settings.integration.test.ts` (3):
+      - Digest, for a person on Asia/Kolkata:
+        - held, and not sent at 8:45;
+        - sent at 9:00 with both items;
+        - a later item waits for the next day;
+        - an escalation goes at once.
+      - Change notice:
+        - the owner's own edit: none;
+        - a colleague's edit: one;
+        - a second edit within the hour: none.
+      - Out of office: the delegate gets the step, and the approver gets it back after returning.
+      - All three failed on the pre-fix code.
+    - `ui-promises` Z4 (3):
+      - every toggle governs a notification type the API sends;
+      - the server's defaults match the toggles;
+      - the digest runs at 9am in the zone the page names.
+      This failed before: nothing sent `CONTRACT_UPDATED`.
+  - **Acceptance:** met.
+- **Z5 — Share links email through the configured mailer (Medium). — DONE.**
+  - **Problem:** share-link emails went out only through SMTP, so a SendGrid deployment sent none, and the dialog decided from `SMTP_HOST` alone.
+  - **What changed:**
+    - `share-email.ts` sends through `lib/mailer.ts` (SendGrid or SMTP), as signing emails do, keeping the Reply-To. The mailer gained `replyTo`.
+    - The route reports `emailDelivered` from `isEmailConfigured()`.
+    - Comments that still said SMTP only were corrected.
+  - **Verification:** `share-email.integration.test.ts` (2).
+    - With only SendGrid configured, the link is emailed (recipient, subject, reply-to address) and reported as sent. This failed before.
+    - With no provider, it is reported as not sent, and nothing goes out.
+  - **Acceptance:** met.
+- **Z6 — "New contract" on a counterparty starts a draft (Low). — DONE.**
+  - **Problem:** it only opened the contract list; `new=1` was ignored.
+  - **What changed:**
+    - The contracts page opens "Draft new" for `new=1`, with the counterparty filled in, then drops `new` from the URL.
+    - The draft is saved linked to the counterparty while its name is unchanged: `saveAs.counterpartyId`, which `/agent/draft` checks belongs to the org before running the agent. So it shows on the counterparty's page.
+  - **Verification:**
+    - `draft-counterparty.integration.test.ts` (2): the saved contract carries the counterparty, and another org's counterparty gets 404 without an agent call. Both failed before.
+    - `ui-promises` Z6 ties the counterparty page's link to what the contracts page reads.
+  - **Acceptance:** met.
+- **Z7 — Comments point to the real thread (Low). — DONE.**
+  - **Problem:** the rail and the review drawer say comments are "coming in B.3", an internal milestone, although the Comments tab exists.
+  - **What changed:**
+    - The clause review drawer shows the clause's own thread: comments anchored to its section, which can be added there.
+    - The rail's comment count opens the Comments tab.
+    - AI Config's log points to the Audit Log tab, where it said export was "coming in the first post-D0 iteration".
+    - The comments API returns a clause's thread by its reference, alone or followed by a title. Comments name a clause "Section 8.2 — Limitation of Liability", while extraction names it "Section 8.2".
+  - **Verification:**
+    - `ui-promises` Z7 (2). The tripwire scans the web app's code, excluding comments, for milestone codes. It found these three strings before the fix and finds none now.
+    - `clause-comments.integration.test.ts`: "Section 8.2" returns its own comments, and not those on 8.21 or 8.
+    - In the browser, the rail's "9+ comments. Open the thread" opens the Comments tab.
+  - **Acceptance:** met.
+- **Z8 — Privacy mode can be set in Admin (Medium). — DONE.**
+  - **Problem:** redaction mode (redact / tokenize / off) can only be changed through the API.
+  - **What changed:** "Personal data sent to AI" on Admin › AI Config, with the other AI settings rather than Admin › Organization as planned. It offers redact, tokenize or off, saved through `PATCH /organization`, which requires `configure:organization` and audits the change (X5).
+  - **Verification:** `ui-promises` Z8: the modes offered equal the ones the API accepts. It failed before.
+  - **Acceptance:** met.
+- **Z9 — The demo workspace works out of the box (Medium). — DONE.**
+  - **Problem:** after the standard setup:
+    - the demo org has 6 of the 9 roles, with no Sales Rep;
+    - the base contracts show "Processing starting…";
+    - no approval workflow exists;
+    - nothing is indexed for search;
+    - the AI-demo contracts have no clause rows.
+  - **Also found:**
+    - The demo scripts looked the org up by the name that seed-ai-demo.ts gives it, which setup lets fail.
+    - **The clause chunker never finished a clause over 2,000 characters** (`legal-chunker.ts`). The last window stepped back by the overlap and was cut again, forever, until the worker ran out of memory. It stops at the end now, with a test. This affected every long clause, not just the seed.
+    - seed-ai-demo.ts couldn't re-seed once a demo contract had an approval or a signature request. Its cleanup now removes their steps, signers and events, and unlinks invoices and child contracts.
+  - **What changed:**
+    - **`lib/demo-workspace.ts` (moved from prisma/seed.ts) sets up:**
+      - all nine roles;
+      - a login per persona: admin@, legal@, contracts@ (Contract Manager) and sales@ (Sales Rep), @demo.com;
+      - base contracts marked analysed, including existing ones still waiting;
+      - a default "Standard approval": Legal review, with NDAs up to USD 10,000 approved at once;
+      - the org named "Demo Org, Inc.", as the fixtures and demo scripts expect.
+      The seed exits non-zero on failure.
+    - **The demo scripts find the org by slug.**
+    - **Clause rows:** the AI-demo contracts get one clause row per numbered section, typed with the review agent's clause types (`numbered-sections.ts`), and indexed for clause search when Elasticsearch is up. Analysis, when run, replaces them.
+    - **One command for the demo data:**
+      - `setup.sh` builds the search index;
+      - `pnpm demo:seed` runs the base seed, the AI demo, the portfolio, the full demo and the search index;
+      - seed-demo-full refreshes its workflows' rules on a re-run.
+  - **Verification:**
+    - `demo-workspace.integration.test.ts` (4) seeds a workspace twice into a test org:
+      - nine roles with permissions, and each persona with its role;
+      - every contract analysed;
+      - one default workflow, whose rules pass the schema and whose approvers resolve;
+      - the scripts' slug lookup, the setup index step and the `demo:seed` steps.
+    - `numbered-sections.test.ts` (4): every seeded fixture gives at least five sections, the MSA's §9 is its liability clause, and a long clause's windows end.
+    - **Live, `demo:seed` on the dev workspace (backed up first):**
+      - four persona logins;
+      - base contracts analysed;
+      - 9 AI-demo contracts with 8–12 clause rows each;
+      - the workflows' descriptions and rules refreshed;
+      - 429 contracts indexed, 0 failed.
+      Their PDFs were skipped while Gotenberg was failing; the seed carries on without them.
+  - **Acceptance:** met.
+- **Checks for Z1–Z9:**
+  - typecheck and lint clean (warnings only); unit 377; web 74.
+  - Integration: 400 passed on the full run. The 8 failures came from the machine running out of memory: Postgres restarted mid-run, and Gotenberg's browser failed to start. Each of those files passed on a rerun.
+  - In the browser:
+    - Settings › Industry packs and Notifications;
+    - Admin › AI Config's privacy mode;
+    - the workflow list and rules editor;
+    - Send for review preselecting "NDA fast-track — fits this contract";
+    - a counterparty's New contract filling in the counterparty.
+    Nothing was saved or sent.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.

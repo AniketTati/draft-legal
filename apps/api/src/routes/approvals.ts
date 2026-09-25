@@ -22,7 +22,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { advanceWorkflow } from '../lib/workflow-engine.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { queueNotification, notificationQueue } from '../lib/queue.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, TriggerRulesSchema } from '@clm/types'
 import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { clauseVersionId } from '../lib/clause-version.js'
 
@@ -57,6 +57,19 @@ function validateWorkflowSteps(steps: unknown[]): string | null {
     }
   }
   return null
+}
+
+/**
+ * Z3 — the rules that choose a workflow and approve without a person went in
+ * unchecked: a misspelt type or a missing limit was stored and then silently
+ * never matched. Returns what is wrong, or null.
+ */
+function triggerRulesError(triggerRules: unknown): string | null {
+  const parsed = TriggerRulesSchema.safeParse(triggerRules)
+  if (parsed.success) return null
+  const issue = parsed.error.issues[0]
+  const where = issue.path.length ? `triggerRules.${issue.path.join('.')}` : 'triggerRules'
+  return `${where}: ${issue.message}`
 }
 
 export async function approvalRoutes(app: FastifyInstance) {
@@ -505,6 +518,8 @@ export async function approvalRoutes(app: FastifyInstance) {
     if (!Array.isArray(steps) || steps.length === 0) return reply.status(400).send({ error: 'steps must be a non-empty array' })
     const stepError = validateWorkflowSteps(steps)
     if (stepError) return reply.status(400).send({ error: stepError })
+    const rulesError = triggerRulesError(triggerRules ?? {})
+    if (rulesError) return reply.status(400).send({ error: rulesError })
 
     // If setting as default, clear any existing default
     if (isDefault) {
@@ -552,6 +567,10 @@ export async function approvalRoutes(app: FastifyInstance) {
       if (!Array.isArray(steps) || steps.length === 0) return reply.status(400).send({ error: 'steps must be a non-empty array' })
       const stepError = validateWorkflowSteps(steps)
       if (stepError) return reply.status(400).send({ error: stepError })
+    }
+    if (triggerRules !== undefined) {
+      const rulesError = triggerRulesError(triggerRules)
+      if (rulesError) return reply.status(400).send({ error: rulesError })
     }
 
     if (isDefault) {

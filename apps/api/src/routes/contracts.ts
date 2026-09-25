@@ -40,6 +40,7 @@ import {
   ContractFilterSchema,
   AuditAction,
   normalizeRiskScore,
+  pickWorkflow,
 } from '@clm/types'
 import { modelFetch } from '../lib/model-boundary.js'
 
@@ -2502,21 +2503,19 @@ export async function contractRoutes(app: FastifyInstance) {
     let workflow = workflowDefinitionId
       ? await prisma.workflowDefinition.findFirst({ where: { id: workflowDefinitionId, orgId, deletedAt: null, isActive: true } })
       : null
+    // Z3 — the workflow the sender chose, or none: never another in its place.
+    if (workflowDefinitionId && !workflow) {
+      return reply.status(422).send({ error: 'That workflow is inactive or no longer exists. Choose another.' })
+    }
 
+    const routed = { type: contract.type, value: contract.value != null ? Number(contract.value) : null, currency: contract.currency }
     if (!workflow) {
-      // Auto-select: find a workflow that matches this contract type / value
+      // Z3 — the workflow whose rules fit this contract most closely, by the
+      // rule the Send for review dialog shows the sender.
       const candidates = await prisma.workflowDefinition.findMany({
         where: { orgId, isActive: true, deletedAt: null },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
       })
-      for (const candidate of candidates) {
-        const rules = candidate.triggerRules as Record<string, unknown>
-        const types = (rules.contractTypes as string[] | undefined) ?? []
-        if (types.length === 0 || types.includes(contract.type)) {
-          workflow = candidate
-          break
-        }
-      }
+      workflow = pickWorkflow(candidates, routed)
     }
 
     if (!workflow) {
@@ -2536,8 +2535,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
 
     // ── Auto-approval check ──────────────────────────────────────────────────
-    const contractValue = contract.value ? Number(contract.value) : null
-    if (checkAutoApprove(contract.type, contractValue, triggerRules)) {
+    if (checkAutoApprove(contract.type, routed.value, triggerRules, contract.currency)) {
       // Instantly approve without creating pending steps
       const instance = await prisma.approvalInstance.create({
         data: {

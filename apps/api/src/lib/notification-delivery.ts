@@ -30,6 +30,11 @@ export interface DeliveryResult {
 }
 
 export async function deliverNotification(data: NotificationJob): Promise<DeliveryResult> {
+  // The preference gate, decided first so the row can say whether it waits
+  // for the daily digest (Z4). A job with no address wants no email at all.
+  const gate = data.email ? await shouldEmail(data.userId, data.type) : null
+  const digest = gate?.digest === true && isEmailConfigured()
+
   // 1. The in-app row is written regardless of preferences. The toggles govern
   // EMAIL delivery; suppressing the record too would lose the notification
   // entirely, which is not what "don't email me about this" means.
@@ -42,18 +47,22 @@ export async function deliverNotification(data: NotificationJob): Promise<Delive
       body:         data.body,
       resourceType: data.resourceType,
       resourceId:   data.resourceId,
+      emailDigest:  digest,
     },
   })
 
-  if (!data.email) {
+  if (!data.email || !gate) {
     return { notified: true, emailed: false, reason: 'no address on the job' }
+  }
+  if (digest) {
+    return { notified: true, emailed: false, reason: gate.reason }
   }
 
   // 2. The preference gate. THE `return` BELOW IS LOAD-BEARING — without it
   // the decision is computed, logged, and ignored, which is exactly the shape
-  // the audit found nothing was catching.
-  const gate = await shouldEmail(data.userId, data.type)
-  if (!gate.emailed) {
+  // the audit found nothing was catching. (A digest email with no mailer to
+  // send it falls through to the check below.)
+  if (!gate.emailed && !gate.digest) {
     console.info('[notify] suppressed by preference for userId=%s type=%s (%s)', data.userId, data.type, gate.reason)
     return { notified: true, emailed: false, reason: gate.reason }
   }

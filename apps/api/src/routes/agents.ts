@@ -321,7 +321,9 @@ export async function agentRoutes(app: FastifyInstance) {
       // a contractType.
       templateId?: string
       context?: Record<string, unknown>
-      saveAs?: { contractId?: string; title?: string }
+      // Z6 — `counterpartyId` links a new contract to the counterparty it
+      // was started from (Counterparties › New contract).
+      saveAs?: { contractId?: string; title?: string; counterpartyId?: string }
     }
 
     if (!body.userMessage?.trim()) {
@@ -364,6 +366,14 @@ export async function agentRoutes(app: FastifyInstance) {
         select: { id: true },
       })
       if (!target) return reply.status(404).send({ detail: 'Contract not found' })
+    }
+    let counterparty: { id: string; name: string } | null = null
+    if (body.saveAs?.counterpartyId && !body.saveAs.contractId) {
+      counterparty = await prisma.counterparty.findFirst({
+        where:  { id: body.saveAs.counterpartyId, orgId, deletedAt: null },
+        select: { id: true, name: true },
+      })
+      if (!counterparty) return reply.status(404).send({ detail: 'Counterparty not found' })
     }
     // X45 — a draft saved as a new contract needs a user to own it: for an API
     // key, the user who made the key. Checked before the agent call, as above.
@@ -456,6 +466,7 @@ export async function agentRoutes(app: FastifyInstance) {
                 type: result.contractType ?? 'OTHER',
                 status: 'DRAFT',
                 createdBy: userId,
+                ...(counterparty && { counterpartyId: counterparty.id, counterpartyName: counterparty.name }),
                 analysisStatus: plainText ? 'CLASSIFYING' : 'DONE',
                 versions: {
                   create: {
@@ -490,6 +501,7 @@ export async function agentRoutes(app: FastifyInstance) {
               title:     contract.title,
               type:      contract.type,
               status:    contract.status,
+              counterpartyName: contract.counterpartyName ?? undefined,
               plainText,
               tags:      contract.tags,
               createdAt: contract.createdAt.toISOString(),

@@ -29,7 +29,9 @@ export async function commentRoutes(app: FastifyInstance) {
       orgId,
       parentId: null,       // top-level threads only — replies fetched inline
       deletedAt: null,
-      ...(clauseRef && { clauseRef }),
+      // Z7 — a clause's thread: comments anchored to its reference, alone or
+      // followed by its title ("Section 8.2 — Limitation of Liability").
+      ...(clauseRef && { OR: [{ clauseRef }, { clauseRef: { startsWith: `${clauseRef} ` } }] }),
       ...(resolved !== undefined && { resolved: resolved === 'true' }),
       ...(cursor && { id: { lt: cursor } }),
     }

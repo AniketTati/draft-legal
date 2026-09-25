@@ -36,6 +36,7 @@
  *   … --clean     remove only the rows this script created
  */
 import { PrismaClient } from '@prisma/client'
+import { DEMO_ORG_SLUG } from '../src/lib/demo-workspace.js'
 
 const prisma = new PrismaClient({ log: ['warn', 'error'] })
 
@@ -116,7 +117,9 @@ function valueFor(type: string): number | null {
 async function main() {
   const clean = process.argv.includes('--clean')
 
-  const org = await prisma.organization.findFirst({ where: { name: 'Demo Org, Inc.' } })
+  // Z9 — by slug. By name, it found the org only after seed-ai-demo.ts had
+  // renamed it from the seed's "Demo Corp", a step setup lets fail.
+  const org = await prisma.organization.findUnique({ where: { slug: DEMO_ORG_SLUG } })
   if (!org) throw new Error('Demo org not found — run `pnpm db:seed` first.')
 
   if (clean) {

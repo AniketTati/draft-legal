@@ -208,7 +208,7 @@ export interface NotificationJob {
   body:         string
   resourceType: string
   resourceId:   string
-  email?:       string  // recipient email address — only used if SMTP_HOST is configured
+  email?:       string  // recipient email address — used when an email provider is configured (lib/mailer.ts)
 }
 
 /**

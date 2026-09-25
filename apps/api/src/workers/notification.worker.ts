@@ -2,8 +2,9 @@
  * Notification Worker — Phase 06
  * Handles 'notify' and 'escalate' jobs from notificationQueue.
  *
- * 'notify'   — writes a Notification row to DB; optionally sends email via nodemailer
- *              if SMTP_HOST is configured (non-blocking; DB notification is authoritative).
+ * 'notify'   — writes a Notification row to DB; emails it through lib/mailer.ts
+ *              as the recipient's settings say, now or in their daily digest
+ *              (non-blocking; DB notification is authoritative).
  * 'escalate' — fires when a step's escalation timer expires without a decision.
  *              Idempotent: if step already decided, exits immediately.
  */

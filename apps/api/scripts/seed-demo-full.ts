@@ -64,6 +64,7 @@
  *   … --clean     remove only the rows this script created
  */
 import { PrismaClient } from '@prisma/client'
+import { DEMO_ORG_SLUG } from '../src/lib/demo-workspace.js'
 
 const prisma = new PrismaClient({ log: ['warn', 'error'] })
 
@@ -303,8 +304,8 @@ const WORKFLOWS: ReadonlyArray<{
 }> = [
   {
     name: 'High-value vendor approval (4-step)',
-    description: 'Legal → Security → Finance → CFO. Triggers on vendor spend at or above $500k, or any uncapped-liability term.',
-    triggerRules: { contractTypes: ['MSA', 'VENDOR_AGREEMENT', 'SOW', 'LICENSE'], valueThreshold: 500_000 },
+    description: 'Legal → Security → Finance → CFO. For MSAs, vendor agreements, SOWs and licenses worth USD 500,000 or more.',
+    triggerRules: { contractTypes: ['MSA', 'VENDOR_AGREEMENT', 'SOW', 'LICENSE'], valueThreshold: 500_000, currency: 'USD' },
     steps: [
       { name: 'Legal Review',    role: 'legal',  executionMode: 'sequential', requiredApprovals: 1, dueSoonHours: 48 },
       { name: 'Security Review', role: 'admin',  executionMode: 'sequential', requiredApprovals: 1, dueSoonHours: 72 },
@@ -314,9 +315,10 @@ const WORKFLOWS: ReadonlyArray<{
   },
   {
     name: 'NDA fast-track (1-step)',
-    description: 'Single legal review. Mutual NDAs on the standard paper under $10k of associated spend auto-approve.',
+    description: 'Single legal review. NDAs worth up to USD 10,000 are approved at once.',
     triggerRules: {
       contractTypes: ['NDA'],
+      currency: 'USD',
       autoApproveRules: [{ contractType: 'NDA', maxValue: 10_000 }],
     },
     steps: [
@@ -325,8 +327,8 @@ const WORKFLOWS: ReadonlyArray<{
   },
   {
     name: 'Data processing review (parallel privacy + security)',
-    description: 'Privacy and Security review concurrently — both must clear — then GC signs off. Triggers on any DPA or contract touching personal data.',
-    triggerRules: { contractTypes: ['DATA_PROCESSING', 'MSA', 'ORDER_FORM'], valueThreshold: 0 },
+    description: 'Privacy and Security review at the same time — both must clear — then the GC signs off. For data processing agreements.',
+    triggerRules: { contractTypes: ['DATA_PROCESSING'] },
     steps: [
       { name: 'Privacy & Security Review', role: 'either', executionMode: 'parallel', requiredApprovals: 2, dueSoonHours: 48 },
       { name: 'GC Sign-off',               role: 'admin',  executionMode: 'sequential', requiredApprovals: 1, dueSoonHours: 72 },
@@ -567,7 +569,9 @@ async function clean() {
 async function main() {
   if (process.argv.includes('--clean')) return clean()
 
-  const org = await prisma.organization.findFirst({ where: { name: 'Demo Org, Inc.' } })
+  // Z9 — by slug. By name, it found the org only after seed-ai-demo.ts had
+  // renamed it from the seed's "Demo Corp", a step setup lets fail.
+  const org = await prisma.organization.findUnique({ where: { slug: DEMO_ORG_SLUG } })
   if (!org) throw new Error('Demo org not found — run `pnpm db:seed` first.')
   const orgId = org.id
 
@@ -583,7 +587,16 @@ async function main() {
     (await prisma.approvalInstance.count({ where: { id: { startsWith: IDP } } })) +
     (await prisma.diligenceRoom.count({ where: { id: { startsWith: IDP } } }))
   if (already > 0) {
-    console.log(`${already} ${IDP}* rows already present — run with --clean first to reshape.`)
+    // Z3/Z9 — the workflows' rules and descriptions stay current on a re-run:
+    // they once described routing (by liability terms, by personal data) that
+    // no rule performs, and a value floor nothing read.
+    for (const [i, w] of WORKFLOWS.entries()) {
+      await prisma.workflowDefinition.updateMany({
+        where: { id: id('wf', i + 1), orgId },
+        data:  { description: w.description, triggerRules: w.triggerRules as never },
+      })
+    }
+    console.log(`${already} ${IDP}* rows already present — run with --clean first to reshape. Workflow rules refreshed.`)
     return
   }
 

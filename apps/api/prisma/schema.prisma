@@ -975,12 +975,15 @@ model Notification {
   resourceId   String
   read         Boolean   @default(false)
   readAt       DateTime?
+  // Z4 — held for the recipient's daily digest email; cleared once it is sent.
+  emailDigest  Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
   org Organization @relation(fields: [orgId], references: [id])
 
   @@index([userId, read])
   @@index([userId, createdAt])
+  @@index([emailDigest, userId])
   @@map("notifications")
 }
 

@@ -8,7 +8,8 @@
  * Behaviour:
  *   • Always logs the link to console — invaluable in dev where SMTP
  *     isn't set, so devs can copy/paste from the log into the browser.
- *   • If SMTP_HOST is set, also fires off a real email asynchronously.
+ *   • If an email provider is configured (lib/mailer.ts: SendGrid or SMTP),
+ *     also fires off a real email asynchronously.
  *     Email failure is non-fatal (link is in the DB regardless via the
  *     SignatureRequest record + Signer.token).
  *   • Idempotent — caller may call once per signer per send; we don't

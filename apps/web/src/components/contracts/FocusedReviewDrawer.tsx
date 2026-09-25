@@ -19,12 +19,13 @@ import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, X, ChevronLeft, ChevronRight, FileEdit, XCircle,
-  BookOpen, Circle, MessageCircle, Sparkles,
+  BookOpen, Circle, Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { classifyRisk, type RiskClause, type RiskKind } from './RiskDecorations'
+import { CommentsPanel } from './CommentsPanel'
 
 /** A playbook position as returned by GET /playbook/positions. */
 interface PlaybookPosition {
@@ -60,6 +61,17 @@ export interface FocusedClause extends RiskClause {
 
 /** Review state kept per clause. Local in B.5.6, persisted in B.5.7. */
 export type ReviewState = 'unreviewed' | 'reviewed' | 'resolved'
+
+/**
+ * Z7 — the reference a clause's comments are anchored to: its section, as
+ * "Section 8.2" when extraction gave a bare number, else its type. The API
+ * also returns comments whose reference adds a title ("Section 8.2 — …").
+ */
+function clauseThreadRef(clause: FocusedClause): string {
+  const ref = clause.sectionRef?.trim()
+  if (!ref) return labelClauseType(clause.clauseType)
+  return /^\d/.test(ref) ? `Section ${ref}` : ref
+}
 
 /** Human-readable label for a clauseType value like "limitation_of_liability". */
 function labelClauseType(t: string | null | undefined): string {
@@ -481,11 +493,11 @@ export function FocusedReviewDrawer({
       )}
 
       {/* ── COMMENTS ───────────────────────────────────────────────────── */}
+      {/* Z7 — the clause's own thread: comments anchored by its section
+          reference, or its type when it has none. They also appear on the
+          contract's Comments tab. */}
       <Section title={`Comments on this clause`}>
-        <div className="flex items-center gap-2 text-body text-ink-500">
-          <MessageCircle className="size-4 text-ink-400" />
-          Full inline comments land in B.3 (margin bubbles).
-        </div>
+        <CommentsPanel key={clause.id} contractId={contractId} clauseRef={clauseThreadRef(clause)} />
       </Section>
     </aside>
   )

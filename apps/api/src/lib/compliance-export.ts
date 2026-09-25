@@ -15,6 +15,7 @@ import { PDFDocument, StandardFonts, rgb, PageSizes } from 'pdf-lib'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from './prisma.js'
 import { s3, S3_BUCKET } from './storage.js'
+import { checkAuditEvents } from './audit.js'
 
 const A4 = PageSizes.A4
 const PAGE_W = A4[0]
@@ -228,13 +229,24 @@ export async function generateCompliancePackage({ contractId, orgId }: Complianc
   }
 
   // ── Audit trail page(s) ──
+  // Z1 — each event is checked against the organization's hash chain, and the
+  // page says what was found. It used to claim "verified" without a check.
+  const checks = await checkAuditEvents(orgId, auditEvents)
+  const broken = auditEvents.find(e => ['hash_mismatch', 'prev_hash_mismatch'].includes(checks.get(e.id) ?? ''))
+  const unhashed = auditEvents.filter(e => checks.get(e.id) === 'unhashed').length
+  const summary = broken
+    ? `${auditEvents.length} events recorded · CHAIN CHECK FAILED at ${broken.createdAt.toISOString().slice(0, 16).replace('T', ' ')} UTC ` +
+      `(${checks.get(broken.id) === 'hash_mismatch' ? 'the event was altered after it was recorded' : 'the link to the event before it is broken'})`
+    : `${auditEvents.length} events recorded · each checked against the organization's hash chain: intact` +
+      (unhashed ? ` (${unhashed} older events predate hashing)` : '')
   newPage()
   page.drawText('AUDIT TRAIL', { x: MARGIN_X, y, font: helvBold, size: 14 })
   y -= 8
-  page.drawText(`${auditEvents.length} events recorded · tamper-evident hash chain verified per row`, {
-    x: MARGIN_X, y: y - 12, font: helv, size: 9, color: rgb(0.5, 0.5, 0.55),
-  })
-  y -= 32
+  for (const line of wrapText(summary, helv, 9, PAGE_W - 2 * MARGIN_X)) {
+    page.drawText(line, { x: MARGIN_X, y: y - 12, font: helv, size: 9, color: broken ? rgb(0.7, 0.15, 0.12) : rgb(0.5, 0.5, 0.55) })
+    y -= 12
+  }
+  y -= 20
 
   // Table headers
   const colX = [MARGIN_X, MARGIN_X + 130, MARGIN_X + 290, MARGIN_X + 410]
@@ -253,12 +265,15 @@ export async function generateCompliancePackage({ contractId, orgId }: Complianc
     }
     const when  = e.createdAt.toISOString().slice(0, 16).replace('T', ' ')
     const actor = e.userId ? (actorById.get(e.userId)?.name ?? actorById.get(e.userId)?.email ?? 'system') : 'system'
-    const hash  = e.hash ? e.hash.slice(0, 10) + '…' : '—'
+    const check = checks.get(e.id)
+    const hash  = e.hash
+      ? `${e.hash.slice(0, 10)}… ${check === 'intact' ? 'ok' : 'FAILED'}`
+      : '— (no hash)'
     const label = ACTION_LABEL[e.action] ?? e.action.replace(/_/g, ' ').toLowerCase()
     page.drawText(when,                  { x: colX[0], y, font: helv, size: 9, color: rgb(0.2, 0.2, 0.3) })
     page.drawText(ascii(label),          { x: colX[1], y, font: helv, size: 9, color: rgb(0.1, 0.1, 0.15) })
     page.drawText(ascii(actor).slice(0, 28), { x: colX[2], y, font: helv, size: 9, color: rgb(0.3, 0.3, 0.4) })
-    page.drawText(hash,                  { x: colX[3], y, font: helv, size: 8.5, color: rgb(0.5, 0.5, 0.55) })
+    page.drawText(hash,                  { x: colX[3], y, font: helv, size: 8.5, color: check === 'intact' || check === 'unhashed' ? rgb(0.5, 0.5, 0.55) : rgb(0.7, 0.15, 0.12) })
     y -= 14
   }
   finishPage()

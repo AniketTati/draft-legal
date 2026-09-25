@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
@@ -8,11 +9,13 @@ import { Label } from '@/components/ui/label'
 import {
   Plus, Trash2, GripVertical, Settings, Layers, Bell,
   Type, Hash, Calendar, ToggleLeft, List, ChevronDown,
-  AlertCircle, Check, Loader2, Mail, AtSign, FileSignature,
-  CheckCircle2, AlertTriangle, Clock,
+  AlertCircle, Check, Loader2, Mail, FileSignature,
+  CheckCircle2, AlertTriangle, Clock, Briefcase,
 } from 'lucide-react'
 import { Eyebrow, EmptyState } from '@/components/ui/primitives'
 import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
+import { IndustryPacksTab } from '@/components/settings/IndustryPacksTab'
+import { useCanRequest } from '@/lib/permissions'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -35,7 +38,8 @@ const CONTRACT_TYPES = ['', 'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMP
  */
 const FIELD_TYPE_CHIP = 'bg-paper-100 text-ink-700 border-paper-200 font-mono'
 
-type Tab = 'custom-fields' | 'general' | 'notifications'
+type Tab = 'custom-fields' | 'general' | 'notifications' | 'industry-packs'
+const TAB_IDS: Tab[] = ['custom-fields', 'general', 'notifications', 'industry-packs']
 
 // U.8.1 — typed user preferences. Loosely-typed to keep backend
 // schema simple (Record<string, unknown> on the API), but the front
@@ -45,7 +49,6 @@ interface NotificationPrefs {
   approvalDecided: boolean
   contractUpdated: boolean
   contractExpiringSoon: boolean
-  mentioned: boolean
   digest: 'real-time' | 'daily' | 'off'
 }
 interface GeneralPrefs {
@@ -58,7 +61,6 @@ const DEFAULT_NOTIFS: NotificationPrefs = {
   approvalDecided: true,
   contractUpdated: false,
   contractExpiringSoon: true,
-  mentioned: true,
   digest: 'real-time',
 }
 const DEFAULT_GENERAL: GeneralPrefs = {
@@ -115,7 +117,11 @@ const EMPTY_FIELD: NewField = {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('custom-fields')
+  // Z2 — ?tab= opens a tab directly (the dashboard checklist links to packs).
+  const [searchParams] = useSearchParams()
+  const requestedTab = searchParams.get('tab') as Tab | null
+  const [activeTab, setActiveTab] = useState<Tab>(requestedTab && TAB_IDS.includes(requestedTab) ? requestedTab : 'custom-fields')
+  const canInstallPacks = useCanRequest('POST /organization/install-industry-pack')
   const [showNewForm, setShowNewForm] = useState(false)
   const [newField, setNewField] = useState<NewField>({ ...EMPTY_FIELD })
   const [formError, setFormError] = useState('')
@@ -212,6 +218,7 @@ export function SettingsPage() {
             { id: 'custom-fields', icon: Layers, label: 'Custom Fields' },
             { id: 'general',       icon: Settings, label: 'General' },
             { id: 'notifications', icon: Bell, label: 'Notifications' },
+            ...(canInstallPacks ? [{ id: 'industry-packs', icon: Briefcase, label: 'Industry packs' }] : []),
           ].map(({ id, icon: Icon, label }) => (
             <button
               key={id}
@@ -495,6 +502,9 @@ export function SettingsPage() {
 
         {/* ─── Notifications ─────────────────────────────────────────────── */}
         {activeTab === 'notifications' && <NotificationsTab />}
+
+        {/* ─── Industry packs (Z2) ───────────────────────────────────────── */}
+        {activeTab === 'industry-packs' && canInstallPacks && <IndustryPacksTab />}
       </div>
 
       <ConfirmDialog
@@ -714,9 +724,10 @@ function GeneralTab() {
 // ─── Notifications tab ────────────────────────────────────────────────────────
 //
 // U.8.1 — toggles for each notification trigger + a digest cadence
-// radio. Stored in user.preferences.notifications. Backend already
-// reads/writes via PATCH /users/me; the actual delivery side
-// (notification.worker.ts) reads these flags before sending.
+// radio. Stored in user.preferences.notifications, read before any email
+// goes (apps/api/src/lib/notification-prefs.ts). Z4 — every toggle names a
+// notification the API sends; the daily digest goes at 9am in the timezone
+// under General (lib/notification-digest.ts).
 
 function NotificationsTab() {
   const qc = useQueryClient()
@@ -738,10 +749,20 @@ function NotificationsTab() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.id])
 
+  // The digest's 9am is in the timezone saved under General; until one is
+  // saved, choosing the digest saves this browser's.
+  const browserZone = typeof Intl !== 'undefined' ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC') : 'UTC'
+  const savedZone: string | undefined = me?.preferences?.general?.timezone
+  const digestZone = savedZone ?? browserZone
+
   const save = useMutation({
     mutationFn: (next: NotificationPrefs) =>
       api.patch('/users/me', {
-        preferences: { ...(me?.preferences ?? {}), notifications: next },
+        preferences: {
+          ...(me?.preferences ?? {}),
+          notifications: next,
+          ...(next.digest === 'daily' && !savedZone && { general: { ...(me?.preferences?.general ?? {}), timezone: browserZone } }),
+        },
       }).then(r => r.data),
     onMutate: () => setSavedFlash('saving'),
     onSuccess: () => {
@@ -761,9 +782,8 @@ function NotificationsTab() {
   const triggers: { key: keyof NotificationPrefs; icon: typeof Bell; title: string; body: string }[] = [
     { key: 'approvalRequested',    icon: FileSignature,  title: 'Approval requested from me',          body: 'Get notified when a contract enters your approval queue.' },
     { key: 'approvalDecided',      icon: CheckCircle2,   title: 'My approval request gets a decision', body: 'Know the moment one of your contracts is approved or rejected.' },
-    { key: 'contractUpdated',      icon: Mail,           title: 'A contract I own is updated',         body: 'Counterparty edits, version uploads, status changes.' },
-    { key: 'contractExpiringSoon', icon: AlertTriangle,  title: 'A contract I own is expiring soon',   body: '90, 60, 30 days before expiry.' },
-    { key: 'mentioned',            icon: AtSign,         title: 'Someone @mentions me in a comment',   body: 'Direct mentions in clause-scoped or contract-level comments.' },
+    { key: 'contractUpdated',      icon: Mail,           title: 'Someone else changes a contract I own', body: 'Edits, new versions and status changes by colleagues. At most one an hour per contract.' },
+    { key: 'contractExpiringSoon', icon: AlertTriangle,  title: 'A contract I own is coming due',        body: 'Weekly from 90 days before it expires, and before an auto-renewal notice deadline; obligations a week before they are due.' },
   ]
 
   return (
@@ -810,11 +830,11 @@ function NotificationsTab() {
           <Clock className="size-4 text-ink-500" />
           <h2 className="text-section text-ink-950">Delivery cadence</h2>
         </div>
-        <p className="text-dense text-ink-500">How often we should batch and send the notifications you've chosen.</p>
+        <p className="text-dense text-ink-500">How often we should batch and send the notifications you've chosen. With the daily digest, escalations and approvals delegated to you still arrive right away.</p>
         <div className="grid grid-cols-3 gap-2">
           {[
             { value: 'real-time', label: 'Real-time',     hint: 'As things happen' },
-            { value: 'daily',     label: 'Daily digest',  hint: 'One email at 9am' },
+            { value: 'daily',     label: 'Daily digest',  hint: `One email at 9am, ${digestZone.replace(/_/g, ' ')}` },
             { value: 'off',       label: 'Off',           hint: 'Pause email' },
           ].map(opt => (
             <button

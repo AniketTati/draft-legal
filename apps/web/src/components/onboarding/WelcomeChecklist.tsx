@@ -107,7 +107,7 @@ export function WelcomeChecklist() {
         sub: 'Auto-seed contract types, templates, clauses, and playbook positions.',
         icon: Briefcase,
         done: Array.isArray(packs) && packs.length > 0,
-        to: '/settings',
+        to: '/settings?tab=industry-packs',
         cta: 'Open Settings',
       },
       {
@@ -131,7 +131,7 @@ export function WelcomeChecklist() {
       {
         id: 'approvals',
         label: 'Configure an approval workflow',
-        sub: 'Route contracts to the right approvers by value, type, or counterparty.',
+        sub: 'Route contracts to the right approvers by type and value, and approve small ones automatically.',
         icon: GitBranch,
         done: Array.isArray(workflowRows) && workflowRows.length > 0,
         to: '/approvals',

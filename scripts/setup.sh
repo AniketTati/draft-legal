@@ -76,10 +76,11 @@ pnpm --filter api db:seed
 pnpm --filter api exec tsx scripts/seed-ai-demo.ts seed || yellow "  ⚠ AI-demo seed skipped (non-fatal)"
 
 # ── 6. Search index ──────────────────────────────────────────────────────────
-# Contracts are indexed into Elasticsearch on write; the AI-demo seed already
-# triggers indexing for the demo set. A manual full reindex is available via
-# `pnpm --filter api exec tsx scripts/reindex-personas.ts` if you load the
-# large persona dataset later. Nothing to do here for the default setup.
+# The seeds write to Postgres; search reads Elasticsearch, so index what they
+# wrote. Z9 — this step used to do nothing, and search came up empty. Not
+# fatal: Elasticsearch can be slow to start the first time.
+cyan "🔎 Building the search index..."
+pnpm --filter api backfill-es-index || yellow "  ⚠ Search index not built (is Elasticsearch up?) — later, run: pnpm --filter api backfill-es-index"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 green ""
@@ -88,5 +89,7 @@ echo ""
 echo "  Start everything:   pnpm dev"
 echo ""
 echo "  Then open:          http://localhost:5173"
-echo "  Log in:             admin@demo.com / password123"
+echo "  Log in:             admin@demo.com / password123  (also legal@, contracts@ and sales@demo.com)"
+echo ""
+echo "  Full demo data:     pnpm demo:seed   (240-contract portfolio, approvals, obligations, search index)"
 echo ""

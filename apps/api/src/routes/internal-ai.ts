@@ -30,7 +30,7 @@ import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { CostCapExceededError } from '../lib/costCap.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, pickWorkflow } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey } from '../lib/clause-category.js'
@@ -3000,7 +3000,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
-      select: { id: true, title: true, type: true, status: true, value: true },
+      select: { id: true, title: true, type: true, status: true, value: true, currency: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
     if (!['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract.status)) {
@@ -3021,16 +3021,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
           where: { id: body.workflowDefinitionId, orgId: body.orgId, deletedAt: null, isActive: true },
         })
       : null
+    if (body.workflowDefinitionId && !workflow) {
+      return reply.status(422).send({ detail: 'That workflow is inactive or no longer exists. Omit it to use the workflow whose rules fit the contract.' })
+    }
+    const contractValue = contract.value != null ? Number(contract.value) : null
     if (!workflow) {
+      // Z3 — the same choice as the REST route and the Send for review dialog.
       const candidates = await prisma.workflowDefinition.findMany({
         where: { orgId: body.orgId, isActive: true, deletedAt: null },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
       })
-      for (const c of candidates) {
-        const rules = (c.triggerRules as Record<string, unknown>) ?? {}
-        const types = (rules.contractTypes as string[] | undefined) ?? []
-        if (types.length === 0 || types.includes(contract.type)) { workflow = c; break }
-      }
+      workflow = pickWorkflow(candidates, { type: contract.type, value: contractValue, currency: contract.currency })
     }
     if (!workflow) {
       return reply.status(422).send({ detail: 'No active approval workflow found for this org' })
@@ -3044,10 +3044,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const firstStepDef = stepDefs.sort((a, b) => a.order - b.order)[0]
     const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
-    const contractValue = contract.value != null ? Number(contract.value) : null
 
     // Auto-approve path — matches the REST handler's fast lane.
-    if (checkAutoApprove(contract.type, contractValue, triggerRules)) {
+    if (checkAutoApprove(contract.type, contractValue, triggerRules, contract.currency)) {
       const instance = await prisma.approvalInstance.create({
         data: {
           orgId: body.orgId,

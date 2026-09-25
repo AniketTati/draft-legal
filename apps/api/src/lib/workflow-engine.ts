@@ -8,7 +8,7 @@
 import type { PrismaClient } from '@prisma/client'
 import { notificationQueue, queueEscalation, queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, autoApproves } from '@clm/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -297,24 +297,18 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
 
 // ─── Auto-approval check ─────────────────────────────────────────────────────
 // Called before creating an instance. Returns true if the contract matches an
-// auto-approve rule in the workflow's triggerRules.
+// auto-approve rule in the workflow's triggerRules. The rule itself lives in
+// @clm/types (Z3), shared with the web app. Wave 1.6 — it fails CLOSED on an
+// unknown value: an editor must not be able to clear the value to skip human
+// approval. Z3 — likewise on a value in another currency than the rules'.
 
 export function checkAutoApprove(
   contractType: string,
   contractValue: number | null | undefined,
   triggerRules: Record<string, unknown>,
+  contractCurrency?: string | null,
 ): boolean {
-  const rules = (triggerRules.autoApproveRules as Array<{ contractType: string; maxValue: number }>) ?? []
-  for (const rule of rules) {
-    const typeMatch = rule.contractType === 'ANY' || rule.contractType === contractType
-    // Wave 1.6 — fail CLOSED on unknown value. Previously `contractValue == null
-    // || contractValue <= rule.maxValue` meant a contract with no value matched
-    // ANY threshold and auto-approved — an editor could clear the value to skip
-    // human approval entirely. An unknown value must route to human review.
-    const valueMatch = contractValue != null && contractValue <= rule.maxValue
-    if (typeMatch && valueMatch) return true
-  }
-  return false
+  return autoApproves(triggerRules, { type: contractType, value: contractValue, currency: contractCurrency })
 }
 
 // ─── Resolve approverId from a step definition ────────────────────────────────
@@ -325,7 +319,7 @@ export async function resolveApprover(
   orgId: string,
   prisma: PrismaClient,
 ): Promise<string | null> {
-  if (stepDef.approverId) return stepDef.approverId
+  if (stepDef.approverId) return (await withDelegates([stepDef.approverId], orgId, prisma))[0]
 
   if (stepDef.roleRequired) {
     const userRole = await prisma.userRole.findFirst({
@@ -335,10 +329,41 @@ export async function resolveApprover(
       },
       include: { user: true },
     })
-    return userRole?.userId ?? null
+    return userRole ? (await withDelegates([userRole.userId], orgId, prisma))[0] : null
   }
 
   return null
+}
+
+// ─── Out of office (Z4) ───────────────────────────────────────────────────────
+// Team › Out of office stores who is away, until when, and their delegate, but
+// approvals still went to the absent approver. Now an approver who is away,
+// with an active delegate in the org, is replaced by the delegate when a step
+// is assigned. One hop: a delegate who is also away still gets it. With no
+// delegate the approver keeps it, and escalation applies as before.
+
+export async function withDelegates(
+  approverIds: string[],
+  orgId: string,
+  prisma: PrismaClient,
+  now: Date = new Date(),
+): Promise<string[]> {
+  if (approverIds.length === 0) return approverIds
+  const away = await prisma.user.findMany({
+    where:  {
+      id: { in: approverIds }, orgId, outOfOffice: true, delegateToId: { not: null },
+      OR: [{ outOfOfficeUntil: null }, { outOfOfficeUntil: { gt: now } }],
+    },
+    select: { id: true, delegateToId: true },
+  })
+  if (away.length === 0) return approverIds
+  const available = new Set((await prisma.user.findMany({
+    where:  { id: { in: away.map(u => u.delegateToId!) }, orgId, status: 'ACTIVE', deletedAt: null },
+    select: { id: true },
+  })).map(u => u.id))
+  const delegateOf = new Map(away.filter(u => available.has(u.delegateToId!)).map(u => [u.id, u.delegateToId!]))
+  // A step with both an approver and their delegate asks the delegate once.
+  return [...new Set(approverIds.map(id => delegateOf.get(id) ?? id))]
 }
 
 // ─── Resolve the FULL set of approvers for a step (Wave 3.8) ──────────────────
@@ -379,5 +404,5 @@ export async function resolveApprovers(
 
   const all = [...ids]
   // Sequential always collapses to a single approver.
-  return parallel ? all : all.slice(0, 1)
+  return withDelegates(parallel ? all : all.slice(0, 1), orgId, prisma)
 }

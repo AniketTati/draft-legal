@@ -15,6 +15,7 @@
     "db:migrate": "pnpm --filter api db:migrate",
     "db:studio": "pnpm --filter api db:studio",
     "db:seed": "pnpm --filter api db:seed",
+    "demo:seed": "pnpm --filter api demo:seed",
     "langfuse:up": "docker compose -f docker-compose.langfuse.yml up -d",
     "langfuse:down": "docker compose -f docker-compose.langfuse.yml down",
     "langfuse:reset": "docker compose -f docker-compose.langfuse.yml down -v",
