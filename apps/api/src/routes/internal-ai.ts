@@ -41,6 +41,7 @@ import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope,
 import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
+import { renewalNotice } from '../lib/renewal-notice.js'
 
 /** Words in a contract search that say nothing about which contract ("our contract with Acme"). */
 const QUERY_STOPWORDS = new Set(['our', 'the', 'a', 'an', 'with', 'for', 'of', 'and', 'to', 'in', 'on', 'by', 'from', 'my', 'we', 'us', 'contract', 'contracts'])
@@ -770,8 +771,12 @@ export function coverageOf(returned: number, totalMatching: number | null, noun 
       note: `This is a ranked sample of ${returned} ${noun}, not a complete list — this search has no total count.` }
   }
   const complete = returned >= totalMatching
+  // CC12 — said as an instruction: "Showing 20 of 40" was answered "here
+  // are 20 contracts expiring", as if 20 were all of them.
   return { returned, totalMatching, complete,
-    note: complete ? `All ${totalMatching} matching ${noun} are shown.` : `Showing ${returned} of ${totalMatching} matching ${noun}.` }
+    note: complete
+      ? `All ${totalMatching} matching ${noun} are shown.`
+      : `Showing ${returned} of ${totalMatching} matching ${noun}. Say there are ${totalMatching}, and that these are ${returned} of them.` }
 }
 
 /** Inclusive date range for a Prisma filter; a bare YYYY-MM-DD `to` covers that whole day. */
@@ -3752,7 +3757,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const select = {
       id: true, title: true, type: true, status: true,
       counterpartyName: true, metadata: true, effectiveDate: true,
-      expiryDate: true, value: true, currency: true,
+      expiryDate: true, value: true, currency: true, keyTerms: true,
     } as const
     // V2 — upcoming renewals first (soonest first), then ones that lapsed in
     // the last 30 days (most recent first). A single expiryDate-asc query
@@ -3792,6 +3797,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const daysOut = expiry
         ? Math.round((expiry - Date.now()) / (24 * 3600 * 1000))
         : null
+      // CC12 — whether it renews by itself, and by when notice must go: the
+      // question a renewal view is for. The rows carried neither, so "put
+      // the ones whose notice deadline has passed first" had nothing to sort.
+      const notice = renewalNotice(c)
       return {
         contractId:       c.id,
         contractTitle:    c.title,
@@ -3805,6 +3814,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         renewalAdvice:    md.renewalAdvice ?? null,
         renewalDecision:  md.renewalDecision ?? null,
         renewalNotifiedAt: md.renewalNotifiedAt ?? null,
+        autoRenews:       notice.autoRenew,
+        noticeDays:       notice.noticeDays,
+        noticeDeadline:   notice.deadline ? notice.deadline.toISOString().slice(0, 10) : null,
+        noticeDeadlinePassed: notice.deadline ? notice.deadline.getTime() < Date.now() : null,
       }
     }).slice(0, body.limit)
 

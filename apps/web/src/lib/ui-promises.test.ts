@@ -179,3 +179,12 @@ describe('CC6 — a conversation shows its own artifacts', () => {
     expect(load).toContain('setArtifacts([])')
   })
 })
+
+describe('CC11 — starter prompts are written for people', () => {
+  it('no starter the user sees, and sends as their message, names an internal tool', () => {
+    const page = web('pages/AgentHomePage.tsx')
+    const prompts = [...page.matchAll(/prompt:\s*'((?:[^'\\]|\\.)*)'/g)].map(m => m[1])
+    expect(prompts.length).toBeGreaterThan(8)
+    for (const p of prompts) expect(p, p).not.toMatch(/\b(?:[a-z]+_){1,3}(?:list|search|advice|memory|compare|cite|get|check|summarize|propose|apply)\b/)
+  })
+})

@@ -151,3 +151,21 @@ describe('CC7 — contract_get on a record with no document', () => {
     expect(res.json()).toMatchObject({ documentOnFile: false, note: expect.stringContaining('no document text on file') })
   })
 })
+
+describe('CC12 — a renewal view says what renews by itself, and by when', () => {
+  it('gives each contract its auto-renewal and notice deadline, and a total to state', async () => {
+    const id = await makeContract(org, user, { title: 'CC12 renews', status: 'EXECUTED' })
+    const expiry = new Date(Date.now() + 60 * 86_400_000)
+    await prisma.contract.update({ where: { id }, data: { expiryDate: expiry, keyTerms: { autoRenew: true, noticePeriodDays: 90 } } })
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/renewal_advice',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, leadDays: 90 },
+    })
+    const item = res.json().items.find((i: { contractId: string }) => i.contractId === id)
+    expect(item).toMatchObject({
+      autoRenews: true, noticeDays: 90, noticeDeadlinePassed: true,
+      noticeDeadline: new Date(expiry.getTime() - 90 * 86_400_000).toISOString().slice(0, 10),
+    })
+  })
+})

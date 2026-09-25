@@ -259,14 +259,14 @@ function groundedStarters(facts: PortfolioFacts | undefined): StarterPrompt[] {
     out.push({
       icon: CalendarClock,
       label: `${approvals} approval${approvals === 1 ? '' : 's'} waiting on you`,
-      prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, the specific off-playbook terms, and your approve / hold / reject recommendation with the reason.',
+      prompt: 'List every approval awaiting my decision. For each: contract, counterparty, value, the specific off-playbook terms, and your approve / hold / reject recommendation with the reason.',
     })
   }
   if (expiring > 0) {
     out.push({
       icon: FileText,
       label: `${expiring} contract${expiring === 1 ? '' : 's'} expire within 90 days`,
-      prompt: 'Use renewal_advice for a portfolio view of everything expiring in the next 90 days. Group by renew / renegotiate / let-expire, and put the ones with auto-renew and a notice deadline already passed at the top.',
+      prompt: 'Give me a renewal view of everything expiring in the next 90 days: which renew by themselves, whose notice deadline has passed or is close, and which to decide on first.',
     })
   }
   // Name the riskiest live negotiation outright — the single most useful
@@ -313,27 +313,27 @@ function starterPromptsFor(
       { icon: FileText, label: 'Review my contracts in negotiation',
         prompt: 'List every contract I own that\'s in UNDER_NEGOTIATION status. For each, give me: counterparty, value, the top off-playbook risk, and what I should push back on next.' },
       { icon: Search, label: 'What\'s our typical liability cap position?',
-        prompt: 'Use org_memory to retrieve our preferred / acceptable / fallback / walkaway positions on Limitation of Liability. Show me each with one example clause from a signed contract.' },
+        prompt: 'What are our preferred, acceptable, fallback and walkaway positions on Limitation of Liability? Show me each with one example clause from a signed contract.' },
     ]
     if (cp1) {
       out.push({ icon: Building2, label: `Brief me on our ${cp1} relationship`,
         prompt: `Use counterparty_memory for ${cp1}. Show me every active and historical contract, key terms across all of them, total exposure, and any open risks.` })
     }
     out.push({ icon: CalendarClock, label: 'What\'s in my approval queue?',
-      prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, key risks, and your recommendation.' })
+      prompt: 'List every approval awaiting my decision. For each: contract, counterparty, value, key risks, and your recommendation.' })
     return withGrounded(out)
   }
   if (has('PROCUREMENT')) {
     const out: StarterPrompt[] = [
       { icon: CalendarClock, label: 'What renews in the next 90 days?',
-        prompt: 'Use renewal_advice to list every contract I own expiring in the next 90 days. For each, show: counterparty, days to expiry, auto-renew status, and your renew/renegotiate/let-expire recommendation with rationale.' },
+        prompt: 'List every contract I own expiring in the next 90 days. For each: counterparty, days to expiry, whether it auto-renews, and the date notice must be given by.' },
     ]
     if (cp1) {
       out.push({ icon: Search, label: `Decide on ${cp1}`,
         prompt: `Pull the most recent ${cp1} agreement details. What are the obligations, the renewal terms, and what should I do at the next renewal?` })
     }
     out.push({ icon: Building2, label: 'All vendor agreements at a glance',
-      prompt: 'Use contract_search with type=VENDOR_AGREEMENT. For each, show counterparty, annual commit, expiry, and current health.' })
+      prompt: 'List our vendor agreements. For each: counterparty, annual commitment, expiry, and current health.' })
     out.push({ icon: FileText, label: 'Compare two vendors\' terms',
       prompt: 'Find every Vendor or License agreement we have. Show me a side-by-side of their payment terms, liability caps, and termination rights so I can spot the outliers.' })
     return withGrounded(out)
@@ -357,7 +357,7 @@ function starterPromptsFor(
   if (has('FINANCE') || has('APPROVER')) {
     const out: StarterPrompt[] = [
       { icon: CalendarClock, label: 'What\'s in my approval queue?',
-        prompt: 'Use approval_list. For each pending approval: contract, counterparty, value, AI-summarised key risks, and your approve/hold/reject recommendation with reasoning.' },
+        prompt: 'For each approval waiting on me: contract, counterparty, value, the key risks, and your approve / hold / reject recommendation with the reason.' },
       { icon: FileText, label: 'Renewals over $100K this year',
         prompt: 'Find every contract expiring in the next 12 months with annual value above $100K. Sort by expiry date and show total value at risk.' },
     ]
@@ -372,11 +372,11 @@ function starterPromptsFor(
     { icon: FileText, label: 'What needs my team\'s attention today?',
       prompt: 'Walk every contract that\'s currently UNDER_NEGOTIATION or PENDING_APPROVAL across the org. For each: counterparty, owner, days waiting, and what\'s blocking it.' },
     { icon: CalendarClock, label: 'Renewal pipeline next 90 days',
-      prompt: 'Use renewal_advice (no contract id) to give me a portfolio view of every contract expiring in 90 days, grouped by recommendation (renew / renegotiate / let_expire).' },
+      prompt: 'Give me a renewal view of every contract expiring in the next 90 days: which renew by themselves, and whose notice deadline has passed or is close.' },
     { icon: Building2, label: 'Top counterparties by exposure',
       prompt: 'List our top 5 counterparties by total contract value. For each, show contract count, total value, and any open risks.' },
     { icon: Search, label: 'Search across all contracts',
-      prompt: 'Use portfolio_search to find every clause that mentions "auto-renew" or "automatic renewal" — give me a count by type and flag any with no notice-period requirement.' },
+      prompt: 'Find every clause across our contracts about automatic renewal. Count them by contract type and flag any with no notice period.' },
   ])
 }
 

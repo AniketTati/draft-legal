@@ -2991,6 +2991,19 @@ Asked after the Word round trip: test the assistant; it has bugs. Every item bel
   - Fix: it now calls `playbook_check`. It lists only the deviations the check reports, or that the clause's own words show (it had called a mutual cap "not mutual"), then suggests redlines for the worst ones and offers to draft them.
   - Found on the way: `seed-skills.ts` and `seed-playbook-rules.ts` did nothing when run from a path with a space, "Code 2" included. They compared `import.meta.url` with an unencoded `file://` path; they now use `pathToFileURL`.
 
+- **CC11 — Starter prompts showed our tool names. — DONE.**
+  - Cause: the Assistant page's starter cards, which are also sent as the user's message, read "Use renewal_advice (no contract id)…", "Use portfolio_search…", "Use approval_list…".
+  - Fix: rewritten in plain language. The routing rules still pick the tools; checked live for renewals. A tripwire keeps tool names out.
+- **CC12 — "Here are 20 contracts expiring", when 40 do. — DONE.**
+  - Cause:
+    - The coverage note read "Showing 20 of 40", and the answer gave 20 as the total.
+    - A renewal view had no auto-renewal or notice data per contract, so "the ones whose notice deadline has passed" couldn't be found, and every contract came back "unadvised".
+  - Fix:
+    - The coverage note now says which total to state.
+    - `renewal_advice` rows carry `autoRenews`, `noticeDays`, `noticeDeadline` and `noticeDeadlinePassed`, from `renewalNotice()` (tested).
+    - The renewal starters ask for what the data holds.
+  - Live: "There are 40… here are 20 of them", grouped by notice deadline passed.
+
 Checked and fine: counts (391 contracts, 18 under negotiation), the approval queue (8, oldest first), a counterparty total ($5,907,957 across 9, matching the database), follow-up questions resolving "the Iron Mountain one", and a redline proposed, applied and undone from the contract panel.
 
 **Also found by the suite:** the compliance package failed to parse about one save in forty. pdf-parse's pdf.js 1.x misreads pdf-lib's compressed cross-reference table at some offsets; the files themselves were valid. It is now saved with a classic table: 0 failures in 150, and a deterministic test.

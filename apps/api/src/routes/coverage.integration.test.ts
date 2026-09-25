@@ -44,7 +44,7 @@ describe('contract_search coverage and ranges', () => {
   it('a page says it is a page', async () => {
     const res = (await tool('contract_search', { limit: 5 })).json()
     expect(res.totalMatching).toBe(12)
-    expect(res.coverage).toEqual({ returned: 5, totalMatching: 12, complete: false, note: 'Showing 5 of 12 matching contracts.' })
+    expect(res.coverage).toEqual({ returned: 5, totalMatching: 12, complete: false, note: 'Showing 5 of 12 matching contracts. Say there are 12, and that these are 5 of them.' })
   })
 
   it('"expiring in the next 90 days" is a filter with a true count', async () => {
