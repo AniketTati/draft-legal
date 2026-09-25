@@ -284,13 +284,15 @@ function formatTermValue(_key: string, v: unknown): string {
 }
 
 function ClauseCard({
-  typeLabel, sectionRef, badge, interpretation, content,
+  typeLabel, sectionRef, badge, interpretation, content, onReview,
 }: {
   typeLabel: string
   sectionRef?: string | null
   badge: { label: string; cls: string } | null
   interpretation?: string | null
   content: string
+  /** Opens the clause in the review drawer: playbook, alternative language, comments. */
+  onReview?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
@@ -313,13 +315,20 @@ function ClauseCard({
       ) : (
         <p className="text-body text-ink-400 italic mb-2">No interpretation available.</p>
       )}
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
-      >
-        {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-        {expanded ? 'Hide' : 'View'} verbatim text
-      </button>
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
+        >
+          {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          {expanded ? 'Hide' : 'View'} verbatim text
+        </button>
+        {onReview && (
+          <button onClick={onReview} className="text-dense text-ink-700 hover:text-ink-950 font-medium underline underline-offset-2" data-testid="clause-card-review">
+            Review and suggest changes
+          </button>
+        )}
+      </div>
       {expanded && (
         <div className="mt-2 p-3 bg-paper-50 rounded-md border border-paper-200">
           <p className="text-micro text-ink-700 font-mono whitespace-pre-wrap">{content}</p>
@@ -2682,6 +2691,7 @@ export function ContractDetailPage() {
                             badge={badge}
                             interpretation={clause.interpretation}
                             content={clause.content}
+                            onReview={() => setFocusedClauseId(clause.id)}
                           />
                         )
                       })}
@@ -3107,8 +3117,10 @@ export function ContractDetailPage() {
           interpretation: c.interpretation,
           sectionRef: c.sectionRef,
         }))
-        // Only risk/deviation clauses are navigable in the drawer.
-        const riskyClauses = allClauses.filter((c) => classifyRisk(c.riskRating) !== null)
+        // Prev / Next step through the risk and deviation clauses. Any clause
+        // can be opened, though (from the Clauses tab or a playbook finding):
+        // a contract with nothing flagged had no way to reach Suggest.
+        const riskyClauses = allClauses.filter((c) => classifyRisk(c.riskRating) !== null || c.id === focusedClauseId)
         const focusedIdx = focusedClauseId
           ? riskyClauses.findIndex((c) => c.id === focusedClauseId)
           : -1
@@ -3224,7 +3236,7 @@ export function ContractDetailPage() {
                 ),
           // When the focused-review drawer is showing, hide the normal rail.
           focusedClauseId != null &&
-            (clausesData?.data ?? []).some((c: any) => c.id === focusedClauseId && classifyRisk(c.riskRating) !== null) &&
+            (clausesData?.data ?? []).some((c: any) => c.id === focusedClauseId) &&
             'hidden xl:hidden',
         )}
       >

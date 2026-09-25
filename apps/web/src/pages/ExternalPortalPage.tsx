@@ -50,6 +50,9 @@ interface PortalData {
   contract: PortalContract
   htmlContent: string
   versionId?: string
+  versionNumber?: number | null
+  /** The newest version, while it is still being read (or couldn't be). */
+  pending?: { versionNumber: number; failed: boolean } | null
   permissions: string[]
   shareLink: {
     id: string
@@ -81,6 +84,12 @@ export function ExternalPortalPage() {
       api.get(`/portal/${portalToken}/contract`).then(r => r.data as PortalData),
     enabled: !!portalToken,
     retry: false,
+    // A version just uploaded is read in the background: check again until
+    // it's ready, rather than showing the page as it was.
+    refetchInterval: (query) => {
+      const pending = (query.state.data as PortalData | undefined)?.pending
+      return pending && !pending.failed ? 3000 : false
+    },
   })
 
   // B.5.14 — upload a revised version mutation (multipart).
@@ -168,6 +177,7 @@ export function ExternalPortalPage() {
    * that cannot succeed.
    */
   const hasDocument = Boolean(data.htmlContent?.trim())
+  const pending = data.pending ?? null
   const isExpiringSoon = shareLink.expiresAt
     ? Date.now() > new Date(shareLink.expiresAt).getTime() - 48 * 3600 * 1000
     : false
@@ -396,7 +406,20 @@ export function ExternalPortalPage() {
             // chrome competing with it.
             <div className="bg-card rounded-paper shadow-page overflow-hidden">
               <div className="p-8 md:p-12">
-                {!hasDocument ? (
+                {pending && (
+                  <div className="mb-6 flex items-start gap-2 rounded-md border border-paper-200 bg-paper-50 px-3 py-2 text-dense text-ink-700" data-testid="portal-version-pending">
+                    {pending.failed
+                      ? <AlertCircle className="size-4 mt-0.5 shrink-0 text-attention-700" />
+                      : <Loader2 className="size-4 mt-0.5 shrink-0 animate-spin text-ink-400" />}
+                    <span>
+                      {pending.failed
+                        ? `We couldn't read version ${pending.versionNumber}. ${contract.org.name} has the file and will follow up.`
+                        : `Version ${pending.versionNumber} was received and is being processed.`}
+                      {hasDocument && data.versionNumber ? ` Showing version ${data.versionNumber} until it's ready.` : ''}
+                    </span>
+                  </div>
+                )}
+                {!hasDocument && pending ? null : !hasDocument ? (
                   <div className="py-12 text-center" data-testid="portal-no-document">
                     <span className="mb-3 inline-flex size-10 items-center justify-center rounded-card border border-paper-200 bg-paper-100 text-ink-400">
                       <FileWarning className="size-5" />

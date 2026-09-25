@@ -1222,6 +1222,19 @@ export async function contractRoutes(app: FastifyInstance) {
     }
     const body = UpdateContractSchema.parse(raw)
 
+    // An analysis of a later version (the counterparty's return, a redline)
+    // renamed the contract after the other side's document, and could retype
+    // it. What the contract is called, what it is and who it's with are set
+    // by the first version's analysis or by a person; later analyses leave them.
+    if (req.user.sub === 'system' && (body.title !== undefined || body.type !== undefined || body.counterpartyName !== undefined)) {
+      const versions = await prisma.contractVersion.count({ where: { contractId: existing.id } })
+      if (versions > 1) {
+        delete (body as Record<string, unknown>).title
+        delete (body as Record<string, unknown>).type
+        delete (body as Record<string, unknown>).counterpartyName
+      }
+    }
+
     // X25 — a matter link must name a live matter of the contract's own org.
     // It was stored unchecked, and the other org's matter view listed this
     // contract (and new amendments inherited the foreign matter).

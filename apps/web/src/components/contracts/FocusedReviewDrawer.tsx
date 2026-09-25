@@ -219,7 +219,8 @@ export function FocusedReviewDrawer({
   const severityLabel =
     kind === 'risk' ? 'HIGH RISK'
     : kind === 'deviation' ? 'DEVIATION'
-    : 'NOTED'
+    // A clause opened from the list rather than flagged: say what it was rated.
+    : (clause.riskRating ?? 'not rated').toUpperCase()
 
   // Unreviewed is the only one of the three that is waiting on this user.
   const stateColor =
@@ -228,7 +229,9 @@ export function FocusedReviewDrawer({
     : 'bg-attention-50 text-attention-700 border-attention-200'
 
   return (
-    <aside className="hidden xl:flex w-rail border-l border-paper-200 bg-card overflow-y-auto flex-col">
+    // A column beside the document from xl up; below that, a panel over it.
+    // It was hidden below xl, so a clause opened on a laptop screen showed nothing.
+    <aside className="flex flex-col bg-card overflow-y-auto border-l border-paper-200 fixed inset-y-0 right-0 z-50 w-full sm:max-w-md shadow-e3 xl:static xl:z-auto xl:w-rail xl:max-w-none xl:shadow-none" data-testid="focused-review-drawer">
       {/* ── Header — prev / counter / next + close ─────────────────────── */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-paper-200 bg-paper-50">
         <div className="flex items-center gap-1">
@@ -299,8 +302,10 @@ export function FocusedReviewDrawer({
         )}
       </Section>
 
-      {/* ── PLAYBOOK COMPARISON (deviations only) ─────────────────────── */}
-      {kind === 'deviation' && (
+      {/* ── PLAYBOOK COMPARISON ───────────────────────────────────────── */}
+      {/* For every clause opened, not just deviations: what the playbook says
+          is what the reviewer weighs a rewrite against. */}
+      {(
         <Section title="Playbook comparison">
           {matchedPositions.length === 0 ? (
             <p className="text-dense text-ink-400 italic">
@@ -340,7 +345,9 @@ export function FocusedReviewDrawer({
             <div className="space-y-2">
               {suggest.data.variants.length === 0 ? (
                 <p className="text-dense text-ink-400 italic">
-                  {suggest.data.error ?? 'No alternative language was returned for this clause.'}
+                  {suggest.data.error?.startsWith('not_this_clause_type')
+                    ? `This text isn't really a ${labelClauseType(clause.clauseType).toLowerCase()} clause, so there's nothing to redline against the playbook. ${suggest.data.error.replace(/^not_this_clause_type:\s*/, '')}`
+                    : suggest.data.error ?? 'No alternative language was returned for this clause.'}
                 </p>
               ) : (
                 suggest.data.variants.map((v, i) => (

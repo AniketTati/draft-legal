@@ -98,3 +98,20 @@ describe('findNormalizedSpan — ambiguity and bounds', () => {
     expect(body.slice(span![0], span![1])).toBe(drifted)
   })
 })
+
+describe('a clause stored across line breaks', () => {
+  const { spliceInto } = __testing
+  const html = '<p>8. INDEMNITY<br />8.1 Each party indemnifies the other.</p>\n<p>9. LIMITATION OF LIABILITY<br />9.1 NEITHER PARTY SHALL BE LIABLE FOR ANY INDIRECT DAMAGES.<br />9.2 CAP. Liability is capped at fees paid.</p>'
+  const clause = '9. LIMITATION OF LIABILITY\n9.1 NEITHER PARTY SHALL BE LIABLE FOR ANY INDIRECT DAMAGES.\n9.2 CAP. Liability is capped at fees paid.'
+
+  it('is found and replaced, keeping its line breaks', () => {
+    const out = spliceInto(html, clause, '9. LIMITATION OF LIABILITY\n9.1 Capped at 2x fees.', escapeHtml)
+    expect(out.mode).toBe('normalized')
+    expect(out.text).toBe('<p>8. INDEMNITY<br />8.1 Each party indemnifies the other.</p>\n<p>9. LIMITATION OF LIABILITY<br />9.1 Capped at 2x fees.</p>')
+  })
+
+  it('is not matched across paragraphs', () => {
+    const across = '8.1 Each party indemnifies the other.\n9. LIMITATION OF LIABILITY'
+    expect(spliceInto(html, across, 'x'.repeat(30), escapeHtml).mode).toBe('none')
+  })
+})

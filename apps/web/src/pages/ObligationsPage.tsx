@@ -5,11 +5,11 @@
  * filter by bucket (open / due-soon / overdue / completed), free-text
  * search, sortable columns, and a stats strip showing pipeline health.
  *
- * Click an obligation row to jump to the contract; a "Mark complete"
- * button appears on the row hover (Step 4 wires the modal).
+ * Click an obligation row to open it (ObligationDrawer, ?obligation=<id> so
+ * it can be linked); the contract link and "Complete" act on their own.
  */
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import {
@@ -23,6 +23,7 @@ import { StatusPill, MeaningDot } from '@/components/ui/status-pill'
 import { CountBadge, EmptyState } from '@/components/ui/primitives'
 import type { Meaning } from '@/lib/status'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
+import { ObligationDrawer, sectionLabel } from '@/components/obligations/ObligationDrawer'
 
 type Bucket = 'all' | 'open' | 'due_soon' | 'overdue' | 'completed'
 
@@ -134,6 +135,13 @@ export function ObligationsPage() {
   // still owed, oldest due date first, which is the order you drain them in.
   const [bucket, setBucket] = useState<Bucket>('open')
   const [q, setQ] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openId = searchParams.get('obligation')
+  const openObligation = (id: string | null) => {
+    const next = new URLSearchParams(searchParams)
+    if (id) next.set('obligation', id); else next.delete('obligation')
+    setSearchParams(next, { replace: !id })
+  }
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
   const qc = useQueryClient()
 
@@ -321,7 +329,15 @@ export function ObligationsPage() {
                 const sevMeaning = SEVERITY_MEANING[o.severity] ?? 'turn'
                 const overdue = isOverdue(o)
                 return (
-                  <tr key={o.id} className="hover:bg-paper-50 align-top" data-testid={`obligation-row-${o.id}`}>
+                  <tr
+                    key={o.id}
+                    className="hover:bg-paper-50 align-top cursor-pointer focus-visible:outline-none focus-visible:bg-paper-50"
+                    data-testid={`obligation-row-${o.id}`}
+                    tabIndex={0}
+                    aria-label={`Open obligation: ${o.description}`}
+                    onClick={(e) => { if (!(e.target as HTMLElement).closest('a,button')) openObligation(o.id) }}
+                    onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openObligation(o.id) } }}
+                  >
                     <td className="px-4 py-2">
                       <div className="flex items-start gap-2">
                         <TypeIcon className="size-3.5 text-ink-400 mt-0.5 flex-shrink-0" />
@@ -340,7 +356,7 @@ export function ObligationsPage() {
                             </span>
                             <span className="uppercase font-mono tracking-[0.08em] text-[10px] shrink-0">· {o.type}</span>
                             <span className="truncate">· {o.owner}</span>
-                            {o.sectionRef && <span className="font-mono shrink-0">§{o.sectionRef}</span>}
+                            {sectionLabel(o.sectionRef) && <span className="font-mono shrink-0">{sectionLabel(o.sectionRef)}</span>}
                             {o.recurrence !== 'one-time' && o.recurrence !== 'unknown' && (
                               // Recurrence is a property of the obligation, not a
                               // state — it gets no meaning colour.
@@ -422,6 +438,7 @@ export function ObligationsPage() {
           }}
         />
       )}
+      <ObligationDrawer obligationId={openId} onClose={() => openObligation(null)} />
     </div>
   )
 }

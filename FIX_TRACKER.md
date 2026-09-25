@@ -2844,6 +2844,55 @@ Preparing the first-customer demo turned up screens that promise what the produc
 
 ---
 
+## First-customer demo feedback (2026-09-25, evening)
+
+Found by the product owner testing the third-party paper flow end to end: upload, playbook redline, share, the counterparty's return, compare, review. Each fix has a test that fails before it.
+
+- **AA1 — The counterparty's link said nothing had been uploaded, just after they uploaded (High). — DONE.**
+  - **Cause:** the portal showed the newest version, and a version just uploaded has no text until the parse job reads it. The page read that as "has not uploaded a version for you to read", never checked again, and hid Download. The download used the same newest version, and refused while the new one was being read.
+  - **Fix:** the portal shows, and downloads, the newest version with text, and reports the newest as pending ("Version 3 was received and is being processed. Showing version 2 until it's ready"), or as unreadable if its parse failed. The page checks again every 3 s while a version is pending.
+  - **Test:** `portal-pending.integration.test.ts`: the pending version, the version shown and the file downloaded. It failed before.
+- **AA2 — A counterparty's return showed dozens of changes nobody made (High). — DONE.**
+  - **Cause:** the returned Word file carried its lists as text ("\t•\t1. Describe…"), as happens when it is re-saved from Pages or Google Docs. Read as text, 40 of the 41 changes were inserted "•". The real change was one deleted line.
+  - **Fix:** Word files are read with such paragraphs turned back into lists (`lib/html-normalize.ts`). The reported contract's stored v3 was repaired, and its cached comparisons cleared. It now compares as the one real change.
+  - **Tests:** `html-normalize.test.ts` (3), including a Word file built with text bullets.
+- **AA3 — The playbook redline rewrote a paragraph into a clause the other side never wrote (High). — DONE.**
+  - **Cause:** extraction labelled "Please direct your responses… to K&L Gates LLP" as governing law. The playbook check found no Delaware, and the rewrite replaced the paragraph with a Delaware clause. The model's own rationale said the original "was not a governing law clause".
+  - **Fix:**
+    - Both rewrite prompts (`apps/agents/app/routes/assist.py`) now check the label first. For text that isn't that kind of clause, they return `notApplicable` with a reason.
+    - The rail lists such passages as "left as written", with the reason, and the review drawer says there's nothing to redline.
+  - **Verified live:** on the reported contract, Suggest for a request-list item labelled confidentiality answered "an itemized request for documents related to employees, not a confidentiality clause".
+- **AA4 — Analysing the counterparty's return renamed the contract after their document (Medium). — DONE.**
+  - **Fix:** a system update to a contract that has more than one version leaves its title, type and counterparty as they are. The first version's analysis still sets them, and a person can still change them.
+  - **Test:** in `portal-pending.integration.test.ts`. It failed before.
+- **AA5 — "Suggest alternative language" couldn't be reached, and broke after the first Apply (High). — DONE.**
+  - **Fix:**
+    - **Reaching it:**
+      - Any clause opens the review drawer: a "Review and suggest changes" button on each card in the Clauses tab, and each Playbook review finding. Before, only clauses rated unfavorable or unusual could open it, and the owner's test contract had none.
+      - The drawer shows as a panel below 1280 px, where it was hidden.
+      - Playbook comparison shows for every clause.
+    - **After an Apply:** Suggest finds the clause on the version that has clause rows, as Apply does. Apply saves a version without re-extracting, so every later Suggest failed with "Could not draft alternatives right now".
+    - **Line breaks:** Apply matches a clause across line breaks within a paragraph, and keeps them in the rewrite. Paragraph boundaries are not crossed.
+  - **Verified live** on "P1 UI drawer probe" at 775 px wide:
+    - the risk marker opens the drawer;
+    - Suggest returns three playbook-based rewrites, and Apply saves v2;
+    - Suggest on the same clause after that returns 200, where it used to fail;
+    - the comparison shows 3 insertions and 2 deletions, and the Word (tracked) download is a valid .docx.
+  - **Tests:** `clause-apply.test.ts` (2 added).
+- **AA6 — An obligation couldn't be opened (Medium). — DONE.**
+  - **Cause:** never built. The API served the record (`GET /obligations/:id`) and nothing called it.
+  - **Fix:**
+    - Obligation rows on the Obligations page and in the contract rail open a drawer (`?obligation=<id>` on the page). It shows who, when and how often, the contract's own words with their section, and the contract with a link to that section. Completion details with their evidence file appear once it's done.
+    - The drawer offers Mark complete and Reopen.
+    - An overdue obligation reads as overdue. Section references no longer print as "§§7.1". The rail offers Complete on overdue items too.
+  - **Verified in the browser** on the demo workspace.
+- **Known limits, not changed:**
+  - The document's risk markers don't reach clauses that span line breaks; the Clauses tab opens them.
+  - Apply refuses a clause that spans paragraphs, and offers to add the change as an amendment instead.
+  - Share links need an Admin by default.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.

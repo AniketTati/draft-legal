@@ -94,7 +94,13 @@ export async function proposeClauseAlternatives(args: {
       })
     : null
   const clause = clauseId
-    ? await prisma.contractClause.findFirst({ where: { id: clauseId, versionId } })
+    ? (await prisma.contractClause.findFirst({ where: { id: clauseId, versionId } }))
+      // Apply and the editor save versions without re-extracting clauses, and
+      // the clause list shows the latest version that has them
+      // (clause-version.ts). Look there too, within this contract, as Apply
+      // does (clause-apply.ts): after the first Apply, Suggest failed on
+      // every other clause with "Could not draft alternatives right now".
+      ?? (await prisma.contractClause.findFirst({ where: { id: clauseId, version: { contractId: contract.id } } }))
     : (await bySection()) ?? (await byType())
   if (!clause) {
     // X53 — the caller (the chat model) can't see the clause ids: say which

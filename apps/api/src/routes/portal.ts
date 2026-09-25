@@ -42,6 +42,25 @@ async function resolvePortalToken(portalToken: string) {
   return { payload, link }
 }
 
+/**
+ * The version the other side reads and downloads: the newest one whose text
+ * has been read. A version just uploaded has no text until the parse job
+ * finishes; the page said nothing had been uploaded, while the counterparty
+ * had just uploaded it. It is reported as pending instead.
+ */
+async function portalVersion(contractId: string) {
+  const versions = await prisma.contractVersion.findMany({
+    where:   { contractId },
+    orderBy: { versionNumber: 'desc' },
+    take:    10,
+    select:  { id: true, versionNumber: true, htmlContent: true, createdAt: true },
+  })
+  const shown = versions.find(v => v.htmlContent?.trim()) ?? null
+  const newest = versions[0] ?? null
+  const pendingVersion = newest && !newest.htmlContent?.trim() ? newest.versionNumber : null
+  return { shown, pendingVersion }
+}
+
 export async function portalRoutes(app: FastifyInstance) {
 
   // ── Get contract via portal token ─────────────────────────────────────────
@@ -60,14 +79,10 @@ export async function portalRoutes(app: FastifyInstance) {
         counterparty: { select: { name: true, legalName: true } },
         owner: { select: { name: true } },
         org: { select: { name: true, brandColor: true, logoUrl: true } },
-        versions: {
-          orderBy: { versionNumber: 'desc' },
-          take: 1,
-          select: { id: true, versionNumber: true, htmlContent: true, createdAt: true },
-        },
       },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    const { shown, pendingVersion } = await portalVersion(contract.id)
 
     // Update view stats (fire and forget)
     prisma.contractShareLink.update({
@@ -83,7 +98,6 @@ export async function portalRoutes(app: FastifyInstance) {
       metadata: { shareLinkId: link.id, ipAddress: req.ip },
     }).catch(() => {})
 
-    const latestVersion = contract.versions[0]
     return reply.send({
       contract: {
         id: contract.id,
@@ -95,8 +109,14 @@ export async function portalRoutes(app: FastifyInstance) {
         expiryDate: contract.expiryDate,
         org: contract.org,
       },
-      htmlContent: latestVersion?.htmlContent ?? '',
-      versionId: latestVersion?.id,
+      htmlContent:   shown?.htmlContent ?? '',
+      versionId:     shown?.id,
+      versionNumber: shown?.versionNumber ?? null,
+      // A version still being read, or one that couldn't be read.
+      pending: pendingVersion == null ? null : {
+        versionNumber: pendingVersion,
+        failed:        contract.analysisStatus === 'FAILED',
+      },
       permissions: payload.permissions,
       shareLink: {
         id: link.id,
@@ -162,12 +182,10 @@ export async function portalRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: payload.contractId, orgId: payload.orgId, deletedAt: null },
-      include: {
-        versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { htmlContent: true, versionNumber: true } },
-      },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
-    const latest = contract.versions[0]
+    // The same version the page shows, not a newer one still being read.
+    const latest = (await portalVersion(contract.id)).shown
     if (!latest?.htmlContent?.trim()) {
       return reply.status(400).send({ error: 'No content available to export' })
     }

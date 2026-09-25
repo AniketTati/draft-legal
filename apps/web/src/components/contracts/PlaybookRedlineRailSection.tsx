@@ -105,8 +105,15 @@ export function PlaybookRedlineRailSection({
     () => (staged?.proposals ?? []).filter(p => p.proposedText),
     [staged],
   )
+  // A passage whose automatic label was wrong (say, a contact line labelled
+  // governing law) is left as written, not reported as a failure to fix.
+  const isMislabelled = (p: { error?: string }) => p.error?.startsWith('not_this_clause_type') ?? false
   const failed = useMemo(
-    () => (staged?.proposals ?? []).filter(p => p.error),
+    () => (staged?.proposals ?? []).filter(p => p.error && !isMislabelled(p)),
+    [staged],
+  )
+  const mislabelled = useMemo(
+    () => (staged?.proposals ?? []).filter(isMislabelled),
     [staged],
   )
 
@@ -195,6 +202,13 @@ export function PlaybookRedlineRailSection({
           {staged.truncated && (
             <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
               This contract was too long to check in full — some clauses were not examined.
+            </p>
+          )}
+          {mislabelled.length > 0 && (
+            <p className="text-[11px] text-ink-500 bg-paper-50 border border-paper-200 rounded-md px-2 py-1">
+              Left as written: {mislabelled.length} passage{mislabelled.length === 1 ? ' was' : 's were'} labelled as a
+              kind of clause {mislabelled.length === 1 ? 'it isn\'t' : 'they aren\'t'}
+              ({mislabelled.map(m => `${(m.clauseType ?? 'clause').replace(/_/g, ' ')}: ${m.error!.replace(/^not_this_clause_type:\s*/, '') || 'not that kind of clause'}`).join('; ')}).
             </p>
           )}
           {failed.length > 0 && (

@@ -1,6 +1,7 @@
 import { createRequire } from 'module'
 import mammoth from 'mammoth'
 import { zipInflatedSize, MAX_OFFICE_INFLATED_BYTES } from './file-type.js'
+import { normalizeTextBullets } from './html-normalize.js'
 
 const require = createRequire(import.meta.url)
 // pdf-parse v1 is CJS — require() returns the function directly
@@ -171,7 +172,9 @@ async function extractDocx(buffer: Buffer): Promise<ExtractResult> {
   const plainText = await mammoth.extractRawText({ buffer })
   return {
     plainText: plainText.value.replace(/\s+/g, ' ').trim(),
-    htmlContent: result.value,
+    // Lists re-saved as "\t•\t" text read as lists again, so a returned
+    // file compares by what changed, not by its bullets.
+    htmlContent: normalizeTextBullets(result.value),
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   }
 }

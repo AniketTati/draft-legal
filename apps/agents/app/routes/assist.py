@@ -509,7 +509,13 @@ text. If nothing clean to quote, skip that change entry.
  • Don't fabricate facts, numbers, or entity names — keep the ones from \
 the original clause unless the playbook's rules explicitly say otherwise.
  • Stay in the domain/register of the original clause (if it's formal \
-contract English, stay formal)."""
+contract English, stay formal).
+ • FIRST CHECK THE LABEL. The clause arrives labelled with a category from \
+automatic extraction, which is sometimes wrong. If the text is not actually \
+that kind of clause (a contact instruction, a heading, a list item about \
+something else), do NOT rewrite it into one: that would replace the other \
+side's text with a clause they never wrote. Return ONLY \
+{"notApplicable": true, "reason": "<1 sentence: what the text actually is>"}."""
 
 
 @router.post("/redline_propose")
@@ -588,6 +594,14 @@ Produce the three-variant redline now."""
             if content.startswith("json"):
                 content = content[4:]
         result = loads_lenient(content)
+        # Mislabelled text: no variants, and a reason the reviewer can read.
+        if result.get("notApplicable"):
+            return {
+                "clauseType": req.clauseType,
+                "category":   req.category,
+                "variants":   [],
+                "error":      f"not_this_clause_type: {str(result.get('reason') or '')[:200]}",
+            }
         # Validate variants shape — we want all three + basic fields.
         variants = result.get("variants") or []
         by_aggression = {v.get("aggression"): v for v in variants if isinstance(v, dict)}
@@ -748,7 +762,13 @@ Skip the entry rather than paraphrase.
  • proposedText is a complete self-contained clause, not a diff.
  • Never invent facts, figures, dates or party names. Carry over the ones in \
 the original unless the playbook explicitly requires otherwise.
- • Stay in the register of the original clause."""
+ • Stay in the register of the original clause.
+ • FIRST CHECK THE LABEL. The clause arrives labelled with a category from \
+automatic extraction, which is sometimes wrong. If the text is not actually \
+that kind of clause (a contact instruction, a heading, a list item about \
+something else), do NOT rewrite it into one: that would replace the other \
+side's text with a clause they never wrote. Return ONLY \
+{"notApplicable": true, "reason": "<1 sentence: what the text actually is>"}."""
 
 
 # Bracketed ALL-CAPS spans and fill-in blanks — "[MUTUALLY AGREED AMOUNT]",
@@ -871,6 +891,12 @@ Produce the rewrite now. JSON only."""
                 if content.startswith("json"):
                     content = content[4:]
             parsed = loads_lenient(content)
+            if parsed.get("notApplicable"):
+                return {
+                    "clauseId": item.clauseId,
+                    "clauseType": item.clauseType,
+                    "error": f"not_this_clause_type: {str(parsed.get('reason') or '')[:200]}",
+                }
             proposed = str(parsed.get("proposedText") or "").strip()
             if not proposed:
                 return {

@@ -90,7 +90,7 @@ const ENTITIES: Array<[string, string]> = [
  * non-breaking spaces, smart quotes, and the whitespace runs the editor's
  * autosave reflow introduces.
  */
-function normalizeWithMap(s: string): { norm: string; start: number[]; end: number[] } {
+function normalizeWithMap(s: string, html = false): { norm: string; start: number[]; end: number[] } {
   const out: string[] = []
   const start: number[] = []
   const end: number[] = []
@@ -102,6 +102,17 @@ function normalizeWithMap(s: string): { norm: string; start: number[]; end: numb
   }
 
   while (i < s.length) {
+    // In HTML, a line break inside a paragraph is whitespace: an extracted
+    // clause spanning lines ("9. LIMITATION…\n9.1 …") is stored as
+    // "…<br />9.1 …" and never matched. Paragraph boundaries are not crossed:
+    // a splice across them would leave unbalanced tags.
+    if (html && s[i] === '<' && /^<br\s*\/?>/i.test(s.slice(i, i + 6))) {
+      const close = s.indexOf('>', i)
+      if (!lastWasSpace) { push(' ', i, close + 1); lastWasSpace = true }
+      else { end[end.length - 1] = close + 1 }
+      i = close + 1
+      continue
+    }
     if (s[i] === '&') {
       const ent = ENTITIES.find(([e]) => s.startsWith(e, i))
       if (ent) {
@@ -144,12 +155,12 @@ function normalizeWithMap(s: string): { norm: string; start: number[]; end: numb
  * would edit an arbitrary clause. A miss is recoverable; the wrong edit to a
  * contract is not.
  */
-function findNormalizedSpan(haystack: string, needle: string): [number, number] | null {
+function findNormalizedSpan(haystack: string, needle: string, html = false): [number, number] | null {
   const target = normalizeWithMap(needle).norm.trim()
   // Short fragments match too loosely to splice on.
   if (target.length < 24) return null
 
-  const { norm, start, end } = normalizeWithMap(haystack)
+  const { norm, start, end } = normalizeWithMap(haystack, html)
   const at = norm.indexOf(target)
   if (at === -1) return null
   if (norm.indexOf(target, at + 1) !== -1) return null
@@ -214,7 +225,7 @@ function locateSpan(
     if (escCount > 1) return { mode: 'ambiguous', occurrences: escCount }
   }
 
-  const span = findNormalizedSpan(body, before)
+  const span = findNormalizedSpan(body, before, escape === escapeHtml)
   if (span) return { mode: 'normalized', start: span[0], end: span[1] }
 
   return { mode: 'none' }
@@ -230,8 +241,11 @@ function spliceInto(
   if (found.mode === 'none' || found.mode === 'ambiguous') {
     return { text: body, mode: 'none' }
   }
+  // Where the clause ran across line breaks, so does its replacement.
+  const lined = escape === escapeHtml && /<br\s*\/?>/i.test(body.slice(found.start, found.end))
+  const replacement = lined ? escape(proposed).replace(/\r?\n/g, '<br />') : escape(proposed)
   return {
-    text: body.slice(0, found.start) + escape(proposed) + body.slice(found.end),
+    text: body.slice(0, found.start) + replacement + body.slice(found.end),
     mode: found.mode,
   }
 }
