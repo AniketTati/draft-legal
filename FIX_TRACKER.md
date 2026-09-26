@@ -3094,7 +3094,38 @@ Asked after the end-to-end report: fix the three limits it listed. Each was repr
     - The API's download default, re-analysis and retype use the version the contract stands on. When that version has no file yet, the download falls back only to a file at or before it.
   - Tests: `current-version.test.ts` (3), `standing-version.integration.test.ts` (2). Both failed on the old code.
   - Live: the page shows v4's Delaware law and two-year term, although v6 is newer. The test edit's v6 is left in the contract's history; the contract points at v4 again, re-indexed and reviewed.
-- **Checks for DD1–DD4:** typecheck and lint clean (warnings only); unit 446; web 85; integration 450; agents 16.
+
+Asked next "are you sure you have tested everything thoroughly?". Not everything: the file-version path of DD2 hadn't run live, DD4 was fixed only where it was met, and nothing had checked what DD2's copies did to the features around clauses. A second pass found:
+
+- **DD5 — DD1 and DD2's own side effects. — DONE.**
+  - Found by reading every use of clause rows and of `evaluatePlaybookRules`, then live:
+    - DD1 judged any limit "in months" from the cap: a notice period of 1–3 months would have been failed on a 12-month cap. Only a limit whose name or description is about the cap or liability is measured now.
+    - After an edit, the playbook review's findings pointed at the reviewed version's clauses, which the page no longer shows: a finding's link did nothing until the review ran again, and never when clause text hadn't changed. The review endpoint now gives each finding its clause in the current version (same place, same type), with `changedSinceReview`.
+    - The review drawer marks the clause it has just rewritten as reviewed, by the old version's id: the new version's clause stayed "unreviewed". A mark on an earlier version's clause now marks the same clause in the current version, and the page refetches.
+    - The drawer then closed, its clause gone from the page's list. It now follows the clause into the new version.
+    - Each autosave re-indexed and re-embedded its version even when a later save had replaced it. The job now skips a replaced version (the delayed review is still asked for).
+  - Found live, running the file-version path for real (their Word file uploaded as a version of a test contract):
+    - It was another document, and six of the old clauses were "changed" into bits of it until analysis replaced them. A version that keeps under 40% of the old words is now a different document: nothing is carried (edits keep 0.79 and up on the demo contracts; that file kept 0.13). A clause whose place now holds unrelated words (under 0.3 in common) is gone, not changed. Word overlap alone can't tell the two apart: two different MSAs from one template share up to 0.82 of their words.
+    - A changed clause could take in the end of the sentence before it ("receipt. 2. LIABILITY …"). It now runs from its first surviving word to its last.
+  - Found live, applying the drawer's rewrite of a one-line cap:
+    - The rewrite made the clause five times longer, and the carry dropped it as "too large". That limit now applies only to a clause with none of its words left.
+    - The rewrite's second sentence (the super-cap) was cut off. Whole sentences added after a clause now join it, up to a paragraph break or the next numbered section; an unfinished sentence running into the next clause's words is that clause's new opening.
+  - Also: the playbook redline's "left unchecked" count included sub-chunk rows (mine, from BB5). It counts clauses now. Not covered by a test: it is inside the worker.
+  - Tests: `playbook-rules.test.ts` (+1), `clause-carry.integration.test.ts` (+5), `current-version.test.ts` (+1) and two of `clause-carry.test.ts`'s three new cases failed on the code before it; the third (a changed clause doesn't take the sentence before it) already held there and guards the new span rule.
+  - Live: after the drawer's "Apply to document" on the Fees clause, the drawer stayed on the clause, now "Reviewed" and "Not rated", in the new version.
+- **DD6 — More places that took the newest version for the current one. — DONE.**
+  - Found by reading every "newest version" lookup in the API.
+  - Publishing a Google Docs copy after an undo was refused: "Version 5 arrived while this copy was in Google Docs". It now looks for versions made after the copy was.
+  - The approvers' AI summary was of the undone version; so was the assistant's "re-analyse". The counterparty portal showed, and let the other side download, the undone internal redline. The negotiation diff opened on "v4 → undone v5".
+  - Fix: all use the version the contract stands on (`lib/standing-version.ts`); the portal, while that version is still being read, the latest one before it with text. The diff defaults to the current version and the one before it.
+  - Tests: `external-edit.integration.test.ts` (+1), `standing-version.integration.test.ts` (+2), `portal-pending.integration.test.ts` (+1), `current-version.test.ts` (+1). Each failed on the code before it.
+  - Live: the assistant's re-analyse of a test contract ran on its current v2, not its newer v3.
+- **DD7 — "Apply to document" failed on a Word file's clause. — DONE.**
+  - Found live: on a clause that runs over a heading and two list items (how a Word file's section arrives), the drawer's Apply answered "could not be located".
+  - Cause: the apply has a fallback for such clauses, the rewrite's own edits applied one by one, but the drawer never sent the edits.
+  - Fix: it sends them. Test: a tripwire in `ui-promises.test.ts`; it failed before.
+  - Live: the same clause's rewrite applied.
+- **Checks for DD1–DD7:** typecheck and lint clean (warnings only); unit 450; web 88; integration 459; agents 16.
 
 ---
 

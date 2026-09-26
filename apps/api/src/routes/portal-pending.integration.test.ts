@@ -69,3 +69,21 @@ describe('analysing a later version', () => {
     expect((await prisma.contract.findUniqueOrThrow({ where: { id: contract } })).title).toBe('Renamed by a person')
   })
 })
+
+describe('DD4 — after an undo', () => {
+  it('shows and downloads the version the contract stands on, not the undone internal redline', async () => {
+    const owner = await makeUser(org)
+    const id = await makeContract(org, owner, { title: 'DD4 portal', status: 'UNDER_NEGOTIATION' })
+    const v1 = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 1, htmlContent: '<p>What we sent.</p>', plainText: 'What we sent.', createdById: owner } })
+    await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 2, htmlContent: '<p>An internal redline, undone.</p>', plainText: 'An internal redline, undone.', createdById: owner, changeNote: 'redline_apply (moderate) (reverted via undo)' } })
+    await prisma.contract.update({ where: { id }, data: { currentVersionId: v1.id } })
+    const token = randomBytes(32).toString('hex')
+    await prisma.contractShareLink.create({ data: { orgId: org, contractId: id, token, permissions: ['read'], expiresAt: new Date(Date.now() + 3600_000), createdById: owner } })
+    const portal = signPortalToken({ token, contractId: id, orgId: org, permissions: ['read'] }, 3600)
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/portal/${portal}/contract` })
+    expect(res.json()).toMatchObject({ htmlContent: '<p>What we sent.</p>', versionNumber: 1, pending: null })
+    const download = await app.inject({ method: 'GET', url: `/api/v1/portal/${portal}/download/docx` })
+    expect(download.headers['content-disposition']).toContain('-v1.docx')
+  })
+})

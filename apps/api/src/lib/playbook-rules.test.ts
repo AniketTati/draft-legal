@@ -55,6 +55,18 @@ describe('liability rules on the Brightwave §3', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 
+  it('measures only a limit on the cap', () => {
+    const rules = { bounds: {
+      notice_period_months: { min: 1, max: 3, units: 'months', severity: 'medium', description: 'Termination notice of 1–3 months.' },
+      liability_cap_months: { min: 6, max: 24, units: 'months of fees', severity: 'high' },
+    } } as unknown as PlaybookRules
+    const text = "Either party may terminate on 30 days' notice. Each party's liability shall not exceed the fees paid in the twelve (12) months before the claim."
+    const { texts } = ruleTextsFor([{ id: 't', content: text }])
+    const v = evaluatePlaybookRules(rules, texts.get('t')!, 'preferred')
+    expect(v.map(b => [b.boundKey, b.passed])).toEqual([['notice_period_months', null], ['liability_cap_months', true]])
+    expect(v[0].reason).toBeUndefined()
+  })
+
   it('still fails a cap outside the limit, and one-sided wording', () => {
     const one = { id: 'one', content: "Supplier's total liability shall not exceed three (3) times the fees paid in the twelve (12) months before the claim." }
     const { texts } = ruleTextsFor([one])

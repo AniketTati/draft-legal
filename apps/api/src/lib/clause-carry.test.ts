@@ -44,6 +44,34 @@ describe('following a clause through an edit', () => {
     })
   })
 
+  it('follows a clause rewritten to five times its length', () => {
+    // The drawer's "moderate" rewrite of a one-line cap, found live: the carry dropped it as "too large".
+    const before = '3. LIABILITY Supplier’s aggregate liability under this Agreement shall not exceed the fees paid in the one (1) month preceding the claim. 4. TERM One year.'
+    const rewritten = 'Except for (a) breaches of confidentiality, (b) payment obligations, (c) gross negligence or willful misconduct, or (d) data breaches, each Party’s total aggregate liability arising out of or related to this Agreement shall not exceed an amount equal to the fees paid by Customer to Supplier in the twelve (12) months immediately preceding the event giving rise to the claim; and for claims arising from a data breach, each Party’s total aggregate liability shall not exceed two (2) times the fees paid in the twelve (12) months preceding the claim.'
+    const after = `3. LIABILITY ${rewritten} 4. TERM One year.`
+    const a = tokensOf(before), b = tokensOf(after)
+    const span = locate(a, 'LIABILITY Supplier’s aggregate liability under this Agreement shall not exceed the fees paid in the one (1) month preceding the claim.')!
+    const moved = followSpan(mapText(a, b), span[0], span[1], { text: after, tokens: b })!
+    expect(moved).toMatchObject({ unchanged: false, anchored: true })
+    expect(spanText(after, b, moved.start, moved.end)).toBe(`LIABILITY ${rewritten}`)
+  })
+
+  it('gives a sentence added after a clause to it, and a rewritten opening to the next clause', () => {
+    const before = 'The fees are due within sixty days. Each party shall keep the other party’s information confidential for two years.'
+    const after = 'The fees are due within sixty days. Late payments bear no interest. Neither party shall disclose the other party’s information for five years.'
+    expect(follow(before, after, 'The fees are due within sixty days.')).toEqual({ unchanged: false, text: 'The fees are due within sixty days. Late payments bear no interest.' })
+    expect(follow(before, after, 'Each party shall keep the other party’s information confidential for two years.'))
+      .toEqual({ unchanged: false, text: 'Neither party shall disclose the other party’s information for five years.' })
+  })
+
+  it('does not take in the end of the sentence before a rewritten clause', () => {
+    // From a heavily changed version: the stretch that changed began mid-sentence.
+    const before = '2. FEES Customer shall pay all invoices within fifteen (15) days of the invoice date. 3. LIABILITY Supplier’s aggregate liability under this Agreement shall not exceed the fees paid in the one (1) month preceding the claim.'
+    const after = '1. PAYMENT Customer shall pay each invoice within thirty (30) days of receipt. 2. LIABILITY Supplier’s aggregate liability shall be unlimited.'
+    expect(follow(before, after, 'LIABILITY Supplier’s aggregate liability under this Agreement shall not exceed the fees paid in the one (1) month preceding the claim.'))
+      .toEqual({ unchanged: false, text: 'LIABILITY Supplier’s aggregate liability shall be unlimited.' })
+  })
+
   it('reports a deleted clause as gone', () => {
     expect(follow(V1, V1.replace(`2. FEES ${FEES}\n`, ''), FEES)).toBeNull()
     // The last clause too, though its full stop pairs with the new last sentence's.

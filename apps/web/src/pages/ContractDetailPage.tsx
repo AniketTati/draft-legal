@@ -761,11 +761,31 @@ export function ContractDetailPage() {
 
   const updateReviewState = useMutation({
     mutationFn: ({ clauseId, state }: { clauseId: string; state: ReviewState }) =>
-      api.patch(`/contracts/clauses/${clauseId}/review-state`, { state }).then(r => r.data),
+      api.patch(`/contracts/clauses/${clauseId}/review-state`, { state }).then(r => r.data as { requestedId?: string }),
+    onSuccess: (data) => {
+      // DD2 — the clause was an older version's (the drawer marks the one it
+      // has just rewritten): the server marked the same clause in the version
+      // the contract stands on, which the page shows.
+      if (data?.requestedId) qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
     onError: () => {
       qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
     },
   })
+
+  // DD2 — the focused clause by its place, so the review drawer follows it
+  // into a new version (an applied rewrite, an edit) instead of closing: the
+  // page's clauses are then the new version's, with new ids.
+  const focusedPlaceRef = useRef<{ sortOrder: number; clauseType: string } | null>(null)
+  useEffect(() => {
+    if (!focusedClauseId) { focusedPlaceRef.current = null; return }
+    const list = (clausesData?.data ?? []) as Array<{ id: string; sortOrder: number; clauseType: string }>
+    const here = list.find(c => c.id === focusedClauseId)
+    if (here) { focusedPlaceRef.current = { sortOrder: here.sortOrder, clauseType: here.clauseType }; return }
+    const place = focusedPlaceRef.current
+    const moved = place && list.find(c => c.sortOrder === place.sortOrder && c.clauseType === place.clauseType)
+    if (moved) setFocusedClauseId(moved.id)
+  }, [focusedClauseId, clausesData])
 
   const { data: fieldDefsData } = useQuery({
     queryKey: ['field-definitions'],
@@ -1009,6 +1029,9 @@ export function ContractDetailPage() {
   // DD4 — the version the contract stands on, which an undo moves back; not
   // the newest.
   const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null }>, contract?.currentVersionId)
+  // …and the version before it: what the negotiation diff compares by default.
+  const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
+  const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
 
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
@@ -1082,8 +1105,8 @@ export function ContractDetailPage() {
   // Auto-populate version dropdowns when switching to negotiate tab
   useEffect(() => {
     if (tab === 'negotiate' && versions.length >= 2 && !diffV1Id && !diffV2Id) {
-      setDiffV1Id(versions[1]?.id ?? '')
-      setDiffV2Id(versions[0]?.id ?? '')
+      setDiffV1Id(diffDefaults.v1 ?? versions[1]?.id ?? '')
+      setDiffV2Id(diffDefaults.v2 ?? versions[0]?.id ?? '')
     }
     if (tab !== 'negotiate' && (diffV1Id || diffV2Id)) {
       setDiffV1Id('')
@@ -3032,6 +3055,8 @@ export function ContractDetailPage() {
                   isAnalyzing={isAnalyzingRedlines}
                   failure={redlineStatus === 'FAILED' ? String(customMeta._redlineError ?? 'The analysis did not complete.') : null}
                   versions={versions.map((v: any) => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt }))}
+                  defaultV1Id={diffDefaults.v1}
+                  defaultV2Id={diffDefaults.v2}
                   onRequestAnalysis={(v1Id, v2Id) => {
                     setDiffV1Id(v1Id)
                     setDiffV2Id(v2Id)

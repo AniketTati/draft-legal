@@ -22,6 +22,7 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
+import { standingVersion } from '../lib/standing-version.js'
 
 async function resolvePortalToken(portalToken: string) {
   let payload
@@ -43,21 +44,25 @@ async function resolvePortalToken(portalToken: string) {
 }
 
 /**
- * The version the other side reads and downloads: the newest one whose text
- * has been read. A version just uploaded has no text until the parse job
- * finishes; the page said nothing had been uploaded, while the counterparty
- * had just uploaded it. It is reported as pending instead.
+ * The version the other side reads and downloads: the one the contract
+ * stands on, or, while its text is still being read, the latest one before
+ * it whose text has been. A version just uploaded has no text until the
+ * parse job finishes; the page said nothing had been uploaded, while the
+ * counterparty had just uploaded it. It is reported as pending instead.
+ *
+ * DD4 — not the newest: after an undo, the newest is the undone version, an
+ * internal redline the other side was never sent.
  */
-async function portalVersion(contractId: string) {
-  const versions = await prisma.contractVersion.findMany({
-    where:   { contractId },
-    orderBy: { versionNumber: 'desc' },
-    take:    10,
-    select:  { id: true, versionNumber: true, htmlContent: true, createdAt: true },
-  })
-  const shown = versions.find(v => v.htmlContent?.trim()) ?? null
-  const newest = versions[0] ?? null
-  const pendingVersion = newest && !newest.htmlContent?.trim() ? newest.versionNumber : null
+async function portalVersion(contract: { id: string; currentVersionId: string | null }) {
+  const current = await standingVersion(contract.id, contract.currentVersionId)
+  if (!current) return { shown: null, pendingVersion: null }
+  const shown = current.htmlContent?.trim()
+    ? current
+    : await prisma.contractVersion.findFirst({
+        where:   { contractId: contract.id, versionNumber: { lt: current.versionNumber }, htmlContent: { not: '' } },
+        orderBy: { versionNumber: 'desc' },
+      })
+  const pendingVersion = current.htmlContent?.trim() ? null : current.versionNumber
   return { shown, pendingVersion }
 }
 
@@ -82,7 +87,7 @@ export async function portalRoutes(app: FastifyInstance) {
       },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
-    const { shown, pendingVersion } = await portalVersion(contract.id)
+    const { shown, pendingVersion } = await portalVersion(contract)
 
     // Update view stats (fire and forget)
     prisma.contractShareLink.update({
@@ -185,7 +190,7 @@ export async function portalRoutes(app: FastifyInstance) {
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
     // The same version the page shows, not a newer one still being read.
-    const latest = (await portalVersion(contract.id)).shown
+    const latest = (await portalVersion(contract)).shown
     if (!latest?.htmlContent?.trim()) {
       return reply.status(400).send({ error: 'No content available to export' })
     }

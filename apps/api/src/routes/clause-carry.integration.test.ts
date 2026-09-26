@@ -4,9 +4,17 @@
  * playbook redline) had none: the playbook check found nothing to check, and
  * the Clauses tab showed v1's text.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+
+// Kept off the shared Redis queue, which the dev API's workers also consume.
+vi.mock('../lib/queue.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/queue.js')>()),
+  queueRefreshVersion: vi.fn(),
+}))
+
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 import { carryClauses } from '../lib/clause-carry.js'
+import { queueRefreshVersion } from '../lib/queue.js'
 
 const SERVICES = 'Supplier shall provide the subscription services described in the Order Form.'
 const FEES = 'Customer shall pay all undisputed invoices within sixty (60) days of the invoice date.'
@@ -110,6 +118,37 @@ describe('an editor save keeps the clauses', () => {
   })
 })
 
+describe('what was said about the clauses before the edit', () => {
+  it('a playbook review of the earlier version links each finding to its clause as it now reads', async () => {
+    const { id, v1 } = await contractWithClauses()
+    const reviewed = await prisma.contractClause.findFirst({ where: { versionId: v1, clauseType: 'limitation_of_liability' } })
+    await prisma.contract.update({ where: { id }, data: { metadata: { _playbookReview: {
+      versionId: v1, summary: '1 of 4 clauses deviate.', requiresHumanGate: false, clausesReviewed: 4, reviewedAt: new Date().toISOString(),
+      findings: [{ clauseId: reviewed!.id, clauseType: 'limitation_of_liability', playbookAlignment: 'fallback', severity: 'medium', recommendation: 'negotiate', reasoning: 'A 12-month cap.' }],
+    } } } })
+    const edited = LIABILITY.replace('twelve (12) months', 'twenty-four (24) months')
+    const v2 = (await app.inject({ method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers: auth(org, ['ADMIN'], user), payload: { htmlContent: html([SERVICES, FEES, edited, TERM]) } })).json().id as string
+    expect(vi.mocked(queueRefreshVersion)).toHaveBeenCalledWith(expect.objectContaining({ versionId: v2, fromVersionId: v1, review: true }))
+
+    const res = await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/playbook-review`, headers: auth(org, ['ADMIN'], user) })
+    const [finding] = res.json().findings
+    const now = await prisma.contractClause.findFirst({ where: { versionId: v2, clauseType: 'limitation_of_liability' } })
+    expect(finding).toMatchObject({ clauseId: now!.id, excerpt: edited, changedSinceReview: true })
+  })
+
+  it('marking an earlier version\'s clause reviewed marks the same clause now', async () => {
+    const { id, v1 } = await contractWithClauses()
+    const old = await prisma.contractClause.findFirst({ where: { versionId: v1, clauseType: 'limitation_of_liability' } })
+    const v2 = (await app.inject({ method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers: auth(org, ['ADMIN'], user),
+      payload: { htmlContent: html([SERVICES, FEES, LIABILITY.replace('twelve (12)', 'six (6)'), TERM]) } })).json().id as string
+    const res = await app.inject({ method: 'PATCH', url: `/api/v1/contracts/clauses/${old!.id}/review-state`, headers: auth(org, ['ADMIN'], user), payload: { state: 'reviewed' } })
+    expect(res.statusCode, res.body).toBe(200)
+    const now = await prisma.contractClause.findFirst({ where: { versionId: v2, clauseType: 'limitation_of_liability' } })
+    expect(res.json()).toMatchObject({ id: now!.id, requestedId: old!.id, reviewState: 'reviewed' })
+    expect(now).toMatchObject({ reviewState: 'reviewed', reviewedById: user })
+  })
+})
+
 describe('an applied rewrite keeps the clauses', () => {
   it('the rewritten clause takes its new words; the rest are as they were', async () => {
     const { id, v1 } = await contractWithClauses()
@@ -141,6 +180,36 @@ describe('carryClauses', () => {
     const out = await carryClauses({ contractId: id, toVersionId: v2.id })
     expect(out).toMatchObject({ carried: 4, changed: 1, dropped: 0 })
     expect((await clausesOf(v2.id)).find(r => r.clauseType === 'limitation_of_liability')?.content).toContain('six (6) months')
+  })
+
+  it('carries nothing to a different document', async () => {
+    // Found live: another agreement uploaded as a version of this one had six
+    // of its clauses "changed" into bits of the other document.
+    const { id } = await contractWithClauses()
+    const other = await prisma.contractVersion.create({
+      data: { contractId: id, versionNumber: 2, createdById: user, plainText: 'MASTER SERVICES AGREEMENT This Agreement is made between Acme Corp and Vendor Ltd (the "Supplier"). 1. PAYMENT Customer shall pay each invoice within thirty (30) days of receipt. 2. LIABILITY Supplier\'s aggregate liability shall be unlimited. Each party may recover consequential loss.' },
+    })
+    expect(await carryClauses({ contractId: id, toVersionId: other.id })).toMatchObject({ carried: 0 })
+    expect(await prisma.contractClause.count({ where: { versionId: other.id } })).toBe(0)
+  })
+
+  it('keeps a clause rewritten to five times its length', async () => {
+    // Found live: the review drawer's rewrite of a one-line cap was dropped as "too large".
+    const { id } = await contractWithClauses()
+    const rewritten = "Except for (a) breaches of Section 6 (Confidentiality), (b) obligations under Section 4 (Indemnification) for intellectual property infringement, (c) Customer's payment obligations, (d) gross negligence, fraud or willful misconduct, and (e) data breaches, each party's aggregate liability arising out of or related to this Agreement, whether in contract, tort (including negligence), breach of statutory duty or otherwise, shall not exceed an amount equal to the fees paid by Customer to Supplier in the twelve (12) months immediately preceding the event giving rise to the claim. Notwithstanding the foregoing, for claims arising from a data breach, each party's total aggregate liability shall not exceed two (2) times the fees paid by Customer to Supplier in the twelve (12) months immediately preceding the event giving rise to the claim, and neither party shall be liable for any indirect, incidental, special or consequential damages, including loss of profits, revenue, goodwill or data, even if advised of their possibility."
+    const v2 = await prisma.contractVersion.create({ data: { contractId: id, versionNumber: 2, createdById: user, plainText: text([SERVICES, FEES, rewritten, TERM]) } })
+    expect(await carryClauses({ contractId: id, toVersionId: v2.id })).toMatchObject({ carried: 4, changed: 1, dropped: 0 })
+    expect((await clausesOf(v2.id)).find(r => r.clauseType === 'limitation_of_liability')?.content).toBe(rewritten)
+  })
+
+  it('drops a clause whose place now holds other text', async () => {
+    const { id } = await contractWithClauses()
+    const v2 = await prisma.contractVersion.create({
+      data: { contractId: id, versionNumber: 2, createdById: user, plainText: text([SERVICES, FEES, 'Supplier will host the platform in the European Union and keep daily backups for ninety days.', TERM]) },
+    })
+    const out = await carryClauses({ contractId: id, toVersionId: v2.id })
+    expect(out).toMatchObject({ carried: 3, changed: 0, dropped: 1 })
+    expect((await clausesOf(v2.id)).map(r => r.clauseType)).toEqual(['services', 'payment', 'term'])
   })
 
   it('leaves a version that has clauses alone', async () => {

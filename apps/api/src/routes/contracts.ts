@@ -27,6 +27,7 @@ import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeft
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { clauseVersionId } from '../lib/clause-version.js'
 import { afterEdit } from '../lib/version-refresh.js'
+import { standingVersion } from '../lib/standing-version.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
@@ -73,18 +74,6 @@ const AGENT_TEXT_EXCERPT = 20_000
 function sameDocumentHtml(stored: string, saved: string): boolean {
   const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
   return norm(stored) === norm(saved)
-}
-
-/**
- * DD4 — the version a contract stands on: `currentVersionId`, which an undo
- * moves back. Its newest version only when it has no pointer.
- */
-async function standingVersion<V extends { id: string }>(contract: { id: string; currentVersionId: string | null; versions: V[] }) {
-  if (contract.currentVersionId && contract.currentVersionId !== contract.versions[0]?.id) {
-    const current = await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: contract.id } })
-    if (current) return current
-  }
-  return contract.versions[0] ?? null
 }
 
 export async function contractRoutes(app: FastifyInstance) {
@@ -679,7 +668,7 @@ export async function contractRoutes(app: FastifyInstance) {
       ? await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: id } })
       // DD4 — the version the contract stands on (an undo moves it back), not
       // the newest: after undoing a redline, the PDF was the undone text.
-      : await standingVersion(contract)
+      : await standingVersion(contract.id, contract.currentVersionId)
 
     // Pick the artifact key: canonical = renderedPdfKey (if present) else s3Key.
     const canonicalKey = (v: typeof version) =>
@@ -1163,7 +1152,10 @@ export async function contractRoutes(app: FastifyInstance) {
     // Scope check: ensure the clause belongs to a contract in this org.
     const clause = await prisma.contractClause.findUnique({
       where: { id: clauseId },
-      select: { version: { select: { contract: { select: { orgId: true, id: true, ownerId: true } } } } },
+      select: {
+        versionId: true, sortOrder: true, clauseType: true, isSubChunk: true,
+        version: { select: { contract: { select: { orgId: true, id: true, ownerId: true, currentVersionId: true } } } },
+      },
     })
     if (!clause || clause.version.contract.orgId !== orgId
       // X7 — an own-scope editor may only mark clauses on contracts it owns.
@@ -1171,16 +1163,28 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(404).send({ detail: 'Clause not found' })
     }
 
-    const updated = await prisma.contractClause.update({
-      where: { id: clauseId },
-      data: {
-        reviewState: state,
-        reviewedAt: state === 'unreviewed' ? null : new Date(),
-        reviewedById: state === 'unreviewed' ? null : userId,
-      },
-      select: { id: true, reviewState: true, reviewedAt: true, reviewedById: true },
-    })
-
+    // DD2 — a clause of a version the contract has moved on from (the page
+    // held its id across an edit; the review drawer marks the clause it has
+    // just rewritten) marks the same clause in the version the contract
+    // stands on: same place, same type.
+    const currentVersionId = clause.version.contract.currentVersionId
+    const target = currentVersionId && clause.versionId !== currentVersionId && !clause.isSubChunk
+      ? await prisma.contractClause.findFirst({
+          where: { versionId: currentVersionId, isSubChunk: false, sortOrder: clause.sortOrder, clauseType: clause.clauseType },
+          select: { id: true },
+        })
+      : null
+    const data = {
+      reviewState: state,
+      reviewedAt: state === 'unreviewed' ? null : new Date(),
+      reviewedById: state === 'unreviewed' ? null : userId,
+    }
+    const select = { id: true, reviewState: true, reviewedAt: true, reviewedById: true }
+    const updated = await prisma.contractClause.update({ where: { id: clauseId }, data, select })
+    if (target) {
+      const now = await prisma.contractClause.update({ where: { id: target.id }, data, select })
+      return reply.send({ ...now, requestedId: clauseId })
+    }
     return reply.send(updated)
   })
 
@@ -1397,7 +1401,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     // DD4 — analyse the version the contract stands on, not the newest (an
     // undone redline).
-    const version = await standingVersion(contract)
+    const version = await standingVersion(contract.id, contract.currentVersionId)
 
     // If no version exists, re-queue draft agent (using stored context or contract fields as fallback)
     if (!version) {
@@ -1496,7 +1500,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
     // DD4 — the version the contract stands on, not the newest.
-    const standing = await standingVersion(contract)
+    const standing = await standingVersion(contract.id, contract.currentVersionId)
     if (!standing?.plainText) {
       return reply.status(422).send({ detail: 'No extracted text available.' })
     }
@@ -2448,12 +2452,12 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { metadata: true, type: true },
+      select: { metadata: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
     const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview as
-      { findings?: Array<Record<string, unknown>> } | undefined
+      { findings?: Array<Record<string, unknown>>; versionId?: string } | undefined
     if (!review) {
       // V1 — say WHY there is no review: the job skips contracts whose type
       // has no playbook positions (same filter as handlePlaybookReview).
@@ -2477,18 +2481,35 @@ export async function contractRoutes(app: FastifyInstance) {
     const clauses = clauseIds.length
       ? await prisma.contractClause.findMany({
           where:  { id: { in: clauseIds }, version: { contractId } },
-          select: { id: true, sortOrder: true, sectionRef: true, content: true },
+          select: { id: true, sortOrder: true, sectionRef: true, content: true, clauseType: true },
         })
       : []
     const byId = new Map(clauses.map(c => [c.id, c]))
+    // DD2 — a review of an earlier version, read on the version the contract
+    // stands on: each finding follows its clause there (same place, same
+    // type), so its link opens the clause as it now reads. The page's clauses
+    // are the current version's; the reviewed ones' ids are not among them.
+    const now = new Map<string, (typeof clauses)[number]>()
+    if (review.versionId && contract.currentVersionId && review.versionId !== contract.currentVersionId) {
+      const rows = await prisma.contractClause.findMany({
+        where:  { versionId: contract.currentVersionId, isSubChunk: false },
+        select: { id: true, sortOrder: true, sectionRef: true, content: true, clauseType: true },
+      })
+      for (const r of rows) now.set(`${r.sortOrder}|${r.clauseType}`, r)
+    }
     const ordered = findings
       .map(f => {
-        const c = typeof f.clauseId === 'string' ? byId.get(f.clauseId) : undefined
+        const reviewed = typeof f.clauseId === 'string' ? byId.get(f.clauseId) : undefined
+        const current = reviewed ? now.get(`${reviewed.sortOrder}|${reviewed.clauseType}`) : undefined
+        const c = current ?? reviewed
         return {
           ...f,
+          ...(current && { clauseId: current.id }),
           sortOrder:  c?.sortOrder ?? null,
           sectionRef: c?.sectionRef ?? null,
           excerpt:    c ? c.content.slice(0, 240) : null,
+          // The clause's words changed after the review: its finding may no longer hold.
+          ...(current && reviewed && current.content !== reviewed.content && { changedSinceReview: true }),
         }
       })
       .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
@@ -2666,11 +2687,9 @@ export async function contractRoutes(app: FastifyInstance) {
       await prisma.approvalStep.update({ where: { id: step.id }, data: { escalationJobId: escalationJob.id?.toString() } })
     }))
 
-    // Queue AI summary generation
-    const latestVersion = await prisma.contractVersion.findFirst({
-      where:   { contractId },
-      orderBy: { versionNumber: 'desc' },
-    })
+    // Queue AI summary generation, of the version the contract stands on
+    // (DD4: after an undo, the newest is the undone one).
+    const latestVersion = await standingVersion(contractId, contract.currentVersionId)
     if (latestVersion) {
       queueApprovalSummary({
         instanceId:  instance.inst.id,

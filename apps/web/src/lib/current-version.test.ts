@@ -28,4 +28,16 @@ describe('the contract page', () => {
     const original = page.slice(page.indexOf('const hasOriginal ='), page.indexOf('const originalNotPdf ='))
     expect(original).not.toContain('versions[0]')
   })
+
+  it('compares the current version with the one before it by default', () => {
+    const negotiate = page.slice(page.indexOf("if (tab === 'negotiate' && versions.length >= 2"), page.indexOf("if (tab !== 'negotiate' && (diffV1Id || diffV2Id))"))
+    expect(negotiate).toContain('diffDefaults.v2')
+    expect(page).toMatch(/<RedlinePanel[\s\S]{0,600}defaultV2Id=\{diffDefaults\.v2\}/)
+  })
+
+  it('keeps the review drawer on its clause across a new version, and shows a mark the server moved there', () => {
+    expect(page).toContain('focusedPlaceRef')
+    const mark = page.slice(page.indexOf('const updateReviewState = useMutation({'), page.indexOf('const focusedPlaceRef'))
+    expect(mark).toMatch(/requestedId[\s\S]*invalidateQueries\(\{ queryKey: \['contract-clauses', id\] \}\)/)
+  })
 })

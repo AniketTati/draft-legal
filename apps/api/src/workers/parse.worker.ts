@@ -233,6 +233,13 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
 
 async function handleRefreshVersion(data: RefreshVersionJob): Promise<void> {
   const { contractId, versionId, orgId, fromVersionId, review } = data
+  // The review is of whatever version stands two minutes on, so it is asked
+  // for even when this one has been replaced.
+  if (review) queuePlaybookReviewSoon({ contractId, orgId })
+  const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { currentVersionId: true, title: true, type: true, jurisdiction: true } })
+  // A later save (the editor saves five seconds after typing stops) made a
+  // newer version: its own job indexes and embeds that one.
+  if (!contract || contract.currentVersionId !== versionId) return
   try {
     await reindexContract(contractId)
   } catch (err) {
@@ -243,12 +250,10 @@ async function handleRefreshVersion(data: RefreshVersionJob): Promise<void> {
     orderBy: { sortOrder: 'asc' },
   })
   if (clauses.length) {
-    const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { title: true, type: true, jurisdiction: true } })
     await legalChunkAndStore(versionId, contractId, orgId, clauses, contract)
     if (fromVersionId) await copyEmbeddings(fromVersionId, versionId)
     queueEmbedContract(versionId)
   }
-  if (review) queuePlaybookReviewSoon({ contractId, orgId })
 }
 
 // ─── split-binder ─────────────────────────────────────────────────────────────

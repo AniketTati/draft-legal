@@ -44,6 +44,7 @@ import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
 import { renewalNotice } from '../lib/renewal-notice.js'
 import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
+import { standingVersion } from '../lib/standing-version.js'
 
 /** Words in a contract search that say nothing about which contract ("our contract with Acme"). */
 const QUERY_STOPWORDS = new Set(['our', 'the', 'a', 'an', 'with', 'for', 'of', 'and', 'to', 'in', 'on', 'by', 'from', 'my', 'we', 'us', 'contract', 'contracts'])
@@ -2736,7 +2737,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
       select: {
         id: true, title: true, type: true, status: true,
-        ownerId: true, tags: true, analysisStatus: true,
+        ownerId: true, tags: true, analysisStatus: true, currentVersionId: true,
       },
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -2820,11 +2821,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // (PENDING) — enqueuing classify would silently no-op and strand the
     // contract in CLASSIFYING. Returns false if there's nothing to analyze.
     const reanalyze = async (): Promise<boolean> => {
-      const latest = await prisma.contractVersion.findFirst({
-        where: { contractId: existing.id },
-        orderBy: { versionNumber: 'desc' },
-        select: { id: true, plainText: true, s3Key: true, mimeType: true },
-      })
+      // DD4 — the version the contract stands on, not the newest (after an
+      // undo, the undone one).
+      const latest = await standingVersion(existing.id, existing.currentVersionId)
       if (!latest) return false
       if (latest.plainText && latest.plainText.trim()) {
         await prisma.contract.update({ where: { id: existing.id }, data: { analysisStatus: 'CLASSIFYING' } })

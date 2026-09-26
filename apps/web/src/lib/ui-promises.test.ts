@@ -188,3 +188,13 @@ describe('CC11 — starter prompts are written for people', () => {
     for (const p of prompts) expect(p, p).not.toMatch(/\b(?:[a-z]+_){1,3}(?:list|search|advice|memory|compare|cite|get|check|summarize|propose|apply)\b/)
   })
 })
+
+describe('DD7 — "Apply to document" in the review drawer', () => {
+  it('sends the rewrite\'s own edits, which place a clause that runs over a heading and list items', () => {
+    const drawer = web('components/contracts/FocusedReviewDrawer.tsx')
+    const apply = drawer.slice(drawer.indexOf('const applyVariant = useMutation({'), drawer.indexOf('onSuccess:', drawer.indexOf('const applyVariant = useMutation({')))
+    expect(apply).toMatch(/changes: v\.changes/)
+    // …and the server takes them (the fallback that splices each edit in its paragraph).
+    expect(api('routes/contracts.ts')).toMatch(/app\.post\('\/:id\/clauses\/:clauseId\/apply'[\s\S]{0,2500}changes/)
+  })
+})

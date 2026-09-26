@@ -147,7 +147,7 @@ export function FocusedReviewDrawer({
       const r = await api.post(`/contracts/${contractId}/clauses/${clauseId}/suggest`, {})
       return r.data as {
         hasPlaybook: boolean
-        variants: Array<{ aggression: string; proposedText: string; rationale: string }>
+        variants: Array<{ aggression: string; proposedText: string; rationale: string; changes?: Array<{ before: string; after: string; reason?: string }> }>
         error?: string
       }
     },
@@ -159,12 +159,17 @@ export function FocusedReviewDrawer({
   const applyVariant = useMutation({
     mutationFn: async (v: {
       aggression: string; proposedText: string; rationale: string
+      changes?: Array<{ before: string; after: string; reason?: string }>
       allowAppendFallback?: boolean
     }) => {
       const r = await api.post(`/contracts/${contractId}/clauses/${clause!.id}/apply`, {
         proposedText: v.proposedText,
         aggression:   v.aggression,
         rationale:    v.rationale,
+        // The rewrite's own edits: how a clause that runs over a heading and
+        // list items (a Word file's section) is changed in place, one edit per
+        // paragraph. Without them it "could not be located".
+        ...(v.changes?.length ? { changes: v.changes } : {}),
         // Only ever set by the explicit "add as an amendment" button below —
         // the server refuses rather than appending silently, because an
         // amendment is a different instrument from the replacement shown here.

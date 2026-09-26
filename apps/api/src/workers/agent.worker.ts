@@ -506,7 +506,7 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     const { clauseIds: deviatingIds, hints, severity: bySeverity } = redlineTargets(checked.checks ?? [], review, versionId)
     // "Could not be checked" means neither the rules nor the review judged it.
     const uncoveredClauses = review?.versionId === versionId
-      ? Math.max(0, (await prisma.contractClause.count({ where: { versionId } })) - (review.clausesReviewed ?? 0))
+      ? Math.max(0, (await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })) - (review.clausesReviewed ?? 0))
       : checked.summary?.uncoveredClauses ?? 0
     if (deviatingIds.length === 0) {
       await setMeta({

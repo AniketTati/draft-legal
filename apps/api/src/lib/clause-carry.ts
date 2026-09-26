@@ -19,7 +19,7 @@
  */
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
-import { diffSequences, fold } from './ooxml/sequence-diff.js'
+import { diffSequences, fold, likeness, wordBag } from './ooxml/sequence-diff.js'
 
 // ── Following text through an edit ──────────────────────────────────────────
 
@@ -132,27 +132,46 @@ export function locate(tokens: readonly Token[], clause: string, from = 0): [num
 
 /**
  * Where old tokens [a, b) are in the new text, and whether they arrived
- * unchanged. Null: deleted. With the new text, words added at either end of
- * the clause join it while its sentence goes on ("…the claim arose.").
+ * unchanged. Null: deleted. The clause runs from its first surviving word to
+ * its last. With the new text, words added at its ends join it:
+ *   - before its first word, while the sentence goes on ("Neither party's …");
+ *   - after its last word, whole sentences up to a paragraph break or the
+ *     next numbered section (a rewrite that adds a super-cap), and the rest
+ *     of its own sentence ("…the claim arose."). An unfinished sentence that
+ *     runs into the next clause's words is that clause's new opening.
+ * A clause with no word left is the stretch that replaced it.
  */
 export function followSpan(
   map: TextMap, a: number, b: number,
   after?: { text: string; tokens: readonly Token[] },
-): { start: number; end: number; unchanged: boolean } | null {
-  let start = map.equal[a] >= 0 ? map.equal[a] : map.hunkStart[a]
-  let end = map.equal[b - 1] >= 0 ? map.equal[b - 1] + 1 : map.hunkEnd[b - 1]
+): { start: number; end: number; unchanged: boolean; anchored: boolean } | null {
+  let first = -1, last = -1
+  for (let k = a; k < b; k++) if (map.equal[k] >= 0) { if (first < 0) first = k; last = k }
+  let start = first < 0 ? map.hunkStart[a] : map.equal[first]
+  let end = first < 0 ? map.hunkEnd[b - 1] : map.equal[last] + 1
   // A deleted clause can keep a stray match (a common word, paired with
   // another sentence's): a fifth of its length is not the clause.
   if (start < 0 || end - start < Math.max(1, Math.ceil((b - a) / 5))) return null
-  let unchanged = end - start === b - a
+  let unchanged = first === a && last === b - 1 && end - start === b - a
   for (let k = a; unchanged && k < b; k++) if (map.equal[k] < 0) unchanged = false
-  if (after) {
+  if (after && first >= 0) {
     const t = after.tokens
-    const sentenceEndsAfter = (i: number) => /[.;:!?]["”’)\]]*(?:\s|$)|\n/.test(after.text.slice(t[i].end, t[i + 1]?.start ?? after.text.length))
-    while (end < t.length && map.inserted[end] && !sentenceEndsAfter(end - 1)) { end++; unchanged = false }
-    while (start > 0 && map.inserted[start - 1] && !sentenceEndsAfter(start - 1)) { start--; unchanged = false }
+    const gapAfter = (i: number) => after.text.slice(t[i].end, t[i + 1]?.start ?? after.text.length)
+    const endsSentence = (gap: string) => /[.;:!?]["”’)\]]*(?:\s|$)|\n/.test(gap)
+    // A new paragraph, or a numbered section after a full stop: "… 4. TERM".
+    const boundaryBefore = (i: number) => /\n/.test(gapAfter(i - 1)) || (endsSentence(gapAfter(i - 1)) && /^\d+(?:\.\d+)*$/.test(t[i].key))
+    let e = end, sentenceDone = -1
+    while (e < t.length && map.inserted[e] && !boundaryBefore(e)) {
+      e++
+      if (endsSentence(gapAfter(e - 1))) sentenceDone = e
+    }
+    // Stopped at the next clause's words, mid-paragraph: keep whole sentences only.
+    if (e < t.length && !map.inserted[e] && !boundaryBefore(e)) e = sentenceDone >= 0 ? sentenceDone : end
+    if (e > end) unchanged = false
+    end = e
+    while (start > 0 && map.inserted[start - 1] && !endsSentence(gapAfter(start - 1))) { start--; unchanged = false }
   }
-  return { start, end, unchanged }
+  return { start, end, unchanged, anchored: first >= 0 }
 }
 
 // ── Copying the rows ────────────────────────────────────────────────────────
@@ -166,6 +185,11 @@ export interface CarryResult {
 }
 
 const NONE: CarryResult = { fromVersionId: null, carried: 0, changed: 0, dropped: 0 }
+
+/** Below this share of words in common (Dice, over the words used), two texts are about different things. */
+const SAME_THING = 0.3
+/** Below this share of the old text's words kept in order, the new version is another document. */
+const SAME_DOCUMENT = 0.4
 
 /**
  * Give `toVersionId` the clauses of `fromVersionId` (or, if that version has
@@ -206,6 +230,14 @@ export async function carryClauses(opts: { contractId: string; toVersionId: stri
   const before = tokensOf(from.plainText)
   const after = tokensOf(to.plainText)
   const map = mapText(before, after)
+  // A different document (the wrong file, or the other side's own paper
+  // uploaded as a version): little of the old text is in it, and none of its
+  // clauses are these. Its analysis gives it its own. Edits, even a whole
+  // playbook redline or a Google Docs round trip, keep most of the words
+  // (0.79 and up on the demo contracts; the wrong file kept 0.13).
+  let kept = 0
+  for (let i = 0; i < before.length; i++) if (map.equal[i] >= 0) kept++
+  if (kept < before.length * SAME_DOCUMENT) return NONE
 
   const created: Prisma.ContractClauseCreateManyInput[] = []
   let cursor = 0, changed = 0, dropped = 0
@@ -214,14 +246,17 @@ export async function carryClauses(opts: { contractId: string; toVersionId: stri
     const last = subs.length ? locate(before, subs[subs.length - 1].content, first?.[0] ?? cursor) : first
     const span = first && last && last[1] > first[0] ? [first[0], last[1]] as const : null
     let moved = span ? followSpan(map, span[0], span[1], { text: to.plainText, tokens: after }) : null
-    // A rewrite too large for the diff reads as one replaced stretch: only a
-    // clause found as it was can be trusted then.
-    if (span && moved && !moved.unchanged && moved.end - moved.start > (span[1] - span[0]) * 3 + 50) moved = null
+    // With none of its words left, a clause is the stretch that replaced it;
+    // a rewrite too large for the diff reads as one such stretch, so a far
+    // larger one can't be trusted. (A clause whose own words still open and
+    // close it may grow as much as it likes: a one-line cap rewritten with
+    // carve-outs and a super-cap is five times longer.)
+    if (span && moved && !moved.anchored && moved.end - moved.start > (span[1] - span[0]) * 3 + 50) moved = null
     if (span) cursor = span[0]
     if (!moved) {
       const same = subs.length === 0 ? locate(after, primary.content) : null
       if (!same) { dropped++; continue }
-      moved = { start: same[0], end: same[1], unchanged: true }
+      moved = { start: same[0], end: same[1], unchanged: true, anchored: true }
     }
     const text = spanText(to.plainText, after, moved.start, moved.end)
     // Unchanged: the same words in the same order, and the same punctuation.
@@ -236,6 +271,10 @@ export async function carryClauses(opts: { contractId: string; toVersionId: stri
         reviewState: primary.reviewState, reviewedAt: primary.reviewedAt, reviewedById: primary.reviewedById,
       })
     } else {
+      // The new words must still be about what the old ones were: a place
+      // that now holds other text means the clause is gone, not changed.
+      const was = span ? spanText(from.plainText, before, span[0], span[1]) : primary.content
+      if (likeness(wordBag(was), wordBag(text)) < SAME_THING) { dropped++; continue }
       changed++
       created.push({ ...base, content: text })
     }

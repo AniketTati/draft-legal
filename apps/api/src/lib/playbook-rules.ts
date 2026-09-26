@@ -120,7 +120,10 @@ export function evaluatePlaybookRules(
   }
   if (t.all != null) {
     for (const [key, b] of Object.entries(rules.bounds ?? {})) {
-      const judged = t.caps ? evaluateCapBound(t.caps, b) : null
+      // Only a limit on the cap is measured from the caps: a notice period
+      // "in months" is not a cap, whatever the clause says about one.
+      const aboutCap = /\bcap(?:s|ped)?\b|liabil/i.test(`${key.replace(/[_-]+/g, ' ')} ${b.description ?? ''}`)
+      const judged = t.caps && aboutCap ? evaluateCapBound(t.caps, b) : null
       out.push({
         kind: 'bound', position: positionType,
         boundKey: key, description: b.description, severity: b.severity,

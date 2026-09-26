@@ -53,6 +53,9 @@ interface RedlinePanelProps {
   failure?: string | null
   versions: Version[]
   onRequestAnalysis: (v1Id: string, v2Id: string) => void
+  /** The pair to compare by default: the one before, and the one the contract stands on. */
+  defaultV1Id?: string
+  defaultV2Id?: string
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -189,10 +192,12 @@ function ChangeCard({ change }: { change: RedlineChange }) {
 }
 
 export function RedlinePanel({
-  analysis, isAnalyzing, failure, versions, onRequestAnalysis,
+  analysis, isAnalyzing, failure, versions, onRequestAnalysis, defaultV1Id, defaultV2Id,
 }: RedlinePanelProps) {
-  const [v1Id, setV1Id] = useState(versions[1]?.id ?? '')
-  const [v2Id, setV2Id] = useState(versions[0]?.id ?? '')
+  // DD4 — by default, the version the contract stands on against the one
+  // before it (after an undo, the newest is the undone version).
+  const [v1Id, setV1Id] = useState(defaultV1Id ?? versions[1]?.id ?? '')
+  const [v2Id, setV2Id] = useState(defaultV2Id ?? versions[0]?.id ?? '')
 
   if (versions.length < 2) {
     return (

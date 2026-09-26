@@ -193,7 +193,12 @@ export async function externalEditRoutes(app: FastifyInstance) {
     }
 
     const base = await prisma.contractVersion.findFirst({ where: { id: lock.baseVersionId, contractId: id } })
-    const latest = await prisma.contractVersion.findFirst({ where: { contractId: id }, orderBy: { versionNumber: 'desc' } })
+    // DD4 — a version made after the copy was, not merely a newer number:
+    // after an undo the newest version is the undone one, older than the copy.
+    const latest = await prisma.contractVersion.findFirst({
+      where: { contractId: id, createdAt: { gt: new Date(lock.startedAt) } },
+      orderBy: { versionNumber: 'desc' },
+    })
     if (!force) {
       // The counterparty sent a new version while the copy was out.
       if (latest && latest.id !== lock.baseVersionId) {

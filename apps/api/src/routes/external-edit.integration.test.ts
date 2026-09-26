@@ -15,6 +15,7 @@ vi.mock('../lib/queue.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../lib/queue.js')>()),
   queueParseDocument: vi.fn(),
   queueNotification: vi.fn(),
+  queueRefreshVersion: vi.fn(),
 }))
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
@@ -234,6 +235,17 @@ describe('Edit in Google Docs', () => {
     const forced = await app.inject({ method: 'POST', url: `/api/v1/contracts/${contract}/external-edit/publish`, ...multipart(copy.rawPayload, 'c.docx', DOCX, { force: 'true' }) })
     expect(forced.statusCode, forced.body).toBe(201)
     expect(forced.json()).toMatchObject({ version: { versionNumber: 3 } })
+  })
+
+  it('DD4 — publishes a copy of the version the contract stands on, though an undone version is newer', async () => {
+    const { contract } = await contractOnTheirPaper('DD4 undone newer')
+    // An assistant redline, undone: v2 stays, as the newest, and the contract stands on v1.
+    await prisma.contractVersion.create({ data: { contractId: contract, versionNumber: 2, htmlContent: '<p>undone</p>', plainText: 'undone', createdById: user, changeNote: 'redline_apply (moderate) (reverted via undo)' } })
+    await app.inject({ method: 'POST', url: `/api/v1/contracts/${contract}/external-edit/start`, headers: headers() })
+    const copy = await app.inject({ method: 'GET', url: `/api/v1/contracts/${contract}/external-edit/working-copy`, headers: headers() })
+    const publish = await app.inject({ method: 'POST', url: `/api/v1/contracts/${contract}/external-edit/publish`, ...multipart(copy.rawPayload, 'c.docx', DOCX) })
+    expect(publish.statusCode, publish.body).toBe(201)
+    expect(publish.json()).toMatchObject({ version: { versionNumber: 3 } })
   })
 
   it('discards a copy without making a version, and one start wins when two race', async () => {
