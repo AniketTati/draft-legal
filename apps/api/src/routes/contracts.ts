@@ -26,6 +26,7 @@ import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-app
 import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms, sliceOutsideTokens } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { clauseVersionId } from '../lib/clause-version.js'
+import { afterEdit } from '../lib/version-refresh.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
@@ -72,6 +73,18 @@ const AGENT_TEXT_EXCERPT = 20_000
 function sameDocumentHtml(stored: string, saved: string): boolean {
   const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
   return norm(stored) === norm(saved)
+}
+
+/**
+ * DD4 — the version a contract stands on: `currentVersionId`, which an undo
+ * moves back. Its newest version only when it has no pointer.
+ */
+async function standingVersion<V extends { id: string }>(contract: { id: string; currentVersionId: string | null; versions: V[] }) {
+  if (contract.currentVersionId && contract.currentVersionId !== contract.versions[0]?.id) {
+    const current = await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: contract.id } })
+    if (current) return current
+  }
+  return contract.versions[0] ?? null
 }
 
 export async function contractRoutes(app: FastifyInstance) {
@@ -664,18 +677,21 @@ export async function contractRoutes(app: FastifyInstance) {
 
     let version = versionId
       ? await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: id } })
-      : contract.versions[0]
+      // DD4 — the version the contract stands on (an undo moves it back), not
+      // the newest: after undoing a redline, the PDF was the undone text.
+      : await standingVersion(contract)
 
     // Pick the artifact key: canonical = renderedPdfKey (if present) else s3Key.
     const canonicalKey = (v: typeof version) =>
       artifact === 'source' ? v?.s3Key : (v?.renderedPdfKey ?? v?.s3Key)
 
     // If the selected version has no usable key, fall back to the most recent
-    // version that does.
+    // version that does, up to the one the contract stands on.
     if (!canonicalKey(version) && !versionId) {
       version = await prisma.contractVersion.findFirst({
         where: {
           contractId: id,
+          ...(version && { versionNumber: { lte: version.versionNumber } }),
           OR: artifact === 'source'
             ? [{ s3Key: { not: null } }]
             : [{ renderedPdfKey: { not: null } }, { s3Key: { not: null } }],
@@ -926,6 +942,9 @@ export async function contractRoutes(app: FastifyInstance) {
       // X42 — an edited document on an approved contract needs approving again.
       data: { currentVersionId: version.id, updatedAt: new Date(), status },
     })
+    // DD2 — the edit keeps the clauses of the version it was made on, and the
+    // search index follows the new text.
+    await afterEdit({ contractId: id, orgId, versionId: version.id, fromVersionId: standing?.id })
     // X47 follow-up — the document changed, and perhaps its approval with it:
     // on the record, as any other change to the contract is.
     await createAuditEvent({
@@ -1376,7 +1395,9 @@ export async function contractRoutes(app: FastifyInstance) {
 
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
-    const version = contract.versions[0]
+    // DD4 — analyse the version the contract stands on, not the newest (an
+    // undone redline).
+    const version = await standingVersion(contract)
 
     // If no version exists, re-queue draft agent (using stored context or contract fields as fallback)
     if (!version) {
@@ -1474,7 +1495,9 @@ export async function contractRoutes(app: FastifyInstance) {
       include: { versions: { orderBy: { versionNumber: 'desc' }, take: 1 } },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    if (!contract.versions[0]?.plainText) {
+    // DD4 — the version the contract stands on, not the newest.
+    const standing = await standingVersion(contract)
+    if (!standing?.plainText) {
       return reply.status(422).send({ detail: 'No extracted text available.' })
     }
 
@@ -1496,7 +1519,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     queueExtractAi({
       contractId: id,
-      versionId:  contract.versions[0].id,
+      versionId:  standing.id,
       orgId,
       contractType,
       triggeredBy: 'retype',

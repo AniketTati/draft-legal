@@ -13,11 +13,12 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { extractDocument } from '../lib/document.js'
 import { embedContractVersion } from '../lib/embeddings.js'
 import { legalChunkAndStore } from '../lib/legal-chunker.js'
-import { indexContract } from '../lib/elasticsearch.js'
+import { indexContract, reindexContract } from '../lib/elasticsearch.js'
 import { getPdfPageCount } from '../lib/pdf-splitter.js'
 import { splitBinder } from '../lib/binder-split.js'
-import { queueDetectBinder, queueEmbedContract, queuePlaybookReview } from '../lib/queue.js'
-import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob } from '../lib/queue.js'
+import { queueDetectBinder, queueEmbedContract, queuePlaybookReview, queuePlaybookReviewSoon } from '../lib/queue.js'
+import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob, RefreshVersionJob } from '../lib/queue.js'
+import { carryClauses, copyEmbeddings } from '../lib/clause-carry.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
@@ -89,6 +90,17 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
       metadata:    nextMd as never,
     },
   })
+
+  // DD2 — until analysis gives this version its own clauses, it keeps the
+  // previous version's, followed into its text: the clause tools, the
+  // Clauses tab and search read the document the contract now has.
+  // Analysis replaces them (storeClauseSegments).
+  try {
+    const carried = await carryClauses({ contractId, toVersionId: versionId })
+    if (carried.carried) console.info('[parse-worker] carried %d clauses (%d changed, %d gone) from %s to %s', carried.carried, carried.changed, carried.dropped, carried.fromVersionId, versionId)
+  } catch (err) {
+    console.warn('[parse-worker] carrying clauses to versionId=%s failed: %s', versionId, (err as Error).message)
+  }
 
   // This version's text just changed, so any cached diff involving it is now
   // stale. VersionDiffCache is keyed on version IDs alone, so nothing else
@@ -214,6 +226,31 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
   console.info('[parse-worker] chunk-and-index done for contractId=%s', contractId)
 }
 
+// ─── refresh-version (DD2) ───────────────────────────────────────────────────
+// A version made by editing: the search index's full text, the clauses'
+// windows and search entries, their embeddings, and a fresh playbook review.
+// The contract's analysis status is left as it is: nothing was analysed.
+
+async function handleRefreshVersion(data: RefreshVersionJob): Promise<void> {
+  const { contractId, versionId, orgId, fromVersionId, review } = data
+  try {
+    await reindexContract(contractId)
+  } catch (err) {
+    console.warn('[parse-worker] refresh-version re-index failed contractId=%s: %s', contractId, (err as Error).message)
+  }
+  const clauses = await prisma.contractClause.findMany({
+    where: { versionId, isSubChunk: false },
+    orderBy: { sortOrder: 'asc' },
+  })
+  if (clauses.length) {
+    const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { title: true, type: true, jurisdiction: true } })
+    await legalChunkAndStore(versionId, contractId, orgId, clauses, contract)
+    if (fromVersionId) await copyEmbeddings(fromVersionId, versionId)
+    queueEmbedContract(versionId)
+  }
+  if (review) queuePlaybookReviewSoon({ contractId, orgId })
+}
+
 // ─── split-binder ─────────────────────────────────────────────────────────────
 // The body lives in lib/binder-split.ts so it can be tested without
 // constructing this file's BullMQ Worker.
@@ -232,6 +269,8 @@ export const parseWorker = new Worker(
       await handleChunkAndIndex(job.data as ChunkAndIndexJob)
     } else if (job.name === 'split-binder') {
       await splitBinder(job.data as SplitBinderJob)
+    } else if (job.name === 'refresh-version') {
+      await handleRefreshVersion(job.data as RefreshVersionJob)
     }
   },
   { connection: redis, concurrency: 3 }

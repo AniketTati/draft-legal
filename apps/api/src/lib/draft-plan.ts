@@ -13,6 +13,11 @@
  * Values come only from (1) what the user said, (2) the template's own
  * declared defaults, and (3) the org's name for our side. Anything else is
  * left visibly blank and reported, never guessed.
+ *
+ * DD3 — a template default that describes a party (what it is, where it is)
+ * is the org's own wording, so it may describe our side only. The other
+ * side's come from the user or the counterparty's record: "Initech Inc., a
+ * Delaware corporation" came from a default both parties' fields carried.
  */
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
@@ -97,6 +102,24 @@ const ALIASES = {
  * written for the seller.
  */
 const weSell = (templateName: string) => /\bsell[- ]side\b|\boutbound\b/i.test(templateName)
+
+/** A fact about a party: its entity type, incorporation, address, registration or legal name. */
+const PARTY_FACT = /(entitytype|entitydescription|entity|stateofincorporation|jurisdictionofincorporation|incorporation|organizedunder|companytype|registeredaddress|principaladdress|noticeaddress|address|registeredoffice|companynumber|registrationnumber|legalname)$/
+const OUR_SIDE = /^(?:our|company|sender|partya|employer)$/
+
+/**
+ * Whose fact a template key is: ours, or not ours (the counterparty's, or a
+ * party we can't tell, which is never assumed). Null for a key that isn't a
+ * fact about a party.
+ */
+function partyFactOf(key: string, ourRole: string | null): { side: 'ours' | 'theirs'; fact: 'address' | 'legalname' | 'other' } | null {
+  const k = norm(key)
+  const m = PARTY_FACT.exec(k)
+  if (!m) return null
+  const prefix = k.slice(0, k.length - m[1].length)
+  const fact = /address|registeredoffice/.test(m[1]) ? 'address' : m[1] === 'legalname' ? 'legalname' : 'other'
+  return { side: prefix && (prefix === ourRole || OUR_SIDE.test(prefix)) ? 'ours' : 'theirs', fact }
+}
 
 function templateKeys(template: TemplateWithSections, clauseContents: string[]): string[] {
   const keys = new Set<string>()
@@ -183,15 +206,21 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
   fill(ALIASES.termYears, years)
   fill(ALIASES.effectiveDate, input.effectiveDate)
 
+  // Which role is ours in a customer/provider template (see weSell).
+  const rolesByName = byNorm.has('customername') && byNorm.has('providername')
+  const ourRole = rolesByName ? (weSell(template.name) ? 'provider' : 'customer') : null
+
   // 2. The template's own declared defaults (the org chose these) — except a
   // venue chosen for a governing law the user changed: New York law with the
-  // template's "Wilmington, Delaware" courts is left for the user to set.
+  // template's "Wilmington, Delaware" courts is left for the user to set; and
+  // (DD3) a default describing the other party, which the org can't know.
   const declared = Array.isArray(template.variables) ? template.variables as Array<{ key?: string; defaultValue?: unknown }> : []
   const lawKey = declared.find(d => d?.key && ALIASES.governingLaw.includes(norm(d.key)))
   const lawChanged = !!input.governingLaw?.trim() && lawKey?.defaultValue != null
     && norm(String(lawKey.defaultValue)) !== norm(input.governingLaw)
   for (const d of declared) {
     if (lawChanged && d?.key && /venue|forum|courtlocation|courts/.test(norm(d.key))) continue
+    if (d?.key && partyFactOf(d.key, ourRole)?.side === 'theirs') continue
     if (d?.key && variables[d.key] === undefined && d.defaultValue != null && String(d.defaultValue).trim()) {
       variables[d.key] = String(d.defaultValue)
     }
@@ -202,10 +231,26 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
   fill(ALIASES.ourCompany, org?.name)
   fill(ALIASES.ourRole, org?.name)
   fill(ALIASES.theirRole, input.counterpartyName)
-  if (byNorm.has('customername') && byNorm.has('providername')) {
+  if (rolesByName) {
     const [ours, theirs] = weSell(template.name) ? ['providername', 'customername'] : ['customername', 'providername']
     fill([ours], org?.name)
     fill([theirs], input.counterpartyName)
+  }
+
+  // DD3 — what the counterparty's record says about it: its registered name
+  // and address. Its entity type isn't recorded anywhere, so it stays blank.
+  const cpName = input.counterpartyName?.trim()
+  const record = cpName
+    ? await prisma.counterparty.findFirst({
+        where: { orgId: input.orgId, deletedAt: null, OR: [{ name: { equals: cpName, mode: 'insensitive' } }, { legalName: { equals: cpName, mode: 'insensitive' } }] },
+        select: { legalName: true, address: true },
+      })
+    : null
+  for (const key of keys) {
+    const f = partyFactOf(key, ourRole)
+    if (f?.side !== 'theirs' || variables[key] !== undefined) continue
+    const value = f.fact === 'address' ? record?.address : f.fact === 'legalname' ? record?.legalName : null
+    if (value?.trim()) variables[key] = value.trim()
   }
 
   const generated = generateDocument({ template, variables, clauseMap })

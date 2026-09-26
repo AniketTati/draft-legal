@@ -73,6 +73,8 @@ import {
   type ExternalEditLock, type RedlineNotice,
 } from '@/components/contracts/GoogleDocsEdit'
 
+import { currentVersionOf } from '@/lib/current-version'
+
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
 
@@ -1004,16 +1006,19 @@ export function ContractDetailPage() {
 
   // ── Hooks that must run before early returns (Rules of Hooks) ─────────────
   const versions = versionsData?.data ?? contract?.versions ?? []
+  // DD4 — the version the contract stands on, which an undo moves back; not
+  // the newest.
+  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null }>, contract?.currentVersionId)
 
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
   // toggle would crash with "Invalid PDF structure". We disable it instead.
   // X49 — only a PDF: now that the version list carries the key, a DOCX or
   // TXT latest version would otherwise open the viewer on a file it can't read.
-  const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType === 'application/pdf')
+  const hasOriginal = !!(standing?.s3Key && standing?.mimeType === 'application/pdf')
   // …but a Word or text upload still has an original: say that, not "created
   // from text or a template".
-  const originalNotPdf = !!versions[0]?.s3Key && !hasOriginal
+  const originalNotPdf = !!standing?.s3Key && !hasOriginal
 
   // X1 — a citation that knows its page opens the original PDF at it (the
   // passage is outlined there); without a source file, ?section= still
@@ -1111,7 +1116,7 @@ export function ContractDetailPage() {
     (e: any) => e && !e.verifiedAt && typeof e.confidence === 'number' && e.confidence < 0.7,
   ).length
   const riskFactors: string[] = contract.riskFactors ?? []
-  const clauseFlags: Record<string, boolean> = contract.versions?.[0]?.clauseFlags ?? {}
+  const clauseFlags: Record<string, boolean> = currentVersionOf(contract.versions as Array<{ id: string; clauseFlags?: Record<string, boolean> }>, contract.currentVersionId)?.clauseFlags ?? {}
   // P2.1 — trust-signal: was this version's text produced by OCR? If
   // yes, the badge in the header lets Legal eyeball "this is scan-
   // derived text; extraction confidence is lower than a digital PDF".
@@ -1120,7 +1125,10 @@ export function ContractDetailPage() {
   // that actually carries structure (or extraction), falling back to
   // versions[0] so existing code paths don't regress.
   const latestVersionMeta = (() => {
-    const versions = (contract.versions ?? []) as Array<{ metadata?: Record<string, unknown> }>
+    const all = (contract.versions ?? []) as Array<{ id: string; metadata?: Record<string, unknown> }>
+    // DD4 — the standing version first, then the most recent before it.
+    const current = currentVersionOf(all, contract.currentVersionId)
+    const versions = current ? [current, ...all.filter(v => v !== current)] : all
     const withStructure = versions.find(v => {
       const md = v.metadata ?? {}
       return md.structure || md.extraction
@@ -2849,7 +2857,8 @@ export function ContractDetailPage() {
           }
 
           // B.5.1 — Styled branch. TipTap + contract-paper CSS. Default.
-          const latest = (contract.versions as any[])?.[0] ?? null
+          // DD4 — the version the contract stands on (an undo moves it back), not the newest.
+          const latest = currentVersionOf(contract.versions as any[], contract.currentVersionId)
           const rawHtml = latest?.htmlContent?.trim()
             ? latest.htmlContent
             : latest?.plainText?.trim() || ''

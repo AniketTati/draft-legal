@@ -101,6 +101,38 @@ describe('CC5 — an NDA\'s term, and a venue that went with another law', () =>
   })
 })
 
+describe('DD3 — facts about the other party', () => {
+  const vars = [
+    { key: 'customerName' }, { key: 'customerEntity', defaultValue: 'a Delaware corporation' }, { key: 'customerAddress' },
+    { key: 'providerName' }, { key: 'providerEntity', defaultValue: 'a Delaware corporation' }, { key: 'providerAddress' },
+  ]
+  const body = '<p>Between {{customerName}}, {{customerEntity}}, of {{customerAddress}}, and {{providerName}}, {{providerEntity}}, of {{providerAddress}}.</p>'
+
+  it('leaves their entity to fill in instead of the template\'s default, which stays for our side', async () => {
+    const t = await template('DD3 Mutual NDA', null, body, vars)
+    const p = (await plan({ userMessage: 'Draft an NDA with Initech', templateId: t, counterpartyName: 'Initech Inc.' })).json()
+    expect(p.variables.customerEntity).toBe('a Delaware corporation')
+    expect(p.variables.providerEntity).toBeUndefined()
+    expect(p.unfilledVariables).toEqual(expect.arrayContaining(['providerEntity', 'providerAddress', 'customerAddress']))
+    expect(p.html).not.toContain('Initech Inc., a Delaware corporation')
+    // A sell-side template: we are the provider.
+    const sell = await template('DD3 NDA (Sell-Side)', null, body, vars)
+    const s = (await plan({ userMessage: 'NDA for Initech', templateId: sell, counterpartyName: 'Initech Inc.' })).json()
+    expect(s.variables.providerEntity).toBe('a Delaware corporation')
+    expect(s.variables.customerEntity).toBeUndefined()
+  })
+
+  it('takes their registered name and address from the counterparty record, and their entity from the user', async () => {
+    await prisma.counterparty.create({ data: { orgId: org, name: 'Globex', legalName: 'Globex Corporation', address: '1 Globex Way, Springfield' } })
+    const t = await template('DD3 services (Buy-Side)', null,
+      '<p>{{customerName}} engages {{providerName}} ({{providerLegalName}}), {{providerEntity}}, of {{providerAddress}}.</p>',
+      [{ key: 'customerName' }, { key: 'providerName' }, { key: 'providerLegalName' }, { key: 'providerAddress' }, { key: 'providerEntity', defaultValue: 'a Delaware corporation' }])
+    const p = (await plan({ userMessage: 'An MSA with Globex, a Nevada corporation', templateId: t, counterpartyName: 'globex', terms: { providerEntity: 'a Nevada corporation' } })).json()
+    expect(p.variables).toMatchObject({ providerLegalName: 'Globex Corporation', providerAddress: '1 Globex Way, Springfield', providerEntity: 'a Nevada corporation' })
+    expect(p.unfilledVariables).toEqual([])
+  })
+})
+
 describe('drafting plan', () => {
   it('fills the user\'s stated terms, the template\'s own defaults and our name — and creates nothing', async () => {
     const before = await prisma.contract.count({ where: { orgId: org } })

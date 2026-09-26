@@ -220,8 +220,11 @@ export interface NotificationJob {
 export interface PlaybookReviewJob {
   contractId: string
   orgId:      string
-  /** The version that was just extracted — also scopes the job identity. */
-  versionId:  string
+  /**
+   * The version that was just extracted — also scopes the job identity.
+   * Null (DD2): whatever version the contract stands on when the job runs.
+   */
+  versionId:  string | null
 }
 export function queuePlaybookReview(payload: PlaybookReviewJob): void {
   agentQueue.add('playbook-review', payload, {
@@ -239,6 +242,47 @@ export function queuePlaybookReview(payload: PlaybookReviewJob): void {
     removeOnComplete: 100,
     removeOnFail:     50,
   }).catch(err => console.warn('[queue] failed to enqueue playbook-review:', err.message))
+}
+
+/**
+ * DD2 — a review after edits: of the version the contract stands on two
+ * minutes from now, one per contract per two minutes. The editor saves a
+ * version five seconds after typing stops; a review per save would be a
+ * model call per pause.
+ */
+export function queuePlaybookReviewSoon(payload: { contractId: string; orgId: string }): void {
+  const slot = Math.floor(Date.now() / 120_000)
+  agentQueue.add('playbook-review', { ...payload, versionId: null } satisfies PlaybookReviewJob, {
+    delay: 120_000,
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 15000 },
+    jobId: `playbook-review-${payload.contractId}-soon-${slot}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue playbook-review:', err.message))
+}
+
+/**
+ * DD2 — after a version is made by editing (lib/version-refresh.ts): the
+ * search index's full text, the clauses' windows and search entries, their
+ * embeddings, and, when clause text changed, a fresh playbook review. Unlike
+ * chunk-and-index it leaves the contract's analysis status alone.
+ */
+export interface RefreshVersionJob {
+  contractId:    string
+  versionId:     string
+  orgId:         string
+  /** Where the clauses were copied from: rows with the same words take its embeddings. */
+  fromVersionId: string | null
+  review:        boolean
+}
+export function queueRefreshVersion(payload: RefreshVersionJob): void {
+  documentQueue.add('refresh-version', payload, {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: 200,
+    removeOnFail:     200,
+  }).catch(err => console.warn('[queue] failed to enqueue refresh-version:', err.message))
 }
 
 /**

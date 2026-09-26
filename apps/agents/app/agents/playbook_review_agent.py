@@ -49,6 +49,8 @@ For each clause you report, return:
 - reasoning: ONE sentence, quoting the specific wording that drove the decision
 - requiresHumanReview: true when playbookAlignment is "walkaway" or "outside_playbook", or severity is "critical"
 
+FIGURES — a clause may come with "facts": its liability caps, measured from its own words (months of fees, times a year's fees). Use those figures as given when you compare a cap with the playbook. Do not work out a cap's size yourself, and do not speculate about payment schedules. A cap for some claims only (a super-cap) is its own term: compare it with what the playbook says about super-caps.
+
 IMPORTANT — only report clauses that DEVIATE from the playbook or are not covered by it. Omit any clause that already matches a preferred position, so the reviewer gets a short actionable list instead of the entire contract restated.
 
 Return ONLY a valid JSON array — no markdown, no prose:
@@ -124,6 +126,7 @@ async def run_playbook_review(
             "clauseType": c.get("clauseType"),
             "sectionRef": c.get("sectionRef"),
             "content": sanitize_untrusted((c.get("content") or "")[:_MAX_CLAUSE_CHARS]),
+            **({"facts": [sanitize_untrusted(f) for f in c["facts"]]} if c.get("facts") else {}),
         }
         for c in clauses[:_MAX_CLAUSES]
     ]

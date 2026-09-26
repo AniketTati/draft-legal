@@ -12,6 +12,7 @@
 import { pathToFileURL } from 'node:url'
 import { PrismaClient } from '@prisma/client'
 import { DEMO_ORG_SLUG } from '../src/lib/demo-workspace.js'
+import { LIABILITY_RULES } from '../src/lib/demo-liability-rules.js'
 
 /** Exported helper so seed-ai-demo can call this inline. */
 export async function seedPlaybookRules(
@@ -46,71 +47,6 @@ export async function seedPlaybookRules(
 }
 
 const p = new PrismaClient()
-
-// Structured rule sample: cap type, consequential-damages carve-out, the
-// liability cap itself. The evaluator walks `must_have[]` over the clause
-// text and checks `bounds[liability_cap_months]` against any "N months of
-// fees" pattern it can spot.
-const LIABILITY_RULES = {
-  must_have: [
-    {
-      id: 'lol.mutual_cap',
-      description: 'Liability cap must apply MUTUALLY (both parties).',
-      check: 'contains',
-      value: 'mutual',
-      severity: 'high',
-    },
-    {
-      id: 'lol.consequential_damages_carveout',
-      description: 'Must exclude consequential / indirect / special damages for both sides.',
-      check: 'contains',
-      value: 'consequential',
-      severity: 'high',
-    },
-    {
-      id: 'lol.cap_is_stated',
-      description: 'A specific liability cap amount or multiple must be stated.',
-      check: 'regex',
-      value: '\\b(?:\\$[\\d,]+|\\d+\\s*(?:months?|years?|x)\\b)',
-      severity: 'walkaway',
-    },
-  ],
-  must_not: [
-    {
-      id: 'lol.uncapped',
-      description: 'Must NOT contain "unlimited" or "uncapped" liability language.',
-      check: 'contains',
-      value: 'unlimited',
-      severity: 'walkaway',
-    },
-    {
-      id: 'lol.uncapped_2',
-      description: 'Must NOT contain "uncapped" liability language.',
-      check: 'contains',
-      value: 'uncapped',
-      severity: 'walkaway',
-    },
-  ],
-  bounds: {
-    liability_cap_months: {
-      min: 6,
-      max: 24,
-      units: 'months of fees',
-      severity: 'high',
-      description: 'Cap should be 6-24 months of fees. >24 months = off-market.',
-    },
-    cap_multiplier_of_annual: {
-      max: 3,
-      units: 'x annual contract value',
-      severity: 'walkaway',
-      description: 'Any cap > 3× annual contract value → escalate to General Counsel.',
-    },
-  },
-  variables: [
-    { key: 'cap_amount', type: 'string', required: true },
-    { key: 'cap_unit',   type: 'string', required: true },
-  ],
-}
 
 const isCli = import.meta.url === pathToFileURL(process.argv[1] ?? '').href
 if (isCli) {

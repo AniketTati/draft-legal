@@ -23,6 +23,7 @@ import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.j
 import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 import { modelFetch } from '../lib/model-boundary.js'
+import { liabilityCaps } from '../lib/liability-cap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -592,16 +593,19 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
 }
 
 async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
-  const { contractId, orgId, versionId } = data
+  const { contractId, orgId } = data
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, type: true },
+    select: { id: true, type: true, currentVersionId: true },
   })
   if (!contract) {
     console.info('[agent-worker] playbook-review skip contractId=%s — contract gone', contractId)
     return
   }
+  // DD2 — a review after edits takes the version the contract stands on now.
+  const versionId = data.versionId ?? contract.currentVersionId
+  if (!versionId) return
 
   // Review the version that was just extracted, not whatever is "current" by
   // the time this runs — the pointer may have moved on, and the stamp below
@@ -639,7 +643,12 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     body:    JSON.stringify({
       contractId,
       orgId,
-      clauses,
+      // DD1 — a clause's caps, measured from its words, so the review states
+      // them instead of working them out.
+      clauses: clauses.map(c => {
+        const facts = liabilityCaps(c.content).map(x => x.statement)
+        return facts.length ? { ...c, facts } : c
+      }),
       playbookPositions: relevant.map(p => ({
         clauseType:   p.clauseCategory?.name ?? 'other',
         positionType: p.positionType,

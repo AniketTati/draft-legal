@@ -3015,6 +3015,83 @@ Checked and fine: counts (391 contracts, 18 under negotiation), the approval que
 
 **Also found by the suite:** the compliance package failed to parse about one save in forty. pdf-parse's pdf.js 1.x misreads pdf-lib's compressed cross-reference table at some offsets; the files themselves were valid. It is now saved with a classic table: 0 failures in 150, and a deterministic test.
 
+## The known limits, closed (2026-09-26, morning)
+
+Asked after the end-to-end report: fix the three limits it listed. Each was reproduced first on the demo workspace (the Brightwave round-trip contract).
+
+- **DD1 — Liability caps were reasoned about, not measured. — DONE.**
+  - Found: the review said the 2× cap "could exceed 3× annual value depending on payment schedule". Two times the fees of the 12 months before a claim is 24 months of fees, twice a year's fees: inside both of the playbook's limits (6–24 months; at most 3× annual value).
+  - Cause: `playbook_check` returns the limits unevaluated (`passed: null`, "deferred to an LLM judge"), so the chat model did the arithmetic. The same check was wrong on the clause itself:
+    - "a cap amount or multiple must be stated" failed, at walkaway severity, on "two (2) times the fees … in the twelve (12) months". Its pattern wanted "12 months" or "2x". The contract was flagged for human sign-off on it.
+    - "the cap must apply mutually" failed on "each party's aggregate liability". It looked for the word "mutual".
+    - The rules ran on one extracted row at a time. The "Excluded Claims" definition, a row of §3 on its own, failed "cap is stated" too.
+    - Two preferred positions carry the same rules, so every result appeared twice.
+  - In fact §3 matches the org's preferred position (2× annual fees, a 3× super-cap for data breach, the same carve-outs). Its one real gap is that it doesn't exclude consequential damages.
+  - Fix:
+    - `lib/liability-cap.ts` reads a cap from its words:
+      - the multiple, the period of fees it counts, or an amount, or the greater or lesser of the two;
+      - whose liability it limits;
+      - a super-cap and the claims it is for.
+      - It computes months of fees and multiples of a year's fees. When the words don't give a figure (fees "in total", an amount against a months limit), it says so rather than estimating.
+    - The playbook check (`lib/playbook-rules.ts`, moved out of the route):
+      - judges a clause type's must-have rules once, on all its clauses together;
+      - judges must-not rules on each clause;
+      - measures the general cap against the limits, reporting a super-cap alongside;
+      - reports a rule two positions share once;
+      - carries `capAnalysis` on the clause stating the cap (redacted with the excerpts).
+      - A model judge's reading no longer replaces a measured result.
+    - The seeded rules (now `lib/demo-liability-rules.ts`) read "each party's aggregate liability" as mutual and "two (2) times … twelve (12) months" as a stated cap.
+    - `contract_get` and `portfolio_compare` (when comparing caps) carry `liabilityCaps`. The automatic playbook review gets each clause's caps as `facts`. Rule A17 and the review skill say to quote these figures and never work a cap out.
+  - Tests:
+    - `liability-cap.test.ts` (12); `playbook-rules.test.ts` (5, on the Brightwave §3 with the seeded rules).
+    - `playbook-cap.integration.test.ts` (4): `playbook_check`, `contract_get`, `portfolio_compare`. All four failed on the old code.
+    - `test_playbook_review_facts.py`. It failed on the old agent.
+  - Live, on the round-trip contract (rules and skill re-seeded):
+    - The check: worst severity "high", not walkaway; no human sign-off; one deviation, the consequential-damages gap; both cap limits passed at 24 months and 2×.
+    - The review skill lists only that gap for §3.
+    - Asked the cap's size: "24 months of fees, or 2 times the annual value … within our playbook's preferred limit … Super-cap … 36 months … 3 times."
+    - The automatic review no longer flags §3.
+- **DD2 — A version made by editing had no clauses. — DONE.**
+  - Found: on the round-trip contract, v2 and v3 (the applied playbook redline) have no clause rows; v1 and v4 (uploads, analysed) have 10 and 9. Only an upload is analysed; an edit, an applied redline or an assistant change never is.
+  - Effect: on such a version the playbook check finds nothing to check. The Clauses tab, approvals, and semantic search fall back to the last analysed version, showing text the contract no longer has. The search index keeps the old full text: saving an edit didn't re-index it.
+  - Also found: the sealed copy made when the last signer signs is such a version too. On an e-signed contract the playbook check found no clauses.
+  - Fix:
+    - `lib/clause-carry.ts` gives a new version the clauses of the one it was made from.
+      - Each clause is found in the old text and followed through a word diff into the new text.
+      - Unchanged: copied as it was, with its type, rating, review state and embedding.
+      - Changed: the new words, unrated and unreviewed.
+      - Gone: not copied.
+      - The version's clause flags come too. Analysis, when it runs, replaces all of this.
+    - Called from the editor save, a single or batch clause apply (the assistant's redlines use these) and the signature seal.
+    - Also called from the parse worker for each file version (uploads, the counterparty portal, email, a Google Docs publish), until its analysis finishes. The function is tested on a file version; the worker's call wasn't run live.
+    - A `refresh-version` job then:
+      - re-indexes the full text;
+      - re-windows and indexes the clauses;
+      - copies embeddings for identical text and embeds the rest;
+      - when clause text changed, queues a playbook review of the current version two minutes later (one per contract per two minutes, since the editor saves after five seconds without typing).
+      - It leaves the analysis status alone.
+  - Tests:
+    - `clause-carry.test.ts` (8): unchanged, rewritten, a rewrite at either end, deleted (the last clause too, whose full stop used to pair with the new last sentence's), and Word text run together.
+    - `clause-carry.integration.test.ts` (5): the editor save, the playbook check on the new version, a clause apply, a file version, a version that already has clauses. The three route tests failed on the old routes.
+  - Live: an edit in the editor (§6 "two (2)" → "three (3)" years) made v6 with all 9 clauses. The others kept their ratings and embeddings; §6 was unrated and embedded within seconds. The search index had the new text. The review ran two minutes later on v6: 2 findings, no sign-off.
+- **DD3 — Drafts stated facts about the other party. — DONE.**
+  - Found: "Draft an NDA with Initech" produced "Initech Inc., a Delaware corporation". Nothing said Initech is one. The template's defaults give both parties "a Delaware corporation", and the planner applied template defaults to every variable.
+  - Fix:
+    - A template default describing a party (entity, incorporation, address, registration, legal name) applies to our side only. The template is the org's own wording.
+    - The other side's facts come from the user's words, or from the counterparty's record (registered name and address). Otherwise they stay blank and are reported.
+    - Which side is ours follows the planner's roles: the customer, or the provider in a sell-side template. A party we can't place is never given a default.
+  - Tests: `draft-plan.integration.test.ts` (+2). Both failed on the old planner.
+  - Live: the NDA now reads "Demo Org, Inc., a Delaware corporation … and Initech Inc., [[providerEntity]], with an address at [[providerAddress]]". The confirm card lists five blanks, `providerEntity` among them.
+- **DD4 — After "Undo", the contract page showed and edited the undone version. — DONE.**
+  - Found while checking DD2 live. The round-trip contract stood on v4 after v5 (an assistant redline of §7) was undone. An edit on its page made v6 with v5's New York law back in it.
+  - Cause: the page took the newest version (`versions[0]`) as the document. So did the PDF view and the download (the API's default), re-analysis and retype. An undo moves `currentVersionId` back and keeps the undone version as the newest.
+  - Fix:
+    - The page's document, its Original toggle, its clause flags and its section metadata follow `currentVersionId` (`lib/current-version.ts`).
+    - The API's download default, re-analysis and retype use the version the contract stands on. When that version has no file yet, the download falls back only to a file at or before it.
+  - Tests: `current-version.test.ts` (3), `standing-version.integration.test.ts` (2). Both failed on the old code.
+  - Live: the page shows v4's Delaware law and two-year term, although v6 is newer. The test edit's v6 is left in the contract's history; the contract points at v4 again, re-indexed and reviewed.
+- **Checks for DD1–DD4:** typecheck and lint clean (warnings only); unit 445; web 85; integration 450; agents 16.
+
 ---
 
 ## Run log

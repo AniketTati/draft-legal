@@ -42,6 +42,8 @@ import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange 
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
 import { renewalNotice } from '../lib/renewal-notice.js'
+import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
+import { liabilityCaps } from '../lib/liability-cap.js'
 
 /** Words in a contract search that say nothing about which contract ("our contract with Acme"). */
 const QUERY_STOPWORDS = new Set(['our', 'the', 'a', 'an', 'with', 'for', 'of', 'and', 'to', 'in', 'on', 'by', 'from', 'my', 'we', 'us', 'contract', 'contracts'])
@@ -136,145 +138,7 @@ async function redactCutExcerpts(
   }
 }
 
-// ── P1.2 — Structured playbook rules (docs/28 C.2.1) ────────────────────
-// `PlaybookPosition.rules` is free-form JSON; we runtime-type it via
-// the shape below. Everything optional — orgs can ship must_have without
-// must_not, bounds-only configs, etc.
-/**
- * One severity vocabulary for the whole playbook surface.
- *
- * The structured-rules path used `low|medium|high|walkaway`; the LLM review
- * path (playbook_review_agent.py) emits `low|medium|high|critical`. Both write
- * into the same field, so an org whose rules say `critical` was silently
- * mis-ranked. `critical` is accepted here and treated as equivalent to
- * `walkaway` — both mean "a human must look at this before it goes anywhere".
- */
-type PlaybookSeverity = 'low' | 'medium' | 'high' | 'critical' | 'walkaway'
-type PlaybookRuleCheck = 'contains' | 'regex' | 'present' | 'absent'
-
-interface PlaybookRule {
-  id?:          string
-  description:  string
-  check:        PlaybookRuleCheck
-  value:        string     // substring / regex source / marker token
-  severity:     PlaybookSeverity
-}
-
-interface PlaybookBound {
-  min?:         number
-  max?:         number
-  units?:       string
-  severity:     PlaybookSeverity
-  description?: string
-}
-
-interface PlaybookRules {
-  must_have?:   PlaybookRule[]
-  must_not?:    PlaybookRule[]
-  bounds?:      Record<string, PlaybookBound>
-  variables?:   Array<{ key: string; type: string; required?: boolean; default?: unknown }>
-}
-
-// Ascending. `critical` and `walkaway` are peers — different words for the same
-// stop condition, arriving from the LLM path and the rules path respectively.
-const SEVERITY_ORDER: PlaybookSeverity[] = ['low', 'medium', 'high', 'critical', 'walkaway']
-
-/**
- * Rank a severity, tolerating values written by hand into a rules JSON.
- *
- * `SEVERITY_ORDER.indexOf(x)` returns -1 for anything unrecognised, and -1 is
- * LOWER than every real rank — so an unknown severity lost to the next `low`
- * that came along. That is how a `critical` violation ended up reported as
- * `low`. Unknown values now rank at the TOP: if we cannot interpret how
- * serious something is, the safe reading is "serious".
- */
-function severityRank(sev: string | undefined | null): number {
-  if (!sev) return -1
-  const i = SEVERITY_ORDER.indexOf(sev as PlaybookSeverity)
-  return i === -1 ? SEVERITY_ORDER.length : i
-}
-
-/**
- * Walk a rules object against a clause's text. Returns one entry per
- * evaluated rule with `{passed, ...}`. "Bounds" checks compile to
- * "no strong assertion" today (P1.3 will pair them with an LLM judge);
- * they appear in the output so the agent LLM can reason over them.
- */
-function evaluatePlaybookRules(
-  rules:        PlaybookRules,
-  clauseText:   string,
-  positionType: string,
-): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  const text = clauseText.toLowerCase()
-
-  for (const r of rules.must_have ?? []) {
-    const passed = ruleMatches(r, text)
-    out.push({
-      kind: 'must_have', position: positionType,
-      ruleId: r.id, description: r.description, severity: r.severity,
-      check: r.check, value: r.value,
-      // "passed" for a must_have rule means the match hit.
-      passed,
-    })
-  }
-  for (const r of rules.must_not ?? []) {
-    const hit = ruleMatches(r, text)
-    out.push({
-      kind: 'must_not', position: positionType,
-      ruleId: r.id, description: r.description, severity: r.severity,
-      check: r.check, value: r.value,
-      // For must_not we flip: "passed" means the text does NOT contain it.
-      passed: !hit,
-    })
-  }
-  for (const [key, b] of Object.entries(rules.bounds ?? {})) {
-    out.push({
-      kind: 'bound', position: positionType,
-      boundKey: key, description: b.description, severity: b.severity,
-      min: b.min, max: b.max, units: b.units,
-      // Leave `passed` null — bounds need numeric extraction which we
-      // defer to P1.3 (two-stage compare). The agent LLM can still see
-      // the bound and reason over the clause text.
-      passed: null,
-    })
-  }
-  return out
-}
-
-function ruleMatches(rule: PlaybookRule, lowerText: string): boolean {
-  switch (rule.check) {
-    case 'contains': return lowerText.includes(rule.value.toLowerCase())
-    case 'regex':
-      try { return new RegExp(rule.value, 'i').test(lowerText) }
-      catch { return false }
-    case 'present':  return lowerText.includes(rule.value.toLowerCase())
-    case 'absent':   return !lowerText.includes(rule.value.toLowerCase())
-    default:         return false
-  }
-}
-
-function pickWorstSeverity(
-  violations: Array<Record<string, unknown>>,
-): PlaybookSeverity | null {
-  let worst: PlaybookSeverity | null = null
-  for (const v of violations) {
-    if (v.passed === true || v.passed === null) continue // no violation
-    const sev = v.severity as PlaybookSeverity | undefined
-    if (!sev) continue
-    if (!worst || severityRank(sev) > severityRank(worst)) {
-      worst = sev
-    }
-  }
-  return worst
-}
-
-function ruleCountOf(rules: PlaybookRules | null): number {
-  if (!rules) return 0
-  return (rules.must_have?.length ?? 0)
-       + (rules.must_not?.length  ?? 0)
-       + Object.keys(rules.bounds ?? {}).length
-}
+// P1.2 structured playbook rules: lib/playbook-rules.ts (DD1).
 
 const ResolveSchema = z.object({
   orgId: z.string().min(1),
@@ -956,11 +820,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // X36 — values are found in the whole text, and the cut to maxChars
     // never splits one.
     // X40 — and the summary's values are found against the text as well.
-    const [redactedPlainText, redactedSummary] = await Promise.all([
+    // DD1 — the caps the whole document states, measured (a super-cap's
+    // statement quotes the claims it is for, so it is redacted too).
+    const caps = liabilityCaps(fullText).map(c => c.statement)
+    const [redactedPlainText, redactedSummary, redactedCaps] = await Promise.all([
       redactCuts(body.orgId, [{ text: fullText, cuts: [[0, body.maxChars]] }], { surface: 'contract_get.plainText', contractId: contract.id }),
       contract.summary
         ? redactCuts(body.orgId, [{ text: contract.summary, cuts: [[0, contract.summary.length]], valuesFrom: fullText }], { surface: 'contract_get.summary', contractId: contract.id })
         : Promise.resolve({ pieces: [], mode: 'off', counts: {}, total: 0 } as const),
+      caps.length
+        ? redactCuts(body.orgId, caps.map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: fullText })), { surface: 'contract_get.liabilityCaps', contractId: contract.id })
+        : Promise.resolve({ pieces: [] as Array<string[] | null> }),
     ])
 
     return reply.send({
@@ -987,6 +857,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       plainText:        redactedPlainText.pieces[0]?.[0] ?? '',
       plainTextLength:  fullText.length,
       truncated,
+      // DD1 — state caps with these figures; don't work them out.
+      ...(caps.length && { liabilityCaps: caps.map((_, i) => redactedCaps.pieces[i]?.[0] ?? REDACTION_UNAVAILABLE) }),
       updatedAt:        contract.updatedAt,
       // CC7 — asked what a contract covers, the assistant answered with its
       // value and dates and left the question alone: the record has no text.
@@ -2323,6 +2195,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // "We found nothing wrong" and "we did not look" have to be distinguishable,
     // because a redlining pipeline treats the first as done.
     const uncovered: Array<{ clauseId: string; clauseType: string; sectionRef: string | null; reason: string }> = []
+    const judgeable: Array<{ cl: (typeof clauses)[number]; category: { id: string; name: string }; matchingPositions: typeof positions }> = []
     for (const cl of clauses) {
       const category = matchCategory(categories, cl.clauseType)
       if (!category) { unmapped.add(cl.clauseType); continue }
@@ -2343,18 +2216,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
         })
         continue
       }
+      judgeable.push({ cl, category, matchingPositions })
+    }
 
+    // DD1 — a clause type's must-have rules and cap limits are judged once,
+    // on all of its clauses together, and carried by the clause stating the
+    // cap; must-not rules on each clause (lib/playbook-rules.ts).
+    const byCategory = new Map<string, Array<(typeof clauses)[number]>>()
+    for (const { cl, category } of judgeable) byCategory.set(category.id, [...(byCategory.get(category.id) ?? []), cl])
+    const textsOf = new Map<string, RuleTexts>()
+    const capAnalysisOf = new Map<string, string[]>()
+    for (const group of byCategory.values()) {
+      const { lead, texts, caps } = ruleTextsFor(group)
+      for (const [id, t] of texts) textsOf.set(id, t)
+      if (caps.length) capAnalysisOf.set(lead.id, caps.map(c => c.statement))
+    }
+
+    for (const { cl, category, matchingPositions } of judgeable) {
       // P1.2 — evaluate every position's `rules` (if any) against the
       // clause text. Combine hits into a single violations[] for the
       // clause so the agent LLM can see "3 violations, severity high"
       // without having to pick through positions.
-      const violations: Array<Record<string, unknown>> = []
-      for (const pos of matchingPositions) {
-        const rules = pos.rules as PlaybookRules | null
-        if (!rules) continue
-        violations.push(...evaluatePlaybookRules(rules, cl.content, pos.positionType))
-      }
+      const texts = textsOf.get(cl.id) ?? { own: cl.content, all: cl.content, caps: null }
+      const violations = dedupeViolations(matchingPositions.flatMap(pos =>
+        pos.rules ? evaluatePlaybookRules(pos.rules as PlaybookRules, texts, pos.positionType) : []))
       const worstSeverity = pickWorstSeverity(violations)
+      const capAnalysis = capAnalysisOf.get(cl.id)
 
       checks.push({
         // Required to chain into a rewrite: redline_propose and redline_apply
@@ -2388,6 +2275,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
         failedCount:     violations.filter(v => v.passed === false).length,
         // Kept for the artifact renderer, which reads `failed` as a number.
         failed:          violations.filter(v => v.passed === false).length,
+        // DD1 — the caps these words state, measured: quote these figures
+        // rather than working them out (redacted below with the excerpts).
+        ...(capAnalysis && { capAnalysis }),
       })
     }
 
@@ -2417,16 +2307,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(ck.excerpt)
         }
       })
+      // DD1 — a super-cap's statement quotes the claims it is for.
+      const capIdx: Array<[number, number]> = []
+      const capTexts: string[] = []
+      checks.forEach((ck, i) => (ck.capAnalysis as string[] | undefined)?.forEach((s, j) => { capIdx.push([i, j]); capTexts.push(s) }))
       // X36 — values found in the whole clause, then cut; X40 — and in the
       // whole contract, where a card number's "card" may be.
       const document = (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
-      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map(text => ({ text, cuts: [[0, 800]], valuesFrom: document })), {
+      const redacted = await redactCutExcerpts(body.orgId, [
+        ...excerptTexts.map((text): CutText => ({ text, cuts: [[0, 800]], valuesFrom: document })),
+        ...capTexts.map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: document })),
+      ], {
         surface: 'playbook_check.excerpt',
         contractId: contract.id,
       })
       excerptIdx.forEach((checkIndex, k) => {
         const ck = checks[checkIndex]
         if (ck) ck.excerpt = redacted[k]?.[0] ?? REDACTION_UNAVAILABLE
+      })
+      capIdx.forEach(([checkIndex, j], k) => {
+        const list = checks[checkIndex]?.capAnalysis as string[] | undefined
+        if (list) list[j] = redacted[excerptTexts.length + k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -2518,6 +2419,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
               if (hit) return { ...v, passed: hit.passed, evidence: hit.evidence, judged: true }
             }
             if (v.kind === 'bound') {
+              // DD1 — measured from the words; a model's reading doesn't replace it.
+              if (v.computed) return v
               const hit = boundsByKey.get(v.boundKey as string)
               if (hit) return {
                 ...v,
@@ -4552,12 +4455,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // row) and map back by position — order, scoring and `found` flags
     // are untouched. Structured cell fields (contractId, sectionRef) and
     // the contracts[] metadata block stay raw on purpose.
+    // DD1 — comparing caps: each contract's caps, measured, so the answer
+    // states figures instead of working them out. Redacted with the cells.
+    const capsOf = new Map<string, string[]>()
+    if (body.topics.some(t => /liab|\bcaps?\b|damages/i.test(t))) {
+      for (const c of contracts) {
+        const caps = liabilityCaps(textByContract.get(c.id) ?? '').map(x => x.statement)
+        if (caps.length) capsOf.set(c.id, caps)
+      }
+    }
     let redactedMatrix: typeof matrix
     try {
       const ids = [...cutsOf.keys()]
-      const { pieces } = await redactCuts(body.orgId, ids.map(id => cutsOf.get(id) ?? null), {
+      const capIds = [...capsOf.keys()]
+      const { pieces } = await redactCuts(body.orgId, [
+        ...ids.map(id => cutsOf.get(id) ?? null),
+        ...capIds.flatMap(id => (capsOf.get(id) ?? []).map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: textByContract.get(id) }))),
+      ], {
         surface: 'portfolio_compare.excerpt',
       })
+      let k = ids.length
+      for (const id of capIds) capsOf.set(id, (capsOf.get(id) ?? []).map(() => pieces[k++]?.[0] ?? REDACTION_UNAVAILABLE))
       const piecesOf = new Map(ids.map((id, k) => [id, pieces[k]]))
       let i = 0
       redactedMatrix = matrix.map(row => ({
@@ -4584,6 +4502,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         value: c.value != null ? Number(c.value) : null,
         currency: c.currency,
         documentOnFile: !!textByContract.get(c.id),
+        ...(capsOf.has(c.id) && { liabilityCaps: capsOf.get(c.id) }),
       })),
       topics: body.topics,
       matrix: redactedMatrix,

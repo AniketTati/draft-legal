@@ -22,6 +22,7 @@ import { generateAndStoreSignedPdf } from './pdf-signing.js'
 import { renderHtmlToPdfAndStore } from './gotenberg.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { afterEdit } from './version-refresh.js'
 
 export type SealOutcome =
   | { status: 'sealed';         versionId: string; signedKey: string }
@@ -175,6 +176,9 @@ export async function sealSignedContract(signatureRequestId: string): Promise<Se
     where: { id: sr.contractId },
     data:  { currentVersionId: newVersion.id },
   })
+  // DD2 — the signed copy has the same words, and keeps the clauses (the
+  // executed contract's obligations and renewal terms are read from them).
+  await afterEdit({ contractId: sr.contractId, orgId: sr.orgId, versionId: newVersion.id, fromVersionId: ver.id })
 
   return { status: 'sealed', versionId: newVersion.id, signedKey }
 }
