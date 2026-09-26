@@ -70,7 +70,8 @@ export interface ClassifyDocumentJob {
 export interface SplitBinderJob {
   contractId: string
   orgId:      string
-  userId:     string
+  userId:     string    // who asked: the children's creator
+  ownerId?:   string    // X45 — their owner, when that isn't `userId` (a key's split)
   splits:     Array<{ pageStart: number; pageEnd: number; title?: string; type?: string }>
 }
 
@@ -207,7 +208,7 @@ export interface NotificationJob {
   body:         string
   resourceType: string
   resourceId:   string
-  email?:       string  // recipient email address — only used if SMTP_HOST is configured
+  email?:       string  // recipient email address — used when an email provider is configured (lib/mailer.ts)
 }
 
 /**
@@ -219,8 +220,11 @@ export interface NotificationJob {
 export interface PlaybookReviewJob {
   contractId: string
   orgId:      string
-  /** The version that was just extracted — also scopes the job identity. */
-  versionId:  string
+  /**
+   * The version that was just extracted — also scopes the job identity.
+   * Null (DD2): whatever version the contract stands on when the job runs.
+   */
+  versionId:  string | null
 }
 export function queuePlaybookReview(payload: PlaybookReviewJob): void {
   agentQueue.add('playbook-review', payload, {
@@ -241,6 +245,47 @@ export function queuePlaybookReview(payload: PlaybookReviewJob): void {
 }
 
 /**
+ * DD2 — a review after edits: of the version the contract stands on two
+ * minutes from now, one per contract per two minutes. The editor saves a
+ * version five seconds after typing stops; a review per save would be a
+ * model call per pause.
+ */
+export function queuePlaybookReviewSoon(payload: { contractId: string; orgId: string }): void {
+  const slot = Math.floor(Date.now() / 120_000)
+  agentQueue.add('playbook-review', { ...payload, versionId: null } satisfies PlaybookReviewJob, {
+    delay: 120_000,
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 15000 },
+    jobId: `playbook-review-${payload.contractId}-soon-${slot}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue playbook-review:', err.message))
+}
+
+/**
+ * DD2 — after a version is made by editing (lib/version-refresh.ts): the
+ * search index's full text, the clauses' windows and search entries, their
+ * embeddings, and, when clause text changed, a fresh playbook review. Unlike
+ * chunk-and-index it leaves the contract's analysis status alone.
+ */
+export interface RefreshVersionJob {
+  contractId:    string
+  versionId:     string
+  orgId:         string
+  /** Where the clauses were copied from: rows with the same words take its embeddings. */
+  fromVersionId: string | null
+  review:        boolean
+}
+export function queueRefreshVersion(payload: RefreshVersionJob): void {
+  documentQueue.add('refresh-version', payload, {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 5000 },
+    removeOnComplete: 200,
+    removeOnFail:     200,
+  }).catch(err => console.warn('[queue] failed to enqueue refresh-version:', err.message))
+}
+
+/**
  * Phase 3 — whole-document redline against the org's playbook.
  *
  * Chains playbook_check -> batch propose -> STAGE. It deliberately does not
@@ -254,16 +299,39 @@ export interface PlaybookRedlineJob {
   versionId:  string
   aggression: 'least' | 'moderate' | 'aggressive'
 }
+export interface BackfillCustomFieldJob {
+  orgId:             string
+  fieldDefinitionId: string
+}
+
+/**
+ * X2 — fill a custom field in on existing contracts. One job per field: a
+ * second press while it runs is the same job. A failed run is removed first,
+ * so pressing again resumes it from its saved cursor.
+ */
+export async function queueBackfillCustomField(payload: BackfillCustomFieldJob): Promise<void> {
+  const jobId = `backfill-custom-field-${payload.fieldDefinitionId}`
+  const existing = await agentQueue.getJob(jobId)
+  if (existing && (await existing.isFailed() || await existing.isCompleted())) await existing.remove()
+  await agentQueue.add('backfill-custom-field', payload, {
+    jobId,
+    attempts: 3,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  })
+}
+
 export function queuePlaybookRedline(payload: PlaybookRedlineJob): void {
   agentQueue.add('playbook-redline', payload, {
     // One attempt. A retry re-runs every LLM call in the batch, and the job is
     // user-initiated — they can see it failed and press the button again.
     attempts: 1,
-    // Version-scoped like playbook-review, so a re-run against the SAME version
-    // is a no-op but the counterparty's next version gets its own run. Note
-    // BullMQ returns the existing job rather than throwing on a duplicate id,
-    // so the .catch below would never see that case.
-    jobId: `playbook-redline-${payload.contractId}-${payload.versionId}`,
+    // One job per press. A version-scoped id made "Try again" (and any second
+    // run on the same version) a silent no-op: BullMQ returns the kept job for
+    // a duplicate id, and the route had already marked the run QUEUED, so the
+    // rail waited forever. Two runs at once are refused by the route instead.
+    jobId: `playbook-redline-${payload.contractId}-${payload.versionId}-${Date.now()}`,
     removeOnComplete: 100,
     removeOnFail:     50,
   }).catch(err => console.warn('[queue] failed to enqueue playbook-redline:', err.message))

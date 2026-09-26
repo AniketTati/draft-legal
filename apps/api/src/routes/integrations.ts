@@ -30,12 +30,17 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
+import { mergeOrgSettings, removeOrgSetting } from '../lib/org-settings.js'
+import { slackTeamOfToken } from '../lib/slack.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { hashApiKey, API_KEY_PREFIX } from '../middleware/auth.js'
+import { hashApiKey, API_KEY_PREFIX, requireUser } from '../middleware/auth.js'
+import { keyMaker } from '../lib/acting-user.js'
 import { queueWebhookDelivery } from '../lib/queue.js'
 import { isTeamsUrl } from '../lib/teams-formatter.js'
 import { VALID_API_SCOPES } from '../lib/permissions.js'
 import { isUrlShapeAllowed } from '../lib/ssrf-guard.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { AuditAction } from '@clm/types'
 
 // Wave 1.5 — reject webhook URLs that target private/localhost/metadata hosts
 // (only enforced when the SSRF guard is active; self-host/dev pass through).
@@ -49,7 +54,8 @@ export const WEBHOOK_EVENTS = [
   'contract.uploaded',
   'contract.updated',
   'contract.executed',
-  'contract.expired',
+  // 'contract.expired' removed (H2): nothing in the product moves a contract
+  // to EXPIRED, so a subscriber would wait for an event that never comes.
   'signature.sent',
   'signature.completed',
   'signature.voided',
@@ -65,12 +71,15 @@ export const WEBHOOK_EVENTS = [
 
 const CreateApiKeySchema = z.object({
   name:       z.string().min(1).max(100),
-  // Wave 1.2 — scopes must be a subset of the known vocabulary. An empty/
-  // omitted list grants NO permissions (no more accidental org-admin key).
-  scopes:     z.array(z.string()).optional().refine(
-    (arr) => !arr || arr.every((s) => VALID_API_SCOPES.includes(s)),
-    { message: `scopes must be a subset of: ${VALID_API_SCOPES.join(', ')}` },
-  ),
+  // Wave 1.2 — scopes must be a subset of the known vocabulary. An empty
+  // list grants NO permissions, so such a key could call nothing (C1: the
+  // admin dialog used to create exactly that). Require at least one.
+  scopes:     z.array(z.string(), { required_error: 'Choose at least one scope — a key with no scopes cannot call any endpoint.' })
+    .min(1, 'Choose at least one scope — a key with no scopes cannot call any endpoint.')
+    .refine(
+      (arr) => arr.every((s) => VALID_API_SCOPES.includes(s)),
+      { message: `scopes must be a subset of: ${VALID_API_SCOPES.join(', ')}` },
+    ),
   expiresInDays: z.number().int().min(1).max(3650).optional(),
 })
 
@@ -105,14 +114,29 @@ export async function integrationsRoutes(app: FastifyInstance) {
     return reply.send({ events: WEBHOOK_EVENTS })
   })
 
+  // X46 — managing API keys is for signed-in users. An admin-scope key passed
+  // configure:organization, so a key could mint keys (recorded as made by
+  // `apikey:<id>`) that survive revoking it and its maker's deactivation.
+
+  // ── GET /api-key-scopes — the scope vocabulary for the create dialog ──
+  app.get('/api-key-scopes', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (_req, reply) => {
+    return reply.send({ scopes: VALID_API_SCOPES })
+  })
+
   // ── POST /api-keys — create (returns full key once) ───────────────────
-  app.post('/api-keys', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.post('/api-keys', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     let body
     try { body = CreateApiKeySchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId, sub: userId } = req.user
+    // X46 — only someone who could make a key now: a deactivated user's access
+    // token outlives the deactivation by its lifetime, and the agents service
+    // is no user. A key's access ends with its maker's (keyMaker).
+    if (!await keyMaker(orgId, userId)) {
+      return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail: 'Only an active member who can manage API keys can create one' })
+    }
 
     const fullKey = generateApiKey()
     const created = await prisma.apiKey.create({
@@ -121,7 +145,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
         name:        body.name.trim(),
         keyHash:     hashApiKey(fullKey),
         prefix:      fullKey.slice(0, 12),
-        scopes:      body.scopes ?? [],
+        scopes:      body.scopes,
         expiresAt:   body.expiresInDays
           ? new Date(Date.now() + body.expiresInDays * 24 * 60 * 60 * 1000)
           : null,
@@ -132,6 +156,12 @@ export async function integrationsRoutes(app: FastifyInstance) {
       },
     })
 
+    // X43 — a key is a standing credential: its creation is on the record.
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.API_KEY_CREATED, resourceType: 'api_key', resourceId: created.id,
+      metadata: { name: created.name, scopes: created.scopes, expiresAt: created.expiresAt }, ipAddress: req.ip,
+    })
+
     return reply.status(201).send({
       ...created,
       // Full key is shown ONCE — caller must save it. We never store it.
@@ -140,22 +170,26 @@ export async function integrationsRoutes(app: FastifyInstance) {
   })
 
   // ── GET /api-keys — list ─────────────────────────────────────────────
-  app.get('/api-keys', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.get('/api-keys', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     const { orgId } = req.user
     const keys = await prisma.apiKey.findMany({
       where: { orgId },
       orderBy: { createdAt: 'desc' },
       select: {
         id: true, name: true, prefix: true, scopes: true,
-        lastUsedAt: true, expiresAt: true, revokedAt: true, createdAt: true,
+        lastUsedAt: true, expiresAt: true, revokedAt: true, createdAt: true, createdById: true,
       },
       take: 100,
     })
-    return reply.send({ data: keys })
+    // X43 — who made each key, so an admin can tell whose keys are whose.
+    const creators = new Map((await prisma.user.findMany({
+      where: { orgId, id: { in: [...new Set(keys.map(k => k.createdById))] } }, select: { id: true, name: true, email: true },
+    })).map(u => [u.id, u]))
+    return reply.send({ data: keys.map(({ createdById, ...k }) => ({ ...k, createdBy: creators.get(createdById) ?? null })) })
   })
 
   // ── DELETE /api-keys/:id — revoke ─────────────────────────────────────
-  app.delete('/api-keys/:id', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
+  app.delete('/api-keys/:id', { preHandler: [requireUser, requirePermission('configure', 'organization')] }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
     const updated = await prisma.apiKey.updateMany({
@@ -163,6 +197,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
       data:  { revokedAt: new Date() },
     })
     if (updated.count === 0) return reply.status(404).send({ detail: 'API key not found' })
+    await createAuditEvent({ orgId, userId: req.user.sub, action: AuditAction.API_KEY_REVOKED, resourceType: 'api_key', resourceId: id, ipAddress: req.ip })
     return reply.status(204).send()
   })
 
@@ -278,7 +313,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
     const slack = ((org?.settings as Record<string, unknown> | null)?.slack ?? null) as
-      { teamId?: string; signingSecret?: string; botToken?: string; configuredAt?: string } | null
+      { teamId?: string; signingSecret?: string; botToken?: string; configuredAt?: string; teamVerified?: boolean } | null
     if (!slack?.teamId) return reply.send({ connected: false })
     return reply.send({
       connected:        true,
@@ -286,6 +321,7 @@ export async function integrationsRoutes(app: FastifyInstance) {
       configuredAt:     slack.configuredAt ?? null,
       hasSigningSecret: Boolean(slack.signingSecret),
       hasBotToken:      Boolean(slack.botToken),
+      teamVerified:     slack.teamVerified === true,
     })
   })
 
@@ -304,31 +340,35 @@ export async function integrationsRoutes(app: FastifyInstance) {
     if (body.botToken && !body.botToken.startsWith('xoxb-')) {
       return reply.status(400).send({ detail: 'Bot token must start with xoxb-' })
     }
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
-    const settings = (org?.settings ?? {}) as Record<string, unknown>
-    await prisma.organization.update({
-      where: { id: orgId },
-      data: {
-        settings: {
-          ...settings,
-          slack: {
-            teamId:        body.teamId.trim(),
-            signingSecret: body.signingSecret.trim(),
-            ...(body.botToken ? { botToken: body.botToken.trim() } : {}),
-            configuredAt:  new Date().toISOString(),
-          },
-        } as never,
+    // X6 — a bot token proves which workspace this is. Verified claims win when
+    // several orgs name the same team id, so a squatter can't displace this one.
+    let teamVerified = false
+    if (body.botToken) {
+      const team = await slackTeamOfToken(body.botToken.trim())
+      if (team && !team.ok) {
+        return reply.status(400).send({ detail: `Slack rejected the bot token (${team.error}).` })
+      }
+      if (team?.ok && team.teamId !== body.teamId.trim()) {
+        return reply.status(400).send({ detail: `That bot token belongs to Slack workspace ${team.teamId}, not ${body.teamId.trim()}.` })
+      }
+      teamVerified = Boolean(team?.ok)
+    }
+    // X4 — set only `slack`, atomically; a whole-blob write undid concurrent changes.
+    await mergeOrgSettings(orgId, {
+      slack: {
+        teamId:        body.teamId.trim(),
+        signingSecret: body.signingSecret.trim(),
+        ...(body.botToken ? { botToken: body.botToken.trim() } : {}),
+        configuredAt:  new Date().toISOString(),
+        teamVerified,
       },
     })
-    return reply.send({ ok: true })
+    return reply.send({ ok: true, teamVerified })
   })
 
   app.delete('/slack', { preHandler: requirePermission('configure', 'organization') }, async (req, reply) => {
     const { orgId } = req.user
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
-    const settings = { ...((org?.settings ?? {}) as Record<string, unknown>) }
-    delete settings.slack
-    await prisma.organization.update({ where: { id: orgId }, data: { settings: settings as never } })
+    await removeOrgSetting(orgId, 'slack')   // X4 — atomic, touches only `slack`
     return reply.status(204).send()
   })
 

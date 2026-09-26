@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Mail, Calendar, Github, ArrowRight, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SEO } from '@/lib/seo'
-import { GITHUB_URL } from '@/lib/utils'
+import { API_ORIGIN, GITHUB_URL } from '@/lib/utils'
 
 export default function Contact() {
   const [params] = useSearchParams()
@@ -26,12 +26,12 @@ export default function Contact() {
     setState('submitting')
     setErrorMsg('')
     try {
-      // Cross-origin POST to api-service. The app site (https://app.draft-legal.com
-      // and the default https://draftlegal-prod-13353.web.app) proxies /api/**
-      // to api-service via Firebase Hosting rewrites, so this URL hits Cloud Run
-      // directly with no extra DNS or proxy hop. CORS allowlist in api-service
-      // accepts requests from this origin.
-      const res = await fetch('https://draftlegal-prod-13353.web.app/api/v1/marketing/contact', {
+      // In production, a cross-origin POST to api-service: the app site
+      // (https://app.draft-legal.com and the default
+      // https://draftlegal-prod-13353.web.app) proxies /api/** to api-service
+      // via Firebase Hosting rewrites, and its CORS allowlist accepts this
+      // origin. From the dev server, the local API (X70; see API_ORIGIN).
+      const res = await fetch(`${API_ORIGIN}/api/v1/marketing/contact`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ ...form, source }),
@@ -148,11 +148,11 @@ export default function Contact() {
                       <Check className="h-6 w-6" />
                     </span>
                     <h2 className="mt-5 text-xl font-bold text-slate-900">
-                      Thanks — we'll be in touch.
+                      Thanks — we've got your message.
                     </h2>
                     <p className="mt-2 max-w-sm text-sm leading-6 text-slate-600">
-                      You should hear from us within one business day. In the meantime, the full
-                      product is on GitHub if you want to look around.
+                      We'll reply by email. In the meantime, the full product is on GitHub if you
+                      want to look around.
                     </p>
                   </div>
                 ) : (

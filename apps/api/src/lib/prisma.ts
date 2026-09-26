@@ -13,12 +13,15 @@
  * "everything is slow but we don't know why" tickets.
  */
 import { PrismaClient } from '@prisma/client'
-import pino from 'pino'
+import { moduleLogger } from './logger.js'
+import { isDevelopment, isStrict } from './runtime-mode.js'
+import { tenantGuardExtension } from './tenant-guard.js'
+import { tenantRlsExtension, tenantTransaction } from './tenant-rls.js'
 
 const SLOW_QUERY_MS = Number(process.env.SLOW_QUERY_MS ?? 250)
 const POOL_LIMIT    = Number(process.env.PRISMA_POOL_LIMIT ?? 20)
 
-const log = pino({ level: process.env.LOG_LEVEL ?? 'info', name: 'prisma' })
+const log = moduleLogger('prisma')
 
 // Apply the pool limit by appending ?connection_limit=N to the URL if
 // not already specified. This is the documented way per Prisma docs.
@@ -29,13 +32,13 @@ function withPoolLimit(url: string | undefined): string | undefined {
   return `${url}${sep}connection_limit=${POOL_LIMIT}`
 }
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient }
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient; prismaBase?: PrismaClient }
 
 function makeClient() {
   const tunedUrl = withPoolLimit(process.env.DATABASE_URL)
   const client = new PrismaClient({
     log:
-      process.env.NODE_ENV === 'development'
+      isDevelopment()
         ? ['query', 'error', 'warn']
         : [
             { emit: 'event', level: 'query' },
@@ -48,7 +51,7 @@ function makeClient() {
   // Production: structured slow-query log + error / warn surfacing.
   // In development we keep Prisma's default raw SQL output (more
   // useful when debugging an actual query).
-  if (process.env.NODE_ENV !== 'development') {
+  if (!isDevelopment()) {
     client.$on('query', (e: { query: string; params: string; duration: number; target: string }) => {
       if (e.duration >= SLOW_QUERY_MS) {
         log.warn({
@@ -69,8 +72,34 @@ function makeClient() {
   return client
 }
 
-export const prisma = globalForPrisma.prisma ?? makeClient()
+// Y1 — tenant isolation in two layers, for every query made for a tenant:
+//   - lib/tenant-guard.ts limits each Prisma query on a model with an `orgId`
+//     to the tenant, whatever its `where` says;
+//   - lib/tenant-rls.ts runs it as the role Postgres's row-level security
+//     policies confine to the tenant's rows, raw SQL and relations included.
+// The extensions leave the model API unchanged, so the client keeps its type.
+function makeGuardedClient(): PrismaClient {
+  const base = makeClient()
+  globalForPrisma.prismaBase = base
+  const guarded = base.$extends(tenantGuardExtension(base)) as unknown as PrismaClient
+  const client = guarded.$extends(tenantRlsExtension(guarded)) as unknown as PrismaClient
+  client.$transaction = tenantTransaction(guarded)
+  return client
+}
 
-if (process.env.NODE_ENV !== 'production') {
+export const prisma = globalForPrisma.prisma ?? makeGuardedClient()
+
+/**
+ * Register Prisma middleware (the deprecated `$use`), which an extended client
+ * no longer offers. Middleware on the base client still runs for every query
+ * the guarded client makes. For tests that hold a query to stage a race.
+ */
+export function usePrismaMiddleware(middleware: Parameters<PrismaClient['$use']>[0]): void {
+  globalForPrisma.prismaBase!.$use(middleware)
+}
+
+// One client across module reloads (a developer's watch mode, the test run's
+// files, which share it).
+if (!isStrict()) {
   globalForPrisma.prisma = prisma
 }

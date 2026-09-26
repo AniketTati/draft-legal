@@ -23,7 +23,7 @@
 | **eSignature** | Internal signing module — `pdf-lib` + `node-forge` | Zero external vendor. Self-hosted. pdf-lib embeds signature fields; node-forge X.509/PAdES-B signs the PDF. Documenso (open-source) available as a drop-in if richer UI needed. |
 | **Email** | SendGrid (transactional) + IMAP listener (inbound) | Reliable delivery, inbound email processing for email-to-request |
 | **Auth** | Internal JWT (HS256) — Phase 01. Auth0/Clerk for enterprise SSO/SAML later (Phase 10). | Simple, no external dependency for early phases. JWT access (15 min) + refresh (7 day, rotated). |
-| **Monitoring** | Prometheus + Grafana (infra), Sentry (errors), PostHog (product) | Full observability stack |
+| **Monitoring** | Prometheus-format metrics at `GET /api/v1/metrics` (behind `METRICS_TOKEN`), Cloud Error Reporting (5xx events on stderr under Cloud Run), Langfuse (LLM traces), the org audit log (Admin → Audit Log). Grafana dashboards, Sentry and PostHog are not wired up. | What exists today (X3); the rest of the stack below is the plan |
 | **CI/CD** | GitHub Actions + Docker + Kubernetes (EKS) | Standard, scalable, multi-environment deployments |
 | **IaC** | Terraform | Reproducible infrastructure across environments |
 

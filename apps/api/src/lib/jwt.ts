@@ -17,6 +17,12 @@ export interface JwtPayload {
   orgId: string
   roles: string[]
   type: 'access' | 'refresh'
+  /**
+   * X50 — the sign-in this token descends from, carried on by every refresh.
+   * Signing is deterministic and `iat` is whole seconds, so without it a
+   * sign-in and a refresh in the same second minted the very same tokens.
+   */
+  sid?: string
 }
 
 export function signAccessToken(payload: Omit<JwtPayload, 'type'>): string {
@@ -29,6 +35,17 @@ export function signRefreshToken(payload: Omit<JwtPayload, 'type'>): string {
   return jwt.sign({ ...payload, type: 'refresh' }, secret(), {
     expiresIn: REFRESH_EXPIRES,
   } as jwt.SignOptions)
+}
+
+/**
+ * The tokens a sign-in or refresh returns. X73 — `expiresIn` is the access
+ * token's lifetime read off the token itself: it was always 900, whatever
+ * JWT_ACCESS_EXPIRES_IN set.
+ */
+export function issueSessionTokens(payload: Omit<JwtPayload, 'type'>) {
+  const accessToken = signAccessToken(payload)
+  const { iat, exp } = jwt.decode(accessToken) as { iat: number; exp: number }
+  return { accessToken, refreshToken: signRefreshToken(payload), expiresIn: exp - iat }
 }
 
 export function verifyToken(token: string): JwtPayload {

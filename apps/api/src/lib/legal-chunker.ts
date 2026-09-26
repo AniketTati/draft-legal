@@ -51,7 +51,7 @@ interface SubChunk {
   windowIndex: number
 }
 
-function slidingWindowChunks(text: string, baseOffset = 0): SubChunk[] {
+export function slidingWindowChunks(text: string, baseOffset = 0): SubChunk[] {
   if (text.length <= MAX_CLAUSE_LEN) {
     return [{
       content:     text,
@@ -82,9 +82,11 @@ function slidingWindowChunks(text: string, baseOffset = 0): SubChunk[] {
       })
     }
 
-    // Advance with overlap
-    start = end - SUB_CHUNK_OVERLAP
-    if (start <= 0 || start >= text.length) break
+    // Advance with overlap. Z9 — stop once a window reaches the end: the
+    // last window stepped back by the overlap and was cut again, forever, so
+    // any clause over MAX_CLAUSE_LEN ran the worker out of memory.
+    if (end >= text.length) break
+    start = Math.max(end - SUB_CHUNK_OVERLAP, start + 1)
   }
 
   return chunks

@@ -20,6 +20,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
+import { portfolioWhere } from '../lib/own-scope-guard.js'
 
 const TimeRangeSchema = z.object({
   // Lookback in days for cycle-time + acceptance KPIs. Defaults to 90.
@@ -57,6 +58,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid query', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId } = req.user
+    // X7 — own-scope callers get the figures for their own contracts.
+    const own = portfolioWhere(req)   // X17 — the org's own contracts, not a diligence room's
+    const ownApprovals = { contract: { is: { diligenceRoomId: null, ...(own.ownerId ? { ownerId: own.ownerId } : {}) } } }
     const now = new Date()
     const windowStart = new Date(now.getTime() - q.days * 24 * 60 * 60 * 1000)
     const expiringHorizon = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
@@ -67,15 +71,16 @@ export async function analyticsRoutes(app: FastifyInstance) {
       totalContracts, executedContracts, pendingApprovals, expiringSoon, highRiskOpen,
       executedAggregate, executedRecent, approvals,
     ] = await Promise.all([
-      prisma.contract.count({ where: { orgId, deletedAt: null } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED' } }),
-      prisma.approvalInstance.count({ where: { orgId, status: 'PENDING' } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED' } }),
+      // ESCALATED is still awaiting a decision (C2) — count it as pending.
+      prisma.approvalInstance.count({ where: { orgId, ...ownApprovals, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } } }),
       prisma.contract.count({
-        where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: expiringHorizon } },
+        where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: expiringHorizon } },
       }),
       prisma.contract.count({
         where: {
-          orgId, deletedAt: null,
+          orgId, deletedAt: null, ...own,
           // 0-100, matching the declared scale in @clm/types. These were 0-1,
           // so with real data "high risk open" counted almost nothing.
           riskScore: { gt: 60 },
@@ -84,14 +89,14 @@ export async function analyticsRoutes(app: FastifyInstance) {
       }),
       // Sum executed value (Decimal in Prisma → handle in app layer).
       prisma.contract.findMany({
-        where:  { orgId, deletedAt: null, status: 'EXECUTED' },
+        where:  { orgId, deletedAt: null, ...own, status: 'EXECUTED' },
         select: { value: true, currency: true },
         take:   5_000,
       }),
       // For cycle time: contracts that EXECUTED inside the window.
       prisma.contract.findMany({
         where: {
-          orgId, deletedAt: null, status: 'EXECUTED',
+          orgId, deletedAt: null, ...own, status: 'EXECUTED',
           updatedAt: { gte: windowStart },
         },
         select: { id: true, createdAt: true, updatedAt: true },
@@ -99,7 +104,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       }),
       // Approvals decided in the window — for acceptance rate.
       prisma.approvalInstance.findMany({
-        where: { orgId, status: { in: ['APPROVED', 'REJECTED'] }, decidedAt: { gte: windowStart } },
+        where: { orgId, ...ownApprovals, status: { in: ['APPROVED', 'REJECTED'] }, decidedAt: { gte: windowStart } },
         select: { status: true },
         take: 5_000,
       }),
@@ -174,23 +179,24 @@ export async function analyticsRoutes(app: FastifyInstance) {
   // ── GET /distributions ───────────────────────────────────────────────
   app.get('/distributions', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
+    const own = portfolioWhere(req)   // X7, X17
 
     const [byStatus, byType, byRisk] = await Promise.all([
       prisma.contract.groupBy({
         by: ['status'],
-        where: { orgId, deletedAt: null },
+        where: { orgId, deletedAt: null, ...own },
         _count: { _all: true },
       }),
       prisma.contract.groupBy({
         by: ['type'],
-        where: { orgId, deletedAt: null },
+        where: { orgId, deletedAt: null, ...own },
         _count: { _all: true },
       }),
       // Risk buckets — a single grouped query against the literal CASE
       // expression. We do this in app-layer because Prisma's groupBy
       // can't bucket arbitrary numeric ranges.
       prisma.contract.findMany({
-        where: { orgId, deletedAt: null },
+        where: { orgId, deletedAt: null, ...own },
         select: { riskScore: true },
         take: 5_000,
       }),
@@ -227,7 +233,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const start = new Date(now.getFullYear(), now.getMonth() - 11, 1)
 
     const contracts = await prisma.contract.findMany({
-      where:  { orgId, deletedAt: null, createdAt: { gte: start } },
+      where:  { orgId, deletedAt: null, ...portfolioWhere(req), createdAt: { gte: start } },   // X7
       select: { createdAt: true, status: true },
       take:   10_000,
     })
@@ -262,7 +268,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const limit = Math.min(50, Math.max(5, Number((req.query as { limit?: string }).limit ?? 10)))
 
     const contracts = await prisma.contract.findMany({
-      where:  { orgId, deletedAt: null, status: 'EXECUTED', counterpartyName: { not: null } },
+      where:  { orgId, deletedAt: null, ...portfolioWhere(req), status: 'EXECUTED', counterpartyName: { not: null } },   // X7
       select: { counterpartyName: true, counterpartyId: true, value: true, currency: true },
       take:   5_000,
     })

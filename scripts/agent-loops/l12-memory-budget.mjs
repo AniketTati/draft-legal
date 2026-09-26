@@ -125,10 +125,10 @@ sid = "l12-budget-probe"
 big = "x" * 20_000
 async def main():
     for i in range(60):
-        await append_to_session(sid, "assistant", "turn %d" % i,
+        await append_to_session(sid, "assistant", "turn %d" % i, org_id="l12-org", user_id="l12-user",
             tool_calls=[{"id": "t%d" % i, "name": "contract_search", "args": {}}],
             tool_results=[{"id": "t%d" % i, "name": "contract_search", "result": big, "truncated": True}])
-    h = await get_session_history(sid)
+    h = await get_session_history(sid, org_id="l12-org", user_id="l12-user")
     print("<<<R>>>" + json.dumps({"bytes": len(json.dumps(h)), "ceiling": MAX_SESSION_BYTES, "messages": len(h)}))
 asyncio.run(main())
 `
@@ -240,7 +240,7 @@ section('5. A clause_search listing survives into the next turn intact')
   const py = `
 import asyncio, json
 from app.memory import get_session_history
-print("<<<R>>>" + json.dumps(asyncio.run(get_session_history(${JSON.stringify(sessionId)}))))
+print("<<<R>>>" + json.dumps(asyncio.run(get_session_history(${JSON.stringify(sessionId)}, org_id=${JSON.stringify(orgId)}, user_id=${JSON.stringify(userId)}))))
 `
   let history = []
   try {

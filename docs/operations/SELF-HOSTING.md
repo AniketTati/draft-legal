@@ -26,7 +26,11 @@ cp .env.selfhost.example .env.selfhost
 ```
 
 The API **refuses to boot** with a missing/short/placeholder `JWT_SECRET` or
-`PORTAL_JWT_SECRET` (Wave 1 fail-closed secrets) — this is deliberate.
+`PORTAL_JWT_SECRET` (Wave 1 fail-closed secrets) — this is deliberate. The same
+goes for a short or placeholder `INTERNAL_SERVICE_SECRET` (the `CHANGE_ME_`
+values in `.env.selfhost.example` are refused): it lets a caller act as an
+admin of any org, so it must be random and 32+ characters, and the same on the
+API, worker and agents services.
 
 ## 3. Build the web bundle + start
 
@@ -44,11 +48,24 @@ Startup order is enforced by health checks: Postgres → **migrate** (one-shot
 Seed the first org/admin:
 
 ```bash
-docker compose -f docker-compose.selfhost.yml exec api-service \
+docker compose -f docker-compose.selfhost.yml exec -e SEED_ADMIN_PASSWORD='<12+ characters>' api-service \
   node --import tsx prisma/seed.ts
 ```
 
+The seed creates `admin@demo.com` and `legal@demo.com` with that password.
+Without `SEED_ADMIN_PASSWORD` it generates a random one and prints it once, so
+keep the output. It never uses the development password `password123` in
+production. Change the password after the first sign-in, and replace the demo
+addresses with real ones.
+
 ## 4. Upgrading
+
+> **Placeholder secrets are refused.** An install still running the example
+> `CHANGE_ME_` values, or an `INTERNAL_SERVICE_SECRET` under 32 characters,
+> will not start after this upgrade. Set new values first. Change
+> `INTERNAL_SERVICE_SECRET` on the API, worker and agents services together;
+> a new `JWT_SECRET` signs everyone out, and a new `PORTAL_JWT_SECRET` ends
+> outstanding portal links.
 
 Migrations run automatically on every `up` via the one-shot `migrate` service,
 so upgrading is:
@@ -113,6 +130,9 @@ does not need backup; rebuild it after a restore with
 - **Queues**: Bull Board is mounted in the API for a live view of queue depth
   and failures.
 - **Disk**: alert before the Postgres/MinIO volumes fill.
+- **LLM calls**: optional Langfuse tracing (`LANGFUSE_*` in `.env.selfhost`,
+  blank by default). Traces contain contract text, so run Langfuse on your own
+  infrastructure rather than a hosted SaaS — see `LANGFUSE.md`.
 
 ## 7. Security notes
 

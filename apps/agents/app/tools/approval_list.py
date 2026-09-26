@@ -1,6 +1,6 @@
 """approval_list tool (P4.5)"""
 from __future__ import annotations
-import logging, httpx
+import json, logging, httpx
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 from ..config import settings
@@ -33,6 +33,13 @@ def build_approval_list(org_id: str, user_id: str | None = None) -> StructuredTo
         if status: payload["status"] = status
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
+        if r.status_code == 403:
+            # X9 — say why, so the model tells the user rather than guessing.
+            try:
+                detail = r.json().get("detail")
+            except ValueError:
+                detail = None
+            return json.dumps({"error": "permission_denied", "detail": detail or "The user does not have permission for this."})
         if r.status_code >= 400:
             log.warning("[approval_list] Node %s: %s", r.status_code, r.text[:200])
             return '{"error":"approval_list_failed","status":' + str(r.status_code) + "}"

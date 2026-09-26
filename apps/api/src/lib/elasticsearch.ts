@@ -6,6 +6,8 @@
 // indices.{exists,create}/aggs is identical for everything this codebase
 // uses, so the swap is import-only.
 import { Client } from '@opensearch-project/opensearch'
+import { normalizeRiskScore } from '@clm/types'
+import { prisma } from './prisma.js'
 
 export const es = new Client({
   node: process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200',
@@ -77,6 +79,7 @@ export async function ensureContractIndex() {
         keyTerms:         { type: 'object', dynamic: true },
         clauseFlags:      { type: 'object', dynamic: true },
         metadata:         { type: 'object', dynamic: true },
+        diligenceRoomId:  { type: 'keyword' },
         },
       },
     },
@@ -102,9 +105,37 @@ export interface ContractDoc {
   keyTerms?: Record<string, unknown>
   clauseFlags?: Record<string, boolean>
   metadata?: Record<string, unknown>
+  /** Set for diligence-room documents (diligence.ts). */
+  diligenceRoomId?: string
 }
 
 // ─── CRUD ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Fields every search doc needs but most callers can't supply: clause flags
+ * live on the contract's version (the Review agent writes them) — the current
+ * version's, else the latest one's — and diligenceRoomId decides whether the
+ * doc belongs in ordinary search at all (C11).
+ */
+async function docExtrasFor(contractId: string): Promise<{ clauseFlags?: Record<string, boolean>; diligenceRoomId?: string }> {
+  const c = await prisma.contract.findUnique({
+    where:  { id: contractId },
+    select: {
+      currentVersionId: true,
+      diligenceRoomId: true,
+      versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { id: true, clauseFlags: true } },
+    },
+  })
+  if (!c) return {}
+  const version = c.currentVersionId && c.currentVersionId !== c.versions[0]?.id
+    ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { clauseFlags: true } })
+    : c.versions[0]
+  const flags = version?.clauseFlags
+  return {
+    ...(flags && typeof flags === 'object' && !Array.isArray(flags) ? { clauseFlags: flags as Record<string, boolean> } : {}),
+    ...(c.diligenceRoomId ? { diligenceRoomId: c.diligenceRoomId } : {}),
+  }
+}
 
 export async function indexContract(id: string, doc: ContractDoc) {
   // The index's dynamic template maps keyTerms.* / metadata.* to keyword —
@@ -123,10 +154,59 @@ export async function indexContract(id: string, doc: ContractDoc) {
     }
     return out
   }
+  // C7 — no caller passed clauseFlags, so every doc lacked them and the
+  // clause-flag facets/filters counted 0. Fill them from the version unless
+  // the caller supplied them, so every index path (and the backfill) carries them.
+  //
+  // C11 — likewise diligenceRoomId: only diligence.ts passed it, so a later
+  // re-index dropped it and the doc leaked back into ordinary search.
+  // Fail closed: if this lookup fails, don't write a doc that might be
+  // missing diligenceRoomId (it would surface in ordinary search).
+  const extras = await docExtrasFor(id)
+  const clauseFlags = doc.clauseFlags ?? extras.clauseFlags
+  const diligenceRoomId = doc.diligenceRoomId ?? extras.diligenceRoomId
   await es.index({
     index: CONTRACT_INDEX,
     id,
-    body: { ...doc, keyTerms: scalarize(doc.keyTerms), metadata: scalarize(doc.metadata) },
+    body: {
+      ...doc,
+      ...(clauseFlags ? { clauseFlags } : {}),
+      ...(diligenceRoomId ? { diligenceRoomId } : {}),
+      keyTerms: scalarize(doc.keyTerms),
+      metadata: scalarize(doc.metadata),
+    },
+  })
+}
+
+/**
+ * Rebuild a contract's whole search document from Postgres and index it.
+ * indexContract is a full-document overwrite, so a partial doc would blank
+ * fields; use this when something other than a create or PATCH changed
+ * what is searchable (clause flags arriving, a review-queue correction).
+ */
+export async function reindexContract(contractId: string): Promise<void> {
+  const c = await prisma.contract.findUnique({ where: { id: contractId } })
+  if (!c || c.deletedAt) return
+  const version = c.currentVersionId
+    ? await prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { plainText: true } })
+    : await prisma.contractVersion.findFirst({ where: { contractId }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
+  await indexContract(c.id, {
+    orgId: c.orgId,
+    title: c.title,
+    type: c.type,
+    status: c.status,
+    counterpartyName: c.counterpartyName ?? undefined,
+    jurisdiction: c.jurisdiction ?? undefined,
+    plainText: version?.plainText ?? '',
+    summary: c.summary ?? undefined,
+    tags: c.tags,
+    riskScore: normalizeRiskScore(c.riskScore) ?? undefined,
+    effectiveDate: c.effectiveDate?.toISOString(),
+    expiryDate: c.expiryDate?.toISOString(),
+    createdAt: c.createdAt.toISOString(),
+    keyTerms: c.keyTerms as Record<string, unknown>,
+    metadata: c.metadata as Record<string, unknown>,
+    ...(c.diligenceRoomId ? { diligenceRoomId: c.diligenceRoomId } : {}),
   })
 }
 
@@ -150,6 +230,10 @@ export interface SearchFilters {
   expiryDateTo?: string
   counterpartyId?: string
   counterpartyName?: string
+  /** Restrict to these contract ids (own-scope callers; docs carry no ownerId). */
+  ids?: string[]
+  /** Search one diligence room's documents (excluded from ordinary search otherwise). */
+  diligenceRoomId?: string
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -205,6 +289,13 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
     filter.push({ range: { expiryDate: range } })
   }
 
+  if (filters.ids) filter.push({ ids: { values: filters.ids } })
+
+  // C11 — diligence-room documents stay out of ordinary search.
+  const mustNot: any[] = []
+  if (filters.diligenceRoomId) filter.push({ term: { diligenceRoomId: filters.diligenceRoomId } })
+  else mustNot.push({ exists: { field: 'diligenceRoomId' } })
+
   if (filters.clauseFlags) {
     for (const [flag, val] of Object.entries(filters.clauseFlags)) {
       filter.push({ term: { [`clauseFlags.${flag}`]: val } })
@@ -215,18 +306,19 @@ export function buildESQuery(orgId: string, filters: SearchFilters): any {
     bool: {
       ...(must.length ? { must } : { must: [{ match_all: {} }] }),
       filter,
+      ...(mustNot.length ? { must_not: mustNot } : {}),
     },
   }
 }
 
 // ─── Full-text search ─────────────────────────────────────────────────────────
 
-export async function searchContracts(orgId: string, query: string, size = 20) {
+export async function searchContracts(orgId: string, query: string, size = 20, ids?: string[]) {
   const raw = await es.search({
     index: CONTRACT_INDEX,
     body: {
       size,
-      query: buildESQuery(orgId, { q: query }),
+      query: buildESQuery(orgId, { q: query, ...(ids ? { ids } : {}) }),
       highlight: {
         fields: {
           title:            { number_of_fragments: 1 },

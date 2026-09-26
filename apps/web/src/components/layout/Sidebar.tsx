@@ -29,6 +29,7 @@ import {
   Plug,
   PanelLeftClose,
   PanelLeftOpen,
+  ScanSearch,
 } from 'lucide-react'
 import { usePermission } from '@/lib/permissions'
 import { CountBadge } from '@/components/ui/primitives'
@@ -70,10 +71,11 @@ interface NavSection {
 //   • Library          — "What reusable assets do I reference?"
 //   • Insights         — "How is the portfolio performing?"
 //
-// Extraction Queue (/review-queue) was demoted out of the sidebar —
-// it's an internal AI-confidence-review tool with low daily-use
-// frequency. Surfaced contextually via Contracts list badges instead.
-// Route still exists; bookmarks + deep links unaffected.
+// Extraction Queue (/review-queue) is the human check on AI-extracted
+// fields. It was once demoted out of the sidebar on the premise that the
+// Contracts list linked to it; nothing did, so it was unreachable (C5). It
+// lives under Queues, and a contract's Key Terms card links to its own
+// low-confidence fields.
 const NAV_SECTIONS: NavSection[] = [
   {
     items: [
@@ -101,6 +103,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/approvals',    icon: CheckSquare, label: 'Approvals', badge: 'pendingApprovals' },
       // Phase 07 — Signatures promoted once the eSignature flow shipped.
       { to: '/signatures',   icon: PenSquare,   label: 'Signatures', badge: 'signaturesAwaitingMe' },
+      { to: '/review-queue', icon: ScanSearch,  label: 'Extraction Queue' },
     ],
   },
   {

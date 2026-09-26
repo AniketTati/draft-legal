@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requireAuth } from '../middleware/auth.js'
+import { randomUUID } from 'node:crypto'
+import { requireUserOrAdminKey, isLimitedApiKey } from '../middleware/auth.js'
 // Wave 1.7 — AI-consuming endpoints are gated on view:contract so a scopeless
 // public-API key (or a non-contract principal) can't burn the org's LLM
 // budget. Per-turn cost enforcement is tightened separately in Wave 3.
@@ -11,10 +12,24 @@ import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
+import { postScore, findTraceBySession, langfuseConfigured } from '../lib/langfuse.js'
+import { redactJson, restorePii, streamRestorer, unresolvedPiiTokens, dropPartialToken, sliceOutsideTokens, getOrgPiiMode, plainSpacesHtml, htmlTextForms, valueLeftInMarkup, valueAcross } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
+import { modelFetch } from '../lib/model-boundary.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 const INTERNAL_SECRET = process.env.INTERNAL_SERVICE_SECRET ?? ''
+
+const FeedbackSchema = z.object({
+  sessionId: z.string().min(1),
+  /** Optional: the exact turn. Without it we resolve the session's latest trace. */
+  traceId:   z.string().optional(),
+  rating:    z.enum(['up', 'down']),
+  comment:   z.string().max(2000).optional(),
+})
 
 const AssistSchema = z.object({
   selectedText: z.string().min(1),
@@ -27,7 +42,7 @@ const AssistSchema = z.object({
 
 export async function agentRoutes(app: FastifyInstance) {
   // GET /api/v1/agent/models — list supported providers + models
-  app.get('/models', { preHandler: requireAuth }, async (_req: unknown, reply) => {
+  app.get('/models', { preHandler: requireUserOrAdminKey }, async (_req: unknown, reply) => {
     const upstream = await fetch(`${AGENTS_URL}/agent/models`, {
       headers: { 'x-internal-secret': INTERNAL_SECRET },
     }).catch(() => null)
@@ -35,6 +50,45 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
     return reply.send(await upstream.json())
+  })
+
+  // POST /api/v1/agent/feedback — what the user thought of an answer.
+  //
+  // The only quality signal that comes from a real person rather than a rubric,
+  // and the cheapest one there is. It lands in Langfuse as a `user_feedback`
+  // score on the turn's trace, so it sits beside the judge scores and can be
+  // compared with them — a turn the judge liked and the user did not is the
+  // most interesting row in the dataset.
+  //
+  // Fails OPEN: if Langfuse is unconfigured or unreachable this returns 200
+  // with recorded:false. A thumbs-up must never show the user an error, and an
+  // observability outage must not look like a broken product.
+  app.post('/feedback', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const body = FeedbackSchema.parse(req.body)
+    const { sub: userId, orgId } = req.user
+
+    if (!langfuseConfigured()) {
+      return reply.send({ recorded: false, reason: 'observability_disabled' })
+    }
+
+    // The browser knows its chat session, never a Langfuse trace id — the
+    // agents service sets session_id from the thread, which is what makes this
+    // resolvable without threading trace ids through the UI. X22 — either way,
+    // only a trace of the caller's own counts (both ids come from the client).
+    const traceId = await findTraceBySession(body.sessionId, { orgId, userId }, body.traceId)
+    if (!traceId) {
+      return reply.send({ recorded: false, reason: 'trace_not_found' })
+    }
+
+    const ok = await postScore({
+      name: 'user_feedback',
+      value: body.rating === 'up' ? 1 : 0,
+      dataType: 'BOOLEAN',
+      traceId,
+      comment: body.comment,
+      metadata: { source: 'app', userId, orgId, sessionId: body.sessionId },
+    })
+    return reply.send({ recorded: ok, ...(ok ? {} : { reason: 'langfuse_write_failed' }) })
   })
 
   // POST /api/v1/agent/chat — proxy to Python agent service with SSE streaming
@@ -72,16 +126,25 @@ export async function agentRoutes(app: FastifyInstance) {
     // This lets an admin override a built-in slug (e.g. customise
     // `@review-nda`) without us having to fork the record.
     // Permission-derived tool denials, evaluated once per turn.
-    // `contract_create_from_template` executes inline rather than proposing an
-    // ActionPreview, so it never reaches checkToolPermission — the layer
-    // agent-threads.ts documents as the only one that can see the caller's
-    // role. Deny it up front for anyone who could not create a contract
-    // through the REST route.
+    // `contract_create_from_template` now proposes an ActionPreview like the
+    // other write tools (C12), so checkToolPermission runs on Apply. It is
+    // still withheld from anyone who could not create a contract through the
+    // REST route: a tool the caller can never apply is not worth offering.
     const callerPermissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, req.user.roles)
     const deniedTools: string[] = []
     if (!evaluatePermission(callerPermissions, 'create', 'contract').granted) {
       deniedTools.push('contract_create_from_template')
     }
+    // X9 — read tools that need more than view:contract refuse the caller
+    // server-side (internal-ai.ts); don't offer them either.
+    if (!evaluatePermission(callerPermissions, 'edit', 'contract').granted) {
+      deniedTools.push('redline_propose', 'redline_propose_batch')
+    }
+    if (!evaluatePermission(callerPermissions, 'view', 'playbook').granted) deniedTools.push('playbook_check')
+    if (!evaluatePermission(callerPermissions, 'view', 'workflow').granted) deniedTools.push('approval_list')
+    // X44 — the member directory is refused to API keys without the admin scope
+    // (GET /users); user_search must not hand it to them through chat.
+    if (isLimitedApiKey(req.user)) deniedTools.push('user_search')
 
     let skillPromptOverride: string | undefined
     let skillAllowedTools: string[] | undefined
@@ -104,12 +167,15 @@ export async function agentRoutes(app: FastifyInstance) {
         skillAllowedTools = skill.allowedTools
         // Record invocation for telemetry + audit. Skill-version freezes
         // behaviour: an edit mid-run can't change this row's effective prompt.
-        await prisma.skillInvocation.create({
+        // X45 — the invoker is a user: for an API key, the one who made it
+        // (no row when there is none; this is telemetry, not a gate).
+        const invokerId = actingUserId(req.user)
+        if (invokerId) await prisma.skillInvocation.create({
           data: {
             skillId: skill.id,
             skillVersion: skill.version,
             threadId: body.sessionId ?? 'anonymous', // rail uses sessionId == threadId
-            userId,
+            userId: invokerId,
             orgId,
             contextType: body.pageContext?.type,
             contextId: body.pageContext?.id,
@@ -124,7 +190,7 @@ export async function agentRoutes(app: FastifyInstance) {
       }
     }
 
-    const upstream = await fetch(`${AGENTS_URL}/agent/chat`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/agent/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
       body: JSON.stringify({
@@ -143,13 +209,10 @@ export async function agentRoutes(app: FastifyInstance) {
         // falls back to the default system prompt + full read-tool catalog.
         skill_system_prompt: skillPromptOverride ?? null,
         skill_allowed_tools: skillAllowedTools ?? null,
-        // Tools this caller may not use. The agent's write tools normally stop
-        // at an ActionPreview, where checkToolPermission evaluates the caller's
-        // role — but contract drafting executes inline, so that layer never
-        // runs and a VIEWER could create contracts by asking, which
-        // POST /api/v1/contracts refuses outright. Withholding the tool is the
-        // honest fix: a tool the model was never given is one it cannot call
-        // and cannot claim to have called.
+        // Tools this caller may not use. The agent's write tools stop at an
+        // ActionPreview, where checkToolPermission evaluates the caller's role;
+        // withholding a tool the caller could never apply also keeps the model
+        // from offering (or claiming) it.
         denied_tools: deniedTools.length ? deniedTools : null,
         skill_slug: body.skillSlug ?? null,
         // P4.3 — structured entity mentions flow through to the
@@ -158,7 +221,7 @@ export async function agentRoutes(app: FastifyInstance) {
         // before the actual message.
         mentions: body.mentions ?? null,
       }),
-    })
+    }, { orgId, surface: 'agent_chat', userId, contractId: body.contractId, userAuthored: ['message'] })
 
     if (!upstream.ok) {
       const err = await upstream.text()
@@ -259,7 +322,9 @@ export async function agentRoutes(app: FastifyInstance) {
       // a contractType.
       templateId?: string
       context?: Record<string, unknown>
-      saveAs?: { contractId?: string; title?: string }
+      // Z6 — `counterpartyId` links a new contract to the counterparty it
+      // was started from (Counterparties › New contract).
+      saveAs?: { contractId?: string; title?: string; counterpartyId?: string }
     }
 
     if (!body.userMessage?.trim()) {
@@ -299,15 +364,33 @@ export async function agentRoutes(app: FastifyInstance) {
     if (body.saveAs?.contractId) {
       const target = await prisma.contract.findFirst({
         where:  { id: body.saveAs.contractId, orgId, deletedAt: null },
-        select: { id: true },
+        select: { id: true, externalEdit: true },
       })
       if (!target) return reply.status(404).send({ detail: 'Contract not found' })
+      // BB3 — no new version while a Google Docs copy is out.
+      const lock = lockOf(target.externalEdit)
+      if (lock) return reply.status(409).send(lockedBody(lock))
+    }
+    let counterparty: { id: string; name: string } | null = null
+    if (body.saveAs?.counterpartyId && !body.saveAs.contractId) {
+      counterparty = await prisma.counterparty.findFirst({
+        where:  { id: body.saveAs.counterpartyId, orgId, deletedAt: null },
+        select: { id: true, name: true },
+      })
+      if (!counterparty) return reply.status(404).send({ detail: 'Counterparty not found' })
+    }
+    // X45 — a draft saved as a new contract needs a user to own it: for an API
+    // key, the user who made the key. Checked before the agent call, as above.
+    let ownerId: string | null = null
+    if (body.saveAs?.title && !body.saveAs.contractId) {
+      ownerId = actingUserId(req.user)
+      if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
     }
 
     const ctx: Record<string, unknown> = { ...(body.context ?? {}) }
     if (body.templateId) ctx.template_id = body.templateId
 
-    const upstream = await fetch(`${AGENTS_URL}/draft`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/draft`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -319,7 +402,7 @@ export async function agentRoutes(app: FastifyInstance) {
         user_id: userId,
         context: ctx,
       }),
-    }).catch(err => {
+    }, { orgId, surface: 'draft', userId, userAuthored: ['user_message', 'context'] }).catch(err => {
       app.log.error({ err }, 'Draft agent unreachable')
       return null
     })
@@ -361,7 +444,7 @@ export async function agentRoutes(app: FastifyInstance) {
               contractId,
               versionNumber: nextVersion,
               htmlContent: result.html,
-              plainText: result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+              plainText: htmlToText(result.html),
               changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
               createdById: userId,
             },
@@ -374,10 +457,11 @@ export async function agentRoutes(app: FastifyInstance) {
           // prisma.user.findFirst({ where: { orgId } }) -- whichever user the
           // org happened to list first -- so an agent-drafted contract showed
           // up in a stranger's 'my contracts' and the person who asked for it
-          // could not find their own draft.
-          const owner = { id: userId }
+          // could not find their own draft. (X45: for an API key, the user
+          // who made the key.)
+          const owner = ownerId && { id: ownerId }
           if (owner) {
-            const plainText = result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+            const plainText = htmlToText(result.html)
             const contract = await prisma.contract.create({
               data: {
                 orgId,
@@ -386,6 +470,7 @@ export async function agentRoutes(app: FastifyInstance) {
                 type: result.contractType ?? 'OTHER',
                 status: 'DRAFT',
                 createdBy: userId,
+                ...(counterparty && { counterpartyId: counterparty.id, counterpartyName: counterparty.name }),
                 analysisStatus: plainText ? 'CLASSIFYING' : 'DONE',
                 versions: {
                   create: {
@@ -420,6 +505,7 @@ export async function agentRoutes(app: FastifyInstance) {
               title:     contract.title,
               type:      contract.type,
               status:    contract.status,
+              counterpartyName: contract.counterpartyName ?? undefined,
               plainText,
               tags:      contract.tags,
               createdAt: contract.createdAt.toISOString(),
@@ -451,20 +537,27 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.selectedText !== 'string' || body.selectedText.trim().length === 0) {
       return reply.status(400).send({ detail: 'selectedText is required' })
     }
-    const upstream = await fetch(`${AGENTS_URL}/assist_stream`, {
+    // X27 — the editor's selection is contract text: it goes to the model
+    // under the org's PII policy, and the rewrite streams back with the values.
+    const { orgId } = req.user
+    const scope = randomUUID()   // tokens mean nothing outside this request
+    // Cut to the agents service's 6,000-character limit here, where a cut
+    // can't split a token.
+    const selected = sliceOutsideTokens(await redactJson(orgId, body.selectedText, { surface: 'assist_stream', roundTrip: scope }), 0, 6000)
+    const upstream = await modelFetch(`${AGENTS_URL}/assist_stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        selected_text: body.selectedText,
+        selected_text: selected,
         action:        body.action ?? 'rewrite',
         contract_type: body.contractType ?? 'general commercial',
         governing_law: body.governingLaw ?? 'Delaware',
         orgId:         req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
-    }).catch(() => null)
+    }, { orgId, surface: 'assist_stream' }).catch(() => null)
     if (!upstream || !upstream.ok || !upstream.body) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
@@ -474,12 +567,55 @@ export async function agentRoutes(app: FastifyInstance) {
     reply.raw.setHeader('X-Accel-Buffering', 'no')  // nginx: disable buffering
     const reader = upstream.body.getReader()
     const decoder = new TextDecoder()
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { value, done } = await reader.read()
-      if (done) break
-      if (value) reply.raw.write(Buffer.from(decoder.decode(value, { stream: true })))
+    // NDJSON: {type:'delta', text} lines carry the rewrite. Tokens can split
+    // across deltas, so each delta is restored through a buffer that holds a
+    // possible partial token back; other events pass through after a flush.
+    const restorer = streamRestorer(body.selectedText, scope)
+    let streamed = ''
+    let ended = false
+    const write = (event: Record<string, unknown>) => reply.raw.write(Buffer.from(JSON.stringify(event) + '\n'))
+    const onLine = (line: string) => {
+      if (!line.trim()) return
+      let event: { type?: string; text?: string } & Record<string, unknown>
+      try { event = JSON.parse(line) } catch { return }
+      if (event.type === 'delta' && typeof event.text === 'string') {
+        const text = restorer.push(event.text)
+        streamed += text
+        if (text) write({ ...event, text })
+        return
+      }
+      const rest = restorer.flush()
+      streamed += rest
+      if (rest) write({ type: 'delta', text: rest })
+      if (event.type === 'done' || event.type === 'error') ended = true
+      // A placeholder the model mangled would be inserted where a value was:
+      // end with an error instead, and the popover won't offer to apply it.
+      if (event.type === 'done' && unresolvedPiiTokens(streamed, body.selectedText).length) {
+        write({ type: 'error', message: 'The suggestion lost a redacted value from your text. Try again.' })
+        return
+      }
+      write(event)
     }
+    let partial = ''
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        if (!value) continue
+        partial += decoder.decode(value, { stream: true })
+        const lines = partial.split('\n')
+        partial = lines.pop() ?? ''
+        lines.forEach(onLine)
+      }
+      onLine(partial)
+    } catch (err) {
+      req.log.warn({ err }, 'assist-stream: the agents service stream failed')
+    }
+    // The agents service ends every stream with done or error: one that just
+    // stops (or resets) was cut off, and what the restorer still holds may be
+    // half a token.
+    if (!ended) write({ type: 'error', message: 'The suggestion was cut off. Try again.' })
     reply.raw.end()
     return reply
   })
@@ -496,22 +632,28 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.clauseText !== 'string' || body.clauseText.trim().length < 30) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '' })
     }
-    const upstream = await fetch(`${AGENTS_URL}/classify_clause`, {
+    // X27 — the paragraph goes to the model under the org's PII policy:
+    // values found in the whole paragraph, then cut to size without
+    // splitting a token.
+    const clauseText = body.clauseText
+    const scope = randomUUID()
+    const sent = sliceOutsideTokens(await redactJson(req.user.orgId, clauseText, { surface: 'classify_clause', roundTrip: scope }), 0, 2400)
+    const upstream = await modelFetch(`${AGENTS_URL}/classify_clause`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        clauseText:   body.clauseText.slice(0, 2400),
+        clauseText:   sent,
         contractType: body.contractType ?? 'general commercial',
         sectionHint:  body.sectionHint ?? null,
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'classify_clause' }).catch(() => null)
     if (!upstream?.ok) {
       return reply.send({ category: 'skip', position: 'skip', reasoning: '', error: 'upstream_unavailable' })
     }
-    return reply.send(await upstream.json())
+    return reply.send(dropPartialToken(restorePii(await upstream.json(), clauseText, scope)))
   })
 
   // POST /api/v1/agent/complete — P6.1 ghost-text completion.
@@ -529,37 +671,70 @@ export async function agentRoutes(app: FastifyInstance) {
     if (typeof body.contextBefore !== 'string' || body.contextBefore.length < 10) {
       return reply.send({ completion: '', reason: 'too_short' })
     }
-    const upstream = await fetch(`${AGENTS_URL}/complete`, {
+    // X27 — the text around the cursor goes to the model under the org's PII
+    // policy; the completion comes back with the values (it is typed into the
+    // document).
+    // Values are found in all the text the editor sent, before the window is
+    // cut: cutting first sent fragments of a value, and a card number whose
+    // "card" fell outside the window went out whole.
+    // The cursor is a cut too: values are also found across it (a date of
+    // birth whose keyword is before it), and one it splits sends nothing.
+    const context = [body.contextBefore, body.contextAfter ?? '']
+    const source = [context.join(''), ...context]
+    const scope = randomUUID()
+    const [fullBefore, fullAfter] = await redactJson(req.user.orgId, context, { surface: 'complete', roundTrip: scope, valuesFrom: source })
+    if (await getOrgPiiMode(req.user.orgId) !== 'off' && valueAcross(fullBefore, fullAfter)) {
+      return reply.send({ completion: '' })
+    }
+    const before = sliceOutsideTokens(fullBefore, fullBefore.length - 1400, fullBefore.length)
+    const after = sliceOutsideTokens(fullAfter, 0, 400)
+    const upstream = await modelFetch(`${AGENTS_URL}/complete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        contextBefore: body.contextBefore.slice(-1400),
-        contextAfter:  (body.contextAfter ?? '').slice(0, 400),
+        contextBefore: before,
+        contextAfter:  after,
         contractType:  body.contractType ?? 'general commercial',
         maxChars:      Math.max(40, Math.min(body.maxChars ?? 160, 320)),
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'complete' }).catch(() => null)
     if (!upstream?.ok) {
       return reply.send({ completion: '', error: 'upstream_unavailable' })
     }
-    return reply.send(await upstream.json())
+    const out = dropPartialToken(restorePii(await upstream.json() as { completion?: string }, source, scope))
+    // Ghost text is inserted with Tab: never offer one carrying a placeholder.
+    if (unresolvedPiiTokens(out.completion ?? '', context).length) return reply.send({ ...out, completion: '' })
+    return reply.send(out)
   })
 
   // POST /api/v1/agent/assist — inline AI text improvement for editor
   app.post('/assist', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const body = AssistSchema.parse(req.body)
+    // X27 — as assist-stream: the selection goes out tokenized, the rewrite
+    // comes back with the values.
+    // The editor sends HTML: values are found in its text too (a label and
+    // its value in separate tags), and it goes out with its spaces made plain.
+    const scope = randomUUID()
+    const html = plainSpacesHtml(body.selectedText)
+    const forms = htmlTextForms(html)
+    const selected = await redactJson(req.user.orgId, html, { surface: 'assist', roundTrip: scope, valuesFrom: forms })
+    if (await getOrgPiiMode(req.user.orgId) !== 'off' && valueLeftInMarkup(selected)) {
+      return reply.status(422).send({
+        detail: 'The selection has a redacted value split by formatting (bold or a link inside it), so it can\'t go to the AI. Remove that formatting and try again.',
+      })
+    }
 
-    const upstream = await fetch(`${AGENTS_URL}/assist`, {
+    const upstream = await modelFetch(`${AGENTS_URL}/assist`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
       body: JSON.stringify({
-        selected_text: body.selectedText,
+        selected_text: selected,
         action: body.action,
         contract_type: body.contractType,
         governing_law: body.governingLaw,
@@ -567,17 +742,25 @@ export async function agentRoutes(app: FastifyInstance) {
         model_id: body.modelId,
         orgId: req.user.orgId,   // per-org BYOK key + Langfuse tracing
       }),
-    }).catch(() => null)
+    }, { orgId: req.user.orgId, surface: 'assist' }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(await upstream.json())
+    const out = restorePii(await upstream.json(), forms, scope)
+    // "Rewrite document" replaces the whole editor content with this: a
+    // placeholder the model mangled would replace a value in the next save.
+    if (unresolvedPiiTokens(out, body.selectedText).length) {
+      return reply.status(502).send({ detail: 'The suggestion lost a redacted value from your text. Try again.' })
+    }
+    return reply.send(out)
   })
 
   // POST /api/v1/agent/compare — compare clause text to playbook positions
-  app.post('/compare', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+  // X9 — the answer is the org's playbook positions (walkaway language
+  // included); REST's twin /playbook/test needs view:playbook.
+  app.post('/compare', { preHandler: requirePermission('view', 'playbook') }, async (req, reply) => {
     const { orgId } = req.user
     const { clauseText, clauseCategoryId, contractType } = req.body as {
       clauseText: string
@@ -608,19 +791,22 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(404).send({ detail: 'No playbook positions found for this category' })
     }
 
-    const upstream = await fetch(`${AGENTS_URL}/compare`, {
+    const scope = randomUUID()
+    const upstream = await modelFetch(`${AGENTS_URL}/compare`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-internal-secret': INTERNAL_SECRET,
       },
-      body: JSON.stringify({ clauseText, positions }),
-    }).catch(() => null)
+      // X27 — the clause goes to the model under the org's PII policy.
+      // Cut to the agents service's 2,000-character limit without splitting a token.
+      body: JSON.stringify({ clauseText: sliceOutsideTokens(await redactJson(orgId, clauseText, { surface: 'compare', roundTrip: scope }), 0, 2000), positions }),
+    }, { orgId, surface: 'compare' }).catch(() => null)
 
     if (!upstream?.ok) {
       return reply.status(502).send({ detail: 'Agent service unavailable' })
     }
 
-    return reply.send(await upstream.json())
+    return reply.send(restorePii(await upstream.json(), clauseText, scope))
   })
 }

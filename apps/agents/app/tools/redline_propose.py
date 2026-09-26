@@ -48,7 +48,18 @@ class RedlineProposeArgs(BaseModel):
     )
     clause_id: str | None = Field(
         None,
-        description="The CUID of a specific ContractClause row.",
+        description=(
+            "The CUID of a specific ContractClause row. If a call can't find "
+            "the clause, its error lists the contract's clauses with their "
+            "clauseId, type, section and opening words: retry with one of those."
+        ),
+    )
+    section_ref: str | None = Field(
+        None,
+        description=(
+            "The section the user named, e.g. '4', '§4', 'Section 4.2'. Use "
+            "this when the user points at a section by number."
+        ),
     )
     instructions: str | None = Field(
         None,
@@ -60,13 +71,14 @@ class RedlineProposeArgs(BaseModel):
     )
 
 
-def build_redline_propose(org_id: str) -> StructuredTool:
+def build_redline_propose(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         contract_id: str,
         clause_type: str | None = None,
         clause_id:   str | None = None,
         instructions: str | None = None,
+        section_ref: str | None = None,
     ) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/redline_propose"
         headers = {
@@ -83,20 +95,24 @@ def build_redline_propose(org_id: str) -> StructuredTool:
         # RedlineProposeSchema reject essentially every call the tool's own
         # description told the model to make. Same convention as
         # contract_search.py, which carries the same comment.
-        payload: dict = {"orgId": org_id, "contractId": contract_id}
+        payload: dict = {"orgId": org_id, "userId": user_id, "contractId": contract_id}
         if clause_type  is not None: payload["clauseType"]   = clause_type
         if clause_id    is not None: payload["clauseId"]     = clause_id
+        # The API takes at most 40 characters; a longer name would be refused
+        # rather than answered with the contract's clause list.
+        if section_ref  is not None: payload["sectionRef"]   = section_ref[:40]
         if instructions is not None: payload["instructions"] = instructions
         async with httpx.AsyncClient(timeout=httpx.Timeout(45.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
             log.warning("[redline_propose] Node %s: %s", r.status_code, r.text[:200])
-            return '{"error":"redline_propose_failed","status":' + str(r.status_code) + ',"detail":' + r.text[:300] + "}"
+            # X53 — the whole body: a miss carries the clause list to retry from.
+            return '{"error":"redline_propose_failed","status":' + str(r.status_code) + ',"detail":' + r.text[:16000] + "}"
         return r.text
 
-    def _run(contract_id: str, clause_type=None, clause_id=None, instructions=None):
+    def _run(contract_id: str, clause_type=None, clause_id=None, instructions=None, section_ref=None):
         import asyncio
-        return asyncio.run(_arun(contract_id, clause_type, clause_id, instructions))
+        return asyncio.run(_arun(contract_id, clause_type, clause_id, instructions, section_ref))
 
     return StructuredTool.from_function(
         coroutine=_arun,

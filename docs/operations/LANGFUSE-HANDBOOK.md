@@ -1,0 +1,630 @@
+# Langfuse handbook — reading traces, setting up judges
+
+**Companion to `AI-EVALS-101.md`.** That one covers concepts; this one is
+hands-on. Every example below is a **real record from our own instance**, not an
+illustration.
+
+**Log in:** http://localhost:3100 · `dev@draft-legal.local` / `langfuse-local-dev`
+
+---
+
+## Part 1 — The five things in Langfuse
+
+Langfuse stores five kinds of object. Everything in the UI is a view over these.
+
+```
+Session          one conversation
+  └─ Trace       one turn — one thing the AI did
+       └─ Observation   one step inside that turn
+            └─ Score    a judgement attached to a trace or a step
+
+Dataset          a fixed set of test cases, run repeatedly
+```
+
+Two rules that explain most of the UI:
+
+- **A score can attach to a trace OR to one observation inside it.** That is
+  what lets you say "the lookup was fine, the answer was wrong".
+- **A score can come from anywhere** — a script, Langfuse's own judge, a human,
+  or a real user clicking thumbs-down. They all land in the same place, which is
+  what makes them comparable.
+
+---
+
+## Part 2 — Reading a trace, line by line
+
+Here is a real trace. The user asked about a contract that **does not exist** —
+our deliberate hallucination trap.
+
+### The header
+
+```
+id          f743f4c42097406399ac6159b995d08a
+name        agent.chat
+timestamp   2026-08-30T14:16:12.925Z
+sessionId   traffic-edge-0-095403
+userId      jo.okafor
+tags        ["model:gemini-2.5-flash", "provider:google",
+             "source:platform", "tier:default"]
+latency     3.311      (seconds)
+totalCost   $0.008027
+```
+
+Field by field, and why each is there:
+
+| Field | Meaning | What you'd use it for |
+|---|---|---|
+| `name` | Which feature ran | Filtering: "show me all chat turns" |
+| `sessionId` | The conversation it belongs to | Jump to the whole conversation |
+| `userId` | Who asked | "Is one customer seeing all the failures?" |
+| `tags` | Model, provider, tier, platform-vs-BYOK | "Show every call on the old model" |
+| `latency` | Total seconds | Slow-surface hunting |
+| `totalCost` | Dollars for this one turn | Cost attribution |
+
+> **`name` is our call-site name**, not the model's class name. That is
+> deliberate — a dashboard full of `ChatGoogleGenerativeAI` rows tells you
+> nothing, while `agent.chat` and `classify.detect` tell you which product
+> feature is misbehaving.
+
+### The steps
+
+```
+STEP 1   GENERATION   agent.chat        1.927s   gemini-2.5-flash
+         in 12,960 tokens · out 42 tokens · $0.003993
+         output: (empty — this is a tool call, not prose)
+
+STEP 2   TOOL         clause_search     0.208s
+         output: {"error": "contract_not_found",
+                  "contract_id": "ZZZ-DOES-NOT-EXIST-9999"}
+
+STEP 3   GENERATION   agent.chat        1.144s   gemini-2.5-flash
+         in 13,155 tokens · out 35 tokens · $0.004034
+         output: "I couldn't find a contract with the ID
+                  ZZZ-DOES-NOT-EXIST-9999. Please double-check
+                  the ID and try again."
+```
+
+**Read it as a story:**
+
+1. The model read the question and decided to search. Its text output is empty
+   because the "output" of this step *is the decision to call a tool*.
+2. The tool ran against the real database and found nothing. **This is the
+   source of truth** — everything the answer says must be justifiable from here.
+3. The model wrote the answer from that result.
+
+**This trace is a pass, and it is worth understanding why.** The tool returned
+`contract_not_found`. The model said it could not find it. It did **not** invent
+a governing law. A confidently wrong "Delaware" here would be this product's most
+damaging possible failure — fluent, well-formed, and completely made up.
+
+**Notice the token counts.** 12,960 tokens in, 42 out. Almost everything is
+input: the system prompt and ~30 tool definitions. That is normal for an agent
+and it is why input cost dominates. If someone asks "why is chat expensive?",
+this is the answer — not long replies, but a large prompt sent on every turn.
+
+### Multi-step traces: the shape that actually matters
+
+The trace above has one tool call. Most real agent turns have several, and the
+interesting failures only exist across them. Two shapes show up, and they mean
+different things.
+
+**Chained** — the model calls a tool, *reads the result*, then decides what to do
+next. `GENERATION` between the tools is the tell:
+
+```
+GENERATION  agent.chat          1.512s     ← decide: find the contract
+TOOL        contract_search     0.055s
+GENERATION  agent.chat          1.524s     ← read result, decide: now compare
+TOOL        portfolio_compare   0.023s
+GENERATION  agent.chat          1.665s     ← write the answer
+```
+
+**Parallel** — the model issues both calls at once, having decided up front it
+needs both. No `GENERATION` between them:
+
+```
+GENERATION  agent.chat              1.531s   ← decide: need history AND renewals
+TOOL        counterparty_memory     0.030s
+TOOL        contract_search         0.022s
+GENERATION  agent.chat              1.171s   ← write the answer
+```
+
+Parallel is cheaper (one fewer model round-trip). Chained is necessary when the
+second call *depends* on the first one's output — you cannot look up a contract's
+liability cap until you know its ID.
+
+**What to look for:**
+
+| Symptom in the trace | What it means |
+|---|---|
+| Same tool, same arguments, twice | The model is looping — it did not register the first result |
+| Chained where parallel would do | Slow for no reason; each hop is a full model call |
+| One tool, then a confident answer needing two lookups | Stopped early; check `groundedness` |
+| A tool errors, then the answer proceeds anyway | The model ignored a failure — the worst case, because it looks fine |
+
+That last row is why `scripts/evals/langfuse/traffic.mjs` includes a **recovery**
+journey that deliberately asks for a non-existent contract ID with a fallback.
+A healthy trace shows the failed lookup, then a *different* call, then an answer.
+A real run produced exactly that:
+`clause_search → contract_search → clause_search`.
+
+Latency note: the API returns observation latency in **seconds**, not
+milliseconds. `0.055` is 55ms.
+
+### The scores
+
+```
+guard:empty                    1   BOOLEAN   API    non-empty
+guard:secret_leak              1   BOOLEAN   API    no credentials in output
+guard:payment_data             1   BOOLEAN   API    no payment instruments
+guard:refusal                  0   BOOLEAN   API    answered
+draftlegal groundedness—live   1   BOOLEAN   EVAL   "…has not yet generated a
+                                                     prose answer; it has only
+                                                     made a tool call…"
+```
+
+| Column | Meaning |
+|---|---|
+| `value` | 1 = pass, 0 = fail (`BOOLEAN` renders as 0/1) |
+| `source` | **`API`** = one of our scripts · **`EVAL`** = Langfuse's own judge, unattended |
+| `comment` | The reasoning. Always read this before believing the number |
+
+**Now spot the problem in that last row.** The judge's comment says it graded a
+step that had *"not yet generated a prose answer… only made a tool call"* — so it
+scored **step 1**, the tool-calling generation, not step 3, the actual answer.
+
+It returned 1, which looks fine. It is not meaningful. Our rule fires on **every**
+`GENERATION` observation, and an agent turn has two — the decide step and the
+answer step. Grading the decide step produces a confident score about nothing.
+
+**This is a real config nuance, found by reading a comment rather than a number**,
+and it is exactly the habit to build: *the number tells you there is something to
+look at; the comment tells you whether to believe it.*
+
+---
+
+## Part 2.5 — The three score types, and why one is not enough
+
+Every score above is `BOOLEAN`. That was our whole setup for a while, and it hid
+things. Langfuse supports three types, and they answer different questions.
+
+| Type | Value | Answers | Example |
+|---|---|---|---|
+| `BOOLEAN` | 0 or 1 | *Did it do the right thing?* | `tool_selection` — was calling this tool the right move |
+| `NUMERIC` | 0.0–1.0 | *How well?* | `groundedness` — 0.7 is "one peripheral detail unsupported", 0.3 is "a central claim is unsupported" |
+| `CATEGORICAL` | a label | *What kind of failure?* | `failure_mode` — `hallucinated`, `misread_data`, `wrong_tool`, `incomplete`, `refused_wrongly`, `malformed`, `fine` |
+
+### Why boolean alone misleads
+
+A boolean forces every judgement to a cliff edge. An answer that is substantively
+right but omits one caveat scores the same 0 as one that invents a liability cap.
+Averaged over a week, both read as "83% pass" and you cannot tell a drift from a
+disaster.
+
+Worse, it hides *where* the failure is. Here is a real run from this repo:
+
+```
+contract_search · tool_selection            3/3   100%
+portfolio_compare · tool_selection          1/1   100%
+contract_search · retrieval_sufficiency     mean 0.20
+portfolio_compare · retrieval_sufficiency   mean 0.00
+agent.chat · groundedness                   mean 1.00
+agent.chat · trajectory (2 calls)           mean 0.67
+agent.chat · failure_mode                   fine ×2, wrong_tool ×1
+```
+
+Read it as a sentence: **the agent picks the right tools (100%) and does not make
+things up (groundedness 1.00), but what those tools return is nearly useless
+(0.20, 0.00).** The model is fine; the retrieval is broken.
+
+With only `tool_selection` we would have seen `100%` and concluded the agent was
+healthy. The numeric score is what separated "chose wrong" from "chose right, got
+nothing back" — and that distinction is the difference between fixing a prompt and
+fixing a database query.
+
+### Anchors are what make a numeric score reproducible
+
+"Score 0 to 1 for groundedness" gets you a different number every run, because the
+judge invents its own scale. Every numeric rubric here defines what each level
+*means*:
+
+```
+1.0 — every claim traceable to the source, OR a correct "I could not find that"
+0.7 — substantively grounded; one peripheral detail unsupported
+0.3 — a CENTRAL claim is unsupported
+0.0 — invented: contract terms, parties, dates or figures that are not in the source
+```
+
+That is the whole difference between a number you can trend and a number you
+cannot. In an interview: *anchored rubrics are how you get inter-rater
+reliability out of an LLM judge* — the same reason human annotation guidelines
+have them.
+
+### `trajectory`: the score a per-call judge cannot produce
+
+`tool_selection` grades each call **in isolation**. So an agent that calls
+`contract_search` four times with the same query scores 1.0 four times — every
+individual call was defensible. The failure exists only in the *sequence*.
+
+`trajectory` is judged once per turn over the ordered tool list, and only when a
+turn used more than one tool (on a single-tool turn it is the same question as
+`tool_selection`, and paying a judge twice to answer it once is waste). It is the
+score that catches looping, re-fetching, and stopping one lookup short.
+
+### Where each type shows up in the UI
+
+They land in **different metric views**, which trips people up:
+
+- `scores-boolean` — pass rates
+- `scores-numeric` — averages and distributions
+- `scores-categorical` — counts per label, *not* an average
+
+A categorical score has no mean. Charting `failure_mode` as a number produces
+nothing; you want a breakdown ("9 of 12 failures are `misread_data`"), which is
+the point of having it — a number tells you to worry, a label tells you what to
+fix.
+
+> **Count-weighted, not averaged.** When a health check spans boolean and numeric
+> views, average them by *count*. With 5 boolean and 200 numeric judgements,
+> averaging the two averages gives those 5 scores forty times the weight they
+> deserve.
+
+---
+
+## Part 3 — Setting up a judge
+
+Two ways. Do it in the UI once to understand the shape; use the script for
+anything you want reproducible.
+
+### 3.1 In the UI
+
+**Step 1 — give Langfuse a model to judge with.**
+`Settings → LLM Connections → Add`. Pick a provider, paste an API key. Without
+this, no judge can run — it is the most common reason a new evaluator does
+nothing.
+
+**Step 2 — create the evaluator.**
+`Evaluations → Evaluators → New`. You provide:
+
+- a **name**
+- a **prompt** containing `{{variables}}` in double braces
+- an **output type** — Numeric, Boolean or Categorical
+- the **model** it should use
+
+Ours, stored verbatim:
+
+```
+name       draftlegal groundedness
+variables  ["input", "output"]
+prompt     You are grading the output of a contract-lifecycle assistant.
+
+           CRITERION (groundedness): Is every factual claim in the ANSWER
+           supported by the SOURCE material or the conversation input?
+           Score 0 if the answer states a contract term, party, date, or
+           figure that does not appear in the source. An answer that
+           correctly says it does not know scores 1. Fluent invention is
+           the failure this catches.
+
+           INPUT:
+           {{input}}
+
+           OUTPUT:
+           {{output}}
+
+           Reason briefly, then score. Score 1 if the criterion is met,
+           0 if not.
+```
+
+Langfuse requires **both** a `reasoning` and a `score` field in the output
+definition. That is a good constraint: a bare 1/0 with no stated reason is
+unreviewable, and reviewing the reason is how you catch a judge that is
+confidently wrong.
+
+**Step 3 — create a rule: what it runs on, and how often.**
+
+```
+name       draftlegal retrieval_sufficiency — live
+target     observation          ← not "trace" (see the warning below)
+enabled    true
+sampling   0.05                 ← 5% of matching observations
+filter     [{ column: "type", operator: "any of", value: ["TOOL"] }]
+mapping    [{ variable: "input",  source: "input"  },
+            { variable: "output", source: "output" }]
+```
+
+- **`target: observation`** — grade a *step*, not the whole turn.
+- **`filter`** — narrow it. This rule only runs on `TOOL` steps, because asking
+  "did the retrieval return enough?" of a prose answer produces a meaningless
+  number at full price.
+- **`mapping`** — where each `{{variable}}` gets its value.
+- **`sampling`** — the fraction that gets graded.
+
+> ⚠️ **Always choose observation-level, never trace-level.** Trace-level
+> evaluators are deprecated and stop producing results on Langfuse Cloud after
+> **16 November 2026**.
+
+### 3.2 In code (reproducible)
+
+```bash
+pnpm evals:setup                          # creates connection, evaluators, rules
+pnpm evals evaluators -- --status         # what exists right now
+pnpm evals evaluators -- --apply --sampling 0.05
+```
+
+Re-running with a different `--sampling` **updates** the existing rule rather
+than skipping it — so changing your mind is one command, and you cannot end up
+with a rule silently stuck at a value someone set months ago while the script
+prints a reassuring "already exists".
+
+Rubric text is imported from one file, so the in-platform judge and our scripts
+grade to the *same* wording. If they ever disagree, that is a bug — not a signal.
+
+---
+
+## Part 3.5 — What happens when a human labels a trace
+
+The question everyone asks: *"I reviewed a conversation and disagreed with the
+judge — how does the judge get updated?"*
+
+**It doesn't. Not on its own.** This is the single most common misconception
+about LLM-as-judge, and worth being precise about.
+
+### What labelling does mechanically
+
+Your labels land in Langfuse as scores named `human_groundedness`,
+`human_helpfulness`, `human_verdict`, `human_notes` — sitting on the same trace,
+right next to the judge's `judge:groundedness`. That is all that happens
+automatically. Two opinions, side by side, on one record.
+
+**There is no training step.** An LLM judge does not learn from scores. There is
+no gradient, no fine-tune, no weight update. It is a prompt and a model; the
+prompt is the only thing that can change.
+
+### The loop, in four steps
+
+```
+1. LABEL       You review traces in the queue and record what you think
+
+2. MEASURE     pnpm evals annotate -- --calibrate
+               Reports agreement per criterion and lists every disagreement.
+               This step only MEASURES. Nothing is updated.
+
+3. DECIDE      Open each disagreement and decide who was right.
+               The judge being wrong and you being wrong look identical in
+               that table — only the trace settles it.
+
+4. UPDATE      pnpm evals annotate -- --emit-examples
+               Turns the cases where the JUDGE was wrong into worked examples
+               and writes them into the judge's prompt.
+```
+
+Step 4 is the actual "update", and it is worth understanding why it takes this
+form. Since you cannot train the judge, you teach it by example: embed the
+corrected case in its prompt — *here is an input, here is the answer, here is the
+correct score, and here is why.* That is the standard calibration technique for
+LLM judges, and it works because the failure is usually not a missing rule but
+an **ambiguous** one, which a concrete case resolves better than another
+sentence of prose.
+
+What the generated example looks like:
+
+```
+--- CORRECTED EXAMPLE 1 ---
+INPUT:  How many contracts expire in the next 90 days?
+        --- TOOL RESULTS --- {"total": 20, rows with daysUntilExpiry -17..11}
+ANSWER: There are 20 contracts expiring in the next 90 days.
+CORRECT SCORE: 0
+WHY: total counts a window reaching 30 days BACKWARD. Only 8 rows had
+     daysUntilExpiry >= 0.
+```
+
+That `WHY` is your `human_notes` text. **It is the most valuable field in the
+queue** — "not_grounded" teaches the judge nothing, while one sentence of
+reasoning defines the boundary the criterion actually cares about.
+
+### Three rules the tooling enforces
+
+**Only disagreements become examples.** A case where the judge already agreed
+teaches it nothing and costs tokens on every future judgement, forever.
+
+**"unclear" is never a correction.** Forcing a binary onto a genuinely ambiguous
+case teaches the judge the wrong boundary — which is why the label exists.
+
+**Both judges must be updated.** The script judge reads the example file at run
+time. Langfuse's in-platform judge holds a *copy* of the prompt, so it needs
+`pnpm evals evaluators -- --apply` to pick up changes. If they drift, a
+disagreement between them tells you nothing about the product — only that one
+was updated and the other was not. The tooling now warns when the stored prompt
+has gone stale.
+
+### Then measure again
+
+```bash
+pnpm evals annotate -- --calibrate
+```
+
+**The number that matters is whether agreement went UP.** Adding examples is a
+change like any other, and it can make a judge worse — over-fit to a handful of
+corrections and it starts applying a narrow rule everywhere. Re-measuring is not
+optional bookkeeping; it is how you find that out.
+
+### Keep the example set small
+
+Every example is tokens on every judgement. A dozen well-chosen corrections beat
+fifty. Prefer cases where the judge was *confidently* wrong in a way that will
+recur, and retire examples whose behaviour the rubric now covers outright.
+
+---
+
+## Part 4 — The pages, and what each is for
+
+### Dashboards
+
+**"LLM production review"** — is it working, what does it cost?
+Spend, calls by surface, cost by model, p95 latency, **time to first token**,
+errors.
+
+**"Agent quality"** — is it good, and is that changing?
+Overall pass rate, pass rate by criterion and by surface, quality over time,
+assessment counts, continuous-vs-on-demand, guardrail violations, human labels.
+
+> ⚠️ **Widen the time range before you conclude anything.** The default is often
+> the last hour; our data spans days. A narrow window makes a healthy system look
+> dead — and it is the single most common way someone misreads this tool.
+
+### Tracing → Sessions
+
+One conversation, end to end. **Where you go when a number looks wrong.** The
+dashboard says *what*; the session says *why*. Nothing here is automatable —
+reading transcripts is where the failures nobody wrote a rubric for get found.
+
+### Tracing → Traces
+
+One turn. Click through to the steps, as in Part 2. Filter by `name` for a
+feature, by `tags` for a model, by `userId` for one customer.
+
+### Scores
+
+Every judgement made, filterable by name.
+
+| Prefix | Who made it |
+|---|---|
+| `judge:` | Our AI judge, script-run |
+| `draftlegal … — live` | Langfuse's judge, automatic |
+| `guard:` | Deterministic safety checks |
+| `human_` | A person, via the review queue |
+| `user_feedback` | A real user's thumbs in the app |
+
+**The most valuable row you can find** is a trace where `judge:` says good and
+`user_feedback` says bad. That gap is a rubric measuring the wrong thing.
+
+### Datasets → Runs
+
+Our fixed test cases. Each execution is a **run**; compare two side by side.
+
+```
+dataset  draftlegal-chat
+run      "final"        5 items
+item     chat-cite-clause  →  trace dc16fe5e93a447d2
+```
+
+Every case links to the trace it produced, so a failure is one click from the
+transcript that caused it.
+
+**Read runs as a delta.** "80%" means little. "Down from 95% last release" is a
+decision.
+
+### Annotation Queues
+
+Conversations waiting for a human. Four fields: did it invent anything, was it
+useful, what should happen, and **free text for why**.
+
+The free-text field is the valuable one. *"not_grounded"* is a number; *"it cited
+clause 9.2 but the cap is in 9.4"* is a fix — and when a human and the judge
+disagree, the note is what says which of them misread the trace.
+
+---
+
+## Part 5 — Recipes
+
+**"Is anything broken right now?"**
+```bash
+pnpm evals health -- --hours 24
+```
+Eight checks, exit 0 or 1. The first one asks *did anything run at all* — because
+a silent system scores 100% on everything else, and tracing breaking looks
+identical to a quiet night.
+
+**"What did production do yesterday?"**
+```bash
+pnpm evals:review -- --hours 24
+```
+
+**"Did my change break anything?"**
+```bash
+pnpm evals:check
+```
+
+**"Show me the whole thing working, locally."**
+```bash
+pnpm evals:rehearse
+```
+Generates traffic, waits for Langfuse to judge it unattended, runs the health
+check, prints the review. **Nothing changes when you move to production except
+three environment variables** — same scripts, same thresholds, different host.
+
+**"A user complained about a specific answer."**
+Sessions → find by `userId` or time → open the trace → read the steps. Was the
+tool result wrong, or did the model misread a good result? Those need opposite
+fixes, and the step view is what separates them.
+
+**"Turn this failure into a permanent test."**
+```bash
+pnpm evals promote -- --hours 24 --apply
+```
+
+---
+
+## Part 6 — Traps
+
+### The empty dashboard
+
+**This is the single most common "something is broken" report, and it is almost
+never broken.** Langfuse dashboards default to a **24-hour window**, and they
+render an out-of-range dashboard as blank — no banner, no "no data in this
+range", just empty tiles that look identical to a broken setup.
+
+Locally, traffic is not continuous. Come back after a weekend and every widget is
+empty because the newest trace is 37 hours old.
+
+Check it in one command:
+
+```bash
+pnpm evals health --hours 24
+```
+
+If the window is empty, the Traffic line now tells you which of the two causes it
+is:
+
+```
+✗ Traffic   0 traces in the last 24h — newest is 37.2h old.
+            Dashboards default to a 24h window, so they will look empty.
+            Run: pnpm evals traffic
+```
+
+*"newest is 37.2h old"* means nothing has run — generate traffic. No newest
+timestamp at all means tracing itself is broken, which is a different problem.
+
+Before concluding a widget is misconfigured, widen the range to 7 days. If data
+appears, the widget was always fine.
+
+| Trap | What happens | Fix |
+|---|---|---|
+| Time range too narrow | Healthy system looks dead — **see above** | Widen to 7d; run `pnpm evals health` |
+| Reading the overall pass rate alone | "76%" tells you nothing actionable | Always read the by-criterion breakdown |
+| Trusting a score without its comment | Judges are confidently wrong | Read the reasoning first |
+| Assuming `EVAL` scores exist | If continuous grading stopped, quality looks stable because nothing is being graded | Check "Assessments" count and the continuous-vs-on-demand pie |
+| Comparing runs across different corpora | Meaningless | Same dataset, different runs |
+| Treating `guard:refusal` as a failure | Refusing to invent a contract is correct | It is a **rate** — watch for spikes |
+| Reading average latency | One 40-second surface vanishes into a mean of 8 | Use p95, and TTFT for streaming |
+
+---
+
+## Part 7 — Current state
+
+Last 36 hours, local environment:
+
+- **248 traces** · $2.38 · 1.53M tokens
+- **Groundedness 77%** (79 judgements) · **helpfulness 86%** (69)
+- **186 guardrail checks, zero violations**
+- Fixed corpora both green: extraction **9/9**, chat **10/10**
+- Time to first token: **1,940 ms** on 2.5-flash, was 23,748 ms on 2.5-pro
+
+**These come from traffic we generated, not real users.** They prove the
+machinery works. They do not yet tell you how the product behaves in the wild —
+production is not traced yet.
+
+---
+
+*Concepts and industry context: `AI-EVALS-101.md`. Method and history:
+`LANGFUSE-EVALS.md`. Commands: `pnpm evals`.*

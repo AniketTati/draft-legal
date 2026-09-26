@@ -58,6 +58,21 @@ const TONE: Record<RedlineVariant['aggression'], { label: string; hint: string }
   aggressive: { label: 'Aggressive', hint: 'Full rewrite to playbook preferred position'    },
 }
 
+const clip = (s: string, n = 280) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+/**
+ * CC8 — what the confirm card shows is about to change. It showed the words
+ * "original → rewritten (moderate)": the text was right there and never used.
+ * The variant's own edits when it has them, else the clause before and after.
+ */
+export function redlineDiff(proposal: RedlineProposal, variant: RedlineVariant): Array<{ field: string; before: string; after: string }> {
+  const edits = (variant.changes ?? []).filter(c => c.before?.trim() || c.after?.trim())
+  if (edits.length) {
+    return edits.slice(0, 4).map((c, i) => ({ field: edits.length > 1 ? `change ${i + 1}` : 'change', before: clip(c.before ?? ''), after: clip(c.after ?? '') }))
+  }
+  return [{ field: 'clause', before: clip(proposal.clause.originalText ?? ''), after: clip(variant.proposedText ?? '') }]
+}
+
 export function RedlinePreview({
   proposal,
   onApplyVariant,
@@ -100,9 +115,7 @@ export function RedlinePreview({
       target: `${proposal.contract.title} · ${proposal.clause.sectionRef ?? proposal.clause.clauseType}`,
       reversible: true,
       status: 'awaiting_confirmation',
-      diff: [
-        { field: 'clause content', before: 'original', after: `rewritten (${variant.aggression})` },
-      ],
+      diff: redlineDiff(proposal, variant),
     }
     onApplyVariant(variant, action)
   }

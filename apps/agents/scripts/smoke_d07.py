@@ -40,6 +40,11 @@ def reset_tracing_cache() -> None:
     """Force the lazy SDK import to re-evaluate on the next call."""
     tracing._handler_factory = None  # type: ignore[attr-defined]
     tracing._import_checked = False  # type: ignore[attr-defined]
+    # The generated handler subclass is bound to the factory, and the client to
+    # a specific set of keys — both go stale when the import is re-evaluated.
+    tracing._attributed_cls = None   # type: ignore[attr-defined]
+    tracing._client = None           # type: ignore[attr-defined]
+    tracing._client_signature = None  # type: ignore[attr-defined]
 
 
 def main() -> None:
@@ -84,34 +89,49 @@ def main() -> None:
             extra_metadata={"custom_flag": True},
         )
         check(handler is not None, "(B) get_callback returns a handler when keys set")
+        # The handler is our _AttributedHandler subclass; what matters is that
+        # it IS a real Langfuse CallbackHandler, so assert on the base class
+        # rather than the exact name.
+        base_names = [c.__name__ for c in type(handler).__mro__] if handler else []
         check(
-            type(handler).__name__ == "LangchainCallbackHandler",
-            f"(B) handler is a LangchainCallbackHandler (got {type(handler).__name__ if handler else 'None'})",
+            "LangchainCallbackHandler" in base_names or "CallbackHandler" in base_names,
+            f"(B) handler subclasses the Langfuse CallbackHandler (mro: {base_names[:3]})",
         )
 
         # ── C — metadata propagated correctly (the filter axes in Langfuse UI) ─
+        # On the v3+ SDK the per-call attributes are no longer constructor args
+        # readable off the handler — they are injected into the LangChain run
+        # metadata at on_*_start time. tracing.py mirrors them onto the handler
+        # as `langfuse_attributes` / `langfuse_trace_name` precisely so this
+        # stays checkable without sending a trace over the network.
         if handler is not None:
-            tags = getattr(handler, "tags", None) or []
-            meta = getattr(handler, "metadata", None) or {}
-            session = getattr(handler, "session_id", None)
-            user    = getattr(handler, "user_id", None)
-            tname   = getattr(handler, "trace_name", None)
+            attrs = getattr(handler, "langfuse_attributes", None)
+            if attrs is None:
+                # v2 SDK — attributes live on the constructor.
+                attrs = dict(getattr(handler, "metadata", None) or {})
+                attrs["langfuse_tags"] = getattr(handler, "tags", None) or []
+                attrs["langfuse_session_id"] = getattr(handler, "session_id", None)
+                attrs["langfuse_user_id"] = getattr(handler, "user_id", None)
+            tname = getattr(handler, "langfuse_trace_name", None) or getattr(handler, "trace_name", None)
 
+            tags = attrs.get("langfuse_tags") or []
             check("tier:default" in tags,       f"(C) tags contain tier:default (got {tags})")
-            check("provider:openai" in tags,    f"(C) tags contain provider:openai")
-            check("model:gpt-4.1" in tags,      f"(C) tags contain model:gpt-4.1")
-            check("source:platform" in tags,    f"(C) tags contain source:platform")
-            check("tool:list_contracts" in tags,f"(C) tags contain tool:list_contracts")
+            check("provider:openai" in tags,    "(C) tags contain provider:openai")
+            check("model:gpt-4.1" in tags,      "(C) tags contain model:gpt-4.1")
+            check("source:platform" in tags,    "(C) tags contain source:platform")
+            check("tool:list_contracts" in tags,"(C) tags contain tool:list_contracts")
 
-            check(meta.get("tier") == "default",          "(C) metadata.tier = default")
-            check(meta.get("provider") == "openai",       "(C) metadata.provider = openai")
-            check(meta.get("tool_name") == "list_contracts", "(C) metadata.tool_name preserved")
-            check(meta.get("thread_id") == "thread_smoke", "(C) metadata.thread_id preserved")
-            check(meta.get("custom_flag") is True,        "(C) extra_metadata merged in")
+            check(attrs.get("tier") == "default",          "(C) metadata.tier = default")
+            check(attrs.get("provider") == "openai",       "(C) metadata.provider = openai")
+            check(attrs.get("tool_name") == "list_contracts", "(C) metadata.tool_name preserved")
+            check(attrs.get("thread_id") == "thread_smoke", "(C) metadata.thread_id preserved")
+            check(attrs.get("custom_flag") is True,        "(C) extra_metadata merged in")
 
-            check(session == "thread_smoke", f"(C) session_id = thread_smoke (got {session!r})")
-            check(user == "user_smoke",      f"(C) user_id = user_smoke (got {user!r})")
-            check(tname == "test.B",         f"(C) trace_name = test.B (got {tname!r})")
+            check(attrs.get("langfuse_session_id") == "thread_smoke",
+                  f"(C) session_id = thread_smoke (got {attrs.get('langfuse_session_id')!r})")
+            check(attrs.get("langfuse_user_id") == "user_smoke",
+                  f"(C) user_id = user_smoke (got {attrs.get('langfuse_user_id')!r})")
+            check(tname == "test.B", f"(C) trace_name = test.B (got {tname!r})")
 
         # Resolver attaches handler to .callbacks
         r2 = asyncio.run(resolve_llm(
@@ -121,9 +141,10 @@ def main() -> None:
         ))
         check(len(r2.callbacks) == 1, f"(B) resolver returns 1 callback when tracing on (got {len(r2.callbacks)})")
         if r2.callbacks:
+            cb_mro = [c.__name__ for c in type(r2.callbacks[0]).__mro__]
             check(
-                type(r2.callbacks[0]).__name__ == "LangchainCallbackHandler",
-                "(B) the callback is a LangchainCallbackHandler",
+                "LangchainCallbackHandler" in cb_mro or "CallbackHandler" in cb_mro,
+                f"(B) the callback is a Langfuse CallbackHandler (mro: {cb_mro[:3]})",
             )
 
         # ── D — flush() is safe on both off/on states ────────────────────────

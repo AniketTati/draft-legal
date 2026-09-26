@@ -28,11 +28,11 @@ class CounterpartyListArgs(BaseModel):
     limit: int = Field(20, ge=1, le=100, description="Max counterparties to return.")
 
 
-def build_counterparty_list(org_id: str) -> StructuredTool:
+def build_counterparty_list(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(query: str | None = None, sort_by: str = "contracts", limit: int = 20) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/counterparty_list"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload: dict = {"orgId": org_id, "sortBy": sort_by, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "sortBy": sort_by, "limit": limit}
         if query:
             payload["query"] = query
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:

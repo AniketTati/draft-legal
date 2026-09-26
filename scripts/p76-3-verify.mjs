@@ -18,14 +18,16 @@
  *   (6) No attachment → 400
  *   (7) Bad To: format → 400
  *
- * Note: in dev with no INBOUND_EMAIL_SECRET, the route accepts
- * unauthenticated requests (loud-warning mode).
+ * The route needs its shared secret in every environment (X35): set
+ * INBOUND_EMAIL_SECRET for both the API and this script, which sends it as
+ * the x-inbound-secret header. Without it the route answers 503.
  */
 import path from 'node:path'
 import { REPO_ROOT } from './lib/repo-root.mjs'
 import { Buffer } from 'node:buffer'
 
 const API = 'http://localhost:3001/api/v1'
+const INBOUND = { 'Content-Type': 'application/json', 'x-inbound-secret': process.env.INBOUND_EMAIL_SECRET ?? '' }
 
 let fail = 0
 const check = (cond, msg) => { console.log(cond ? `  ✓ ${msg}` : `  ✗ ${msg}`); if (!cond) fail++ }
@@ -72,7 +74,7 @@ const check = (cond, msg) => { console.log(cond ? `  ✓ ${msg}` : `  ✗ ${msg}
   console.log('\n=== (1) Happy path: counterparty emails a redline PDF ===')
   const r = await fetch(`${API}/inbound/email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: INBOUND,
     body: JSON.stringify({
       to: `contracts+${pick.id}@inbound.example.com`,
       from: cpEmail,
@@ -144,7 +146,7 @@ const check = (cond, msg) => { console.log(cond ? `  ✓ ${msg}` : `  ✗ ${msg}
     // skip — this control test only runs when production-like config is active.
     const wrongRes = await fetch(`${API}/inbound/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: INBOUND,
       body: JSON.stringify({
         to: `contracts+${otherContract.id}@inbound.example.com`,
         from: 'random-stranger@example.com',
@@ -170,7 +172,7 @@ const check = (cond, msg) => { console.log(cond ? `  ✓ ${msg}` : `  ✗ ${msg}
   console.log('\n=== (6) Email with no PDF/DOCX attachment → 400 ===')
   const noAtt = await fetch(`${API}/inbound/email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: INBOUND,
     body: JSON.stringify({
       to: `contracts+${pick.id}@inbound.example.com`,
       from: cpEmail,
@@ -185,7 +187,7 @@ const check = (cond, msg) => { console.log(cond ? `  ✓ ${msg}` : `  ✗ ${msg}
   console.log('\n=== (7) Bad To: format → 400 ===')
   const badTo = await fetch(`${API}/inbound/email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: INBOUND,
     body: JSON.stringify({
       to: 'just@example.com',  // missing +tag
       from: cpEmail,

@@ -79,13 +79,17 @@ export function CompareMode({
       .get(`/contracts/${contractId}/versions/${olderId}/diff/${newerId}`)
       .then(r => r.data),
     enabled: open && !!olderId && !!newerId && olderId !== newerId,
+    // X32 — a pair too large to diff took the whole time limit to say so.
+    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 422 && count < 1,
   })
 
   // A 409 from the diff endpoint means one version's text has not been
   // extracted yet (e.g. a counterparty turn still in the parse pipeline).
   // That's a wait, not a failure — it must not read as "no diff available".
-  const stillProcessing =
-    (error as { response?: { status?: number } } | null)?.response?.status === 409
+  const failure = (error as { response?: { status?: number; data?: { detail?: string } } } | null)?.response
+  const stillProcessing = failure?.status === 409
+  // X32 — the versions are too large to compare within the time limit.
+  const tooLarge = failure?.status === 422 ? failure.data?.detail ?? 'These versions are too large to compare.' : null
 
   // Wave 2.1 — per-change accept/reject. Changes come from the diff blob in
   // document order; decisions are keyed by their ids. accept = take theirs,
@@ -310,6 +314,10 @@ export function CompareMode({
               This version is still being processed. The comparison will be
               available once extraction finishes.
             </p>
+          </Centered>
+        ) : tooLarge ? (
+          <Centered>
+            <p className="text-body text-ink-500 max-w-sm text-center">{tooLarge}</p>
           </Centered>
         ) : diff?.diffHtml ? (
           <div className="flex gap-4 items-start">

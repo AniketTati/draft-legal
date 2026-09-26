@@ -27,6 +27,9 @@ import { renderHtmlToPdfAndStore } from '../src/lib/gotenberg.js'
 import { seedBuiltInSkills } from './seed-skills.js'
 import { seedPlaybookRules } from './seed-playbook-rules.js'
 import { ensureBucket } from '../src/lib/storage.js'
+import { numberedSections } from '../src/lib/numbered-sections.js'
+import { legalChunkAndStore, CLAUSES_INDEX } from '../src/lib/legal-chunker.js'
+import { es } from '../src/lib/elasticsearch.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const FIXTURES = join(__dirname, 'fixtures/ai-demo')
@@ -379,10 +382,28 @@ async function clearAiDemoContracts(orgId: string) {
   await prisma.contractComment.deleteMany({   where: { contractId: { in: ids } } })
   await prisma.contractShareLink.deleteMany({ where: { contractId: { in: ids } } })
   await prisma.versionDiffCache.deleteMany({  where: { contractId: { in: ids } } })
+  // Z9 — rows a demo leaves on these contracts, which blocked a re-seed: an
+  // approval's steps, a signature request's signers and events. Invoices and
+  // other contracts are unlinked, not deleted.
+  await prisma.approvalStep.deleteMany({      where: { instance: { contractId: { in: ids } } } })
   await prisma.approvalInstance.deleteMany({  where: { contractId: { in: ids } } })
+  const requestIds = (await prisma.signatureRequest.findMany({ where: { contractId: { in: ids } }, select: { id: true } })).map(r => r.id)
+  await prisma.signatureEvent.deleteMany({    where: { signatureRequestId: { in: requestIds } } })
+  await prisma.signer.deleteMany({            where: { signatureRequestId: { in: requestIds } } })
+  await prisma.signatureRequest.deleteMany({  where: { id: { in: requestIds } } })
+  await prisma.invoice.updateMany({           where: { contractId: { in: ids } }, data: { contractId: null } })
+  await prisma.contract.updateMany({          where: { parentContractId: { in: ids } }, data: { parentContractId: null } })
   await prisma.contract.updateMany({ where: { id: { in: ids } }, data: { currentVersionId: null } })
   await prisma.contractVersion.deleteMany({   where: { contractId: { in: ids } } })
   await prisma.contract.deleteMany({ where: { id: { in: ids } } })
+  // Z9 — and from search: a re-seed recreates these contracts under new ids,
+  // and the old documents stayed, so search listed each twice, once as a 404.
+  try {
+    await es.deleteByQuery({ index: 'contracts', body: { query: { ids: { values: ids } } }, refresh: true })
+    await es.deleteByQuery({ index: CLAUSES_INDEX, body: { query: { terms: { contractId: ids } } }, refresh: true })
+  } catch (e) {
+    console.warn(`  ⚠ search index not cleared (${(e as Error).message.slice(0, 80)}) — run backfill-es-index`)
+  }
   return ids.length
 }
 
@@ -479,9 +500,28 @@ async function seed(orgId: string, ownerId: string) {
       data: { currentVersionId: version.id },
     })
 
+    // Z9 — clause rows from the fixture's numbered sections, so the Clauses
+    // tab, clause search and the playbook check work before any analysis.
+    // Analysis, when run, replaces them with typed and rated clauses.
+    const clauses = []
+    for (const [i, section] of numberedSections(plainText).entries()) {
+      clauses.push(await prisma.contractClause.create({
+        data: { versionId: version.id, clauseType: section.clauseType, content: section.content, sectionRef: `Section ${section.number}`, sortOrder: i },
+        select: { id: true, clauseType: true, content: true, sortOrder: true },
+      }))
+    }
+    let clauseInfo = `${clauses.length} clauses`
+    try {
+      await legalChunkAndStore(version.id, contract.id, orgId, clauses, {
+        title: f.title, type: f.type, jurisdiction: (f.keyTerms as { governingLaw?: string } | undefined)?.governingLaw ?? null,
+      })
+    } catch (e) {
+      clauseInfo += `, not in clause search (${(e as Error).message.slice(0, 80)})`
+    }
+
     const lenKb = (plainText.length / 1024).toFixed(1)
     const pdfInfo = s3Key ? `, PDF ${(fileSize! / 1024).toFixed(1)} KB → ${s3Key}` : ', no PDF'
-    console.log(`  ✓ ${f.type.padEnd(4)} ${f.title}  (${lenKb} KB plainText${pdfInfo})`)
+    console.log(`  ✓ ${f.type.padEnd(4)} ${f.title}  (${lenKb} KB plainText${pdfInfo}, ${clauseInfo})`)
   }
 }
 

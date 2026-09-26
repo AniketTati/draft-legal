@@ -6,26 +6,33 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser, requireUserOrAdminKey } from '../middleware/auth.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { invalidatePermissionCache, DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { InviteUserSchema, AssignRoleSchema, BulkImportUserSchema, AuditAction } from '@clm/types'
+import { withoutTenantGuard } from '../lib/tenant-context.js'
 
 export async function adminUserRoutes(app: FastifyInstance) {
   const adminGuard = requirePermission('configure', 'user')
+  // X46 — giving someone access (a new account, a role, a reactivation) is for
+  // signed-in users: an admin-scope key could invite a new admin, or put its
+  // demoted maker's role back, and so outlive its own revocation.
+  const grantGuard = [requireUser, adminGuard]
 
   // POST /api/v1/admin/users/invite — invite a user to the org
-  app.post('/invite', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/invite', { preHandler: grantGuard }, async (req, reply) => {
     const body = InviteUserSchema.parse(req.body)
     const { orgId } = req.user
 
     // P7.0.1 — Email is now globally unique (one user per email across all
     // orgs). Check across the entire DB, not just this org, so we surface a
     // useful error before the DB constraint fires with an opaque P2002.
-    const existing = await prisma.user.findUnique({
+    // Y1 — deliberately across orgs, so outside the tenant isolation (the
+    // answer names no other org and shows none of its data).
+    const existing = await withoutTenantGuard(() => prisma.user.findUnique({
       where: { email: body.email },
       select: { id: true, orgId: true, deletedAt: true },
-    })
+    }))
     if (existing && !existing.deletedAt) {
       const sameOrg = existing.orgId === orgId
       return reply.status(409).send({
@@ -114,7 +121,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // PATCH /api/v1/admin/users/:id/roles — assign/replace roles
-  app.patch('/:id/roles', { preHandler: adminGuard }, async (req, reply) => {
+  app.patch('/:id/roles', { preHandler: grantGuard }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const body = AssignRoleSchema.parse(req.body)
     const { orgId } = req.user
@@ -190,6 +197,22 @@ export async function adminUserRoutes(app: FastifyInstance) {
       where: { id },
       data: { status: 'DEACTIVATED', refreshToken: null },
     })
+    // X43 — and their API keys: a key never checks who made it, so an admin's
+    // `admin`-scope key kept full access after they left. X46 — and every key
+    // made through those keys (recorded as made by `apikey:<id>`) before key
+    // management was closed to keys, however deep the chain, including keys
+    // made by one of theirs that was already revoked.
+    const chain = new Set<string>()
+    for (let makers = [id]; makers.length;) {
+      const made = await prisma.apiKey.findMany({ where: { orgId, createdById: { in: makers } }, select: { id: true } })
+      const fresh = made.map(k => k.id).filter(k => !chain.has(k))
+      fresh.forEach(k => chain.add(k))
+      makers = fresh.map(k => `apikey:${k}`)
+    }
+    const keys = await prisma.apiKey.updateMany({
+      where: { orgId, id: { in: [...chain] }, revokedAt: null },
+      data:  { revokedAt: new Date() },
+    })
 
     await createAuditEvent({
       orgId,
@@ -197,6 +220,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
       action: AuditAction.USER_DEACTIVATED,
       resourceType: 'user',
       resourceId: id,
+      metadata: { apiKeysRevoked: keys.count },
       ipAddress: req.ip,
     })
 
@@ -204,7 +228,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/admin/users/:id/reactivate
-  app.post('/:id/reactivate', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/:id/reactivate', { preHandler: grantGuard }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
 
@@ -234,7 +258,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   })
 
   // POST /api/v1/admin/users/bulk-import — bulk invite users via JSON array
-  app.post('/bulk-import', { preHandler: adminGuard }, async (req, reply) => {
+  app.post('/bulk-import', { preHandler: grantGuard }, async (req, reply) => {
     const users = BulkImportUserSchema.parse(req.body)
     const { orgId } = req.user
 
@@ -308,7 +332,7 @@ export async function adminUserRoutes(app: FastifyInstance) {
   // because the web client's usePermission() hook depends on it to compute
   // RoleGate visibility. Restricting to view:user broke non-admin pages with
   // 403 floods. The role catalogue is org-scoped and not sensitive.
-  app.get('/roles', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/roles', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const roles = await prisma.role.findMany({
       where: {
         OR: [{ orgId: req.user.orgId }, { orgId: null, isSystem: true }],

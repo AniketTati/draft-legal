@@ -29,20 +29,20 @@ You are a contract search specialist. Translate the user's natural-language ques
 into a structured search filter JSON.
 
 Return ONLY valid JSON — no markdown, no explanation:
-{
+{{
   "q": "<keyword query or null>",
   "type": "<NDA|MSA|SOW|SLA|VENDOR_AGREEMENT|EMPLOYMENT|PARTNERSHIP|LICENSE|OTHER|null>",
   "status": "<DRAFT|ACTIVE|UNDER_REVIEW|EXPIRED|TERMINATED|null>",
   "jurisdiction": "<jurisdiction string or null>",
   "riskScoreMin": <0.0-1.0 or null>,
   "riskScoreMax": <0.0-1.0 or null>,
-  "clauseFlags": { "<flagName>": <true|false> } or null,
+  "clauseFlags": {{ "<flagName>": <true|false> }} or null,
   "expiryDateFrom": "<ISO date or null>",
   "expiryDateTo": "<ISO date or null>",
   "effectiveDateFrom": "<ISO date or null>",
   "effectiveDateTo": "<ISO date or null>",
   "intent": "<count|list|summarise|compare>"
-}
+}}
 
 clauseFlags keys: forceMajeure, mfn, changeOfControl, auditRights,
                   assignmentRestriction, limitationOfLiability, indemnification, warrantyDisclaimer
@@ -107,9 +107,13 @@ async def run_portfolio_query(question: str, org_id: str) -> dict[str, Any]:
     filters["limit"] = 50  # fetch up to 50 for portfolio queries
 
     # Step 2: Fetch contracts from API
+    # All three internal-service headers (see routes/approval.py): without
+    # x-org-id the API resolves the caller's org to 'system', and the org-scoped
+    # search matches nothing (FIX_TRACKER X15, same defect as C8).
     headers = {
         "x-internal-service": "agents",
         "x-internal-secret": settings.internal_service_secret,
+        "x-org-id": org_id,
     }
     contracts: list[dict] = []
     try:

@@ -24,6 +24,7 @@ from typing_extensions import TypedDict
 
 from ..router import resolve_llm
 from ..untrusted import wrap_untrusted_document
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -591,7 +592,7 @@ async def _extract(state: ReviewState) -> ReviewState:
         try:
             resp = await llm.ainvoke(
                 [
-                    SystemMessage(content=_EXTRACT_PROMPT + extra_prompt),
+                    SystemMessage(content=_EXTRACT_PROMPT + extra_prompt + PII_TOKEN_RULE),
                     # The chunk is counterparty-authored text. Frame it as data
                     # so instructions inside the contract cannot steer extraction.
                     HumanMessage(content=wrap_untrusted_document(
@@ -688,7 +689,7 @@ async def _extract(state: ReviewState) -> ReviewState:
             # new failure mode to the path that triggers it.
             resp2 = await llm.ainvoke(
                 [
-                    SystemMessage(content=second_prompt),
+                    SystemMessage(content=second_prompt + PII_TOKEN_RULE),
                     # Slice is taken above from the raw text, then wrapped here,
                     # so truncation can never cut a framing marker in half.
                     HumanMessage(content=wrap_untrusted_document(
@@ -737,7 +738,7 @@ async def _validate(state: ReviewState) -> ReviewState:
                     resolved.provider, resolved.model, len(state["raw_fields"]))
         resp = await resolved.llm.ainvoke(
             [
-                SystemMessage(content=_VALIDATE_PROMPT + payload),
+                SystemMessage(content=_VALIDATE_PROMPT + payload + PII_TOKEN_RULE),
                 HumanMessage(content="Validate the fields above."),
             ],
             config={"callbacks": resolved.callbacks},
@@ -816,7 +817,7 @@ async def _score(state: ReviewState) -> ReviewState:
                     resolved.provider, resolved.model, len(state["validated_fields"]))
         resp = await resolved.llm.ainvoke(
             [
-                SystemMessage(content=_SCORE_PROMPT + payload),
+                SystemMessage(content=_SCORE_PROMPT + payload + PII_TOKEN_RULE),
                 HumanMessage(content="Produce the final analysis."),
             ],
             config={"callbacks": resolved.callbacks},

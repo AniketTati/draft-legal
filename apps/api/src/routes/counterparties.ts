@@ -3,6 +3,7 @@ import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
+import { portfolioWhere } from '../lib/own-scope-guard.js'
 
 const CreateCounterpartySchema = z.object({
   name:    z.string().min(1).max(255),
@@ -57,6 +58,9 @@ export async function counterpartyRoutes(app: FastifyInstance) {
       where: {
         orgId,
         deletedAt: null,
+        // X7 — own-scope callers count only their own contracts. X17 — and
+        // a diligence room's documents are a target's, not the org's.
+        ...portfolioWhere(req),
         OR: [
           { counterpartyId: { in: ids } },
           { counterpartyName: { in: names } },
@@ -190,6 +194,9 @@ export async function counterpartyRoutes(app: FastifyInstance) {
       where: {
         orgId,
         deletedAt: null,
+        // X7 — an own-scope caller sees only their own contracts with this
+        // party. X17 — none of a diligence room's.
+        ...portfolioWhere(req),
         OR: [
           { counterpartyId: id },
           { counterpartyName: counterparty.name },

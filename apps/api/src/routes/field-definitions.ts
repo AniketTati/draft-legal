@@ -9,6 +9,8 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
+import { queueBackfillCustomField } from '../lib/queue.js'
+import type { BackfillState } from '../lib/custom-field-backfill.js'
 
 const FIELD_TYPES = ['text', 'number', 'date', 'boolean', 'select', 'multiselect'] as const
 
@@ -114,6 +116,28 @@ export async function fieldDefinitionRoutes(app: FastifyInstance) {
     await prisma.contractFieldDefinition.delete({ where: { id } })
 
     return reply.status(204).send()
+  })
+
+  // ── Fill the field in on existing contracts (X2) ──────────────────────────
+  // A field only reached contracts analysed after it existed. This queues the
+  // backfill (lib/custom-field-backfill.ts); pressing again while it runs is a
+  // no-op, after a pause or failure it resumes, after completion it re-scans
+  // (contracts can have been added since).
+  app.post('/:id/backfill', { preHandler: requirePermission('configure', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId } = req.user
+
+    const def = await prisma.contractFieldDefinition.findFirst({ where: { id, orgId, deletedAt: null } })
+    if (!def) return reply.status(404).send({ detail: 'Field definition not found' })
+
+    const prior = def.backfill as BackfillState | null
+    if (prior?.status !== 'RUNNING') {
+      const backfill = { ...(prior && prior.status !== 'DONE' ? prior : {}), status: 'QUEUED', error: null, updatedAt: new Date().toISOString() }
+      await prisma.contractFieldDefinition.update({ where: { id }, data: { backfill } })
+    }
+    await queueBackfillCustomField({ orgId, fieldDefinitionId: id })
+    const fresh = await prisma.contractFieldDefinition.findUniqueOrThrow({ where: { id }, select: { backfill: true } })
+    return reply.status(202).send({ backfill: fresh.backfill })
   })
 
   // ── Reorder field definitions ─────────────────────────────────────────────

@@ -1,5 +1,7 @@
 import { createRequire } from 'module'
 import mammoth from 'mammoth'
+import { zipInflatedSize, MAX_OFFICE_INFLATED_BYTES } from './file-type.js'
+import { normalizeTextBullets } from './html-normalize.js'
 
 const require = createRequire(import.meta.url)
 // pdf-parse v1 is CJS — require() returns the function directly
@@ -55,25 +57,37 @@ export type ExtractResult = {
   }
 }
 
+/**
+ * X11 — extracted text is data, not markup. Built into HTML unescaped, an
+ * uploaded `<img src=x onerror=…>` or `<iframe src=…>` was stored as live
+ * HTML in htmlContent. (& < > only: the text never lands in an attribute.)
+ */
+export function escapeText(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 export async function extractDocument(
   buffer: Buffer,
   mimeType: string,
   filename: string,
 ): Promise<ExtractResult> {
-  if (mimeType === 'application/pdf' || filename.endsWith('.pdf')) {
+  // The stored type is detected from the bytes at upload; the filename is
+  // client-supplied, so it only decides when the type is unknown (legacy rows).
+  const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  const known = mimeType === 'application/pdf' || mimeType === DOCX || mimeType === 'text/plain'
+  const is = (type: string, ext: string) => mimeType === type || (!known && filename.endsWith(ext))
+
+  if (is('application/pdf', '.pdf')) {
     return extractPdf(buffer)
   }
 
-  if (
-    mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-    filename.endsWith('.docx')
-  ) {
+  if (is(DOCX, '.docx')) {
     return extractDocx(buffer)
   }
 
-  if (mimeType === 'text/plain' || filename.endsWith('.txt')) {
+  if (is('text/plain', '.txt')) {
     const text = buffer.toString('utf-8')
-    return { plainText: text, htmlContent: `<pre>${text}</pre>`, mimeType: 'text/plain' }
+    return { plainText: text, htmlContent: `<pre>${escapeText(text)}</pre>`, mimeType: 'text/plain' }
   }
 
   throw new Error(`Unsupported file type: ${mimeType} (${filename})`)
@@ -143,17 +157,24 @@ async function extractPdf(buffer: Buffer): Promise<ExtractResult> {
     .split(/\n{2,}|\f/)
     .map(block => block.replace(/\n/g, ' ').trim())
     .filter(block => block.length > 2)
-    .map(block => `<p>${block}</p>`)
+    .map(block => `<p>${escapeText(block)}</p>`)
     .join('\n')
   return { plainText, htmlContent, mimeType: 'application/pdf' }
 }
 
 async function extractDocx(buffer: Buffer): Promise<ExtractResult> {
+  // X13 — refuse a zip bomb before mammoth expands it (files stored before
+  // the upload check existed, or reached some other way).
+  if (zipInflatedSize(buffer, MAX_OFFICE_INFLATED_BYTES) === null) {
+    throw new Error(`DOCX expands to more than ${MAX_OFFICE_INFLATED_BYTES / 1024 / 1024} MB when opened, or is damaged — not processed`)
+  }
   const result = await mammoth.convertToHtml({ buffer })
   const plainText = await mammoth.extractRawText({ buffer })
   return {
     plainText: plainText.value.replace(/\s+/g, ' ').trim(),
-    htmlContent: result.value,
+    // Lists re-saved as "\t•\t" text read as lists again, so a returned
+    // file compares by what changed, not by its bullets.
+    htmlContent: normalizeTextBullets(result.value),
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   }
 }

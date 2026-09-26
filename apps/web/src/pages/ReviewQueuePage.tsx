@@ -13,8 +13,9 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '@/lib/api'
+import { toast } from '@/components/common/Toaster'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
@@ -48,12 +49,15 @@ export function ReviewQueuePage() {
   const qc = useQueryClient()
   const [threshold, setThreshold] = useState(0.7)
   const [search, setSearch] = useState('')
+  // ?contractId= — opened from a contract's Key Terms card (C5).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const contractId = searchParams.get('contractId') ?? undefined
 
-  const queryKey = ['review-queue', threshold]
+  const queryKey = ['review-queue', threshold, contractId]
   const { data, isLoading, error } = useQuery({
     queryKey,
     queryFn: async () => (await api.get<{ items: QueueItem[]; total: number; threshold: number }>(
-      '/review-queue', { params: { threshold } },
+      '/review-queue', { params: { threshold, contractId } },
     )).data,
   })
 
@@ -74,8 +78,12 @@ export function ReviewQueuePage() {
         ...(p.value !== undefined ? { value: p.value } : {}),
       }).then(r => r.data),
     onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
-    onSettled: () => { setBusyKey(null); setEditKey(null) },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
+    onSettled: () => { setBusyKey(null) },
+    onSuccess: () => { setEditKey(null); qc.invalidateQueries({ queryKey: ['review-queue'] }) },
+    // A correction the API can't store (e.g. "next spring" as a date) keeps
+    // the editor open and says why, rather than silently dropping the edit.
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Correction not saved', { description: err.response?.data?.detail ?? 'Try again.' }),
   })
   const reject = useMutation({
     mutationFn: (p: { contractId: string; field: string }) =>
@@ -83,6 +91,8 @@ export function ReviewQueuePage() {
     onMutate: (p) => { setBusyKey(`${p.contractId}::${p.field}`) },
     onSettled: () => { setBusyKey(null) },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['review-queue'] }),
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Could not clear the value', { description: err.response?.data?.detail ?? 'Try again.' }),
   })
 
   const filtered = useMemo(() => {
@@ -121,6 +131,15 @@ export function ReviewQueuePage() {
             correct (set a new value), or reject (clear the value) — each contract stops
             carrying a silent low-confidence extraction.
           </p>
+          {contractId && (
+            <button
+              onClick={() => setSearchParams({})}
+              className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2 mt-1"
+              data-testid="review-queue-clear-contract"
+            >
+              Showing one contract — show all
+            </button>
+          )}
         </div>
         <div className="text-[11px] text-ink-400 tabular-nums">
           {data ? `${data.total} items · threshold ${(data.threshold * 100).toFixed(0)}%` : ''}

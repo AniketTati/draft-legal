@@ -41,7 +41,10 @@ class ContractSearchArgs(BaseModel):
     )
     type: Optional[str] = Field(
         None,
-        description="Filter by contract type (e.g. 'NDA', 'MSA', 'SLA', 'SOW').",
+        description=(
+            "Filter by contract type (e.g. 'NDA', 'MSA', 'SLA', 'SOW'). ONLY when the user names a type: "
+            "\"our Airtable contract\" has no type, and guessing one hides the contracts of every other type."
+        ),
     )
     counterparty_name: Optional[str] = Field(
         None,
@@ -62,9 +65,17 @@ class ContractSearchArgs(BaseModel):
         None,
         description="'asc' or 'desc'. Default 'desc' (largest/most recent first).",
     )
+    # V2 — answer date/value questions with a FILTER (and its true count),
+    # never by sorting a page and eyeballing it.
+    expiry_from: Optional[str] = Field(None, description="Only contracts expiring on/after this date (YYYY-MM-DD). 'Expiring in the next 90 days' = expiry_from today, expiry_to today+90.")
+    expiry_to: Optional[str] = Field(None, description="Only contracts expiring on/before this date (YYYY-MM-DD).")
+    effective_from: Optional[str] = Field(None, description="Only contracts effective on/after this date (YYYY-MM-DD).")
+    effective_to: Optional[str] = Field(None, description="Only contracts effective on/before this date (YYYY-MM-DD).")
+    value_min: Optional[float] = Field(None, description="Only contracts worth at least this much (contract value, in its own currency).")
+    value_max: Optional[float] = Field(None, description="Only contracts worth at most this much.")
 
 
-def build_contract_search(org_id: str) -> StructuredTool:
+def build_contract_search(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(
         query: Optional[str] = None,
@@ -74,6 +85,12 @@ def build_contract_search(org_id: str) -> StructuredTool:
         limit: int = 10,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
+        expiry_from: Optional[str] = None,
+        expiry_to: Optional[str] = None,
+        effective_from: Optional[str] = None,
+        effective_to: Optional[str] = None,
+        value_min: Optional[float] = None,
+        value_max: Optional[float] = None,
     ) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_search"
         headers = {
@@ -83,13 +100,19 @@ def build_contract_search(org_id: str) -> StructuredTool:
         }
         # Zod's .optional() rejects explicit null — only send keys that are
         # actually set so the Node endpoint's schema validates cleanly.
-        payload: dict = {"orgId": org_id, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "limit": limit}
         if query             is not None: payload["query"]            = query
         if status            is not None: payload["status"]           = status
         if type              is not None: payload["type"]             = type
         if counterparty_name is not None: payload["counterpartyName"] = counterparty_name
         if sort_by           is not None: payload["sortBy"]           = sort_by
         if sort_order        is not None: payload["sortOrder"]        = sort_order
+        if expiry_from       is not None: payload["expiryDateFrom"]    = expiry_from
+        if expiry_to         is not None: payload["expiryDateTo"]      = expiry_to
+        if effective_from    is not None: payload["effectiveDateFrom"] = effective_from
+        if effective_to      is not None: payload["effectiveDateTo"]   = effective_to
+        if value_min         is not None: payload["valueMin"]          = value_min
+        if value_max         is not None: payload["valueMax"]          = value_max
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:

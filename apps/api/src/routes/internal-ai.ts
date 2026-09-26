@@ -13,24 +13,44 @@
  *   - Cache resolution per (orgId, tier) for ~30s in Redis
  *   - Audit-log every resolution call
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
 import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { generateDocument } from '../lib/template-engine.js'
-import { searchClauses } from '../lib/embeddings.js'
-import { advancedSearch, indexContract } from '../lib/elasticsearch.js'
+import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
+import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
-import { applyPiiPolicy, applyPiiPolicyBatch } from '../lib/pii-policy.js'
+import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
+import { setTenant } from '../lib/tenant-context.js'
+import { modelFetch, recordingModelOutput, toolCheck, toolResponseBackstop, type ToolCheck } from '../lib/model-boundary.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { CostCapExceededError } from '../lib/costCap.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, pickWorkflow } from '@clm/types'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
-import { normalisedKey } from '../lib/clause-category.js'
+import { normalisedKey, matchCategory } from '../lib/clause-category.js'
+import { findTopic } from '../lib/clause-topic.js'
+import { planDraft } from '../lib/draft-plan.js'
+import { fireWebhook } from '../lib/webhook-events.js'
+import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
+import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
+import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
+import { renewalNotice } from '../lib/renewal-notice.js'
+import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
+import { liabilityCaps } from '../lib/liability-cap.js'
+import { standingVersion } from '../lib/standing-version.js'
+
+/** Words in a contract search that say nothing about which contract ("our contract with Acme"). */
+const QUERY_STOPWORDS = new Set(['our', 'the', 'a', 'an', 'with', 'for', 'of', 'and', 'to', 'in', 'on', 'by', 'from', 'my', 'we', 'us', 'contract', 'contracts'])
+
+/** A numbered, capitalised line that heads a section ("3. LIMITATION OF LIABILITY"). */
+const SECTION_HEADING = /^\d{1,2}(?:\.\d+)*\.?\s+[A-Z][A-Z0-9 ,;:&'()/—-]{2,}$/
 
 const TIERS: Tier[] = ['reasoning', 'default', 'fast', 'embed', 'rerank', 'vision_ocr']
 
@@ -95,145 +115,31 @@ async function redactExcerpts(
   return out
 }
 
-// ── P1.2 — Structured playbook rules (docs/28 C.2.1) ────────────────────
-// `PlaybookPosition.rules` is free-form JSON; we runtime-type it via
-// the shape below. Everything optional — orgs can ship must_have without
-// must_not, bounds-only configs, etc.
 /**
- * One severity vocabulary for the whole playbook surface.
- *
- * The structured-rules path used `low|medium|high|walkaway`; the LLM review
- * path (playbook_review_agent.py) emits `low|medium|high|critical`. Both write
- * into the same field, so an org whose rules say `critical` was silently
- * mis-ranked. `critical` is accepted here and treated as equivalent to
- * `walkaway` — both mean "a human must look at this before it goes anywhere".
+ * X36 — redactExcerpts for pieces cut from longer texts: the values are
+ * found in each whole text (a card whose "card" is outside the piece counts)
+ * and no cut splits one, where cutting first sent `123-45-6`. The same
+ * failure handling: retried as force-redact, then withheld.
  */
-type PlaybookSeverity = 'low' | 'medium' | 'high' | 'critical' | 'walkaway'
-type PlaybookRuleCheck = 'contains' | 'regex' | 'present' | 'absent'
-
-interface PlaybookRule {
-  id?:          string
-  description:  string
-  check:        PlaybookRuleCheck
-  value:        string     // substring / regex source / marker token
-  severity:     PlaybookSeverity
-}
-
-interface PlaybookBound {
-  min?:         number
-  max?:         number
-  units?:       string
-  severity:     PlaybookSeverity
-  description?: string
-}
-
-interface PlaybookRules {
-  must_have?:   PlaybookRule[]
-  must_not?:    PlaybookRule[]
-  bounds?:      Record<string, PlaybookBound>
-  variables?:   Array<{ key: string; type: string; required?: boolean; default?: unknown }>
-}
-
-// Ascending. `critical` and `walkaway` are peers — different words for the same
-// stop condition, arriving from the LLM path and the rules path respectively.
-const SEVERITY_ORDER: PlaybookSeverity[] = ['low', 'medium', 'high', 'critical', 'walkaway']
-
-/**
- * Rank a severity, tolerating values written by hand into a rules JSON.
- *
- * `SEVERITY_ORDER.indexOf(x)` returns -1 for anything unrecognised, and -1 is
- * LOWER than every real rank — so an unknown severity lost to the next `low`
- * that came along. That is how a `critical` violation ended up reported as
- * `low`. Unknown values now rank at the TOP: if we cannot interpret how
- * serious something is, the safe reading is "serious".
- */
-function severityRank(sev: string | undefined | null): number {
-  if (!sev) return -1
-  const i = SEVERITY_ORDER.indexOf(sev as PlaybookSeverity)
-  return i === -1 ? SEVERITY_ORDER.length : i
-}
-
-/**
- * Walk a rules object against a clause's text. Returns one entry per
- * evaluated rule with `{passed, ...}`. "Bounds" checks compile to
- * "no strong assertion" today (P1.3 will pair them with an LLM judge);
- * they appear in the output so the agent LLM can reason over them.
- */
-function evaluatePlaybookRules(
-  rules:        PlaybookRules,
-  clauseText:   string,
-  positionType: string,
-): Array<Record<string, unknown>> {
-  const out: Array<Record<string, unknown>> = []
-  const text = clauseText.toLowerCase()
-
-  for (const r of rules.must_have ?? []) {
-    const passed = ruleMatches(r, text)
-    out.push({
-      kind: 'must_have', position: positionType,
-      ruleId: r.id, description: r.description, severity: r.severity,
-      check: r.check, value: r.value,
-      // "passed" for a must_have rule means the match hit.
-      passed,
-    })
-  }
-  for (const r of rules.must_not ?? []) {
-    const hit = ruleMatches(r, text)
-    out.push({
-      kind: 'must_not', position: positionType,
-      ruleId: r.id, description: r.description, severity: r.severity,
-      check: r.check, value: r.value,
-      // For must_not we flip: "passed" means the text does NOT contain it.
-      passed: !hit,
-    })
-  }
-  for (const [key, b] of Object.entries(rules.bounds ?? {})) {
-    out.push({
-      kind: 'bound', position: positionType,
-      boundKey: key, description: b.description, severity: b.severity,
-      min: b.min, max: b.max, units: b.units,
-      // Leave `passed` null — bounds need numeric extraction which we
-      // defer to P1.3 (two-stage compare). The agent LLM can still see
-      // the bound and reason over the clause text.
-      passed: null,
-    })
-  }
-  return out
-}
-
-function ruleMatches(rule: PlaybookRule, lowerText: string): boolean {
-  switch (rule.check) {
-    case 'contains': return lowerText.includes(rule.value.toLowerCase())
-    case 'regex':
-      try { return new RegExp(rule.value, 'i').test(lowerText) }
-      catch { return false }
-    case 'present':  return lowerText.includes(rule.value.toLowerCase())
-    case 'absent':   return !lowerText.includes(rule.value.toLowerCase())
-    default:         return false
-  }
-}
-
-function pickWorstSeverity(
-  violations: Array<Record<string, unknown>>,
-): PlaybookSeverity | null {
-  let worst: PlaybookSeverity | null = null
-  for (const v of violations) {
-    if (v.passed === true || v.passed === null) continue // no violation
-    const sev = v.severity as PlaybookSeverity | undefined
-    if (!sev) continue
-    if (!worst || severityRank(sev) > severityRank(worst)) {
-      worst = sev
+async function redactCutExcerpts(
+  orgId: string,
+  sources: Array<CutText | null>,
+  opts: { surface: string; contractId?: string; userId?: string },
+): Promise<Array<string[] | null>> {
+  try {
+    return (await redactCuts(orgId, sources, opts)).pieces
+  } catch (err) {
+    console.error(`[internal-ai] PII redaction failed for ${opts.surface}; retrying force-redact:`, err)
+    try {
+      return (await redactCuts(orgId, sources, { ...opts, override: 'redact' })).pieces
+    } catch (err2) {
+      console.error(`[internal-ai] force-redact failed for ${opts.surface}; withholding text:`, err2)
+      return sources.map(src => src && src.cuts.map(() => REDACTION_UNAVAILABLE))
     }
   }
-  return worst
 }
 
-function ruleCountOf(rules: PlaybookRules | null): number {
-  if (!rules) return 0
-  return (rules.must_have?.length ?? 0)
-       + (rules.must_not?.length  ?? 0)
-       + Object.keys(rules.bounds ?? {}).length
-}
+// P1.2 structured playbook rules: lib/playbook-rules.ts (DD1).
 
 const ResolveSchema = z.object({
   orgId: z.string().min(1),
@@ -244,6 +150,7 @@ const ResolveSchema = z.object({
 // so any tool call from Python is scoped to a single tenant.
 const ContractGetSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   // How much of the plaintext to return. LLM context is precious — the
   // default keeps us well under a default tier's context window even for
@@ -253,6 +160,7 @@ const ContractGetSchema = z.object({
 
 const ContractSearchSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:            z.string().optional(),           // text search in title/counterparty
   status:           z.string().optional(),
   type:             z.string().optional(),
@@ -264,10 +172,19 @@ const ContractSearchSchema = z.object({
   // failure mode: the LLM just reads the first N rows the DB returned.
   sortBy:    z.enum(['updatedAt', 'value', 'effectiveDate', 'expiryDate', 'createdAt', 'riskScore']).default('updatedAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
+  // V2 — ranges, so "expiring in the next 90 days" or "worth over $1M" is
+  // answered by a filter (with a true count), not by sorting a sample.
+  expiryDateFrom:    z.string().refine(v => !Number.isNaN(Date.parse(v)), 'expiryDateFrom must be a date').optional(),
+  expiryDateTo:      z.string().refine(v => !Number.isNaN(Date.parse(v)), 'expiryDateTo must be a date').optional(),
+  effectiveDateFrom: z.string().refine(v => !Number.isNaN(Date.parse(v)), 'effectiveDateFrom must be a date').optional(),
+  effectiveDateTo:   z.string().refine(v => !Number.isNaN(Date.parse(v)), 'effectiveDateTo must be a date').optional(),
+  valueMin:          z.number().optional(),
+  valueMax:          z.number().optional(),
 })
 
 const ContractSummarizeSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
 })
 
@@ -282,6 +199,7 @@ const ContractSummarizeSchema = z.object({
 // judge-mode for very long contracts.
 const PlaybookCheckSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   // How many clauses to examine. The default stays small because an agent
   // turn can't absorb more, but the ceiling has to admit a whole contract:
@@ -306,6 +224,7 @@ const PlaybookCheckSchema = z.object({
 // pills in the rail — click → the contract opens at that section.
 const ContractCiteSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   query:      z.string().min(1),
   limit:      z.number().int().min(1).max(10).default(5),
@@ -317,6 +236,7 @@ const ContractCiteSchema = z.object({
 // trigger) or automatically after post-signature status changes.
 const ObligationsListSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().optional(),
   dueWithin:   z.number().int().min(1).max(365).optional(),
   type:        z.string().optional(),
@@ -331,6 +251,7 @@ const ObligationsListSchema = z.object({
 // authenticated POST /contracts/:id/renewal-advice endpoint.
 const RenewalAdviceSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().optional(),
   leadDays:    z.number().int().min(1).max(365).default(90),
   limit:       z.number().int().min(1).max(50).default(20),
@@ -347,6 +268,7 @@ const RenewalAdviceSchema = z.object({
 // accounts" from a single tool call.
 const OrgMemorySchema = z.object({
   orgId:        z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   topic:        z.string().min(1).max(200),
   clauseType:   z.string().optional(),
   contractType: z.string().optional(),
@@ -368,6 +290,7 @@ const ApprovalListSchema = z.object({
 
 const CounterpartyGetSchema = z.object({
   orgId:   z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   // EITHER an id OR a name (fuzzy). Caller picks what they have.
   id:      z.string().optional(),
   name:    z.string().optional(),
@@ -380,6 +303,7 @@ const CounterpartyGetSchema = z.object({
 // contract count or by total contract value.
 const CounterpartyListSchema = z.object({
   orgId:     z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:     z.string().optional(),
   // Rank counterparties by:
   //   'contracts'  — number of contracts (most prolific first)
@@ -393,6 +317,7 @@ const CounterpartyListSchema = z.object({
 
 const RequestListSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   status:      z.string().optional(),
   assignedToId: z.string().optional(),
   priority:    z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional(),
@@ -412,6 +337,7 @@ const CustomFieldListSchema = z.object({
 // pilot programs); making them queryable is table-stakes for our personas.
 const MatterListSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // X9 — caller identity (absent = service call)
   ownerId:          z.string().optional(),  // filter to matters owned by this user
   status:           z.enum(['OPEN', 'CLOSED', 'ARCHIVED']).optional(),
   counterpartyName: z.string().optional(),  // fuzzy substring on counterpartyName
@@ -429,15 +355,20 @@ const MatterListSchema = z.object({
 const ContractDraftFromIntentSchema = z.object({
   orgId:            z.string().min(1),
   userId:           z.string().min(1),
-  // Free-form description of what to draft. The Python pipeline parses
-  // this for type + counterparty + intent.
+  // Free-form description of what to draft (used to infer the type when no
+  // contractType / templateId is given).
   userMessage:      z.string().min(1).max(2000),
-  // Optional structured hints — passed through as `context`. The Python
-  // pipeline uses these as defaults when the message is ambiguous.
   contractType:     z.string().optional(),   // 'NDA' | 'MSA' | 'SOW' | 'VENDOR_AGREEMENT' | …
+  templateId:       z.string().optional(),   // from template_list — wins over type inference
   counterpartyName: z.string().optional(),
-  // Title for the new Contract row. If omitted, derived from message + cp.
+  // Title for the new Contract row. If omitted, derived from counterparty + type.
   title:            z.string().optional(),
+  // C12 — the user's stated terms. Unstated terms fall back to the template's
+  // own declared defaults, else stay blank; nothing is hard-coded.
+  governingLaw:     z.string().max(200).optional(),
+  term:             z.string().max(200).optional(),
+  effectiveDate:    z.string().max(100).optional(),
+  terms:            z.record(z.string().max(2000)).optional(),
 })
 
 // P3.4 — contract_validate. Fast lexical + structural checks the
@@ -452,6 +383,7 @@ const ContractDraftFromIntentSchema = z.object({
 // Each issue carries {kind, severity, message, excerpt, page?, ref?}.
 const ContractValidateSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   maxIssues:  z.number().int().min(1).max(200).default(50),
 })
@@ -468,6 +400,7 @@ const ContractValidateSchema = z.object({
 // instead of sending the agent on an O(N) contract_get hunt.
 const CounterpartyMemorySchema = z.object({
   orgId:             z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   counterpartyName:  z.string().min(1),
   clauseType:        z.string().optional(), // e.g. 'limitation_of_liability'
   limit:             z.number().int().min(1).max(30).default(10),
@@ -482,6 +415,7 @@ const CounterpartyMemorySchema = z.object({
 // liability?" class of question.
 const PortfolioSearchSchema = z.object({
   orgId:            z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   query:            z.string().min(1).max(500),
   topK:             z.number().int().min(1).max(30).default(10),
   // Optional filters — pass through to ES. Keeps portfolio_search
@@ -502,6 +436,7 @@ const UserSearchSchema = z.object({
 
 const TemplateListSchema = z.object({
   orgId:         z.string().min(1),
+  userId:     z.string().nullable().optional(),   // X9 — caller identity (absent = service call)
   query:         z.string().max(200).optional(),
   contractType:  z.string().max(50).optional(),
   publishedOnly: z.boolean().default(false),
@@ -523,6 +458,7 @@ const ApprovalDecideSchema = z.object({
 
 const ClauseSearchSchema = z.object({
   orgId:      z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId: z.string().min(1),
   query:      z.string().min(1),
   limit:      z.number().int().min(1).max(20).default(5),
@@ -612,6 +548,7 @@ const RedlineApplyBatchSchema = z.object({
 
 const RedlineProposeBatchSchema = z.object({
   orgId:        z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:   z.string().min(1),
   clauseIds:    z.array(z.string().min(1)).min(1).max(200),
   aggression:   z.enum(['least', 'moderate', 'aggressive']).default('moderate'),
@@ -620,10 +557,12 @@ const RedlineProposeBatchSchema = z.object({
 
 const RedlineProposeSchema = z.object({
   orgId:       z.string().min(1),
+  userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
   contractId:  z.string().min(1),
-  // Target a clause. One of clauseId | clauseType must be provided.
+  // Target a clause. One of clauseId | clauseType | sectionRef must be provided.
   clauseId:    z.string().optional(),
   clauseType:  z.string().optional(),
+  sectionRef:  z.string().max(40).optional(),   // X53 — "4", "§4", "Section 4.2"
   // Free-text direction from the user ("make the cap 6 months"), passed
   // through to the LLM alongside the playbook rules.
   instructions: z.string().max(2_000).optional(),
@@ -643,6 +582,9 @@ const ContractCreateFromTemplateSchema = z.object({
   variables:        z.record(z.unknown()).default({}),
   title:            z.string().max(200).optional(),
   counterpartyName: z.string().max(200).optional(),
+  // C12 — the type the drafting plan chose (an untyped template can be
+  // picked for, say, an NDA); falls back to the template's own type.
+  contractType:     z.string().max(50).optional(),
 })
 
 // D.5.6 — approval_route write tool input. Inline workflow-driven path;
@@ -682,13 +624,101 @@ const ContractUpdateSchema = z.object({
   payload: z.record(z.unknown()).default({}),
 })
 
+/**
+ * V2 — how complete a list answer is, carried WITH the rows so the model
+ * can't present a page or a ranked sample as the whole answer. `note` is a
+ * sentence the assistant can say as-is (orchestrator rule A13).
+ */
+export interface Coverage { returned: number; totalMatching: number | null; complete: boolean; note: string }
+export function coverageOf(returned: number, totalMatching: number | null, noun = 'contracts'): Coverage {
+  if (totalMatching == null) {
+    return { returned, totalMatching: null, complete: false,
+      note: `This is a ranked sample of ${returned} ${noun}, not a complete list — this search has no total count.` }
+  }
+  const complete = returned >= totalMatching
+  // CC12 — said as an instruction: "Showing 20 of 40" was answered "here
+  // are 20 contracts expiring", as if 20 were all of them.
+  return { returned, totalMatching, complete,
+    note: complete
+      ? `All ${totalMatching} matching ${noun} are shown.`
+      : `Showing ${returned} of ${totalMatching} matching ${noun}. Say there are ${totalMatching}, and that these are ${returned} of them.` }
+}
+
+/** Inclusive date range for a Prisma filter; a bare YYYY-MM-DD `to` covers that whole day. */
+function dateRange(from?: string, to?: string): { gte?: Date; lte?: Date } | undefined {
+  if (!from && !to) return undefined
+  const end = to && /^\d{4}-\d{2}-\d{2}$/.test(to) ? `${to}T23:59:59.999Z` : to
+  return { ...(from ? { gte: new Date(from) } : {}), ...(end ? { lte: new Date(end) } : {}) }
+}
+
+/**
+ * X23 — the values a redline tool result is scrubbed of: exactly those in the
+ * contract's current text and the clauses asked about, wherever they appear
+ * in the result. A value neither holds (one the user asked for, one the model
+ * wrote) is left as written: it is nobody's data from this contract, and a
+ * token for it could never be put back when the redline is applied.
+ */
+async function redlineSource(contractId: string, clauseIds: string[]): Promise<string[]> {
+  const c = await prisma.contract.findUnique({ where: { id: contractId }, select: { currentVersionId: true } })
+  if (!c?.currentVersionId) return []
+  const [version, clauses] = await Promise.all([
+    prisma.contractVersion.findUnique({ where: { id: c.currentVersionId }, select: { plainText: true } }),
+    prisma.contractClause.findMany({ where: { id: { in: clauseIds }, version: { contractId } }, select: { content: true } }),
+  ])
+  return [version?.plainText ?? '', ...clauses.map(cl => cl.content)]
+}
+
+/** The tool an internal call is to, from its URL; none for /resolve. */
+const toolOf = (req: FastifyRequest) => /^\/api\/internal\/ai\/tools\/([^/?]+)/.exec(req.url)?.[1]
+
+/** The org an internal call acts for: the one its body names, or x-org-id. */
+function internalCallOrg(req: FastifyRequest): string | undefined {
+  const bodyOrg = (req.body as { orgId?: unknown } | undefined)?.orgId
+  const headerOrg = (req.headers['x-org-id'] as string | undefined)?.trim()
+  return typeof bodyOrg === 'string' ? bodyOrg : headerOrg || undefined
+}
+
 export async function internalAiRoutes(app: FastifyInstance) {
+  // S2 — the caller's view scope, resolved from their roles (never from the
+  // body). Sends 403 and returns null when they may not view `resource`.
+  async function scopeOr403(
+    reply: FastifyReply, orgId: string, userId: string | null | undefined,
+    resource: ToolResource = 'contract', action: 'view' | 'edit' | 'configure' = 'view',
+  ): Promise<CallerScope | null> {
+    const scope = await resolveCallerScope(orgId, userId, resource, action)
+    if (scope.kind === 'none') {
+      reply.status(403).send({ detail: `The user in this conversation does not have ${action}:${resource} permission` })
+      return null
+    }
+    return scope
+  }
+
+  // Y2 — what each tool call's response is checked against (onSend below),
+  // and the record of what a model wrote during the call, which it may carry.
+  const toolChecks = new WeakMap<FastifyRequest, ToolCheck>()
+  app.addHook('preHandler', (req, _reply, done) => { if (toolOf(req)) recordingModelOutput(done); else done() })
+
   // ── x-internal-secret guard for every route in this plugin ─────────────────
   app.addHook('preHandler', async (req, reply) => {
     const secret = req.headers['x-internal-secret']
     if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
       return reply.status(401).send({ detail: 'Internal endpoint — bad secret' })
     }
+    // Y1 — these calls act for the org their body (or x-org-id) names: limit
+    // every query to it, as for a user's request.
+    const org = internalCallOrg(req)
+    setTenant(org)
+    const check = toolOf(req) ? await toolCheck(org, req.body) : undefined
+    if (check) toolChecks.set(req, check)
+  })
+
+  // Y2 — the agents service hands what a tool returns to the model, so the
+  // org's PII policy is checked once more over it (lib/model-boundary.ts).
+  // Only the tools: /resolve returns provider credentials to the agents
+  // service itself. Callback-style and synchronous: see ToolCheck.
+  app.addHook('onSend', (req, _reply, payload, done) => {
+    const tool = toolOf(req)
+    done(null, tool ? toolResponseBackstop(toolChecks.get(req), tool, payload) : payload)
   })
 
   // ── POST /internal/ai/resolve ──────────────────────────────────────────────
@@ -748,9 +778,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, jurisdiction: true,
@@ -778,7 +810,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const fullText      = version?.plainText ?? ''
     const truncated     = fullText.length > body.maxChars
-    const truncatedText = truncated ? fullText.slice(0, body.maxChars) : fullText
 
     // P21 production audit (2026-04-29). Apply PII redaction at the
     // boundary BEFORE the agents service ships the text to OpenAI /
@@ -787,11 +818,20 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // settings.piiRedactionMode = 'off'. The redactor catches SSN,
     // ITIN, CC, passport, IBAN, phone, email, DOB, IP, API key.
     // Summary string also goes through (LLMs cite the summary too).
-    const [redactedPlainText, redactedSummary] = await Promise.all([
-      applyPiiPolicy(body.orgId, truncatedText, { surface: 'contract_get.plainText', contractId: contract.id }),
+    // X36 — values are found in the whole text, and the cut to maxChars
+    // never splits one.
+    // X40 — and the summary's values are found against the text as well.
+    // DD1 — the caps the whole document states, measured (a super-cap's
+    // statement quotes the claims it is for, so it is redacted too).
+    const caps = liabilityCaps(fullText).map(c => c.statement)
+    const [redactedPlainText, redactedSummary, redactedCaps] = await Promise.all([
+      redactCuts(body.orgId, [{ text: fullText, cuts: [[0, body.maxChars]] }], { surface: 'contract_get.plainText', contractId: contract.id }),
       contract.summary
-        ? applyPiiPolicy(body.orgId, contract.summary, { surface: 'contract_get.summary', contractId: contract.id })
-        : Promise.resolve({ text: '', mode: 'off', counts: {}, total: 0 } as const),
+        ? redactCuts(body.orgId, [{ text: contract.summary, cuts: [[0, contract.summary.length]], valuesFrom: fullText }], { surface: 'contract_get.summary', contractId: contract.id })
+        : Promise.resolve({ pieces: [], mode: 'off', counts: {}, total: 0 } as const),
+      caps.length
+        ? redactCuts(body.orgId, caps.map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: fullText })), { surface: 'contract_get.liabilityCaps', contractId: contract.id })
+        : Promise.resolve({ pieces: [] as Array<string[] | null> }),
     ])
 
     return reply.send({
@@ -805,18 +845,28 @@ export async function internalAiRoutes(app: FastifyInstance) {
       currency:         contract.currency,
       effectiveDate:    contract.effectiveDate,
       expiryDate:       contract.expiryDate,
-      summary:          contract.summary ? redactedSummary.text : null,
-      keyTerms:         contract.keyTerms,
+      summary:          contract.summary ? (redactedSummary.pieces[0]?.[0] ?? REDACTION_UNAVAILABLE) : null,
+      // X27 — the key terms quote the contract too (parties, amounts, quotes).
+      // X40 — values found against the contract's text too.
+      keyTerms:         await redactJsonAgainst(body.orgId, contract.keyTerms, fullText, { surface: 'contract_get.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       version: {
         number:    version?.versionNumber ?? null,
         createdAt: version?.createdAt ?? null,
       },
-      plainText:        redactedPlainText.text,
+      plainText:        redactedPlainText.pieces[0]?.[0] ?? '',
       plainTextLength:  fullText.length,
       truncated,
+      // DD1 — state caps with these figures; don't work them out.
+      ...(caps.length && { liabilityCaps: caps.map((_, i) => redactedCaps.pieces[i]?.[0] ?? REDACTION_UNAVAILABLE) }),
       updatedAt:        contract.updatedAt,
+      // CC7 — asked what a contract covers, the assistant answered with its
+      // value and dates and left the question alone: the record has no text.
+      documentOnFile:   fullText.length > 0,
+      ...(!fullText && {
+        note: 'This contract has no document text on file, only the record above. For anything about its terms or scope, say the document is not on file and answer only from the record.',
+      }),
       // Surface mode + counts so the agent can mention "I redacted N
       // PII items" if it wants to be transparent. Optional — most
       // turns ignore this.
@@ -836,11 +886,22 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, diligenceRoomId: null, ...contractScopeWhere(scope) }
     if (body.status)           where.status           = body.status
     if (body.type)             where.type             = body.type
     if (body.counterpartyName) where.counterpartyName = { contains: body.counterpartyName, mode: 'insensitive' }
+    const rangeWhere: Record<string, unknown> = {}
+    const expiry = dateRange(body.expiryDateFrom, body.expiryDateTo)
+    if (expiry) rangeWhere.expiryDate = expiry
+    const effective = dateRange(body.effectiveDateFrom, body.effectiveDateTo)
+    if (effective) rangeWhere.effectiveDate = effective
+    if (body.valueMin != null || body.valueMax != null) {
+      rangeWhere.value = { ...(body.valueMin != null ? { gte: body.valueMin } : {}), ...(body.valueMax != null ? { lte: body.valueMax } : {}) }
+    }
+    Object.assign(where, rangeWhere)
 
     // Text query: hit title + counterpartyName. Full-text via Elasticsearch
     // is out of scope for D.1.4b — the ES integration layer already exists
@@ -854,11 +915,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const rawQuery = body.query?.trim() ?? ''
     const isWildcard = ['*', '%', '.*', '.+', 'all', 'any', '*.*'].includes(rawQuery.toLowerCase())
     if (rawQuery && !isWildcard) {
-      (where as any).OR = [
-        { title:            { contains: rawQuery, mode: 'insensitive' } },
-        { counterpartyName: { contains: rawQuery, mode: 'insensitive' } },
-        { summary:          { contains: rawQuery, mode: 'insensitive' } },
-      ]
+      // CC9 — every word, anywhere in the title, counterparty or summary: as
+      // one phrase, "Iron Mountain SOW" never met the title "Iron Mountain —
+      // SOW", and the assistant said there was no such contract.
+      const words = rawQuery.split(/[\s—–,]+/).map(w => w.replace(/^["'(]+|["'),.]+$/g, ''))
+        .filter(w => w.length > 1 && !QUERY_STOPWORDS.has(w.toLowerCase()))
+      ;(where as any).AND = (words.length ? words : [rawQuery]).map(w => ({ OR: [
+        { title:            { contains: w, mode: 'insensitive' } },
+        { counterpartyName: { contains: w, mode: 'insensitive' } },
+        { summary:          { contains: w, mode: 'insensitive' } },
+      ] }))
     }
 
     // Build the sort clause. For `value` and `riskScore`, we need to
@@ -901,9 +967,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // semantically-related contracts exist.
     let usedFallback = false
     let fallbackResults: typeof contracts = []
-    if (contracts.length === 0 && rawQuery && !isWildcard) {
+    // CC7 — a company's name ("Globex Corporation") means that company. Its
+    // meaning-alike clauses belong to other counterparties, and offering
+    // their contracts ("did you mean Brightwave?") answered a question
+    // nobody asked. A name that matches nothing is reported as a miss.
+    const looksLikeAName = /\b(?:inc|llc|ltd|limited|corp|corporation|co|company|gmbh|plc|llp|lp|sa|ag|bv|pty)\b\.?$/i.test(rawQuery)
+      || /^[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*){1,3}$/.test(rawQuery)
+    if (contracts.length === 0 && rawQuery && !isWildcard && !looksLikeAName) {
       try {
-        const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4)
+        const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4, undefined, scopeOwnerId(scope))
         const seen = new Set<string>()
         const orderedIds: string[] = []
         for (const hit of clauseHits) {
@@ -920,6 +992,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
             orgId:     body.orgId,
             deletedAt: null,
             id:        { in: orderedIds },
+            ...contractScopeWhere(scope), diligenceRoomId: null,
+            ...rangeWhere,
           }
           if (body.status)           semanticWhere.status           = body.status
           if (body.type)             semanticWhere.type             = body.type
@@ -944,6 +1018,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
     }
     const finalResults = usedFallback ? fallbackResults : contracts
+    // CC7 — a type filter the assistant added on a guess can hide the one
+    // contract asked for: say how many match without it.
+    let typeNote: string | undefined
+    if (finalResults.length === 0 && body.type) {
+      const withoutType = await prisma.contract.count({ where: { ...(where as Record<string, unknown>), type: undefined } as never })
+      if (withoutType > 0) {
+        typeNote = `No ${body.type} matched, but ${withoutType === 1 ? '1 contract matches' : `${withoutType} contracts match`} without the type filter. `
+          + `If the user did not ask for ${body.type}s, search again without "type".`
+      }
+    }
+    const nameNote = contracts.length === 0 && looksLikeAName && !usedFallback
+      ? `No contract has a title or counterparty matching "${rawQuery}". Say so; do not offer other counterparties' contracts as if they were it.`
+      : undefined
 
     return reply.send({
       // P63 — keep `total` as the page size for back-compat, but
@@ -963,6 +1050,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Null forces the model onto the `searchMode` branch, which says to
       // report a lower bound and announce that the search was broadened.
       totalMatching: usedFallback ? null : totalMatching,
+      coverage:      coverageOf(finalResults.length, usedFallback ? null : totalMatching),
       results: finalResults.map(c => ({
         ...c,
         value: c.value != null ? Number(c.value) : null,
@@ -970,6 +1058,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Surface the fallback to the agent so it can mention "I broadened the
       // search" in its prose synthesis if it wants to be transparent.
       ...(usedFallback ? { searchMode: 'semantic-fallback', note: 'No keyword matches; expanded to clause-content semantic search.' } : {}),
+      ...((typeNote || nameNote) && { note: [typeNote, nameNote].filter(Boolean).join(' ') }),
     })
   })
 
@@ -988,9 +1077,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -1064,6 +1155,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Keep only non-trivial matches; skip duplicates by (ref, title).
     const seen = new Set<string>()
     const citations: Array<Record<string, unknown>> = []
+    const quoteCuts: CutText[] = []   // each quote's paragraph and trim, for redaction (X36)
+    const quoteTails: string[] = []
     for (const s of scored) {
       if (s.score < 0.1) break
       const key = `${s.n.ref}::${s.n.title}`
@@ -1071,9 +1164,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       seen.add(key)
       // Trim the text to 400 chars so the UI pill has something
       // scannable without blowing the message payload.
-      const snippet = s.n.text.length > 400 ? s.n.text.slice(0, 397) + '...' : s.n.text
+      const long = s.n.text.length > 400
+      quoteCuts.push({ text: s.n.text, cuts: [[0, long ? 397 : s.n.text.length]], valuesFrom: plainText })
+      quoteTails.push(long ? '...' : '')
       citations.push({
-        quote:        snippet,
+        quote:        s.n.text,
         page:         s.n.page,
         bbox:         s.n.bbox,
         sectionRef:   s.n.ref || null,
@@ -1089,14 +1184,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // answer is one user action and gets one audit row. Ordering and every
     // other field (page, bbox, sectionRef, sectionTitle, score, exact) are
     // structural anchors the citation UI depends on and stay untouched.
-    const redactedQuotes = await redactExcerpts(
-      body.orgId,
-      citations.map(c => (typeof c.quote === 'string' ? c.quote : null)),
-      { surface: 'contract_cite.quote', contractId: contract.id },
-    )
+    // X36 — values found in the whole paragraph, and the trim never splits one.
+    const redactedQuotes = await redactCutExcerpts(body.orgId, quoteCuts, { surface: 'contract_cite.quote', contractId: contract.id })
     citations.forEach((c, i) => {
-      const q = redactedQuotes[i]
-      if (typeof q === 'string') c.quote = q
+      const q = redactedQuotes[i]?.[0] ?? REDACTION_UNAVAILABLE
+      c.quote = q === REDACTION_UNAVAILABLE ? q : q + quoteTails[i]
     })
 
     return reply.send({
@@ -1121,9 +1213,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -1155,6 +1249,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
 
     const issues: Array<Record<string, unknown>> = []
+    const excerptCuts: Array<[number, number]> = []   // each issue's excerpt as offsets into text, for redaction (X36)
 
     // ── Pass 1: extract defined terms ──────────────────────────────
     // Common contract patterns:
@@ -1185,7 +1280,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const lower = (text.match(new RegExp(`\\b${term.toLowerCase()}\\b`, 'g')) ?? []).length
       if (exact >= 1 && lower >= 1) {
         const firstLower = text.indexOf(term.toLowerCase())
-        const excerpt = text.slice(Math.max(0, firstLower - 40), firstLower + 80)
+        const cut: [number, number] = [Math.max(0, firstLower - 40), firstLower + 80]
+        const excerpt = text.slice(...cut)
+        excerptCuts.push(cut)
         issues.push({
           kind:     'defined_term_drift',
           severity: 'medium',
@@ -1209,11 +1306,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
       for (const m of text.matchAll(pat)) {
         if (issues.length >= body.maxIssues) break
         const idx = m.index ?? 0
+        const cut: [number, number] = [Math.max(0, idx - 30), idx + (m[0]?.length ?? 0) + 40]
+        excerptCuts.push(cut)
         issues.push({
           kind:     'unresolved_crossref',
           severity: 'high',
           message:  `Placeholder reference "${m[0]}" was never filled in.`,
-          excerpt:  text.slice(Math.max(0, idx - 30), idx + (m[0]?.length ?? 0) + 40),
+          excerpt:  text.slice(...cut),
           match:    m[0],
         })
       }
@@ -1236,11 +1335,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
         if (!ref) continue
         if (!refsInDoc.has(ref)) {
           const idx = m.index ?? 0
+          const cut: [number, number] = [Math.max(0, idx - 40), idx + (m[0]?.length ?? 0) + 40]
+          excerptCuts.push(cut)
           issues.push({
             kind:     'dangling_section_ref',
             severity: 'medium',
             message:  `Reference to "Section ${ref}" but no such section exists in the document.`,
-            excerpt:  text.slice(Math.max(0, idx - 40), idx + (m[0]?.length ?? 0) + 40),
+            excerpt:  text.slice(...cut),
             ref,
           })
         }
@@ -1271,28 +1372,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // plus occurrence counts — no free document text.
     const visibleIssues = issues.slice(0, body.maxIssues)
     try {
-      const excerptIdx: number[] = []
-      const excerpts: string[] = []
-      visibleIssues.forEach((issue, i) => {
-        if (typeof issue.excerpt === 'string') {
-          excerptIdx.push(i)
-          excerpts.push(issue.excerpt)
-        }
-      })
-      if (excerpts.length > 0) {
-        const redacted = await applyPiiPolicyBatch(body.orgId, excerpts, {
+      // X36 — values found in the whole text, and no window splits one.
+      if (visibleIssues.length > 0) {
+        const { pieces: [windows] } = await redactCuts(body.orgId, [{ text, cuts: excerptCuts.slice(0, visibleIssues.length) }], {
           surface: 'contract_validate.excerpt',
           contractId: contract.id,
         })
-        excerptIdx.forEach((issueIndex, k) => {
-          const issue = visibleIssues[issueIndex]
-          if (issue) issue.excerpt = redacted.texts[k] ?? issue.excerpt
-        })
+        visibleIssues.forEach((issue, i) => { issue.excerpt = windows?.[i] ?? REDACTION_UNAVAILABLE })
       }
     } catch (err) {
-      // Redaction must never break the tool call. Fall through with a
-      // loud log; the excerpts stay raw for this one response.
+      // X23 — fail closed: if the org's PII policy can't be applied, the text
+      // doesn't go to the model at all.
       console.error('[contract_validate] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the excerpts were withheld. Try again shortly.' })
     }
 
     return reply.send({
@@ -1319,6 +1411,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // Match on counterpartyName OR via Counterparty.name — fuzzy ILIKE.
     // An exact name is ideal; substring match covers minor variations
@@ -1327,6 +1421,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: {
         orgId: body.orgId,
         deletedAt: null,
+        ...contractScopeWhere(scope), diligenceRoomId: null,
         OR: [
           { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } },
           { counterparty: { name: { contains: body.counterpartyName, mode: 'insensitive' } } },
@@ -1410,7 +1505,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       let riskRating: string | null = null
       if (body.clauseType && versionClauses.length > 0) {
         const cl = versionClauses[0]
-        excerpt = cl.content.slice(0, 400)
+        excerpt = cl.content   // cut to 400 characters when redacted (X36)
         sectionRef = cl.sectionRef
         riskRating = cl.riskRating
       }
@@ -1425,7 +1520,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         effectiveDate:    c.effectiveDate,
         expiryDate:       c.expiryDate,
         riskScore:        c.riskScore,
-        summary:          c.summary ? c.summary.slice(0, 280) : null,
+        summary:          c.summary || null,   // cut to 280 characters when redacted (X36)
         excerpt,
         sectionRef,
         riskRating,
@@ -1454,17 +1549,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
         if (d.excerpt) { excerptIdx.push(i); excerptTexts.push(d.excerpt) }
         if (d.summary) { summaryIdx.push(i); summaryTexts.push(d.summary) }
       })
+      // X40 — each deal's contract text (its current version), where a card
+      // number's "card" may be.
+      const versionOfContract = new Map(contracts.map(c => [c.id, c.currentVersionId]))
+      const documentOf = new Map((await prisma.contractVersion.findMany({
+        where: { id: { in: versionIds } }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const withDocument = (indices: number[], texts: string[], length: number): CutText[] =>
+        texts.map((text, k) => ({ text, cuts: [[0, length]], valuesFrom: documentOf.get(versionOfContract.get(deals[indices[k]]?.contractId ?? '') ?? '') }))
       const [redactedExcerpts, redactedSummaries] = await Promise.all([
-        redactExcerpts(body.orgId, excerptTexts, { surface: 'counterparty_memory.excerpt' }),
-        redactExcerpts(body.orgId, summaryTexts, { surface: 'counterparty_memory.summary' }),
+        // X36 — values found in the whole clause or summary, then cut.
+        redactCutExcerpts(body.orgId, withDocument(excerptIdx, excerptTexts, 400), { surface: 'counterparty_memory.excerpt' }),
+        redactCutExcerpts(body.orgId, withDocument(summaryIdx, summaryTexts, 280), { surface: 'counterparty_memory.summary' }),
       ])
       excerptIdx.forEach((dealIndex, k) => {
         const d = deals[dealIndex]
-        if (d) d.excerpt = redactedExcerpts[k] ?? d.excerpt
+        if (d) d.excerpt = redactedExcerpts[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
       summaryIdx.forEach((dealIndex, k) => {
         const d = deals[dealIndex]
-        if (d) d.summary = redactedSummaries[k] ?? d.summary
+        if (d) d.summary = redactedSummaries[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -1520,6 +1624,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // Dense — pgvector clause similarity. Caps at 2× topK so RRF has
     // room to rerank. Wrapped in try so an embedding failure (missing
@@ -1530,7 +1636,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     let dense: DenseHit[] = []
     try {
-      dense = await searchClauses(body.query, body.orgId, body.topK * 2)
+      dense = await searchClauses(body.query, body.orgId, body.topK * 2, undefined, scopeOwnerId(scope))
     } catch (err) {
       app.log.warn({ err }, '[portfolio_search] searchClauses failed, falling back to BM25 only')
     }
@@ -1540,13 +1646,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // a candidate container and later zip with any clause hits from
     // `dense` belonging to it.
     let bm25: Array<{ id?: string; score?: number | null }> = []
+    let bm25Total: number | null = null   // V2 — ES's count of keyword matches (the countable half)
     try {
       const filters: Record<string, unknown> = { q: body.query }
       if (body.contractType)     filters.type            = body.contractType
       if (body.status)           filters.status          = body.status
       if (body.counterpartyName) filters.counterpartyName = body.counterpartyName
+      // ES docs carry no ownerId, so an own-scope caller's contract ids are
+      // pushed in as a filter — before top-k, so results aren't thinned.
+      if (scope.kind === 'own') {
+        const owned = await prisma.contract.findMany({
+          where: { orgId: body.orgId, deletedAt: null, ownerId: scope.userId },
+          select: { id: true },
+          orderBy: { updatedAt: 'desc' },
+          take: 10_000,
+        })
+        filters.ids = owned.map(c => c.id)
+      }
       const esRes = await advancedSearch(body.orgId, filters as never, body.topK * 2)
       bm25 = esRes.hits
+      bm25Total = typeof esRes.total === 'number' ? esRes.total : null
     } catch (err) {
       app.log.warn({ err }, '[portfolio_search] ES advancedSearch failed, dense only')
     }
@@ -1609,6 +1728,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: { in: contractIds },
         orgId: body.orgId,
         deletedAt: null,
+        ...contractScopeWhere(scope), diligenceRoomId: null,
         ...(body.contractType     ? { type:             body.contractType }     : {}),
         ...(body.status           ? { status:           body.status }           : {}),
         ...(body.counterpartyName ? { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } } : {}),
@@ -1671,7 +1791,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         clauseId:      r.clauseId ?? null,
         clauseType:    clause?.clauseType ?? null,
         sectionRef:    clause?.sectionRef ?? null,
-        excerpt:       clause ? clause.content.slice(0, 500) : null,
+        excerpt:       clause ? clause.content : null,   // cut to 500 characters when redacted (X36)
         page:          navHit?.page ?? null,
         bbox:          navHit?.bbox ?? null,
         fusedScore:    Number(r.score.toFixed(4)),
@@ -1687,20 +1807,41 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // would be worse than leaving it request-scoped. Ranking inputs and the
     // structured metadata (titles, counterparty, clauseType, sectionRef,
     // page/bbox, scores) are untouched, so ordering is unchanged.
-    const redactedExcerpts = await redactExcerpts(
+    // X36 — values found in the whole clause, then cut.
+    // X40 — each clause's contract text too, where a card number's "card" may be.
+    const versionOfHit = (h: { clauseId: string | null }) => (h.clauseId ? clauseById.get(h.clauseId)?.versionId : undefined)
+    const documentOf = new Map((await prisma.contractVersion.findMany({
+      where:  { id: { in: [...new Set(hits.filter(h => h.excerpt).map(versionOfHit).filter((v): v is string => !!v))] } },
+      select: { id: true, plainText: true },
+    })).map(v => [v.id, v.plainText]))
+    const redactedExcerpts = await redactCutExcerpts(
       body.orgId,
-      hits.map(h => h.excerpt),
+      hits.map(h => (h.excerpt ? { text: h.excerpt, cuts: [[0, 500]], valuesFrom: documentOf.get(versionOfHit(h) ?? '') } : null)),
       { surface: 'portfolio_search.excerpt' },
     )
     hits.forEach((h, i) => {
-      const e = redactedExcerpts[i]
-      if (typeof e === 'string') h.excerpt = e
+      if (h.excerpt) h.excerpt = redactedExcerpts[i]?.[0] ?? REDACTION_UNAVAILABLE
     })
+
+    // V2 — hits are the top-K by relevance, not everything that matches. The
+    // keyword side is countable (ES total); the semantic side is ranked only.
+    const returnedContracts = new Set(hits.map(h => h.contractId)).size
+    const coverage: Coverage = bm25Total == null
+      ? coverageOf(returnedContracts, null)
+      : {
+          returned: returnedContracts,
+          totalMatching: bm25Total,
+          complete: returnedContracts >= bm25Total,
+          note: returnedContracts >= bm25Total
+            ? `All ${bm25Total} contracts matching the keywords are shown (plus any found by meaning).`
+            : `Showing the ${returnedContracts} most relevant contracts; ${bm25Total} contracts match the keywords, so this is not a complete list.`,
+        }
 
     return reply.send({
       query:   body.query,
       hits,
       total:   hits.length,
+      coverage,
       sources: {
         // Adaptive-router signal: did we actually get to use both
         // ranking sources, or was one down? The agent can read this
@@ -1724,9 +1865,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, jurisdiction: true,
@@ -1744,10 +1887,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const version = contract.currentVersionId
       ? await prisma.contractVersion.findUnique({
           where: { id: contract.currentVersionId },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
       : null
-    const snippet = (version?.plainText ?? '').slice(0, 1_500)
+    const plainText = version?.plainText ?? ''
+    // CC8 — the document's own sections, so a summary's points can be cited
+    // to them. Without them, "cite the sections" put indemnification in
+    // Section 3 of a contract whose Section 4 is Indemnification.
+    const sections = htmlBlocks(version?.htmlContent ?? '')
+      .filter(b => /^h[1-6]$/.test(b.kind) || SECTION_HEADING.test(b.text))
+      .map(b => b.text.slice(0, 120))
+      .slice(0, 80)
 
     // P21 PII boundary. Both document-derived blobs this tool returns —
     // the AI summary (written from contract text) and the plainText
@@ -1755,20 +1905,23 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // row for what the user experienced as a single tool call.
     // Structured metadata (counterparty, title, dates, riskFactors) is
     // deliberately left raw: the product depends on it.
-    let summaryOut = contract.summary
-    let snippetOut = snippet
+    let summaryOut: string | null
+    let snippetOut: string
     try {
-      const redacted = await applyPiiPolicyBatch(
-        body.orgId,
-        [contract.summary ?? '', snippet],
-        { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id },
-      )
+      // X36 — the snippet's values are found in the whole text, and its cut
+      // to 1,500 characters never splits one.
+      const summaryText = contract.summary ?? ''
+      const { pieces: [summaryPieces, snippetPieces] } = await redactCuts(body.orgId, [
+        { text: summaryText, cuts: [[0, summaryText.length]], valuesFrom: plainText },   // X40
+        { text: plainText, cuts: [[0, 1_500]] },
+      ], { surface: 'contract_summarize.summary+plainTextSnippet', contractId: contract.id })
       // Keep `summary: null` null — don't turn an absent summary into ''.
-      summaryOut = contract.summary != null ? (redacted.texts[0] ?? contract.summary) : null
-      snippetOut = redacted.texts[1] ?? snippet
+      summaryOut = contract.summary != null ? (summaryPieces?.[0] ?? REDACTION_UNAVAILABLE) : null
+      snippetOut = snippetPieces?.[0] ?? REDACTION_UNAVAILABLE
     } catch (err) {
-      // Redaction must never break the tool call.
-      console.error('[contract_summarize] PII redaction failed, returning unredacted text:', err)
+      // X23 — fail closed: unredacted text must not reach the model.
+      console.error('[contract_summarize] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the summary was withheld. Try again shortly.' })
     }
 
     return reply.send({
@@ -1783,10 +1936,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
       value:            contract.value != null ? Number(contract.value) : null,
       currency:         contract.currency,
       summary:          summaryOut,
-      keyTerms:         contract.keyTerms,
+      // X27 — as contract_get.
+      keyTerms:         await redactJsonAgainst(body.orgId, contract.keyTerms, plainText, { surface: 'contract_summarize.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       plainTextSnippet: snippetOut,
+      sections:         await redactJsonAgainst(body.orgId, sections, plainText, { surface: 'contract_summarize.sections', contractId: contract.id }),
     })
   })
 
@@ -1804,9 +1959,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, currentVersionId: true },
     })
     if (!contract) {
@@ -1816,17 +1973,47 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const version = contract.currentVersionId
       ? await prisma.contractVersion.findUnique({
           where: { id: contract.currentVersionId },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
       : await prisma.contractVersion.findFirst({
           where: { contractId: contract.id },
           orderBy: { versionNumber: 'desc' },
-          select: { plainText: true },
+          select: { plainText: true, htmlContent: true },
         })
 
-    const text = version?.plainText ?? ''
+    // The document's paragraphs, where the version has them: a match comes
+    // with the whole paragraph it's in. A fixed window around it cut a list
+    // of exclusions at "(a)", and the assistant answered as if that was all
+    // of it. (A Word file's plain text has no paragraph breaks to go by.)
+    const blocks = version?.htmlContent ? htmlBlocks(version.htmlContent) : []
+    const text = blocks.length ? blocks.map(b => b.text).join('\n') : version?.plainText ?? ''
     if (!text) {
-      return reply.send({ contractId: contract.id, title: contract.title, matches: [] })
+      // CC7 — say why there is nothing to find.
+      return reply.send({
+        contractId: contract.id, title: contract.title, matches: [], documentOnFile: false,
+        note: 'This contract has no document text on file (only its record), so nothing in it can be searched. Say so, and suggest uploading the document.',
+      })
+    }
+    const ranges: Array<{ start: number; end: number; heading: boolean }> = []
+    for (let at = 0, i = 0; i < blocks.length; at += blocks[i].text.length + 1, i++) {
+      ranges.push({ start: at, end: at + blocks[i].text.length, heading: /^h[1-6]$/.test(blocks[i].kind) || SECTION_HEADING.test(blocks[i].text) })
+    }
+    const PASSAGE_MAX = 1_600
+    /** The paragraph around a match (and what follows a bare heading), and whether all of it fits. */
+    const passage = (idx: number, len: number) => {
+      const bi = ranges.findIndex(r => idx < r.end + 1)
+      if (bi < 0) return null
+      let start = ranges[bi].start, end = ranges[bi].end
+      for (let j = bi; (ranges[j].heading || end - start < 160) && j + 1 < ranges.length && end - start < PASSAGE_MAX; j++) end = ranges[j + 1].end
+      let complete = true
+      if (end - start > PASSAGE_MAX) {
+        complete = false
+        start = Math.max(start, Math.min(idx - 300, end - PASSAGE_MAX))
+        end = Math.min(end, Math.max(start + PASSAGE_MAX, idx + len))
+      }
+      let k = bi
+      while (k >= 0 && !ranges[k].heading) k--
+      return { start, end, complete, section: k >= 0 ? blocks[k].text.slice(0, 120) : null }
     }
 
     // Case-insensitive sliding-window match. Not fancy — a real BM25 pass
@@ -1834,34 +2021,47 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // that the agent can find the right SECTION and cite it verbatim.
     const q = body.query.trim()
     const lower = text.toLowerCase()
-    const qLower = q.toLowerCase()
     const matches: Array<{
       index: number
       beforeContext: string
       match: string
       afterContext: string
       sectionHint: string | null
+      /** False when the paragraph was longer than the passage returned: fetch more before quoting all of it. */
+      passageComplete?: boolean
     }> = []
 
+    const windowCuts: Array<[number, number]> = []   // before, match, after of each match, for redaction (X36)
     let cursor = 0
     while (matches.length < body.limit) {
-      const idx = lower.indexOf(qLower, cursor)
-      if (idx === -1) break
+      // Alias-aware, same reason as portfolio_compare: a query of "liability
+      // cap" has to find "Limitation of Liability" or it reports the clause
+      // missing from a contract that contains it.
+      const hit = findTopic(text, q, cursor)
+      if (!hit) break
+      const idx = hit.index
+      const mLen = hit.matchedPhrase.length
+      const para = blocks.length ? passage(idx, mLen) : null
       const half = Math.floor(body.windowChars / 2)
-      const start = Math.max(0, idx - half)
-      const end   = Math.min(text.length, idx + q.length + half)
+      const start = para ? para.start : Math.max(0, idx - half)
+      const end   = para ? para.end   : Math.min(text.length, idx + mLen + half)
       const before = text.slice(start, idx)
-      const match  = text.slice(idx, idx + q.length)
-      const after  = text.slice(idx + q.length, end)
+      const match  = text.slice(idx, idx + mLen)
+      const after  = text.slice(idx + mLen, end)
 
-      // Best-effort section heading detection: look backwards for a line
-      // starting with a digit + dot + optional dot (e.g. "9.2", "3.1.4").
-      const backscan = text.slice(Math.max(0, idx - 500), idx)
-      const sectionMatch = backscan.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
-      const sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
+      // The section it's under: its heading, or (plain text) the nearest
+      // "9.2"-style number above it.
+      let sectionHint = para?.section ?? null
+      if (!para) {
+        const backscan = text.slice(Math.max(0, idx - 500), idx)
+        const sectionMatch = backscan.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
+        sectionHint = sectionMatch ? sectionMatch[sectionMatch.length - 1].trim() : null
+      }
 
-      matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint })
-      cursor = idx + q.length
+      matches.push({ index: idx, beforeContext: before, match, afterContext: after, sectionHint, ...(para && { passageComplete: para.complete }) })
+      windowCuts.push([start, idx], [idx, idx + mLen], [idx + mLen, end])
+      // One passage per paragraph: the next match starts after this one.
+      cursor = Math.max(idx + mLen, para ? end : 0)
     }
 
     // P7.5.1 — every window here is verbatim contract text going to the LLM:
@@ -1869,19 +2069,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // matches into ONE batch (3N strings, one policy read, one audit row) and
     // map back by index, so ordering and shape are unchanged. `index` and
     // `sectionHint` are positional/structural metadata and stay raw.
-    const flatWindows: string[] = []
-    for (const m of matches) flatWindows.push(m.beforeContext, m.match, m.afterContext)
-    const redactedWindows = await redactExcerpts(body.orgId, flatWindows, {
+    // X36 — values found in the whole text, and no window edge splits one
+    // (each was redacted on its own, so a value across an edge went out in
+    // pieces).
+    const [windows] = await redactCutExcerpts(body.orgId, [{ text, cuts: windowCuts }], {
       surface: 'clause_search.excerpt',
       contractId: contract.id,
     })
     matches.forEach((m, i) => {
-      const before = redactedWindows[i * 3]
-      const mid    = redactedWindows[i * 3 + 1]
-      const after  = redactedWindows[i * 3 + 2]
-      if (typeof before === 'string') m.beforeContext = before
-      if (typeof mid    === 'string') m.match         = mid
-      if (typeof after  === 'string') m.afterContext  = after
+      m.beforeContext = windows?.[i * 3] ?? REDACTION_UNAVAILABLE
+      m.match         = windows?.[i * 3 + 1] ?? REDACTION_UNAVAILABLE
+      m.afterContext  = windows?.[i * 3 + 2] ?? REDACTION_UNAVAILABLE
     })
 
     return reply.send({
@@ -1918,9 +2116,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    // X9 — the answer is the org's playbook positions: REST needs view:playbook.
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'playbook')) return
 
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -1960,10 +2162,6 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { orgId: body.orgId },
       select: { id: true, name: true },
     })
-    const categoryByNormalisedName = new Map<string, { id: string; name: string }>()
-    for (const c of categories) {
-      categoryByNormalisedName.set(normalisedKey(c.name), { id: c.id, name: c.name })
-    }
 
     // Load every position for the contract's type (or type-agnostic).
     // We also pull `rules` (P1.2) — the structured playbook schema the
@@ -1998,9 +2196,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // "We found nothing wrong" and "we did not look" have to be distinguishable,
     // because a redlining pipeline treats the first as done.
     const uncovered: Array<{ clauseId: string; clauseType: string; sectionRef: string | null; reason: string }> = []
+    const judgeable: Array<{ cl: (typeof clauses)[number]; category: { id: string; name: string }; matchingPositions: typeof positions }> = []
     for (const cl of clauses) {
-      const key = normalisedKey(cl.clauseType)
-      const category = categoryByNormalisedName.get(key)
+      const category = matchCategory(categories, cl.clauseType)
       if (!category) { unmapped.add(cl.clauseType); continue }
       const matchingPositions = positionsByCategory.get(category.id) ?? []
       if (matchingPositions.length === 0) {
@@ -2019,18 +2217,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
         })
         continue
       }
+      judgeable.push({ cl, category, matchingPositions })
+    }
 
+    // DD1 — a clause type's must-have rules and cap limits are judged once,
+    // on all of its clauses together, and carried by the clause stating the
+    // cap; must-not rules on each clause (lib/playbook-rules.ts).
+    const byCategory = new Map<string, Array<(typeof clauses)[number]>>()
+    for (const { cl, category } of judgeable) byCategory.set(category.id, [...(byCategory.get(category.id) ?? []), cl])
+    const textsOf = new Map<string, RuleTexts>()
+    const capAnalysisOf = new Map<string, string[]>()
+    for (const group of byCategory.values()) {
+      const { lead, texts, caps } = ruleTextsFor(group)
+      for (const [id, t] of texts) textsOf.set(id, t)
+      if (caps.length) capAnalysisOf.set(lead.id, caps.map(c => c.statement))
+    }
+
+    for (const { cl, category, matchingPositions } of judgeable) {
       // P1.2 — evaluate every position's `rules` (if any) against the
       // clause text. Combine hits into a single violations[] for the
       // clause so the agent LLM can see "3 violations, severity high"
       // without having to pick through positions.
-      const violations: Array<Record<string, unknown>> = []
-      for (const pos of matchingPositions) {
-        const rules = pos.rules as PlaybookRules | null
-        if (!rules) continue
-        violations.push(...evaluatePlaybookRules(rules, cl.content, pos.positionType))
-      }
+      const texts = textsOf.get(cl.id) ?? { own: cl.content, all: cl.content, caps: null }
+      const violations = dedupeViolations(matchingPositions.flatMap(pos =>
+        pos.rules ? evaluatePlaybookRules(pos.rules as PlaybookRules, texts, pos.positionType) : []))
       const worstSeverity = pickWorstSeverity(violations)
+      const capAnalysis = capAnalysisOf.get(cl.id)
 
       checks.push({
         // Required to chain into a rewrite: redline_propose and redline_apply
@@ -2039,7 +2251,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         clauseId:    cl.id,
         clauseType:  cl.clauseType,
         sectionRef:  cl.sectionRef,
-        excerpt:     cl.content.slice(0, 800),
+        excerpt:     cl.content,   // cut to 800 characters when redacted (X36)
         riskRating:  cl.riskRating,
         reviewState: cl.reviewState,
         category:    { id: category.id, name: category.name },
@@ -2064,6 +2276,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
         failedCount:     violations.filter(v => v.passed === false).length,
         // Kept for the artifact renderer, which reads `failed` as a number.
         failed:          violations.filter(v => v.passed === false).length,
+        // DD1 — the caps these words state, measured: quote these figures
+        // rather than working them out (redacted below with the excerpts).
+        ...(capAnalysis && { capAnalysis }),
       })
     }
 
@@ -2093,13 +2308,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(ck.excerpt)
         }
       })
-      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+      // DD1 — a super-cap's statement quotes the claims it is for.
+      const capIdx: Array<[number, number]> = []
+      const capTexts: string[] = []
+      checks.forEach((ck, i) => (ck.capAnalysis as string[] | undefined)?.forEach((s, j) => { capIdx.push([i, j]); capTexts.push(s) }))
+      // X36 — values found in the whole clause, then cut; X40 — and in the
+      // whole contract, where a card number's "card" may be.
+      const document = (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
+      const redacted = await redactCutExcerpts(body.orgId, [
+        ...excerptTexts.map((text): CutText => ({ text, cuts: [[0, 800]], valuesFrom: document })),
+        ...capTexts.map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: document })),
+      ], {
         surface: 'playbook_check.excerpt',
         contractId: contract.id,
       })
       excerptIdx.forEach((checkIndex, k) => {
         const ck = checks[checkIndex]
-        if (ck) ck.excerpt = redacted[k] ?? ck.excerpt
+        if (ck) ck.excerpt = redacted[k]?.[0] ?? REDACTION_UNAVAILABLE
+      })
+      capIdx.forEach(([checkIndex, j], k) => {
+        const list = checks[checkIndex]?.capAnalysis as string[] | undefined
+        if (list) list[j] = redacted[excerptTexts.length + k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
@@ -2154,7 +2383,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           ?.find(p => p.positionType === 'preferred')
         if (!preferredPos || !pos?.rules) return ck
         try {
-          const judgeRes = await fetch(`${AGENTS_URL}/playbook_judge`, {
+          const judgeRes = await modelFetch(`${AGENTS_URL}/playbook_judge`, {
             method: 'POST',
             headers: {
               'content-type': 'application/json',
@@ -2166,7 +2395,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
               rules: pos.rules,
               orgId: body.orgId,   // per-org BYOK key + Langfuse tracing
             }),
-          })
+          }, { orgId: body.orgId, surface: 'playbook_judge' })
           if (!judgeRes.ok) return ck
           const judged = await judgeRes.json() as {
             bestMatchPositionType?: string
@@ -2191,6 +2420,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
               if (hit) return { ...v, passed: hit.passed, evidence: hit.evidence, judged: true }
             }
             if (v.kind === 'bound') {
+              // DD1 — measured from the words; a model's reading doesn't replace it.
+              if (v.computed) return v
               const hit = boundsByKey.get(v.boundKey as string)
               if (hit) return {
                 ...v,
@@ -2276,6 +2507,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    // X9 — REST's /clauses/:clauseId/suggest needs edit:contract; the variants
+    // are built from the org's playbook positions, walkaway language included.
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'contract', 'edit')
+    if (!scope) return
+    if (scope.kind === 'own') {
+      const visible = await prisma.contract.count({
+        where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
+      })
+      if (!visible) return reply.status(404).send({ detail: 'Contract not found in this org' })
+    }
     // Shared with the user-facing POST /contracts/:id/clauses/:clauseId/suggest
     // so the chat agent and the review drawer produce identical proposals.
     const result = await proposeClauseAlternatives({
@@ -2283,12 +2524,40 @@ export async function internalAiRoutes(app: FastifyInstance) {
       orgId:        body.orgId,
       clauseId:     body.clauseId,
       clauseType:   body.clauseType,
+      sectionRef:   body.sectionRef,
       instructions: body.instructions,
     })
     if (!result.ok) {
+      // X53 — a miss lists the contract's clauses (id, type, section and
+      // opening words), so the model retries by id rather than guessing
+      // another type. The openings are contract text going to the model:
+      // under the org's PII policy, found in the whole clause and document.
+      if (result.clauses?.length) {
+        const [document] = await redlineSource(body.contractId, [])
+        const openings = await redactCutExcerpts(
+          body.orgId,
+          result.clauses.map(c => ({ text: c.content, cuts: [[0, 100]] as Array<[number, number]>, valuesFrom: document })),
+          { surface: 'redline_propose.clauses', contractId: body.contractId, userId: body.userId ?? undefined },
+        )
+        const total = result.totalClauses ?? result.clauses.length
+        const cut = total > result.clauses.length
+          ? ` These are ${result.clauses.length} of the contract's ${total}; name the section to see others.`
+          : ''
+        return reply.status(result.status).send({
+          detail: `${result.detail}. Retry with clauseId set to one of these clauses.${cut}`,
+          clauses: result.clauses.map((c, i) => ({
+            clauseId: c.id, clauseType: c.clauseType, sectionRef: c.sectionRef?.slice(0, 40) ?? null, opening: openings[i]?.[0] ?? '',
+          })),
+        })
+      }
       return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
     }
-    return reply.send(result.data)
+    // X23 — this goes back to the chat model: the org's PII policy applies, as
+    // round-trip tokens that redline_apply puts back (clause-apply.ts).
+    return reply.send(await redactJson(body.orgId, result.data, {
+      surface: 'redline_propose', contractId: body.contractId, roundTrip: body.contractId,
+      valuesFrom: await redlineSource(body.contractId, [result.data.clause.id]),
+    }))
   })
 
 
@@ -2302,6 +2571,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    // X9 — REST's /clauses/:clauseId/suggest needs edit:contract; the variants
+    // are built from the org's playbook positions, walkaway language included.
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'contract', 'edit')
+    if (!scope) return
+    if (scope.kind === 'own') {
+      const visible = await prisma.contract.count({
+        where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
+      })
+      if (!visible) return reply.status(404).send({ detail: 'Contract not found in this org' })
+    }
     const result = await proposeClauseBatch({
       orgId:        body.orgId,
       contractId:   body.contractId,
@@ -2312,7 +2591,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!result.ok) {
       return reply.status(result.status).send({ detail: result.detail, upstream: result.upstream })
     }
-    return reply.send(result.data)
+    // X23 — as redline_propose: tokens for the chat model, put back on apply.
+    return reply.send(await redactJson(body.orgId, result.data, {
+      surface: 'redline_propose_batch', contractId: body.contractId, roundTrip: body.contractId,
+      valuesFrom: await redlineSource(body.contractId, body.clauseIds),
+    }))
   })
 
   // ── POST /internal/ai/tools/comment_add (D.3.2) ────────────────────────────
@@ -2343,6 +2626,17 @@ export async function internalAiRoutes(app: FastifyInstance) {
         select: { id: true },
       })
       if (!v) return reply.status(404).send({ detail: 'Version not found on this contract' })
+    }
+
+    // X10 — a reply must answer a comment on this same contract, as REST
+    // requires. A bare parentId let a reply land in another contract's — or
+    // another org's — thread, where its owner couldn't even edit it.
+    if (body.parentId) {
+      const parent = await prisma.contractComment.findFirst({
+        where: { id: body.parentId, contractId: body.contractId, orgId: body.orgId, deletedAt: null },
+        select: { id: true },
+      })
+      if (!parent) return reply.status(404).send({ detail: 'Parent comment not found on this contract' })
     }
 
     const comment = await prisma.contractComment.create({
@@ -2443,34 +2737,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
       select: {
         id: true, title: true, type: true, status: true,
-        ownerId: true, tags: true, analysisStatus: true,
+        ownerId: true, tags: true, analysisStatus: true, currentVersionId: true,
       },
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found in this org' })
-
-    // Valid status transitions — mirror the REST PATCH handler's table so
-    // the agent can't skip through states the UI would reject.
-    const VALID_TRANSITIONS: Record<string, string[]> = {
-      DRAFT:             ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-      PENDING_REVIEW:    ['DRAFT', 'UNDER_NEGOTIATION', 'PENDING_APPROVAL'],
-      UNDER_NEGOTIATION: ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-      PENDING_APPROVAL:  ['APPROVED', 'REJECTED'],
-      APPROVED:          ['EXECUTED', 'PENDING_SIGNATURE'],
-      EXECUTED:          ['ARCHIVED'],
-      EXPIRED:           ['ARCHIVED'],
-      REJECTED:          ['DRAFT'],
-    }
 
     // Each action is its own switch branch so reversibility + the undo
     // snapshot can be computed exactly where the mutation happens.
     if (body.action === 'set_status') {
       const nextStatus = String(body.payload.status ?? '')
-      const allowed = VALID_TRANSITIONS[existing.status] ?? []
-      if (!allowed.includes(nextStatus)) {
-        return reply.status(409).send({
-          detail: `Cannot transition from ${existing.status} to ${nextStatus}`,
-          allowed,
-        })
+      // X24 — the same manual table as REST; approval statuses are the workflow's.
+      const refusal = manualStatusRefusal(existing.status, nextStatus)
+      if (refusal) {
+        return reply.status(409).send({ detail: refusal, allowed: MANUAL_STATUS_TRANSITIONS[existing.status] ?? [] })
       }
       await prisma.contract.update({
         where: { id: existing.id },
@@ -2481,7 +2760,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         reversible: true,
         action: 'set_status',
         contractId: existing.id,
-        snapshot: { status: existing.status }, // for undo
+        snapshot: { status: existing.status, after: nextStatus }, // for undo
         diff: [{ field: 'status', before: existing.status, after: nextStatus }],
       })
     }
@@ -2542,11 +2821,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // (PENDING) — enqueuing classify would silently no-op and strand the
     // contract in CLASSIFYING. Returns false if there's nothing to analyze.
     const reanalyze = async (): Promise<boolean> => {
-      const latest = await prisma.contractVersion.findFirst({
-        where: { contractId: existing.id },
-        orderBy: { versionNumber: 'desc' },
-        select: { id: true, plainText: true, s3Key: true, mimeType: true },
-      })
+      // DD4 — the version the contract stands on, not the newest (after an
+      // undo, the undone one).
+      const latest = await standingVersion(existing.id, existing.currentVersionId)
       if (!latest) return false
       if (latest.plainText && latest.plainText.trim()) {
         await prisma.contract.update({ where: { id: existing.id }, data: { analysisStatus: 'CLASSIFYING' } })
@@ -2567,14 +2844,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (body.action === 'retype') {
       const nextType = String(body.payload.type ?? '')
       if (!nextType) return reply.status(400).send({ detail: 'payload.type required' })
-      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType } })
+      // X56 — as REST: a new type on an approved contract returns it to DRAFT
+      // for approval again, on the record.
+      const retyped = nextType !== existing.type
+      const status = retyped ? statusAfterTermsChange(existing.status) : undefined
+      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType, ...(status && { status }) } })
+      if (retyped) {
+        await createAuditEvent({
+          orgId: body.orgId, userId: body.userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: existing.id,
+          metadata: { action: 'retype', source: 'agent', typeFrom: existing.type, typeTo: nextType, ...(status && { statusFrom: existing.status, statusTo: status }) },
+        })
+      }
       await reanalyze()  // best-effort re-analysis; retype still succeeds without a version
       return reply.send({
         ok: true,
         reversible: false,
         action: 'retype',
         contractId: existing.id,
-        diff: [{ field: 'type', before: existing.type, after: nextType }],
+        diff: [
+          { field: 'type', before: existing.type, after: nextType },
+          ...(status ? [{ field: 'status', before: existing.status, after: status }] : []),
+        ],
       })
     }
 
@@ -2613,14 +2903,25 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const existing = await prisma.contract.findFirst({
       where: { id: body.data.contractId, orgId: body.data.orgId, deletedAt: null },
-      select: { id: true },
+      select: { id: true, status: true },
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
 
     const data: Record<string, unknown> = {}
     if (body.data.action === 'set_status') {
-      data.status = String(body.data.snapshot.status ?? '')
-      if (!data.status) return reply.status(400).send({ detail: 'snapshot.status missing' })
+      const previous = String(body.data.snapshot.status ?? '')
+      if (!previous) return reply.status(400).send({ detail: 'snapshot.status missing' })
+      // X24 follow-up — only an exact undo: the contract must still have the
+      // status the action set. Restored over later changes, an undo could put
+      // APPROVED back on a contract renegotiated and rejected since. (A
+      // snapshot from before `after` was recorded falls back to the manual
+      // transition table.)
+      const after = body.data.snapshot.after
+      const stale = typeof after === 'string' ? existing.status !== after : manualStatusRefusal(existing.status, previous) !== null
+      if (stale) {
+        return reply.status(409).send({ detail: `The contract's status has changed since (it is now ${existing.status}), so nothing was undone.` })
+      }
+      data.status = previous
     } else if (body.data.action === 'assign_owner') {
       data.ownerId = body.data.snapshot.ownerId == null ? null : String(body.data.snapshot.ownerId)
     } else if (body.data.action === 'add_tag' || body.data.action === 'remove_tag') {
@@ -2685,7 +2986,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
-      select: { id: true, title: true, type: true, status: true, value: true },
+      select: { id: true, title: true, type: true, status: true, value: true, currency: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
     if (!['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract.status)) {
@@ -2706,16 +3007,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
           where: { id: body.workflowDefinitionId, orgId: body.orgId, deletedAt: null, isActive: true },
         })
       : null
+    if (body.workflowDefinitionId && !workflow) {
+      return reply.status(422).send({ detail: 'That workflow is inactive or no longer exists. Omit it to use the workflow whose rules fit the contract.' })
+    }
+    const contractValue = contract.value != null ? Number(contract.value) : null
     if (!workflow) {
+      // Z3 — the same choice as the REST route and the Send for review dialog.
       const candidates = await prisma.workflowDefinition.findMany({
         where: { orgId: body.orgId, isActive: true, deletedAt: null },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
       })
-      for (const c of candidates) {
-        const rules = (c.triggerRules as Record<string, unknown>) ?? {}
-        const types = (rules.contractTypes as string[] | undefined) ?? []
-        if (types.length === 0 || types.includes(contract.type)) { workflow = c; break }
-      }
+      workflow = pickWorkflow(candidates, { type: contract.type, value: contractValue, currency: contract.currency })
     }
     if (!workflow) {
       return reply.status(422).send({ detail: 'No active approval workflow found for this org' })
@@ -2729,10 +3030,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const firstStepDef = stepDefs.sort((a, b) => a.order - b.order)[0]
     const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
-    const contractValue = contract.value != null ? Number(contract.value) : null
 
     // Auto-approve path — matches the REST handler's fast lane.
-    if (checkAutoApprove(contract.type, contractValue, triggerRules)) {
+    if (checkAutoApprove(contract.type, contractValue, triggerRules, contract.currency)) {
       const instance = await prisma.approvalInstance.create({
         data: {
           orgId: body.orgId,
@@ -2927,9 +3227,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
     const contract = await prisma.contract.findFirst({
       where: { id: body.data.contractId, orgId: body.data.orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true },
+      select: { id: true, currentVersionId: true, externalEdit: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
     // Idempotency — if we've already been undone, return 409.
     if (contract.currentVersionId === body.data.previousVersionId) {
       return reply.status(409).send({ detail: 'Already reverted to previous version' })
@@ -2999,9 +3301,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true },
+      select: { id: true, currentVersionId: true, externalEdit: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const version = await prisma.contractVersion.findFirst({
       where:  { id: versionId, contractId },
@@ -3089,8 +3393,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       (body.counterpartyName
         ? `${template.name} — ${body.counterpartyName}`
         : `Draft — ${template.name}`)
-    const contractType = template.contractType ?? 'OTHER'
-    const plainText = htmlToPlainText(generated.html)
+    const contractType = body.contractType ?? template.contractType ?? 'OTHER'
+    // X67 review — as the editor's saves: its own converter glued table cells
+    // (`<td>SSN</td><td>219-09-9999</td>` → `SSN219-09-9999`), out of the
+    // PII patterns' reach.
+    const plainText = htmlToText(generated.html)
 
     const created = await prisma.$transaction(async (tx) => {
       const contract = await tx.contract.create({
@@ -3146,6 +3453,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
       createdAt:        created.contract.createdAt.toISOString(),
     }).catch(() => { /* swallow */ })
 
+    // An agent-created contract is a real contract: record who caused it,
+    // as the manual REST create does. (Moved here from /tools/contract_draft,
+    // which now only plans — C12.)
+    createAuditEvent({
+      orgId:        body.orgId,
+      userId:       body.userId,
+      action:       AuditAction.CONTRACT_CREATED,
+      resourceType: 'contract',
+      resourceId:   created.contract.id,
+      metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
+    }).catch(err => req.log.warn({ err }, '[contract_create_from_template] audit failed'))
+
     return reply.send({
       ok: true,
       reversible: true,
@@ -3153,6 +3472,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       versionId:  created.version.id,
       title:      created.contract.title,
       type:       created.contract.type,
+      // Doc artifact fields (artifact-from-tool.ts) — the draft opens in the
+      // right pane once the user applies the confirm card.
+      html:       generated.html,
+      subtitle:   body.counterpartyName ? `Draft ${contractType} for ${body.counterpartyName}` : `Draft ${contractType}`,
       sectionsIncluded:   generated.sectionsIncluded,
       sectionsExcluded:   generated.sectionsExcluded,
       unfilledVariables:  generated.unfilledVariables,
@@ -3186,6 +3509,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       where: { id: existing.id },
       data:  { deletedAt: new Date() },
     })
+    // Keep an undone draft out of search too.
+    deleteContractFromIndex(existing.id).catch(() => { /* swallow */ })
     return reply.send({ ok: true, undone: true, contractId: existing.id })
   })
 
@@ -3200,21 +3525,25 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     // P8 Step 1 — read from the Obligation table, not contract.metadata.
     const where: Record<string, unknown> = { orgId: body.orgId }
+    if (scope.kind === 'own') where.contract = { ownerId: scope.userId }
     if (body.contractId) where.contractId = body.contractId
     if (body.type)       where.type = body.type
 
     // Pull contracts up-front so we can join titles + flag contracts
     // that haven't been extracted yet (the empty-state diagnostic).
-    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const contractWhere: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), ...(body.contractId ? {} : { diligenceRoomId: null }) }
     if (body.contractId) contractWhere.id = body.contractId
     const contracts = await prisma.contract.findMany({
       where: contractWhere as never,
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, effectiveDate: true, expiryDate: true,
+        currentVersionId: true,
       },
       take: body.contractId ? 1 : 500,
     })
@@ -3274,8 +3603,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
       .filter(c => !seen.has(c.id))
       .map(c => ({ id: c.id, title: c.title }))
 
+    // X27 — an obligation's description and source quote are contract text,
+    // bound for the chat model like any other excerpt.
+    const page = items.slice(0, body.limit)
+    // X40 — values found against each obligation's contract text too, where
+    // a card number's "card" may be.
+    const versionOf = (item: Record<string, unknown>) => contractById.get(String(item.contractId ?? ''))?.currentVersionId ?? null
+    const documentOf = new Map((await prisma.contractVersion.findMany({
+      where: { id: { in: [...new Set(page.map(versionOf).filter((v): v is string => !!v))] } }, select: { id: true, plainText: true },
+    })).map(v => [v.id, v.plainText]))
+    const whole = (text: unknown, item: Record<string, unknown>): CutText | null =>
+      typeof text === 'string' && text ? { text, cuts: [[0, text.length]], valuesFrom: documentOf.get(versionOf(item) ?? '') } : null
+    const texts = await redactCutExcerpts(body.orgId, page.flatMap(i => [whole(i.description, i), whole(i.quote, i)]), {
+      surface: 'obligations_list', contractId: body.contractId ?? undefined,
+    })
+    page.forEach((item, k) => {
+      item.description = texts[2 * k]?.[0] ?? (item.description ? REDACTION_UNAVAILABLE : item.description)
+      item.quote = texts[2 * k + 1]?.[0] ?? (item.quote ? REDACTION_UNAVAILABLE : item.quote)
+    })
+
     return reply.send({
-      items: items.slice(0, body.limit),
+      items: page,
       total: items.length,
       contractId: body.contractId ?? null,
       // P7.7.3 / F-83 — When the answer is empty, surface "X contracts
@@ -3304,29 +3652,37 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
-    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), ...(body.contractId ? {} : { diligenceRoomId: null }) }
+    const select = {
+      id: true, title: true, type: true, status: true,
+      counterpartyName: true, metadata: true, effectiveDate: true,
+      expiryDate: true, value: true, currency: true, keyTerms: true,
+    } as const
+    // V2 — upcoming renewals first (soonest first), then ones that lapsed in
+    // the last 30 days (most recent first). A single expiryDate-asc query
+    // over the whole window filled the page with LAPSED contracts before any
+    // upcoming one, and its page counts were reported as if complete.
+    let contracts
+    let upcomingTotal = 0, lapsedTotal = 0
     if (body.contractId) {
-      where.id = body.contractId
+      contracts = await prisma.contract.findMany({ where: { ...where, id: body.contractId } as never, select, take: 1 })
     } else {
       const now = Date.now()
-      where.expiryDate = {
-        lte: new Date(now + body.leadDays * 24 * 3600 * 1000),
-        gte: new Date(now - 30 * 24 * 3600 * 1000),
-      }
-      where.status = 'EXECUTED'
+      const upcomingWhere = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now), lte: new Date(now + body.leadDays * 24 * 3600 * 1000) } }
+      const lapsedWhere   = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now - 30 * 24 * 3600 * 1000), lt: new Date(now) } }
+      const [upcoming, lapsed, u, l] = await Promise.all([
+        prisma.contract.findMany({ where: upcomingWhere as never, select, orderBy: { expiryDate: 'asc' }, take: body.limit }),
+        prisma.contract.findMany({ where: lapsedWhere as never, select, orderBy: { expiryDate: 'desc' }, take: body.limit }),
+        prisma.contract.count({ where: upcomingWhere as never }),
+        prisma.contract.count({ where: lapsedWhere as never }),
+      ])
+      contracts = [...upcoming, ...lapsed]
+      upcomingTotal = u
+      lapsedTotal = l
     }
-
-    const contracts = await prisma.contract.findMany({
-      where: where as never,
-      select: {
-        id: true, title: true, type: true, status: true,
-        counterpartyName: true, metadata: true, effectiveDate: true,
-        expiryDate: true, value: true, currency: true,
-      },
-      take: body.contractId ? 1 : Math.min(body.limit * 3, 300),
-      orderBy: { expiryDate: 'asc' },
-    })
 
     type Advice = {
       recommendation?: string; confidence?: string; rationale?: string
@@ -3343,6 +3699,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const daysOut = expiry
         ? Math.round((expiry - Date.now()) / (24 * 3600 * 1000))
         : null
+      // CC12 — whether it renews by itself, and by when notice must go: the
+      // question a renewal view is for. The rows carried neither, so "put
+      // the ones whose notice deadline has passed first" had nothing to sort.
+      const notice = renewalNotice(c)
       return {
         contractId:       c.id,
         contractTitle:    c.title,
@@ -3356,6 +3716,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         renewalAdvice:    md.renewalAdvice ?? null,
         renewalDecision:  md.renewalDecision ?? null,
         renewalNotifiedAt: md.renewalNotifiedAt ?? null,
+        autoRenews:       notice.autoRenew,
+        noticeDays:       notice.noticeDays,
+        noticeDeadline:   notice.deadline ? notice.deadline.toISOString().slice(0, 10) : null,
+        noticeDeadlinePassed: notice.deadline ? notice.deadline.getTime() < Date.now() : null,
       }
     }).slice(0, body.limit)
 
@@ -3367,9 +3731,38 @@ export async function internalAiRoutes(app: FastifyInstance) {
       else counts.unadvised++
     }
 
+    // The window deliberately reaches 30 days BACKWARD as well as `leadDays`
+    // forward, so a renewal that lapsed last week still surfaces. That is
+    // useful and stays — but `total` counted both halves, and the agent, told
+    // by the tool description that every row was "expiring in the next N days",
+    // reported the row count verbatim: "there are 20 contracts expiring in the
+    // next 90 days" when 12 of them had already expired. Found in production
+    // traces, reproduced across four sessions.
+    //
+    // Splitting the count is the fix. The agent should not have to infer the
+    // split by reading the sign of daysUntilExpiry across twenty rows, and
+    // anything that reports `total` as "expiring" is now visibly wrong rather
+    // than subtly wrong.
+    //
+    // V2 — and they are now TRUE counts over the whole window, not counts of
+    // the returned page, so "how many renew in the next 90 days" is right
+    // even when more exist than one page shows.
+    const expiringSoon    = body.contractId ? items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry >= 0).length : upcomingTotal
+    const recentlyExpired = body.contractId ? items.filter((i) => i.daysUntilExpiry !== null && i.daysUntilExpiry < 0).length : lapsedTotal
+    const totalMatching = body.contractId ? items.length : upcomingTotal + lapsedTotal
+
     return reply.send({
       items,
       total:  items.length,
+      // Read THESE, not `total`, when answering "how many are expiring?".
+      expiringSoon,
+      recentlyExpired,
+      totalMatching,
+      coverage: coverageOf(items.length, totalMatching),
+      windowNote: `Window covers the next ${body.leadDays} days plus the previous 30. `
+        + `${expiringSoon} contract(s) have not yet expired; ${recentlyExpired} already have.`
+        + (items.length < totalMatching ? ` Only ${items.length} of the ${totalMatching} are listed below.` : ''),
+      // Recommendation mix among the LISTED rows only.
       counts,
       contractId: body.contractId ?? null,
     })
@@ -3390,6 +3783,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    // X9 — each section follows its own permission, as in REST: positions need
+    // view:playbook, library items view:clause. What's withheld is named so
+    // the model says "not available to you", not "none exist".
+    const [playbookScope, clauseScope] = await Promise.all([
+      resolveCallerScope(body.orgId, body.userId, 'playbook'),
+      resolveCallerScope(body.orgId, body.userId, 'clause'),
+    ])
+    const withheld = [
+      ...(playbookScope.kind === 'none' ? ['playbook'] : []),
+      ...(clauseScope.kind === 'none' ? ['clauseLibrary'] : []),
+    ]
 
     // Pick the category that best matches the topic — normalise both
     // sides (docs/28 C.2.1 match rule).
@@ -3404,7 +3810,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     })
 
     // 1) Playbook positions for that category (type-filtered when set).
-    const playbook = matchCategory
+    const playbook = matchCategory && playbookScope.kind !== 'none'
       ? await prisma.playbookPosition.findMany({
           where: {
             orgId: body.orgId,
@@ -3423,7 +3829,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     // 2) Clause-library items tagged with the topic or under that
     //    category, approved-only by default.
-    const clauseLibrary = await prisma.clauseLibraryItem.findMany({
+    const clauseLibrary = clauseScope.kind === 'none' ? [] : await prisma.clauseLibraryItem.findMany({
       where: {
         orgId: body.orgId,
         deletedAt: null,
@@ -3449,24 +3855,35 @@ export async function internalAiRoutes(app: FastifyInstance) {
       ?? (matchCategory ? matchCategory.name.replace(/\s+/g, '_').toLowerCase() : undefined)
 
     const pastDeals: Array<Record<string, unknown>> = []
+    const versionOfClause = new Map<string, string>()   // for each excerpt's contract text (X40)
     if (clauseTypeFilter) {
+      // C11 — excerpts from each contract's CURRENT version only (a clause a
+      // later version replaced is not how that deal landed), and never from
+      // diligence-room documents, which are a target's contracts, not ours.
+      const deals = await prisma.contract.findMany({
+        where: {
+          orgId: body.orgId,
+          deletedAt: null,
+          diligenceRoomId: null,
+          ...contractScopeWhere(scope),
+          ...(body.contractType ? { type: body.contractType } : {}),
+          status: { in: ['EXECUTED', 'APPROVED', 'PENDING_SIGNATURE'] },
+        },
+        select: { id: true },
+        orderBy: { updatedAt: 'desc' },
+        take: 5_000,
+      })
+      const dealVersionIds = await effectiveClauseVersionIds(body.orgId, deals.map(d => d.id))
       const clauses = await prisma.contractClause.findMany({
         where: {
           clauseType: clauseTypeFilter,
           isSubChunk: false,
-          version: {
-            contract: {
-              orgId: body.orgId,
-              deletedAt: null,
-              ...(body.contractType ? { type: body.contractType } : {}),
-              status: { in: ['EXECUTED', 'APPROVED', 'PENDING_SIGNATURE'] },
-            },
-          },
+          versionId: { in: dealVersionIds },
         },
         orderBy: { id: 'desc' },
         take: body.limit,
         select: {
-          id: true, clauseType: true, content: true, sectionRef: true,
+          id: true, clauseType: true, content: true, sectionRef: true, versionId: true,
           riskRating: true,
           version: {
             select: {
@@ -3482,6 +3899,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         },
       })
       for (const cl of clauses) {
+        versionOfClause.set(cl.id, cl.versionId)
         pastDeals.push({
           clauseId:         cl.id,
           contractId:       cl.version?.contractId ?? null,
@@ -3491,7 +3909,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           effectiveDate:    cl.version?.contract?.effectiveDate ?? null,
           sectionRef:       cl.sectionRef,
           riskRating:       cl.riskRating,
-          excerpt:          cl.content.slice(0, 500),
+          excerpt:          cl.content,   // cut to 500 characters when redacted (X36)
         })
       }
 
@@ -3512,20 +3930,32 @@ export async function internalAiRoutes(app: FastifyInstance) {
           excerptTexts.push(d.excerpt)
         }
       })
-      const redacted = await redactExcerpts(body.orgId, excerptTexts, {
+      // X36 — values found in the whole clause, then cut.
+      // X40 — each clause's contract text too, where a card number's "card" may be.
+      const documentOf = new Map((await prisma.contractVersion.findMany({
+        where: { id: { in: [...new Set(versionOfClause.values())] } }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const redacted = await redactCutExcerpts(body.orgId, excerptTexts.map((text, k) => ({
+        text, cuts: [[0, 500]],
+        valuesFrom: documentOf.get(versionOfClause.get(String(pastDeals[excerptIdx[k]]?.clauseId ?? '')) ?? ''),
+      })), {
         surface: 'org_memory.excerpt',
       })
       excerptIdx.forEach((dealIndex, k) => {
         const d = pastDeals[dealIndex]
-        if (d) d.excerpt = redacted[k] ?? d.excerpt
+        if (d) d.excerpt = redacted[k]?.[0] ?? REDACTION_UNAVAILABLE
       })
     }
 
     return reply.send({
+      // First, so it survives when a long result is cut for session memory.
+      ...(withheld.length ? { withheld, withheldReason: 'The user in this conversation lacks the permission to see these sections.' } : {}),
       topic:           body.topic,
       contractType:    body.contractType ?? null,
       clauseType:      clauseTypeFilter ?? null,
-      matchedCategory: matchCategory ?? null,
+      // A category belongs to the playbook / clause library; name it only to
+      // a caller who may see one of them.
+      matchedCategory: withheld.length === 2 ? null : (matchCategory ?? null),
       playbook:        playbook.map(p => ({
         positionType:  p.positionType,
         content:       p.content,
@@ -3553,20 +3983,34 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    // X9 — as REST: the queue needs view:workflow (/approvals/my-queue), the
+    // org-wide list configure:workflow (/approvals/all).
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'workflow', body.scope === 'all' ? 'configure' : 'view')) return
 
     const stepWhere: Record<string, unknown> = { orgId: body.orgId }
     if (body.scope === 'my-queue') {
+      // X9 — as REST's /approvals/my-queue: the caller's own steps, only the
+      // instance's current one (a later step isn't theirs to decide yet), on
+      // whichever contract — an approver sees what they are asked to approve.
       stepWhere.approverId = body.userId
       stepWhere.status = body.status ?? 'PENDING'
-    } else if (body.status) {
-      stepWhere.status = body.status
+    } else {
+      if (scope.kind === 'own') stepWhere.instance = { contract: { ownerId: scope.userId } }
+      if (body.status) stepWhere.status = body.status
     }
 
-    const steps = await prisma.approvalStep.findMany({
+    const found = await prisma.approvalStep.findMany({
       where: stepWhere as never,
       orderBy: { createdAt: 'asc' },
-      take: body.limit,
+      take: body.scope === 'my-queue' ? 500 : body.limit,
+      include: { instance: { select: { currentStepOrder: true } } },
     })
+    const steps = (body.scope === 'my-queue'
+      ? found.filter(st => st.stepOrder === st.instance.currentStepOrder)
+      : found
+    ).slice(0, body.limit)
     if (steps.length === 0) return reply.send({ items: [], total: 0 })
 
     const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId))]
@@ -3602,11 +4046,16 @@ export async function internalAiRoutes(app: FastifyInstance) {
         instance:   inst ? {
           status:                 inst.status,
           submittedAt:            inst.submittedAt,
-          aiSummary:              inst.aiSummary?.slice(0, 400) ?? null,
+          aiSummary:              inst.aiSummary ?? null,
           approvalRecommendation: inst.approvalRecommendation,
         } : null,
       }
     })
+    // X27 — the AI summary is written from the contract and stored with the
+    // real values; going back to the chat model, the org's policy applies.
+    // Redacted whole, then cut: a value across the cut matched no pattern.
+    const summaries = await redactExcerpts(body.orgId, items.map(i => i.instance?.aiSummary ?? null), { surface: 'approval_list.aiSummary' })
+    items.forEach((item, k) => { if (item.instance) item.instance.aiSummary = summaries[k]?.slice(0, 400) ?? null })
     return reply.send({ items, total: items.length, scope: body.scope })
   })
 
@@ -3617,6 +4066,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     if (!body.id && !body.name) {
       return reply.status(400).send({ detail: 'Either id or name is required' })
     }
@@ -3642,7 +4093,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const items = await Promise.all(cps.map(async cp => {
       const contractCount = await prisma.contract.count({
-        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null },
+        where: { counterpartyId: cp.id, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), diligenceRoomId: null },
       })
       return {
         id:            cp.id,
@@ -3672,6 +4123,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.query?.trim()) {
@@ -3696,7 +4149,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Stats per counterparty: contractCount + sumValue.
     const stats = await prisma.contract.groupBy({
       by: ['counterpartyId'],
-      where: { orgId: body.orgId, deletedAt: null, counterpartyId: { in: cps.map(c => c.id) } },
+      where: { orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope), diligenceRoomId: null, counterpartyId: { in: cps.map(c => c.id) } },
       _count: { _all: true },
       _sum:   { value: true },
     })
@@ -3738,8 +4191,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId, 'request')
+    if (!scope) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
+    if (scope.kind === 'own') where.requestedById = scope.userId
     if (body.status)       where.status       = body.status
     if (body.assignedToId) where.assignedToId = body.assignedToId
     if (body.priority)     where.priority     = body.priority
@@ -3779,6 +4235,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
 
+    // X9 — as REST's /matters: view:contract, with counts covering only what
+    // the caller could open (own contracts / requests / threads for own scope).
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+    const requestScope = await resolveCallerScope(body.orgId, body.userId, 'request')
+    const own = scope.kind === 'own' ? scope.userId : null
+
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.ownerId)          where.ownerId = body.ownerId
     if (body.status)           where.status  = body.status
@@ -3796,7 +4259,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
         id: true, name: true, description: true, status: true,
         counterpartyName: true, ownerId: true, tags: true,
         createdAt: true, updatedAt: true,
-        _count: { select: { contracts: true, requests: true, threads: true } },
+        // X25 — only this org's live rows, as REST's /matters counts them (a
+        // link stored before the fix could name another org's).
+        _count: { select: {
+          contracts: { where: { orgId: body.orgId, deletedAt: null, ...(own ? { ownerId: own } : {}) } },
+          requests:  { where: { orgId: body.orgId, deletedAt: null, ...(requestScope.kind === 'own' ? { requestedById: requestScope.userId }
+            : requestScope.kind === 'org' ? {} : { id: { in: [] as string[] } }) } },
+          threads:   { where: { orgId: body.orgId, ...(own ? { userId: own } : {}) } },
+        } },
       },
       orderBy: { updatedAt: 'desc' },
       take: body.limit,
@@ -3820,187 +4290,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
   })
 
   // ── POST /internal/ai/tools/contract_draft ────────────────────────────────
-  // Intent-based drafting: takes a free-text user_message, picks the org's
-  // best-fit published template by contractType, renders via generateDocument
-  // (same engine as POST /templates/:id/generate), and persists a new
-  // Contract + ContractVersion in DRAFT status. Returns the artifact-shaped
-  // payload the AgentHomePage Doc artifact expects.
+  // C12 — a read-only PLANNER. Picks the template and fills it from the
+  // user's stated terms (lib/draft-plan.ts), returning the rendered preview
+  // and the exact args /tools/contract_create_from_template needs. It creates
+  // nothing: the chat tool shows the plan on a confirm card, and Apply goes
+  // through the apply RPC (permission-checked, recorded, undoable).
   //
-  // Distinct from /tools/contract_create_from_template (line ~2525) which
-  // requires an explicit templateId + pre-resolved variables. The agent
-  // rarely knows the templateId or the variable shape; this handler removes
-  // both gaps by doing template lookup + variable inference in one step.
-  //
-  // Implemented entirely in Node (no Python /draft hop) because the existing
-  // /api/v1/templates endpoint is auth-gated by user permission and the
-  // Python pipeline's x-internal-secret was being ignored — empty results,
-  // NO_TEMPLATE_MATCH every time. Direct Prisma access bypasses that mess.
+  // It used to persist the contract here, mid-stream, with no card, no undo,
+  // and California law / a 2-year term / today's date whatever was asked.
   app.post('/tools/contract_draft', async (req, reply) => {
     let body
     try { body = ContractDraftFromIntentSchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-
-    // Infer contract type from the explicit hint OR by sniffing the message.
-    const lowerMsg = body.userMessage.toLowerCase()
-    const inferredType =
-      body.contractType ??
-      (lowerMsg.includes(' nda') || lowerMsg.startsWith('nda') || lowerMsg.includes('non-disclosure') || lowerMsg.includes('confidential disclosure') ? 'NDA' :
-       lowerMsg.includes(' msa') || lowerMsg.includes('master service') ? 'MSA' :
-       lowerMsg.includes(' sow') || lowerMsg.includes('statement of work') ? 'SOW' :
-       lowerMsg.includes('vendor') ? 'VENDOR_AGREEMENT' :
-       lowerMsg.includes('license') ? 'LICENSE' :
-       lowerMsg.includes('employment') || lowerMsg.includes('offer letter') ? 'EMPLOYMENT' :
-       lowerMsg.includes(' dpa') || lowerMsg.includes('data processing') ? 'DATA_PROCESSING' :
-       null)
-
-    if (!inferredType) {
-      return reply.status(422).send({
-        error: 'CONTRACT_TYPE_AMBIGUOUS',
-        detail: 'Could not determine contract type from the message. Pass contract_type explicitly (NDA | MSA | SOW | VENDOR_AGREEMENT | LICENSE | EMPLOYMENT | DATA_PROCESSING).',
-      })
+    const plan = await planDraft(body)
+    if (!plan.ok) {
+      return reply.status(plan.status).send({ error: plan.error, detail: plan.detail, ...(plan.templates ? { templates: plan.templates } : {}) })
     }
-
-    // Find the best-fit published template for this org + type. Prefer the
-    // most-recently-updated published one if multiple exist.
-    const template = await prisma.template.findFirst({
-      where: {
-        orgId: body.orgId, deletedAt: null,
-        contractType: inferredType,
-        isPublished: true,
-      },
-      include: { sections: { orderBy: { sortOrder: 'asc' } } },
-      orderBy: { updatedAt: 'desc' },
-    })
-    if (!template) {
-      return reply.status(422).send({
-        error: 'NO_TEMPLATE_MATCH',
-        detail: `Your org doesn't have a published ${inferredType} template. Create one in Templates first, or I can quote draft text inline.`,
-      })
-    }
-
-    // Resolve clause library references the template's sections point at.
-    // Mirrors what /tools/contract_create_from_template does and what
-    // POST /templates/:id/generate does for preview.
-    const allClauseRefs = template.sections.flatMap(s =>
-      Array.isArray(s.clauseRefs) ? (s.clauseRefs as string[]) : [],
-    )
-    const clauseItems = allClauseRefs.length
-      ? await prisma.clauseLibraryItem.findMany({
-          where: { id: { in: allClauseRefs }, orgId: body.orgId, deletedAt: null },
-        })
-      : []
-    const clauseMap = new Map(clauseItems.map(c => [c.id, c]))
-
-    // Build a sensible default variable map. The agent can iterate later
-    // by editing the contract directly. Variable keys we recognize:
-    const today = new Date().toISOString().slice(0, 10)
-    const orgName = (await prisma.organization.findUnique({
-      where: { id: body.orgId }, select: { name: true },
-    }))?.name ?? 'Our Organization'
-    const variables: Record<string, string> = {
-      counterparty_name: body.counterpartyName ?? '[Counterparty Name]',
-      counterpartyName:  body.counterpartyName ?? '[Counterparty Name]',
-      counterparty:      body.counterpartyName ?? '[Counterparty Name]',
-      our_company:       orgName,
-      our_org_name:      orgName,
-      effective_date:    today,
-      effectiveDate:     today,
-      date:              today,
-      governing_law:     'California',
-      governingLaw:      'California',
-      term_years:        '2',
-      term:              '2 years',
-    }
-
-    const generated = generateDocument({
-      template,
-      variables,
-      clauseMap,
-    })
-
-    // Title fallback: counterparty + type if both known, else template name.
-    const computedTitle = body.title?.trim()
-      || (body.counterpartyName ? `${body.counterpartyName} — ${inferredType}` : `Draft — ${template.name}`)
-
-    const plainText = generated.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-    const created = await prisma.$transaction(async (tx) => {
-      const contract = await tx.contract.create({
-        data: {
-          orgId:            body.orgId,
-          title:            computedTitle,
-          type:             inferredType,
-          status:           'DRAFT',
-          counterpartyName: body.counterpartyName ?? null,
-          ownerId:          body.userId,
-          createdBy:        body.userId,
-          analysisStatus:   'DONE',
-          tags:             ['agent-draft'],
-        },
-      })
-      const version = await tx.contractVersion.create({
-        data: {
-          contractId:    contract.id,
-          versionNumber: 1,
-          htmlContent:   generated.html,
-          plainText,
-          changeNote:    `AI-drafted from template "${template.name}"`,
-          createdById:   body.userId,
-        },
-      })
-      await tx.contract.update({
-        where: { id: contract.id },
-        data:  { currentVersionId: version.id },
-      })
-      await tx.template.update({
-        where: { id: template.id },
-        data:  { usageCount: { increment: 1 } },
-      })
-      return { contract, version }
-    })
-
-    // Index the new draft in ES so it's findable via portfolio_search /
-    // contract_search immediately. Fire-and-forget.
-    indexContract(created.contract.id, {
-      orgId:            body.orgId,
-      title:            created.contract.title,
-      type:             created.contract.type,
-      status:           created.contract.status,
-      counterpartyName: created.contract.counterpartyName ?? undefined,
-      plainText,
-      tags:             created.contract.tags,
-      createdAt:        created.contract.createdAt.toISOString(),
-    }).catch(() => { /* swallow */ })
-
-    // An agent-drafted contract is a real contract. This path creates one
-    // mid-stream with no ActionPreview, so `checkToolPermission` — the only
-    // layer that sees the caller's role — never runs, and until now nothing
-    // recorded that it happened either: a contract appeared in the org with no
-    // trace of who caused it. The manual REST create has always audited.
-    createAuditEvent({
-      orgId:        body.orgId,
-      userId:       body.userId,
-      action:       AuditAction.CONTRACT_CREATED,
-      resourceType: 'contract',
-      resourceId:   created.contract.id,
-      metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
-    }).catch(err => req.log.warn({ err }, '[contract_draft] audit failed'))
-
-    return reply.send({
-      // Fields consumed by artifact-from-tool.ts (Doc artifact)
-      title:    created.contract.title,
-      subtitle: body.counterpartyName ? `Draft ${inferredType} for ${body.counterpartyName}` : `Draft ${inferredType}`,
-      html:     generated.html,
-      contractId: created.contract.id,
-      // Metadata for the agent's natural-language summary
-      contractType:     inferredType,
-      counterpartyName: created.contract.counterpartyName,
-      templateName:     template.name,
-      versionId:        created.version.id,
-      sectionsIncluded: generated.sectionsIncluded,
-      unfilledVariables: generated.unfilledVariables,
-    })
+    const { ok: _ok, ...rest } = plan
+    return reply.send({ ...rest, persisted: false })
   })
 
   // ── POST /internal/ai/tools/custom_field_list (P4.5) ───────────────────────
@@ -4046,6 +4355,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // pass; when none exists it tells the user where to run one.
   const ComplianceGetSchema = z.object({
     orgId:      z.string().min(1),
+    userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
     contractId: z.string().min(1),
   })
   app.post('/tools/compliance_get', async (req, reply) => {
@@ -4054,8 +4364,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     const contract = await prisma.contract.findFirst({
-      where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
+      where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: { id: true, title: true, type: true, metadata: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
@@ -4079,6 +4391,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // 3× parallel portfolio_search prose synthesis.
   const PortfolioCompareSchema = z.object({
     orgId:        z.string(),
+    userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
     contractIds:  z.array(z.string()).min(2).max(10),
     topics:       z.array(z.string().min(2).max(80)).min(1).max(10),
     excerptChars: z.number().int().min(50).max(800).default(220),
@@ -4089,8 +4402,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
     const contracts = await prisma.contract.findMany({
-      where: { id: { in: body.contractIds }, orgId: body.orgId, deletedAt: null },
+      where: { id: { in: body.contractIds }, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyName: true, value: true, currency: true,
@@ -4104,21 +4419,30 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }) : []
     const textByContract = new Map(versions.map(v => [v.contractId, v.plainText ?? '']))
     const half = Math.floor(body.excerptChars / 2)
+    // X36 — each contract's text with its cells' windows, and each cell's
+    // window in matrix order, so the excerpts are redacted against the whole
+    // text rather than one by one.
+    const cutsOf = new Map<string, CutText>()
+    const windowOf: Array<[string, number] | null> = []
     const matrix = body.topics.map(topic => {
-      const tLower = topic.toLowerCase()
       const perContract = contracts.map(c => {
         const text = textByContract.get(c.id) ?? ''
-        if (!text) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
-        const lower = text.toLowerCase()
-        const idx = lower.indexOf(tLower)
-        if (idx === -1) return { contractId: c.id, sectionRef: null, excerpt: '', found: false }
+        if (!text) { windowOf.push(null); return { contractId: c.id, sectionRef: null, excerpt: '', found: false } }
+        // Alias-aware: a contract says "Limitation of Liability", never
+        // "liability cap". A literal match reported every clause as absent.
+        const hit = findTopic(text, topic)
+        if (!hit) { windowOf.push(null); return { contractId: c.id, sectionRef: null, excerpt: '', found: false } }
+        const idx = hit.index
         const start = Math.max(0, idx - half)
-        const end   = Math.min(text.length, idx + topic.length + half)
+        const end   = Math.min(text.length, idx + hit.matchedPhrase.length + half)
+        const own = cutsOf.get(c.id) ?? { text, cuts: [] }
+        cutsOf.set(c.id, own)
+        windowOf.push([c.id, own.cuts.push([start, end]) - 1])
         const excerpt = text.slice(start, end)
         const back = text.slice(Math.max(0, idx - 500), idx)
         const sec = back.match(/\n\s*(\d+(?:\.\d+)*)[.\s)]/g)
         const sectionRef = sec ? sec[sec.length - 1].trim().replace(/[.\s)]+$/, '') : null
-        return { contractId: c.id, sectionRef, excerpt, found: true }
+        return { contractId: c.id, sectionRef, excerpt, found: true, matchedPhrase: hit.matchedPhrase }
       })
       const foundCount = perContract.filter(p => p.found).length
       return { topic, foundCount, perContract }
@@ -4130,34 +4454,61 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // row) and map back by position — order, scoring and `found` flags
     // are untouched. Structured cell fields (contractId, sectionRef) and
     // the contracts[] metadata block stay raw on purpose.
-    let redactedMatrix = matrix
+    // DD1 — comparing caps: each contract's caps, measured, so the answer
+    // states figures instead of working them out. Redacted with the cells.
+    const capsOf = new Map<string, string[]>()
+    if (body.topics.some(t => /liab|\bcaps?\b|damages/i.test(t))) {
+      for (const c of contracts) {
+        const caps = liabilityCaps(textByContract.get(c.id) ?? '').map(x => x.statement)
+        if (caps.length) capsOf.set(c.id, caps)
+      }
+    }
+    let redactedMatrix: typeof matrix
     try {
-      const flat = matrix.flatMap(row => row.perContract.map(cell => cell.excerpt))
-      const { texts } = await applyPiiPolicyBatch(body.orgId, flat, {
+      const ids = [...cutsOf.keys()]
+      const capIds = [...capsOf.keys()]
+      const { pieces } = await redactCuts(body.orgId, [
+        ...ids.map(id => cutsOf.get(id) ?? null),
+        ...capIds.flatMap(id => (capsOf.get(id) ?? []).map((text): CutText => ({ text, cuts: [[0, text.length]], valuesFrom: textByContract.get(id) }))),
+      ], {
         surface: 'portfolio_compare.excerpt',
       })
+      let k = ids.length
+      for (const id of capIds) capsOf.set(id, (capsOf.get(id) ?? []).map(() => pieces[k++]?.[0] ?? REDACTION_UNAVAILABLE))
+      const piecesOf = new Map(ids.map((id, k) => [id, pieces[k]]))
       let i = 0
       redactedMatrix = matrix.map(row => ({
         ...row,
         perContract: row.perContract.map(cell => {
-          const text = texts[i++]
-          return { ...cell, excerpt: text ?? cell.excerpt }
+          const w = windowOf[i++]
+          return w ? { ...cell, excerpt: piecesOf.get(w[0])?.[w[1]] ?? REDACTION_UNAVAILABLE } : cell
         }),
       }))
     } catch (err) {
-      // Redaction must never break the tool call.
-      console.error('[portfolio_compare] PII redaction failed, returning unredacted excerpts:', err)
+      // X23 — fail closed: unredacted excerpts must not reach the model.
+      console.error('[portfolio_compare] PII redaction failed:', err)
+      return reply.status(503).send({ detail: 'PII redaction is unavailable, so the comparison was withheld. Try again shortly.' })
     }
 
+    // CC7 — a contract with no document text can't be compared, and saying
+    // "no clause found" for it read as "the clause isn't there": the
+    // assistant blamed the clauses' wording for a file that was never read.
+    const withoutText = contracts.filter(c => !textByContract.get(c.id))
     return reply.send({
       contracts: contracts.map(c => ({
         id: c.id, title: c.title, type: c.type, status: c.status,
         counterpartyName: c.counterpartyName,
         value: c.value != null ? Number(c.value) : null,
         currency: c.currency,
+        documentOnFile: !!textByContract.get(c.id),
+        ...(capsOf.has(c.id) && { liabilityCaps: capsOf.get(c.id) }),
       })),
       topics: body.topics,
       matrix: redactedMatrix,
+      ...(withoutText.length && {
+        note: `${withoutText.map(c => c.title).join(', ')} ${withoutText.length === 1 ? 'has' : 'have'} no document text on file (only the contract record), `
+          + 'so no clause of theirs could be compared. Say so, and suggest uploading the signed document; do not suggest the clauses are worded differently.',
+      }),
     })
   })
 
@@ -4168,7 +4519,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
   // to one, so the flow dead-ended on asking the user to paste an id.
   //
   // Deliberately NARROWER than its user-facing counterpart, which is the
-  // reverse of the usual direction: GET /api/v1/users is requireAuth-only with
+  // reverse of the usual direction: GET /api/v1/users checks sign-in only, with
   // no query param and no limit, and hands back every org member's email and
   // role list in one response. An agent needs to look someone up, not to
   // enumerate the directory.
@@ -4244,6 +4595,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
+    // X9 — REST's GET /templates needs view:template (APPROVER and FINANCE lack it).
+    if (!await scopeOr403(reply, body.orgId, body.userId, 'template')) return
 
     const where: Record<string, unknown> = { orgId: body.orgId, deletedAt: null }
     if (body.contractType) where.contractType = body.contractType
@@ -4416,6 +4769,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
     await advanceWorkflow(body.instanceId, prisma)
 
     const updated = await prisma.approvalInstance.findUnique({ where: { id: body.instanceId } })
+    fireWebhook(body.orgId, 'approval.decided', {
+      instanceId: body.instanceId, contractId: instance.contractId, stepId: body.stepId, decision: body.decision,
+      instanceStatus: updated?.status ?? null, decidedBy: body.userId, via: 'agent',
+    })
     return reply.send({
       instanceId:     body.instanceId,
       instanceStatus: updated?.status,
@@ -4423,22 +4780,4 @@ export async function internalAiRoutes(app: FastifyInstance) {
       stepDecision:   body.decision,
     })
   })
-}
-
-// Minimal HTML → plaintext helper for storing the generated body as
-// searchable text. A heavier sanitiser (striptags + list bullets) isn't
-// needed today — later D.5 phases (F.2 structural extractor) will
-// replace this with a proper tree walker.
-function htmlToPlainText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/(li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
 }

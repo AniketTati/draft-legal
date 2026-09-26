@@ -14,18 +14,21 @@ import {
   Cpu,
   BarChart3,
   Database,
+  ScrollText,
 } from 'lucide-react'
 import { AiConfigTab } from '@/components/admin/AiConfigTab'
+import { OrgAuditLog } from '@/components/admin/OrgAuditLog'
 import { Card, EmptyState, Eyebrow } from '@/components/ui/primitives'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'alerts' | 'ai-config' | 'system' | 'data'
+type Tab = 'general' | 'alerts' | 'ai-config' | 'audit' | 'system' | 'data'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'general', label: 'General', icon: Building2 },
   { id: 'alerts', label: 'Alert Rules', icon: Bell },
   { id: 'ai-config', label: 'AI Config', icon: Cpu },
+  { id: 'audit', label: 'Audit Log', icon: ScrollText },
   { id: 'system', label: 'System Dashboard', icon: BarChart3 },
   { id: 'data', label: 'Data Management', icon: Database },
 ]
@@ -69,7 +72,7 @@ export function AdminOrgPage() {
   }, [org])
 
   const saveOrg = useMutation({
-    mutationFn: (body: { name: string; logoUrl: string; brandColor: string }) =>
+    mutationFn: (body: { name: string; logoUrl: string | null; brandColor: string | null }) =>
       api.patch('/organization', body).then(r => r.data),
     onSuccess: () => {
       setSuccessMsg('Organization settings saved.')
@@ -88,7 +91,8 @@ export function AdminOrgPage() {
   const handleSave = () => {
     setErrorMsg('')
     setSuccessMsg('')
-    saveOrg.mutate({ name: orgName, logoUrl, brandColor })
+    // An empty field clears it (X59).
+    saveOrg.mutate({ name: orgName, logoUrl: logoUrl.trim() || null, brandColor: brandColor.trim() || null })
   }
 
   return (
@@ -249,6 +253,7 @@ export function AdminOrgPage() {
           <PlaceholderTab icon={Bell} title="Alert Rules" />
         )}
         {activeTab === 'ai-config' && <AiConfigTab />}
+        {activeTab === 'audit' && <OrgAuditLog />}
         {activeTab === 'system' && (
           <PlaceholderTab icon={BarChart3} title="System Dashboard" />
         )}

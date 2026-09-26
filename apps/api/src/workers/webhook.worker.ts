@@ -21,7 +21,7 @@ import { formatForSlack } from '../lib/slack-formatter.js'
 import { formatForTeams } from '../lib/teams-formatter.js'
 import { assertPublicUrl, ssrfGuardEnabled } from '../lib/ssrf-guard.js'
 
-async function handleWebhookDelivery(data: WebhookDeliveryJob) {
+export async function handleWebhookDelivery(data: WebhookDeliveryJob) {
   const wh = await prisma.webhook.findUnique({
     where: { id: data.webhookId },
     select: { id: true, url: true, secret: true, enabled: true, deletedAt: true, events: true, type: true },
@@ -62,8 +62,9 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
 
   try {
     // Wave 1.5 — SSRF guard: refuse to POST to a URL that resolves to a
-    // private / loopback / link-local / cloud-metadata address (hosted
-    // deployments only; self-host can opt out via WEBHOOK_ALLOW_PRIVATE_URLS).
+    // private / loopback / link-local / cloud-metadata address (every
+    // environment since X35; a self-host that must deliver to its own
+    // network opts out via WEBHOOK_ALLOW_PRIVATE_URLS).
     // Throws before the fetch, so an internal target never gets a request.
     await assertPublicUrl(wh.url)
     const ctrl = new AbortController()
@@ -79,13 +80,18 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
       },
       body,
       signal: ctrl.signal,
+      // X39 — never follow a redirect: the guard above checked this URL only,
+      // and a redirect could send the delivery (with 307/308, its body too)
+      // to a private or cloud-metadata address.
+      redirect: 'manual',
     })
     clearTimeout(t)
     responseStatus = r.status
     // Wave 1.5 — do NOT reflect the response body into the delivery log when
     // the SSRF guard is active: it was an exfiltration channel (a blocked
     // internal endpoint's content leaking to a tenant). Store status only.
-    // With the guard off (self-host/dev) we keep a capped body for debugging.
+    // With the guard turned off (WEBHOOK_ALLOW_PRIVATE_URLS) we keep a
+    // capped body for debugging.
     if (ssrfGuardEnabled()) {
       responseBody = null
     } else {
@@ -93,7 +99,11 @@ async function handleWebhookDelivery(data: WebhookDeliveryJob) {
       responseBody = text.slice(0, 1000)
     }
     succeeded = r.ok
-    if (!succeeded) errorMessage = `Non-2xx response: ${r.status}`
+    if (!succeeded) {
+      errorMessage = r.status >= 300 && r.status < 400
+        ? `Redirect (${r.status}) not followed: set the webhook to its final URL`
+        : `Non-2xx response: ${r.status}`
+    }
   } catch (err) {
     errorMessage = (err as Error).message?.slice(0, 500) ?? 'Delivery failed'
   }

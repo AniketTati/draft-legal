@@ -131,10 +131,10 @@ async function seedPersona(spec: PersonaSpec): Promise<void> {
       data: {
         orgId: org.id,
         name: 'Standard contract approval (3-step)',
-        description: 'Legal review → GC approval → Finance sign-off. Triggers on contracts ≥$100k or non-standard liability terms.',
+        description: 'Legal review → GC approval → Finance sign-off. For MSAs, SOWs, vendor agreements and licenses worth USD 100,000 or more.',
         triggerRules: {
           contractTypes: ['MSA', 'SOW', 'VENDOR_AGREEMENT', 'LICENSE'],
-          valueThreshold: 100000,
+          valueThreshold: 100000, currency: 'USD',
         },
         // FIX (2026-04-30 audit): each step needs a `roleRequired` so
         // resolveApprover() can find a user. Without it, Submit-for-Approval

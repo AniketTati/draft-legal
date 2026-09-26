@@ -35,12 +35,13 @@ class PortfolioCompareArgs(BaseModel):
     excerpt_chars: int = Field(220, ge=50, le=800, description="Excerpt window size per cell.")
 
 
-def build_portfolio_compare(org_id: str) -> StructuredTool:
+def build_portfolio_compare(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(contract_ids: list[str], topics: list[str], excerpt_chars: int = 220) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/portfolio_compare"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
         payload = {
             "orgId":        org_id,
+            "userId":       user_id,  # S2 — Node resolves the caller's view scope from this
             "contractIds":  contract_ids,
             "topics":       topics,
             "excerptChars": excerpt_chars,

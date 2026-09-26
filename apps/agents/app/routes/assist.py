@@ -16,7 +16,8 @@ import os
 from app.agents.assist_agent import run_assist, AssistAction
 from app.router import resolve_llm
 from app.untrusted import wrap_untrusted_document
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from app.pii_tokens import PII_TOKEN_RULE
 
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
@@ -95,6 +96,13 @@ class BatchClauseItem(BaseModel):
     # negotiator does, and the rewriter could not see those positions before.
     positions:        list[dict[str, Any]] = []
     rules:            dict[str, Any] | None = None
+    # Why the playbook review flagged this clause, when it did: the rewrite
+    # should fix that, not whatever else it might notice.
+    issue:            str | None = None
+    # The other clauses of its section, so a rewrite doesn't restate them.
+    siblings:         list[dict[str, Any]] = []
+    # Clauses of one section are rewritten in turn, each seeing the last.
+    sectionRef:       str | None = None
 
 
 class RedlineProposeBatchRequest(BaseModel):
@@ -103,6 +111,10 @@ class RedlineProposeBatchRequest(BaseModel):
     contractType: str = "general commercial"
     instructions: str | None = None
     orgId:        str | None = None
+    # The agreement's section headings, for cross-references in a rewrite.
+    sections:     list[str] = []
+    # The agreement's defined terms ("Supplier", "Customer").
+    definedTerms: list[str] = []
 
 
 # P6.2 — Background clause classifier. For each visible paragraph in
@@ -171,7 +183,7 @@ Classify now. JSON only."""
         provider = resolved.provider
         model = resolved.model
         response = await llm.ainvoke([
-            SystemMessage(content=_CLASSIFY_SYSTEM),
+            SystemMessage(content=_CLASSIFY_SYSTEM + PII_TOKEN_RULE),
             HumanMessage(content=user),
         ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
@@ -248,7 +260,7 @@ async def complete(req: CompleteRequest, x_internal_secret: str = Header(default
         provider = resolved.provider
         model = resolved.model
         response = await llm.ainvoke([
-            SystemMessage(content=system),
+            SystemMessage(content=system + PII_TOKEN_RULE),
             HumanMessage(content=user),
         ], config={"callbacks": resolved.callbacks})
         raw = response.content if isinstance(response.content, str) else str(response.content)
@@ -353,7 +365,7 @@ Playbook positions (from most to least preferred):
 Analyze how well the submitted clause matches each position."""
 
     response = await llm.ainvoke([
-        SystemMessage(content=_COMPARE_SYSTEM),
+        SystemMessage(content=_COMPARE_SYSTEM + PII_TOKEN_RULE),
         HumanMessage(content=user_content),
     ], config={"callbacks": resolved.callbacks})
 
@@ -508,7 +520,13 @@ text. If nothing clean to quote, skip that change entry.
  • Don't fabricate facts, numbers, or entity names — keep the ones from \
 the original clause unless the playbook's rules explicitly say otherwise.
  • Stay in the domain/register of the original clause (if it's formal \
-contract English, stay formal)."""
+contract English, stay formal).
+ • FIRST CHECK THE LABEL. The clause arrives labelled with a category from \
+automatic extraction, which is sometimes wrong. If the text is not actually \
+that kind of clause (a contact instruction, a heading, a list item about \
+something else), do NOT rewrite it into one: that would replace the other \
+side's text with a clause they never wrote. Return ONLY \
+{"notApplicable": true, "reason": "<1 sentence: what the text actually is>"}."""
 
 
 @router.post("/redline_propose")
@@ -577,7 +595,7 @@ Produce the three-variant redline now."""
 
     try:
         response = await llm.ainvoke([
-            SystemMessage(content=_REDLINE_SYSTEM),
+            SystemMessage(content=_REDLINE_SYSTEM + PII_TOKEN_RULE),
             HumanMessage(content=user_content),
         ], config={"callbacks": callbacks})
         content = response.content if isinstance(response.content, str) else str(response.content)
@@ -587,6 +605,14 @@ Produce the three-variant redline now."""
             if content.startswith("json"):
                 content = content[4:]
         result = loads_lenient(content)
+        # Mislabelled text: no variants, and a reason the reviewer can read.
+        if result.get("notApplicable"):
+            return {
+                "clauseType": req.clauseType,
+                "category":   req.category,
+                "variants":   [],
+                "error":      f"not_this_clause_type: {str(result.get('reason') or '')[:200]}",
+            }
         # Validate variants shape — we want all three + basic fields.
         variants = result.get("variants") or []
         by_aggression = {v.get("aggression"): v for v in variants if isinstance(v, dict)}
@@ -700,7 +726,7 @@ async def assist_stream(req: StreamAssistRequest, x_internal_secret: str = Heade
             # yield a start event so the client can show "typing…"
             yield json.dumps({"type": "start", "action": req.action, "model": model, "provider": provider}) + "\n"
             async for chunk in llm.astream([
-                SystemMessage(content=_STREAM_SYSTEM),
+                SystemMessage(content=_STREAM_SYSTEM + PII_TOKEN_RULE),
                 HumanMessage(content=user),
             ], config={"callbacks": callbacks}):
                 piece = chunk.content if isinstance(chunk.content, str) else (
@@ -742,12 +768,28 @@ applied to a real contract as though it were ours.
 "[INSERT ...]", "TBD", or blank underscores. This text goes into a legal \
 document. If the playbook gives you no figure and the original has none, keep \
 the original's formulation rather than inventing a blank to fill in.
+ • Rewrite ONLY this clause. Other clauses of its section are listed for \
+context: do not restate, repeat or contradict what they cover. If one of them \
+is being rewritten too, it will cover its own topic.
+ • Use the agreement's own defined terms for the parties and things (listed \
+below). Playbook positions are written generically ("Provider", "Vendor", \
+"Client"): write them as this agreement's terms (e.g. "Supplier", "Customer"), \
+never as a name the agreement doesn't define.
+ • To refer to another part of the agreement, name it from the sections \
+listed (e.g. "Section 4 (Indemnification)"), or describe it in words ("the \
+indemnities in this Agreement"). Never leave a bracket for a section number.
  • changes[].before MUST be a verbatim substring of the original clause text. \
 Skip the entry rather than paraphrase.
  • proposedText is a complete self-contained clause, not a diff.
  • Never invent facts, figures, dates or party names. Carry over the ones in \
 the original unless the playbook explicitly requires otherwise.
- • Stay in the register of the original clause."""
+ • Stay in the register of the original clause.
+ • FIRST CHECK THE LABEL. The clause arrives labelled with a category from \
+automatic extraction, which is sometimes wrong. If the text is not actually \
+that kind of clause (a contact instruction, a heading, a list item about \
+something else), do NOT rewrite it into one: that would replace the other \
+side's text with a clause they never wrote. Return ONLY \
+{"notApplicable": true, "reason": "<1 sentence: what the text actually is>"}."""
 
 
 # Bracketed ALL-CAPS spans and fill-in blanks — "[MUTUALLY AGREED AMOUNT]",
@@ -808,7 +850,7 @@ async def redline_propose_batch(
 
     semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
-    async def one(item: BatchClauseItem) -> dict[str, Any]:
+    async def one(item: BatchClauseItem, done_in_section: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if not item.clauseText.strip():
             # Reported, not omitted. An omitted clause is indistinguishable
             # from a clause that needed no change.
@@ -837,39 +879,83 @@ async def redline_propose_batch(
         if req.instructions and req.instructions.strip():
             instructions_block = f"\n\nUser direction: {req.instructions.strip()}"
 
+        issue_block = f"\n\nWhy it needs changing (our playbook review): {item.issue.strip()[:800]}" if item.issue and item.issue.strip() else ""
+        sections_block = ""
+        if req.sections:
+            sections_block = "\n\nThe agreement's sections:\n" + "\n".join(f"- {s[:120]}" for s in req.sections[:60])
+        if req.definedTerms:
+            sections_block += "\n\nThe agreement's defined terms: " + ", ".join(t[:40] for t in req.definedTerms[:40])
+        siblings_block = ""
+        if item.siblings:
+            lines = []
+            for sib in item.siblings[:4]:
+                note = " (also being rewritten, separately)" if sib.get("alsoRewritten") else ""
+                lines.append(f"- [{sib.get('clauseType') or 'clause'}{note}] {str(sib.get('text') or '')[:600]}")
+            siblings_block = "\n\nOther clauses in the same section (context only, do not restate them):\n" + "\n".join(lines)
+        if done_in_section:
+            siblings_block += (
+                "\n\nAlready rewritten in this section (as it will now read). Make this clause fit with it: "
+                "do not restate or duplicate its terms; refer to it instead (\"subject to the limits above\").\n"
+                + "\n".join(f"- [{d.get('clauseType') or 'clause'}] {str(d.get('proposedText'))[:1200]}" for d in done_in_section)
+            )
+
         category_line = f" (category: {item.category})" if item.category else ""
         user_content = f"""Clause to redline{category_line}:
-{wrap_untrusted_document(item.clauseText[:6000], source="counterparty contract clause")}{positions_block}{rules_block}{instructions_block}
+{wrap_untrusted_document(item.clauseText[:6000], source="counterparty contract clause")}{positions_block}{rules_block}{issue_block}{instructions_block}{sections_block}{siblings_block}
 
 Contract type: {req.contractType}
 Negotiating posture: {req.aggression}
 
 Produce the rewrite now. JSON only."""
 
-        async with semaphore:
-            try:
-                response = await llm.ainvoke(
-                    [
-                        SystemMessage(content=_BATCH_REDLINE_SYSTEM),
-                        HumanMessage(content=user_content),
-                    ],
-                    config={"callbacks": callbacks},
-                )
-            except Exception as e:  # noqa: BLE001
-                return {
-                    "clauseId": item.clauseId,
-                    "clauseType": item.clauseType,
-                    "error": f"llm_failed: {type(e).__name__}",
-                }
+        messages = [
+            SystemMessage(content=_BATCH_REDLINE_SYSTEM + PII_TOKEN_RULE),
+            HumanMessage(content=user_content),
+        ]
 
-        try:
+        async def ask() -> Any:
+            async with semaphore:
+                return await llm.ainvoke(messages, config={"callbacks": callbacks})
+
+        def parse(response: Any) -> dict[str, Any]:
             content = response.content if isinstance(response.content, str) else str(response.content)
             content = content.strip()
             if content.startswith("```"):
                 content = content.split("```", 2)[1]
                 if content.startswith("json"):
                     content = content[4:]
-            parsed = loads_lenient(content)
+            return loads_lenient(content)
+
+        try:
+            response = await ask()
+        except Exception as e:  # noqa: BLE001
+            return {
+                "clauseId": item.clauseId,
+                "clauseType": item.clauseType,
+                "error": f"llm_failed: {type(e).__name__}",
+            }
+
+        try:
+            parsed = parse(response)
+            # One more try when the rewrite left a blank: the guarantee below
+            # refuses it, and a clause with no rewrite is a miss in a redline.
+            first_blank = _find_placeholder(str(parsed.get("proposedText") or ""))
+            if first_blank and not parsed.get("notApplicable"):
+                messages.append(AIMessage(content=str(response.content)))
+                messages.append(HumanMessage(content=(
+                    f"Your rewrite contains the placeholder {first_blank[:60]!r}. Rewrite it with no placeholder: "
+                    "name the section from the list, describe it in words, or keep the original's wording. JSON only."
+                )))
+                try:
+                    parsed = parse(await ask())
+                except Exception:  # noqa: BLE001
+                    pass
+            if parsed.get("notApplicable"):
+                return {
+                    "clauseId": item.clauseId,
+                    "clauseType": item.clauseType,
+                    "error": f"not_this_clause_type: {str(parsed.get('reason') or '')[:200]}",
+                }
             proposed = str(parsed.get("proposedText") or "").strip()
             if not proposed:
                 return {
@@ -902,8 +988,25 @@ Produce the rewrite now. JSON only."""
                 "error": f"parse_failed: {type(e).__name__}",
             }
 
-    # gather keeps input order, so proposals line up with the request.
-    proposals = await asyncio.gather(*(one(c) for c in req.clauses))
+    # One section's clauses in turn, each seeing the rewrites before it: two
+    # clauses of one section rewritten side by side each restated the whole
+    # section (two liability caps). Sections still run side by side.
+    groups: dict[str, list[int]] = {}
+    for i, c in enumerate(req.clauses):
+        groups.setdefault(c.sectionRef or f"__{i}", []).append(i)
+    results: list[dict[str, Any] | None] = [None] * len(req.clauses)
+
+    async def section(indices: list[int]) -> None:
+        done: list[dict[str, Any]] = []
+        for i in indices:
+            r = await one(req.clauses[i], done)
+            results[i] = r
+            if r.get("proposedText"):
+                done.append(r)
+
+    await asyncio.gather(*(section(ix) for ix in groups.values()))
+    # In input order, so proposals line up with the request.
+    proposals = [r for r in results if r is not None]
 
     return {
         "proposals": list(proposals),

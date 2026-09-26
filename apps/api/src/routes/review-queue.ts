@@ -26,13 +26,22 @@
  *     → inverse: mark the extracted value WRONG. Clears the field's
  *        value so the contract shows "—" + logs the rejection for the
  *        re-extraction queue (future).
+ *
+ * C5 — a correction (or rejection) writes through to the canonical column
+ * when the field has one. The contracts list, renewals and the renewal scan
+ * read the columns; keyTerms is display/back-compat and is kept in step.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 // Wave 1.7 — this router mutates AI-extracted contract fields (keyTerms /
 // metadata) on verify/reject, so it must be RBAC-gated, not requireAuth-only.
 import { requirePermission } from '../middleware/permissions.js'
+import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import { prisma } from '../lib/prisma.js'
+import { reindexContract } from '../lib/elasticsearch.js'
+import { createAuditEvent } from '../lib/audit.js'
+import { statusAfterTermsChange } from '../lib/contract-status.js'
+import { AuditAction } from '@clm/types'
 
 // Fields worth surfacing in the queue. Extraction produces keyTerms for
 // a lot of keys but not all are HITL-worthy (internal helpers). We keep
@@ -55,6 +64,51 @@ const FIELD_LABELS: Record<string, string> = {
   termination:      'Termination',
 }
 
+// Fields backed by a canonical Contract column. governingLaw is the source the
+// extraction derives `jurisdiction` from (agents review.py), so it writes there.
+const COLUMN_FOR_FIELD: Record<string, { column: 'counterpartyName' | 'jurisdiction' | 'currency' | 'effectiveDate' | 'expiryDate' | 'value'; kind: 'text' | 'date' | 'number' }> = {
+  counterpartyName: { column: 'counterpartyName', kind: 'text' },
+  jurisdiction:     { column: 'jurisdiction',     kind: 'text' },
+  governingLaw:     { column: 'jurisdiction',     kind: 'text' },
+  currency:         { column: 'currency',         kind: 'text' },
+  effectiveDate:    { column: 'effectiveDate',    kind: 'date' },
+  expiryDate:       { column: 'expiryDate',       kind: 'date' },
+  value:            { column: 'value',            kind: 'number' },
+}
+
+/** Parse a human correction for a column-backed field. */
+function parseCorrection(
+  kind: 'text' | 'date' | 'number',
+  raw: string | number | null,
+): { ok: true; column: string | number | Date | null; keyTerm: string | number | null } | { ok: false; detail: string } {
+  if (raw === null || String(raw).trim() === '') return { ok: true, column: null, keyTerm: null }
+  if (kind === 'date') {
+    const text = String(raw).trim()
+    const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T00:00:00.000Z` : text)
+    if (Number.isNaN(d.getTime())) return { ok: false, detail: 'Enter the date as YYYY-MM-DD.' }
+    return { ok: true, column: d, keyTerm: d.toISOString().slice(0, 10) }
+  }
+  if (kind === 'number') {
+    const n = typeof raw === 'number' ? raw : Number(String(raw).replace(/[\s,]/g, '').replace(/^[$€£¥]/, ''))
+    if (!Number.isFinite(n)) return { ok: false, detail: 'Enter the value as a number, e.g. 250000.' }
+    return { ok: true, column: n, keyTerm: n }
+  }
+  const text = String(raw).trim()
+  return { ok: true, column: text, keyTerm: text }
+}
+
+/**
+ * X42 follow-up — the terms an approval judged, among the columns the queue
+ * can write. Changing one on an approved contract sends it back to DRAFT,
+ * as a PATCH of the same column does.
+ */
+const JUDGED_COLUMNS = new Set(['value', 'currency'])
+function judgedTermChanged(column: string, before: unknown, after: string | number | Date | null): boolean {
+  if (!JUDGED_COLUMNS.has(column)) return false
+  if (before == null || after == null) return before != after
+  return column === 'value' ? Number(before) !== Number(after) : String(before) !== String(after)
+}
+
 /** Pull the human value for a given field off keyTerms / top-level columns. */
 function valueOfField(contract: Record<string, unknown>, field: string): string | number | null {
   // Top-level columns first — a few fields live directly on Contract.
@@ -74,6 +128,8 @@ function valueOfField(contract: Record<string, unknown>, field: string): string 
 }
 
 export async function reviewQueueRoutes(app: FastifyInstance) {
+  // X7 — verify/reject name the contract `:contractId`; own scope must own it.
+  guardOwnScopeContractRoutes(app, /\/:contractId(\/|$)/, 'contractId')
 
   // ── GET /api/v1/review-queue ────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
@@ -82,6 +138,8 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       threshold: z.coerce.number().min(0).max(1).default(0.7),
       limit:     z.coerce.number().int().min(1).max(500).default(200),
       contractId: z.string().optional(),
+      // X17 — a diligence room's extractions, on request.
+      diligenceRoomId: z.string().optional(),
     }).parse(req.query)
 
     const where: Record<string, unknown> = {
@@ -91,6 +149,12 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
       // a still-PENDING contract.
       analysisStatus: { in: ['DONE', 'INDEXING'] },
       fieldConfidence: { not: {} },
+      // X7 — own-scope callers review only the contracts they own.
+      ...ownContractWhere(req),
+      // X17 — the org's queue is the org's contracts: a freshly analysed data
+      // room would otherwise push them out of the 500 most recent. A room's
+      // own queue, or a named contract, still comes through.
+      ...(q.contractId ? {} : { diligenceRoomId: q.diligenceRoomId ?? null }),
     }
     if (q.contractId) where.id = q.contractId
 
@@ -166,7 +230,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     const contract = await prisma.contract.findFirst({
       where: { id: contractId, orgId, deletedAt: null },
       select: {
-        id: true, fieldConfidence: true, keyTerms: true,
+        id: true, fieldConfidence: true, keyTerms: true, status: true, value: true,
         counterpartyName: true, jurisdiction: true, currency: true,
       },
     })
@@ -182,22 +246,47 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     }
 
     const updateData: Record<string, unknown> = { fieldConfidence: fc }
-    // If the caller provided a corrected value, persist it onto the
-    // right column / keyTerm key.
+    // If the caller provided a corrected value, persist it onto the canonical
+    // column (C5) and keep keyTerms in step, so every reader agrees.
+    const mapped = COLUMN_FOR_FIELD[body.field]
     if (body.value !== undefined) {
-      if (body.field === 'counterpartyName') updateData.counterpartyName = body.value
-      else if (body.field === 'jurisdiction') updateData.jurisdiction = body.value
-      else if (body.field === 'currency')     updateData.currency = body.value
-      else {
-        const kt = { ...(contract.keyTerms as Record<string, unknown> ?? {}) }
+      const kt = { ...(contract.keyTerms as Record<string, unknown> ?? {}) }
+      if (mapped) {
+        const parsed = parseCorrection(mapped.kind, body.value)
+        if (!parsed.ok) return reply.status(400).send({ detail: parsed.detail })
+        updateData[mapped.column] = parsed.column
+        if (body.field in kt || mapped.column !== body.field) kt[body.field] = parsed.keyTerm
+        if (judgedTermChanged(mapped.column, (contract as Record<string, unknown>)[mapped.column], parsed.column)) {
+          const reset = statusAfterTermsChange(contract.status)
+          if (reset) updateData.status = reset
+        }
+      } else {
         kt[body.field] = body.value
-        updateData.keyTerms = kt
       }
+      updateData.keyTerms = kt
     }
 
     await prisma.contract.update({
       where: { id: contract.id },
       data: updateData as never,
+    })
+    if (mapped && body.value !== undefined) {
+      reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
+    }
+    // C5 follow-up — a correction changes the contract's terms (the columns
+    // the list, renewals and alerts read), and a review changes what counts
+    // as checked: on the record, as a PATCH is. Like PATCH, the field is
+    // named and its value isn't.
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: contract.id,
+      metadata: {
+        source: 'review_queue', action: body.value === undefined ? 'verified' : 'corrected', field: body.field,
+        ...(updateData.status ? { statusFrom: contract.status, statusTo: updateData.status } : {}),
+      },
+      ipAddress: req.ip,
     })
     return reply.send({ ok: true, contractId, field: body.field, verifiedBy: userId })
   })
@@ -210,7 +299,7 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: contractId, orgId, deletedAt: null },
-      select: { id: true, fieldConfidence: true, keyTerms: true },
+      select: { id: true, fieldConfidence: true, keyTerms: true, status: true, value: true, currency: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
@@ -227,9 +316,33 @@ export async function reviewQueueRoutes(app: FastifyInstance) {
     fc[body.field].verifiedAt = fc[body.field].rejectedAt
     fc[body.field].verifiedBy = userId
 
+    // C5 — "reject" clears the value (as the UI says), so a value a human
+    // called wrong stops driving renewals, alerts and agent answers.
+    const kt = { ...(contract.keyTerms as Record<string, unknown> ?? {}) }
+    delete kt[body.field]
+    const mapped = COLUMN_FOR_FIELD[body.field]
+    const reset = mapped && judgedTermChanged(mapped.column, (contract as Record<string, unknown>)[mapped.column], null)
+      ? statusAfterTermsChange(contract.status) : undefined
     await prisma.contract.update({
       where: { id: contract.id },
-      data:  { fieldConfidence: fc as never },
+      data:  {
+        fieldConfidence: fc as never,
+        keyTerms: kt as never,
+        ...(mapped ? { [mapped.column]: null } : {}),
+        ...(reset ? { status: reset } : {}),
+      },
+    })
+    if (mapped) reindexContract(contract.id).catch(err => app.log.warn({ err }, '[review-queue] ES re-index failed'))
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: contract.id,
+      metadata: {
+        source: 'review_queue', action: 'rejected', field: body.field,
+        ...(reset ? { statusFrom: contract.status, statusTo: reset } : {}),
+      },
+      ipAddress: req.ip,
     })
     return reply.send({ ok: true, contractId, field: body.field, rejectedBy: userId })
   })

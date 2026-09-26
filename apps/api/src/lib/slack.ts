@@ -20,6 +20,8 @@ export interface SlackOrgConfig {
   /** xoxb- bot token; optional — needed only to resolve button-clickers to CLM users. */
   botToken?:     string
   configuredAt?: string
+  /** X6 — the bot token proved this workspace via Slack's auth.test. */
+  teamVerified?: boolean
 }
 
 const APP_BASE = process.env.FRONTEND_URL ?? 'http://localhost:5173'
@@ -56,14 +58,47 @@ export async function getSlackConfig(orgId: string): Promise<SlackOrgConfig | nu
 }
 
 /** Find the org connected to a Slack workspace (team_id). */
-export async function findOrgBySlackTeam(teamId: string): Promise<{ orgId: string; config: SlackOrgConfig } | null> {
-  const org = await prisma.organization.findFirst({
-    where: { settings: { path: ['slack', 'teamId'], equals: teamId } },
-    select: { id: true, settings: true },
-  })
-  if (!org) return null
-  const config = (org.settings as Record<string, unknown>).slack as SlackOrgConfig
-  return config?.signingSecret ? { orgId: org.id, config } : null
+export async function findOrgsBySlackTeam(teamId: string): Promise<Array<{ orgId: string; config: SlackOrgConfig }>> {
+  // X6 — a team id names a workspace, not an org: two orgs can share one
+  // (separate Slack apps, separate signing secrets), and any admin can type
+  // any team id. Taking the first match let a second claimant break the
+  // first org's Slack, so return every candidate; the caller authenticates
+  // as the one whose signing secret signed the request.
+  //
+  // Any cap on candidates can be filled by squatters (and no cap multiplies
+  // the HMAC work per request), so verified claims — whose bot token proved
+  // the workspace through Slack's auth.test — are tried first. A squatter
+  // can't verify a workspace it isn't in.
+  const rows = await prisma.$queryRaw<Array<{ id: string; slack: unknown }>>`
+    SELECT id, settings -> 'slack' AS slack
+    FROM   organizations
+    WHERE  settings -> 'slack' ->> 'teamId' = ${teamId}
+    -- A config saved before verification existed has no flag: it ranks as
+    -- unverified (by age), not behind every new claim. Compare the JSON value,
+    -- so only a real boolean true counts.
+    ORDER  BY COALESCE(settings -> 'slack' -> 'teamVerified' = 'true'::jsonb, false) DESC, "createdAt" ASC
+    LIMIT  20`
+  return rows
+    .map(row => ({ orgId: row.id, config: row.slack as SlackOrgConfig }))
+    .filter(found => typeof found.config?.signingSecret === 'string' && found.config.signingSecret.length > 0)
+}
+
+/**
+ * X6 — which Slack workspace a bot token belongs to (Slack's auth.test).
+ * Null when Slack can't be reached, so the caller can tell "unknown" from "no".
+ */
+export async function slackTeamOfToken(botToken: string): Promise<{ ok: true; teamId: string } | { ok: false; error: string } | null> {
+  try {
+    const res = await fetch('https://slack.com/api/auth.test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${botToken}` },
+      signal: AbortSignal.timeout(5_000),
+    })
+    const body = await res.json() as { ok?: boolean; team_id?: string; error?: string }
+    return body.ok && body.team_id ? { ok: true, teamId: body.team_id } : { ok: false, error: body.error ?? `HTTP ${res.status}` }
+  } catch {
+    return null
+  }
 }
 
 /**

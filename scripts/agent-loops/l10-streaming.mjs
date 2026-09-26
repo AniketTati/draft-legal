@@ -194,7 +194,7 @@ section('1. Tokens arrive as they are generated')
     const py = `
 import asyncio, json
 from app.memory import get_session_history
-print("<<<R>>>" + json.dumps(asyncio.run(get_session_history(${JSON.stringify(sid)}))))
+print("<<<R>>>" + json.dumps(asyncio.run(get_session_history(${JSON.stringify(sid)}, org_id=${JSON.stringify(orgId)}, user_id=${JSON.stringify(userId)}))))
 `
     try {
       const out = execFileSync(`${REPO}/apps/agents/.venv/bin/python`, ['-c', py],

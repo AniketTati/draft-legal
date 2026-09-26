@@ -393,8 +393,9 @@ export function ContractEditor({
         contractType,
       })
       setAssistResult(res.data)
-    } catch {
-      setAssistError('AI request failed — please try again.')
+    } catch (err) {
+      // A refusal says why (X27: a redacted value the formatting splits).
+      setAssistError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'AI request failed — please try again.')
       setTimeout(() => setAssistError(null), 4000)
     } finally {
       setAssistLoading(false)
@@ -417,8 +418,8 @@ export function ContractEditor({
         editor.commands.setContent(res.data.revisedText)
         setDocAiDone(true)   // prompt user to save
       }
-    } catch {
-      setAssistError('Doc AI failed — please try again.')
+    } catch (err) {
+      setAssistError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Doc AI failed — please try again.')
       setTimeout(() => setAssistError(null), 4000)
     } finally {
       setDocAiLoading(null)

@@ -13,16 +13,17 @@
  *   POST  /api/v1/invoices/:id/rematch    — re-run auto-matcher
  *   GET   /api/v1/invoices/stats          — header KPIs
  */
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { fireWebhook } from '../lib/webhook-events.js'
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const CreateSchema = z.object({
-  contractId:    z.string().optional(),  // optional manual link
+  contractId:    z.string().min(1).optional(),  // optional manual link
   vendorName:    z.string().min(1).max(200),
   invoiceNumber: z.string().max(100).optional(),
   amount:        z.coerce.number().positive(),
@@ -48,10 +49,14 @@ interface MatchResult {
   reason:       string
 }
 
-/** Pick the single best payment obligation that matches an invoice. */
+/**
+ * Pick the single best payment obligation that matches an invoice. X19 — for
+ * an own-scope caller (`ownerId`), only obligations on contracts it owns: a
+ * match is returned with the contract's title and the obligation's text.
+ */
 async function autoMatchInvoice(orgId: string, invoice: {
   vendorName: string; amount: number; currency: string; invoiceDate: Date; description?: string | null
-}): Promise<MatchResult | null> {
+}, ownerId?: string): Promise<MatchResult | null> {
   // Pull every OPEN payment obligation in the org and score against the invoice.
   // Capped at 500 — orgs running >500 OPEN payment obligations can re-run match
   // post-creation via /rematch with a more restrictive contract filter.
@@ -60,6 +65,10 @@ async function autoMatchInvoice(orgId: string, invoice: {
       orgId,
       status: 'OPEN',
       type:   'payment',
+      // A live contract only — and, for own scope, one the caller owns. X17 —
+      // never a diligence room's: its obligations are a target's, and a match
+      // would let reconciling our invoice close them.
+      contract: { is: { deletedAt: null, diligenceRoomId: null, ...(ownerId ? { ownerId } : {}) } },
     },
     include: {
       contract: { select: { counterpartyName: true, currency: true, value: true } },
@@ -186,7 +195,22 @@ async function autoMatchInvoice(orgId: string, invoice: {
   return null
 }
 
+/**
+ * X7 — own-scope callers see the invoices on contracts they own, plus unlinked
+ * invoices they entered themselves; never another rep's contract title,
+ * counterparty or matched obligation.
+ */
+function ownInvoiceWhere(userId: string) {
+  return { OR: [{ contract: { is: { ownerId: userId } } }, { contractId: null, createdById: userId }] }
+}
+const ownInvoiceScope = (req: FastifyRequest) => req.permissionScope === 'own' ? [ownInvoiceWhere(req.user.sub)] : []
+
 export async function invoiceRoutes(app: FastifyInstance) {
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.invoice.count({ where: { id, orgId: req.user.orgId, ...ownInvoiceWhere(req.user.sub) } })) > 0,
+    'Invoice not found',
+  ))
+
   // ── POST / — create + auto-match ─────────────────────────────────────
   app.post('/', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     let body
@@ -202,6 +226,17 @@ export async function invoiceRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'invalid invoiceDate' })
     }
 
+    // X19 — a manual link must name a live contract of this org (one the
+    // caller owns, for own scope). It was stored unchecked, and the response
+    // then carried another org's contract title and counterparty.
+    const ownerId = req.permissionScope === 'own' ? userId : undefined
+    if (body.contractId) {
+      const linkable = await prisma.contract.count({
+        where: { id: body.contractId, orgId, deletedAt: null, ...(ownerId ? { ownerId } : {}) },
+      })
+      if (!linkable) return reply.status(404).send({ detail: 'Contract not found' })
+    }
+
     // Auto-match BEFORE inserting so we can stamp matchedObligationId + score on creation.
     const match = await autoMatchInvoice(orgId, {
       vendorName: body.vendorName,
@@ -209,7 +244,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
       currency:   body.currency,
       invoiceDate,
       description: body.description ?? null,
-    })
+    }, ownerId)
 
     // If user supplied a contractId, force the contract link to that one
     // (overrides the auto-match's contract). The obligation match still
@@ -248,6 +283,11 @@ export async function invoiceRoutes(app: FastifyInstance) {
       },
     })
 
+    // H2 — advertised to webhook subscribers, never emitted until now.
+    fireWebhook(orgId, 'invoice.created', {
+      invoiceId: created.id, contractId: created.contractId, vendorName: created.vendorName,
+      amount: Number(created.amount), currency: created.currency, status: created.status,
+    })
     return reply.status(201).send({ invoice: created, matchReason: match?.reason ?? null })
   })
 
@@ -260,7 +300,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
 
-    const where: Record<string, unknown> = { orgId }
+    const where: Record<string, unknown> = { orgId, AND: ownInvoiceScope(req) }
     if (q.status !== 'all') where.status = q.status
     if (q.contractId)       where.contractId = q.contractId
     if (q.vendor)           where.vendorName = { contains: q.vendor, mode: 'insensitive' }
@@ -290,15 +330,16 @@ export async function invoiceRoutes(app: FastifyInstance) {
   // ── GET /stats ────────────────────────────────────────────────────────
   app.get('/stats', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
+    const AND = ownInvoiceScope(req)
     const [pending, matched, reconciled, disputed] = await Promise.all([
-      prisma.invoice.count({ where: { orgId, status: 'PENDING' } }),
-      prisma.invoice.count({ where: { orgId, status: 'MATCHED' } }),
-      prisma.invoice.count({ where: { orgId, status: 'RECONCILED' } }),
-      prisma.invoice.count({ where: { orgId, status: 'DISPUTED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'PENDING' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'MATCHED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'RECONCILED' } }),
+      prisma.invoice.count({ where: { orgId, AND, status: 'DISPUTED' } }),
     ])
     // Total invoiced amount in pending+matched buckets
     const open = await prisma.invoice.findMany({
-      where: { orgId, status: { in: ['PENDING', 'MATCHED'] } },
+      where: { orgId, AND, status: { in: ['PENDING', 'MATCHED'] } },
       select: { amount: true, currency: true },
       take: 5_000,
     })
@@ -339,6 +380,10 @@ export async function invoiceRoutes(app: FastifyInstance) {
     })
     if (!inv) return reply.status(404).send({ detail: 'Invoice not found' })
     if (inv.status === 'RECONCILED') return reply.status(409).send({ detail: 'Already reconciled' })
+    // X45 — reconciling completes the matched obligation, whose completer is a
+    // user, and a key is none: a key's reconcile records no one there (its
+    // audit event names the key).
+    const completedById = req.user.sub.startsWith('apikey:') ? null : userId
 
     const now = new Date()
     const updated = await prisma.invoice.update({
@@ -353,16 +398,20 @@ export async function invoiceRoutes(app: FastifyInstance) {
 
     // Close the matched obligation if it's still open.
     if (inv.matchedObligationId) {
-      await prisma.obligation.updateMany({
-        where: { id: inv.matchedObligationId, status: { in: ['OPEN', 'OVERDUE'] } },
+      const closed = await prisma.obligation.updateMany({
+        // Bounded to this org and the invoice's own contract, so a bad link
+        // can never close someone else's obligation.
+        where: { id: inv.matchedObligationId, orgId, contractId: inv.contractId ?? undefined, status: { in: ['OPEN', 'OVERDUE'] } },
         data: {
           status:         'COMPLETED',
           completedAt:    now,
-          completedById:  userId,
+          completedById,
           completionNote: `Reconciled via invoice ${inv.id}${body.notes ? ` — ${body.notes.slice(0, 100)}` : ''}`,
         },
       })
-      if (inv.contractId) {
+      // X63 — only when this closed it: an obligation already completed (or
+      // a link that doesn't qualify) was recorded as completed again.
+      if (inv.contractId && closed.count > 0) {
         await createAuditEvent({
           orgId, userId,
           action: AuditAction.OBLIGATION_COMPLETED,
@@ -413,7 +462,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
       currency:   inv.currency,
       invoiceDate: inv.invoiceDate,
       description: inv.description ?? null,
-    })
+    }, req.permissionScope === 'own' ? req.user.sub : undefined)
 
     const data: Record<string, unknown> = {
       matchedObligationId: match?.obligationId ?? null,

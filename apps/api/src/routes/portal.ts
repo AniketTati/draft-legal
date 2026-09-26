@@ -21,6 +21,8 @@ import { verifyPortalToken } from './share.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
+import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
+import { standingVersion } from '../lib/standing-version.js'
 
 async function resolvePortalToken(portalToken: string) {
   let payload
@@ -41,6 +43,29 @@ async function resolvePortalToken(portalToken: string) {
   return { payload, link }
 }
 
+/**
+ * The version the other side reads and downloads: the one the contract
+ * stands on, or, while its text is still being read, the latest one before
+ * it whose text has been. A version just uploaded has no text until the
+ * parse job finishes; the page said nothing had been uploaded, while the
+ * counterparty had just uploaded it. It is reported as pending instead.
+ *
+ * DD4 — not the newest: after an undo, the newest is the undone version, an
+ * internal redline the other side was never sent.
+ */
+async function portalVersion(contract: { id: string; currentVersionId: string | null }) {
+  const current = await standingVersion(contract.id, contract.currentVersionId)
+  if (!current) return { shown: null, pendingVersion: null }
+  const shown = current.htmlContent?.trim()
+    ? current
+    : await prisma.contractVersion.findFirst({
+        where:   { contractId: contract.id, versionNumber: { lt: current.versionNumber }, htmlContent: { not: '' } },
+        orderBy: { versionNumber: 'desc' },
+      })
+  const pendingVersion = current.htmlContent?.trim() ? null : current.versionNumber
+  return { shown, pendingVersion }
+}
+
 export async function portalRoutes(app: FastifyInstance) {
 
   // ── Get contract via portal token ─────────────────────────────────────────
@@ -59,14 +84,10 @@ export async function portalRoutes(app: FastifyInstance) {
         counterparty: { select: { name: true, legalName: true } },
         owner: { select: { name: true } },
         org: { select: { name: true, brandColor: true, logoUrl: true } },
-        versions: {
-          orderBy: { versionNumber: 'desc' },
-          take: 1,
-          select: { id: true, versionNumber: true, htmlContent: true, createdAt: true },
-        },
       },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    const { shown, pendingVersion } = await portalVersion(contract)
 
     // Update view stats (fire and forget)
     prisma.contractShareLink.update({
@@ -82,7 +103,6 @@ export async function portalRoutes(app: FastifyInstance) {
       metadata: { shareLinkId: link.id, ipAddress: req.ip },
     }).catch(() => {})
 
-    const latestVersion = contract.versions[0]
     return reply.send({
       contract: {
         id: contract.id,
@@ -94,8 +114,14 @@ export async function portalRoutes(app: FastifyInstance) {
         expiryDate: contract.expiryDate,
         org: contract.org,
       },
-      htmlContent: latestVersion?.htmlContent ?? '',
-      versionId: latestVersion?.id,
+      htmlContent:   shown?.htmlContent ?? '',
+      versionId:     shown?.id,
+      versionNumber: shown?.versionNumber ?? null,
+      // A version still being read, or one that couldn't be read.
+      pending: pendingVersion == null ? null : {
+        versionNumber: pendingVersion,
+        failed:        contract.analysisStatus === 'FAILED',
+      },
       permissions: payload.permissions,
       shareLink: {
         id: link.id,
@@ -161,12 +187,10 @@ export async function portalRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: payload.contractId, orgId: payload.orgId, deletedAt: null },
-      include: {
-        versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { htmlContent: true, versionNumber: true } },
-      },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
-    const latest = contract.versions[0]
+    // The same version the page shows, not a newer one still being read.
+    const latest = (await portalVersion(contract)).shown
     if (!latest?.htmlContent?.trim()) {
       return reply.status(400).send({ error: 'No content available to export' })
     }
@@ -246,17 +270,14 @@ export async function portalRoutes(app: FastifyInstance) {
 
     const file = await (req as unknown as { file: () => Promise<{ filename: string; mimetype: string; toBuffer: () => Promise<Buffer> } | undefined> }).file()
     if (!file) return reply.status(400).send({ error: 'file is required' })
-    const allowedMime = new Set([
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    ])
-    if (!allowedMime.has(file.mimetype)) {
-      return reply.status(400).send({ error: 'Only .pdf or .docx files accepted' })
-    }
     const buffer = await file.toBuffer()
     if (buffer.length > 25 * 1024 * 1024) {
       return reply.status(413).send({ error: 'File too large (25MB limit)' })
     }
+    // S3 — validate the bytes; the declared mimetype is attacker-controlled.
+    const checked = checkUpload(buffer, file.mimetype, PDF_OR_DOCX)
+    if (!checked.ok) return reply.status(checked.status).send({ error: checked.detail })
+    const mimeType = checked.mimeType
 
     // Next version number for this contract
     const latest = await prisma.contractVersion.findFirst({
@@ -276,7 +297,7 @@ export async function portalRoutes(app: FastifyInstance) {
         Bucket: S3_BUCKET,
         Key: s3Key,
         Body: buffer,
-        ContentType: file.mimetype,
+        ContentType: mimeType,
         Metadata: {
           'uploaded-by': `portal:${link.id}`,
           'contract-id': payload.contractId,
@@ -296,7 +317,7 @@ export async function portalRoutes(app: FastifyInstance) {
         versionNumber: nextVersion,
         s3Key,
         fileSize:      buffer.length,
-        mimeType:      file.mimetype,
+        mimeType:      mimeType,
         createdById:   `portal:${link.id}`,
         changeNote:    `Uploaded by counterparty via portal (${file.filename})`,
       },
@@ -325,7 +346,7 @@ export async function portalRoutes(app: FastifyInstance) {
       contractId: payload.contractId,
       versionId:  version.id,
       s3Key,
-      mimeType:   file.mimetype,
+      mimeType:   mimeType,
       orgId:      payload.orgId,
       filename:   file.filename,
     })

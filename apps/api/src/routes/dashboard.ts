@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
+import { permissionScopeFor } from '../middleware/permissions.js'
 
 const ACTIVE_STATUSES = [
   'DRAFT',
@@ -78,8 +79,43 @@ const ACTIONS_TO_HIDE = [
 ]
 
 export async function dashboardRoutes(app: FastifyInstance) {
-  app.get('/', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
+
+    // X7 — this route checks sign-in only, so resolve the scopes it must honour.
+    // Unless the caller can view contracts (requests) beyond its own, it counts
+    // and sees only the contracts it owns (the requests it raised).
+    const [contractScope, requestScope] = await Promise.all([
+      permissionScopeFor(req, 'view', 'contract'),
+      permissionScopeFor(req, 'view', 'request'),
+    ])
+    const narrowContracts = !contractScope || contractScope === 'own'
+    const narrowRequests = !requestScope || requestScope === 'own'
+    const ownContracts = narrowContracts ? { ownerId: userId } : {}
+    // X17 — the KPIs describe the org's own portfolio: a diligence room's
+    // documents are a target's contracts (C11 keeps them out of search too).
+    const portfolio = { diligenceRoomId: null, ...ownContracts }
+    const ownRequests = narrowRequests ? { requestedById: userId } : {}
+
+    // The feed takes the 40 newest events, so narrow it in the query — not
+    // after — or a busy org pushes a rep's own activity out of the window.
+    // Only these three resource types can be titled below; others drop anyway.
+    let feedWhere: Record<string, unknown> = {}
+    if (narrowContracts || narrowRequests) {
+      const idsOf = (rows: Array<{ id: string }>) => ({ in: rows.map(r => r.id) })
+      const [myContracts, myRequests, myApprovals] = await Promise.all([
+        narrowContracts ? prisma.contract.findMany({ where: { orgId, ownerId: userId }, select: { id: true }, orderBy: { updatedAt: 'desc' }, take: 5_000 }) : null,
+        narrowRequests ? prisma.contractRequest.findMany({ where: { orgId, requestedById: userId }, select: { id: true }, orderBy: { updatedAt: 'desc' }, take: 5_000 }) : null,
+        narrowContracts ? prisma.approvalInstance.findMany({ where: { orgId, contract: { is: { ownerId: userId } } }, select: { id: true }, orderBy: { createdAt: 'desc' }, take: 5_000 }) : null,
+      ])
+      feedWhere = {
+        OR: [
+          { resourceType: 'contract', ...(myContracts ? { resourceId: idsOf(myContracts) } : {}) },
+          { resourceType: 'contract_request', ...(myRequests ? { resourceId: idsOf(myRequests) } : {}) },
+          { resourceType: 'approval_instance', ...(myApprovals ? { resourceId: idsOf(myApprovals) } : {}) },
+        ],
+      }
+    }
 
     const now = new Date()
     // P7.1.1 — Renewal-window lookahead is the CLM industry standard
@@ -107,10 +143,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       recentEvents,
     ] = await Promise.all([
       prisma.contract.count({
-        where: { orgId, deletedAt: null, status: { in: ACTIVE_STATUSES } },
+        where: { orgId, deletedAt: null, ...portfolio, status: { in: ACTIVE_STATUSES } },
       }),
       prisma.contractRequest.count({
-        where: { orgId, deletedAt: null, status: { in: OPEN_REQUEST_STATUSES } },
+        where: { orgId, deletedAt: null, ...ownRequests, status: { in: OPEN_REQUEST_STATUSES } },
       }),
       // P7.2.3 — Per-user pending approvals: only steps assigned to me
       // AND only the currently-active step (sequential gating). Without
@@ -122,12 +158,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
         WHERE s."orgId" = ${orgId}
           AND s."approverId" = ${userId}
           AND s.status = 'PENDING'
-          AND s."stepOrder" = GREATEST(i."currentStepOrder", 1)
+          AND s."stepOrder" = i."currentStepOrder"
       `.then(rows => Number(rows[0]?.count ?? 0)),
       prisma.contract.count({
         where: {
           orgId,
           deletedAt: null,
+          ...portfolio,
           expiryDate: { gte: now, lte: in90Days },
           // Only count active contracts — expired-EXECUTED in the
           // renewal window is the actionable signal; archived/cancelled
@@ -151,6 +188,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           expiryDate: { gte: now, lte: in90Days },
           status: { in: ACTIVE_STATUSES },
@@ -161,6 +199,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           status: 'DRAFT',
           analysisStatus: { not: 'FAILED' },
@@ -169,8 +208,10 @@ export async function dashboardRoutes(app: FastifyInstance) {
       // P7.2.3 — Org-wide pending approval count. Surfaces to admin
       // and legal_ops in the KPI strip so they can spot "1 deal stuck
       // somewhere in the org" without joining each approval queue.
+      // X21 — narrowed like the rest of the strip: an own-scope caller counts
+      // the approvals on their own contracts only.
       prisma.approvalInstance.count({
-        where: { orgId, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+        where: { orgId, contract: { is: { deletedAt: null, diligenceRoomId: null, ...(narrowContracts ? { ownerId: userId } : {}) } }, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       }),
       // P7.1.1 — Negotiations I own (Maya's primary JTBD). Returns full
       // rows (not just count) because the dashboard renders inline cards
@@ -179,6 +220,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           status: { in: ['UNDER_NEGOTIATION', 'PENDING_REVIEW'] },
         },
@@ -197,6 +239,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         where: {
           orgId,
           deletedAt: null,
+          diligenceRoomId: null,   // X17
           ownerId: userId,
           expiryDate: { gte: now, lte: in90Days },
           status: { in: ACTIVE_STATUSES },
@@ -216,6 +259,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
           orgId,
           action: { notIn: ACTIONS_TO_HIDE },
           userId: { not: null },
+          ...feedWhere,
         },
         orderBy: { createdAt: 'desc' },
         take: 40,
@@ -247,7 +291,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const contractIds = [...(byType.get('contract') ?? [])]
     if (contractIds.length) {
       const rows = await prisma.contract.findMany({
-        where: { id: { in: contractIds } },
+        where: { id: { in: contractIds }, orgId, ...ownContracts },
         select: { id: true, title: true, status: true },
       })
       for (const r of rows) titleMap.set(entityKey('contract', r.id), {
@@ -260,7 +304,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const requestIds = [...(byType.get('contract_request') ?? [])]
     if (requestIds.length) {
       const rows = await prisma.contractRequest.findMany({
-        where: { id: { in: requestIds } },
+        where: { id: { in: requestIds }, orgId, ...ownRequests },
         select: { id: true, title: true, status: true },
       })
       for (const r of rows) titleMap.set(entityKey('contract_request', r.id), {
@@ -279,16 +323,20 @@ export async function dashboardRoutes(app: FastifyInstance) {
       const approvalContractIds = rows.map((r) => r.contractId).filter(Boolean) as string[]
       const contracts = approvalContractIds.length
         ? await prisma.contract.findMany({
-            where: { id: { in: approvalContractIds } },
+            where: { id: { in: approvalContractIds }, orgId, ...ownContracts },
             select: { id: true, title: true },
           })
         : []
       const cMap = new Map(contracts.map((c) => [c.id, c.title]))
-      for (const r of rows) titleMap.set(entityKey('approval_instance', r.id), {
-        title: (r.contractId ? cMap.get(r.contractId) : null) ?? 'Untitled contract',
-        status: r.status,
-        entityType: 'approval_instance',
-      })
+      for (const r of rows) {
+        // An approval on a contract the caller can't see stays out of the feed.
+        if (narrowContracts && !(r.contractId && cMap.has(r.contractId))) continue
+        titleMap.set(entityKey('approval_instance', r.id), {
+          title: cMap.get(r.contractId) ?? 'Untitled contract',
+          status: r.status,
+          entityType: 'approval_instance',
+        })
+      }
     }
 
     // --- Humanise status codes for the "secondary" line ---

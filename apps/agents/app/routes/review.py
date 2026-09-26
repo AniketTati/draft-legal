@@ -227,13 +227,37 @@ async def _process_and_update(
     if type_fields_out:
         metadata_update["_typeFields"] = type_fields_out
 
-    # Org-defined custom fields — stored flat by fieldKey
+    # Org-defined custom fields — stored flat by fieldKey (what search and the
+    # UI read). X2 — their confidence and source quote were dropped; they go
+    # beside the values, in _customFieldEvidence, as _typeFields keeps them.
+    custom_evidence: dict = {}
+    # X26 follow-up — only the org's own fields. The model's output follows
+    # the document it read, and any other key written here (`_splitInto`, a
+    # forged report) would be trusted as the server's own state.
+    wanted_fields = {f.get("fieldKey") for f in custom_fields if isinstance(f, dict)}
     for field_key, extraction in custom_field_values.items():
+        if field_key not in wanted_fields:
+            continue
         if isinstance(extraction, dict) and extraction.get("value") is not None:
             metadata_update[field_key] = extraction["value"]
+            custom_evidence[field_key] = {
+                "confidence": extraction.get("confidence", 0.5),
+                "quote":      extraction.get("quote"),
+            }
+    if custom_evidence:
+        metadata_update["_customFieldEvidence"] = custom_evidence
 
     if open_ended:
         metadata_update["_aiFindings"] = open_ended
+    # The API merges metadata (C4), so other jobs' reports (_compliance,
+    # _playbookReview, binder markers, …) survive a re-analysis. This run's
+    # own outputs must still refresh: send None (= delete) for any it did not
+    # produce this time, so a stale value from the last run can't linger —
+    # but only when this run produced output; a failed run keeps the last one.
+    if not (has_error and not has_output):
+        metadata_update.setdefault("_typeFields", None)
+        metadata_update.setdefault("_aiFindings", None)
+        metadata_update.setdefault("_customFieldEvidence", None)
     if metadata_update:
         contract_payload["metadata"] = metadata_update
 
@@ -255,6 +279,8 @@ async def _process_and_update(
                 r = await client.patch(
                     f"{api_url}/api/v1/contracts/{contract_id}",
                     json=contract_payload,
+                    # X23 — the API restores PII tokens against the version read.
+                    params={"versionId": version_id},
                     headers=headers,
                     timeout=10,
                 )

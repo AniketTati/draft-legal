@@ -4,10 +4,10 @@ import { Link } from 'react-router-dom'
 const items = [
   { icon: Lock, label: 'Encryption at rest & in transit' },
   { icon: ShieldCheck, label: 'RBAC with action × resource × scope' },
-  { icon: FileSearch, label: 'Append-only audit log' },
-  { icon: KeyRound, label: 'JWT (RS256) + optional SAML SSO' },
+  { icon: FileSearch, label: 'Tamper-evident audit log' },
+  { icon: KeyRound, label: 'JWT (HS256) sessions · SSO on the roadmap' },
   { icon: ScrollText, label: 'AI plans gated by human approval' },
-  { icon: Database, label: 'Postgres row-level isolation' },
+  { icon: Database, label: 'Postgres row-level security' },
 ]
 
 export function TrustStrip() {

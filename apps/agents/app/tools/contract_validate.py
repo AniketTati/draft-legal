@@ -36,7 +36,7 @@ class ContractValidateArgs(BaseModel):
     )
 
 
-def build_contract_validate(org_id: str) -> StructuredTool:
+def build_contract_validate(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(contract_id: str, max_issues: int = 50) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_validate"
@@ -45,7 +45,7 @@ def build_contract_validate(org_id: str) -> StructuredTool:
             "x-internal-service": "agents",
             "content-type":      "application/json",
         }
-        payload = {"orgId": org_id, "contractId": contract_id, "maxIssues": max_issues}
+        payload = {"orgId": org_id, "userId": user_id, "contractId": contract_id, "maxIssues": max_issues}
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:

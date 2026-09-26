@@ -3,12 +3,13 @@ import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
-import { signAccessToken, signRefreshToken, verifyToken } from '../lib/jwt.js'
+import { issueSessionTokens, verifyToken } from '../lib/jwt.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { seedOrgDefaults } from '../lib/org-seed.js'
 import { DEFAULT_ROLE_PERMISSIONS, DEFAULT_ROLE_DESCRIPTIONS } from '../lib/permissions.js'
 import { LoginSchema, RegisterSchema, RefreshTokenSchema, AcceptInviteSchema, ChangePasswordSchema } from '@clm/types'
 import { AuditAction } from '@clm/types'
+import { isTest } from '../lib/runtime-mode.js'
 
 // P20 — per-email login throttle. The Fastify rate-limit hook fires
 // before body parsing, so it can't see the email; we apply it manually
@@ -36,7 +37,7 @@ export async function authRoutes(app: FastifyInstance) {
   // hour. Genuine users register once; anything beyond that is a bot.
   app.post('/register', {
     config: {
-      rateLimit: process.env.NODE_ENV === 'test' ? false : {
+      rateLimit: isTest() ? false : {
         max: 5,
         timeWindow: '1 hour',
         keyGenerator: (req) => `register:${req.ip}`,
@@ -110,7 +111,7 @@ export async function authRoutes(app: FastifyInstance) {
       },
     })
 
-    const tokens = issueTokens(user.id, orgId, ['ADMIN'])
+    const tokens = issueTokens(user.id, orgId, ['ADMIN'], crypto.randomUUID())
 
     await prisma.user.update({
       where: { id: user.id },
@@ -150,7 +151,7 @@ export async function authRoutes(app: FastifyInstance) {
   // thousands of logins back-to-back.
   app.post('/login', {
     config: {
-      rateLimit: process.env.NODE_ENV === 'test' ? false : {
+      rateLimit: isTest() ? false : {
         // 200 attempts per 15 min per IP. Generous enough for real
         // user sessions (auto-retry on stale tokens, multiple tabs)
         // and the probe runner; tight enough to slow a one-IP brute-
@@ -174,7 +175,7 @@ export async function authRoutes(app: FastifyInstance) {
     // email exists. We also DON'T leak whether they hit the throttle
     // before reaching auth — same "Too many login attempts" message
     // either way.
-    if (process.env.NODE_ENV !== 'test') {
+    if (!isTest()) {
       const { tooMany } = await emailThrottleHit(body.email)
       if (tooMany) {
         return reply.status(429).send({
@@ -208,12 +209,12 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name)
-    const tokens = issueTokens(user.id, user.orgId, roles)
+    const tokens = issueTokens(user.id, user.orgId, roles, crypto.randomUUID())
 
     // Reset the per-email throttle on a successful login. A user
     // who's been locked out can fix their typo and get back in
     // without waiting the full 15-min window.
-    if (process.env.NODE_ENV !== 'test') await emailThrottleReset(body.email)
+    if (!isTest()) await emailThrottleReset(body.email)
 
     await prisma.user.update({
       where: { id: user.id },
@@ -255,12 +256,29 @@ export async function authRoutes(app: FastifyInstance) {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name)
-    const tokens = issueTokens(user.id, user.orgId, roles)
+    // A token from before sessions had ids gets one derived from it, so two
+    // refreshes racing with it still mint the same tokens (below).
+    const sid = payload.sid ?? crypto.createHash('sha256').update(refreshToken).digest('hex').slice(0, 32)
+    const tokens = issueTokens(user.id, user.orgId, roles, sid)
 
-    await prisma.user.update({
-      where: { id: user.id },
+    // X50 — rotate only while this is still the current token. Two refreshes
+    // racing with the same token both passed the lookup above and both
+    // answered 200, and the tokens the loser got were dead on arrival.
+    const rotated = await prisma.user.updateMany({
+      where: { id: user.id, refreshToken, deletedAt: null },
       data: { refreshToken: tokens.refreshToken },
     })
+    if (rotated.count === 0) {
+      // The race was lost — but a winner refreshing the same session in the
+      // same second minted these very tokens (signing is deterministic, `iat`
+      // is whole seconds, and a sign-in starts a new `sid`), and they are the
+      // current ones: hand them over, as before, rather than refuse a
+      // harmless race.
+      const current = await prisma.user.count({
+        where: { id: user.id, refreshToken: tokens.refreshToken, deletedAt: null },
+      })
+      if (current === 0) return reply.status(401).send({ detail: 'Refresh token revoked' })
+    }
 
     return reply.send(tokens)
   })
@@ -441,20 +459,40 @@ export async function authRoutes(app: FastifyInstance) {
 
   // POST /api/v1/auth/logout
   app.post('/logout', async (req, reply) => {
+    // Whose session ends: the access token's user or, once that token has
+    // expired (15 idle minutes), the user whose current refresh token this
+    // is (X50 review). Before, a sign-out after a pause ended nothing on the
+    // server, and other tabs kept the session going.
+    let who: { sub: string; orgId: string } | null = null
     const header = req.headers.authorization
     if (header?.startsWith('Bearer ')) {
       try {
         const payload = verifyToken(header.slice(7))
+        who = { sub: payload.sub, orgId: payload.orgId }
+      } catch { /* expired or invalid */ }
+    }
+    const refreshToken = (req.body as { refreshToken?: unknown } | undefined)?.refreshToken
+    if (!who && typeof refreshToken === 'string') {
+      try {
+        const payload = verifyToken(refreshToken)
+        // Only the current token: an old one can't end a newer session.
+        if (payload.type === 'refresh' && await prisma.user.count({ where: { id: payload.sub, refreshToken } })) {
+          who = { sub: payload.sub, orgId: payload.orgId }
+        }
+      } catch { /* expired or invalid */ }
+    }
+    if (who) {
+      try {
         await prisma.user.update({
-          where: { id: payload.sub },
+          where: { id: who.sub },
           data: { refreshToken: null },
         })
         await createAuditEvent({
-          orgId: payload.orgId,
-          userId: payload.sub,
+          orgId: who.orgId,
+          userId: who.sub,
           action: AuditAction.USER_LOGOUT,
           resourceType: 'user',
-          resourceId: payload.sub,
+          resourceId: who.sub,
         })
       } catch { /* ignore */ }
     }
@@ -462,13 +500,8 @@ export async function authRoutes(app: FastifyInstance) {
   })
 }
 
-function issueTokens(userId: string, orgId: string, roles: string[]) {
-  const base = { sub: userId, orgId, roles }
-  return {
-    accessToken: signAccessToken(base),
-    refreshToken: signRefreshToken(base),
-    expiresIn: 900, // 15 min in seconds
-  }
+function issueTokens(userId: string, orgId: string, roles: string[], sid: string) {
+  return issueSessionTokens({ sub: userId, orgId, roles, sid })
 }
 
 function safeUser(user: { id: string; email: string; name: string; orgId: string; avatarUrl: string | null; status?: string }) {

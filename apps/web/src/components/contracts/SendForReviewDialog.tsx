@@ -7,13 +7,17 @@
  *   • Who the first reviewer will be (from the workflow's first step)
  *   • An optional message that goes to the approver
  *
- * The auto-selected workflow is the org default OR one whose
- * triggerRules match this contract's type / value. Users can override
- * via the dropdown.
+ * The preselected workflow is the one the server would choose
+ * (pickWorkflow in @clm/types, Z3): the workflow whose rules fit this
+ * contract's type and value most closely, else the default. Users can
+ * override via the dropdown. When the workflow's rules approve the contract
+ * without a review, the dialog says so before it is sent.
  */
 import { useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { autoApproves, pickWorkflow, workflowApplies } from '@clm/types'
 import { api } from '@/lib/api'
+import { toast } from '@/components/common/Toaster'
 import { Button } from '@/components/ui/button'
 import { Loader2, X, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react'
 
@@ -23,6 +27,7 @@ interface WorkflowDef {
   description?: string | null
   isDefault: boolean
   isActive: boolean
+  createdAt: string
   steps: Array<{
     name?: string
     stepName?: string
@@ -30,18 +35,23 @@ interface WorkflowDef {
     approverIds?: string[]
     approverRoles?: string[]
   }>
-  triggerRules?: { contractTypes?: string[]; minValue?: number } | null
+  triggerRules?: unknown
 }
 
 export function SendForReviewDialog({
   contractId,
   contractType,
+  contractValue,
+  contractCurrency,
   open,
   onClose,
   onSent,
 }: {
   contractId: string
   contractType?: string
+  /** As the API returns it: a decimal string, or null when not set. */
+  contractValue?: string | number | null
+  contractCurrency?: string | null
   open: boolean
   onClose: () => void
   onSent: () => void
@@ -49,21 +59,21 @@ export function SendForReviewDialog({
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
 
-  const { data: workflows = [], isLoading: loadingWorkflows } = useQuery<WorkflowDef[]>({
+  const { data: allWorkflows = [], isLoading: loadingWorkflows } = useQuery<WorkflowDef[]>({
     queryKey: ['workflows-for-review', contractType],
     queryFn: () => api.get('/approvals/workflows').then(r => r.data),
     enabled: open,
     staleTime: 60_000,
   })
+  // The server runs only active workflows.
+  const workflows = allWorkflows.filter(w => w.isActive)
 
-  // Pick the auto-default: contractType match → isDefault → first.
-  const autoDefault = (() => {
-    if (workflows.length === 0) return null
-    const byType = contractType
-      ? workflows.find(w => w.triggerRules?.contractTypes?.includes(contractType))
-      : null
-    return byType ?? workflows.find(w => w.isDefault) ?? workflows[0]
-  })()
+  const routed = {
+    type:     contractType ?? '',
+    value:    contractValue == null || contractValue === '' ? null : Number(contractValue),
+    currency: contractCurrency ?? null,
+  }
+  const autoDefault = pickWorkflow(workflows, routed)
 
   const effectiveWorkflowId = selectedWorkflowId ?? autoDefault?.id ?? null
   const effectiveWorkflow = workflows.find(w => w.id === effectiveWorkflowId) ?? autoDefault
@@ -73,7 +83,10 @@ export function SendForReviewDialog({
       workflowDefinitionId: effectiveWorkflowId,
       comment: message.trim() || undefined,
     }).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: (data: { autoApproved?: boolean }) => {
+      if (data?.autoApproved) {
+        toast.success('Approved automatically', { description: "The workflow's rules approve this contract without a review." })
+      }
       onSent()
       onClose()
       // reset for next time
@@ -84,6 +97,7 @@ export function SendForReviewDialog({
 
   if (!open) return null
 
+  const approvesAtOnce = !!effectiveWorkflow && autoApproves(effectiveWorkflow.triggerRules, routed)
   const firstStep = effectiveWorkflow?.steps?.[0]
   const firstStepLabel = firstStep
     ? (firstStep.stepName ?? firstStep.name ?? 'First reviewer')
@@ -129,7 +143,8 @@ export function SendForReviewDialog({
               <AlertCircle className="size-4 mt-0.5 flex-shrink-0" />
               <div>
                 <p className="font-medium">No workflows configured</p>
-                <p className="text-dense mt-1 leading-relaxed">An admin needs to create a workflow first via Admin → Approvals.</p>
+                {/* X76 — workflows live under Approvals → Manage Workflows; there is no "Admin → Approvals". */}
+                <p className="text-dense mt-1 leading-relaxed">An admin needs to create one first, under Approvals → Manage Workflows.</p>
               </div>
             </div>
           ) : (
@@ -142,19 +157,28 @@ export function SendForReviewDialog({
                   data-testid="send-for-review-workflow"
                   className="w-full h-8 text-[13px] border border-input rounded-md px-2.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
                 >
+                  {!effectiveWorkflowId && <option value="" disabled>Choose a workflow</option>}
                   {workflows.map(w => (
                     <option key={w.id} value={w.id}>
                       {w.name}{w.isDefault ? ' (default)' : ''}
-                      {w === autoDefault && w !== workflows[0] ? ' — auto-matched for this contract' : ''}
+                      {w === autoDefault && workflowApplies(w.triggerRules, routed) ? ' — fits this contract' : ''}
                     </option>
                   ))}
                 </select>
+                {!autoDefault && (
+                  <p className="text-[11px] text-ink-500 mt-1.5">No workflow's rules cover this contract, and there is no default. Choose one to send it.</p>
+                )}
                 {effectiveWorkflow?.description && (
                   <p className="text-[11px] text-ink-500 mt-1.5">{effectiveWorkflow.description}</p>
                 )}
               </div>
 
-              {/* Reviewer chain preview */}
+              {approvesAtOnce ? (
+                <div className="bg-paper-50 border border-paper-200 rounded-md p-3 text-[13px] text-ink-950" data-testid="send-for-review-auto-approve">
+                  This workflow's rules approve this contract as soon as you send it, with no review.
+                </div>
+              ) : (
+              /* Reviewer chain preview */
               <div className="bg-paper-50 border border-paper-200 rounded-md p-3">
                 <div className="text-[10.5px] uppercase tracking-[0.07em] font-semibold text-ink-700 mb-1.5">
                   First reviewer
@@ -171,6 +195,7 @@ export function SendForReviewDialog({
                   </p>
                 )}
               </div>
+              )}
 
               <div>
                 <label className="block text-dense font-semibold text-ink-700 mb-1.5">

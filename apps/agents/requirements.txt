@@ -40,10 +40,17 @@ Pillow>=10.0.0
 pytesseract>=0.3.10
 # D.0.7 — LLM observability. CallbackHandler integrates with LangChain 0.3
 # and captures prompts, tool calls, token counts, latency, cost per trace.
-# Pin the major: the LangChain CallbackHandler moved from langfuse.callback
-# (v2) to langfuse.langchain (v3+), and the unbounded >=2.55.0 range silently
-# resolved to v4 — which disabled tracing everywhere. app/tracing.py handles
-# both layouts, but the pin keeps the resolution predictable.
+#
+# This range spans TWO incompatible handler designs and app/tracing.py
+# implements both — see its module docstring before changing the bounds:
+#   v2  langfuse.callback.CallbackHandler, auth + trace attrs on the constructor
+#   v3+ langfuse.langchain.CallbackHandler, auth on a client singleton and
+#       trace attrs in the LangChain run config
+# A fresh install resolves to v4. Fixing only the import path is not enough:
+# the v2 constructor kwargs raise TypeError against a v4 handler, which
+# get_callback() swallows, so tracing goes silently dark everywhere while
+# tracing_enabled() still reports True. scripts/smoke_langfuse_live.py is the
+# check that actually catches this — it sends a trace and reads it back.
 langfuse>=3.0.0,<5.0
 # Required by langfuse.langchain (the split langchain-* packages are not enough).
 # Held below 1.0 to stay satisfiable against langchain-core<1.0 above — see the

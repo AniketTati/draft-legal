@@ -1,9 +1,11 @@
 /**
  * scan.worker — daily obligation + renewal scan (Phase 08 Step 6).
  *
- * Two repeatable BullMQ jobs are registered on startup:
+ * Three repeatable BullMQ jobs are registered on startup:
  *   • obligation-scan-daily — runs scanObligations() every day at 09:00 UTC
  *   • renewal-scan-daily    — runs scanRenewals()    every day at 09:15 UTC
+ *   • notification-digest   — runs sendDueDigests()  every 15 minutes (Z4):
+ *     each person's daily digest goes from 9am in their own timezone
  *
  * Idempotent registration: BullMQ dedups repeatable jobs by their
  * pattern + jobId, so re-importing this module on every API restart is
@@ -18,9 +20,11 @@ import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { scanQueue } from '../lib/queue.js'
 import { scanObligations, scanRenewals } from '../lib/obligation-scanner.js'
+import { sendDueDigests } from '../lib/notification-digest.js'
 
 const OBLIGATION_PATTERN = process.env.OBLIGATION_SCAN_PATTERN ?? '0 9 * * *'   // 09:00 UTC daily
 const RENEWAL_PATTERN    = process.env.RENEWAL_SCAN_PATTERN    ?? '15 9 * * *'  // 09:15 UTC daily
+const DIGEST_PATTERN     = process.env.DIGEST_PATTERN          ?? '*/15 * * * *' // every 15 minutes
 
 async function registerRepeatable(name: string, pattern: string, payload: Record<string, unknown> = {}) {
   // BullMQ uses the jobId so repeated invocations from process restart
@@ -44,9 +48,10 @@ async function registerRepeatable(name: string, pattern: string, payload: Record
   try {
     await registerRepeatable('obligation-scan-daily', OBLIGATION_PATTERN)
     await registerRepeatable('renewal-scan-daily',    RENEWAL_PATTERN)
+    await registerRepeatable('notification-digest',   DIGEST_PATTERN)
     console.info(
-      '[scan-worker] registered repeatable jobs · obligations=%s renewals=%s',
-      OBLIGATION_PATTERN, RENEWAL_PATTERN,
+      '[scan-worker] registered repeatable jobs · obligations=%s renewals=%s digests=%s',
+      OBLIGATION_PATTERN, RENEWAL_PATTERN, DIGEST_PATTERN,
     )
   } catch (err) {
     console.error('[scan-worker] failed to register repeatable jobs:', err)
@@ -75,6 +80,16 @@ export const scanWorker = new Worker(
         result.scannedContracts, result.notified, result.skippedCooldown,
         result.errors.length,
       )
+      return result
+    }
+    if (job.name === 'notification-digest') {
+      const result = await sendDueDigests()
+      if (result.users > 0) {
+        console.info(
+          '[scan-worker] notification-digest · %dms · users=%d sent=%d notifications=%d waiting=%d errors=%d',
+          Date.now() - start, result.users, result.sent, result.notifications, result.waiting, result.errors.length,
+        )
+      }
       return result
     }
   },

@@ -1,7 +1,5 @@
 import Fastify from 'fastify'
 import type { FastifyRequest } from 'fastify'
-import pino from 'pino'
-import pinoPretty from 'pino-pretty'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import rateLimit from '@fastify/rate-limit'
@@ -30,12 +28,15 @@ import { clauseRoutes } from './routes/clauses.js'
 import { playbookRoutes } from './routes/playbook.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
+import { externalEditRoutes } from './routes/external-edit.js'
 import { portalRoutes } from './routes/portal.js'
 import { approvalRoutes } from './routes/approvals.js'
 import { dashboardRoutes } from './routes/dashboard.js'
 import { adminUserRoutes } from './routes/admin-users.js'
 import { adminAuditRoutes } from './routes/admin-audit.js'
 import { metricsRoutes } from './routes/metrics.js'
+import { recordRequest } from './lib/metrics.js'
+import { trustProxyHops } from './lib/trust-proxy.js'
 import { teamRoutes } from './routes/team.js'
 import { organizationRoutes } from './routes/organization.js'
 import { healthRoutes } from './routes/health.js'
@@ -61,44 +62,26 @@ import { slackRoutes } from './routes/slack.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
-
-function devLogger() {
-  const stream = pinoPretty({ colorize: true })
-  return pino({ level: process.env.LOG_LEVEL ?? 'info' }, stream)
-}
+import { devLogger, productionLoggerOptions } from './lib/logger.js'
+import { assertNoDevOnlyFlags, devFlag, globalRateLimitPerMinute, isDevelopment } from './lib/runtime-mode.js'
+import { runInTenantStore } from './lib/tenant-context.js'
+import { recordRoute, type RegisteredRoute } from './lib/route-registry.js'
+import { routePermission } from './middleware/permissions.js'
+import { afterAuditEvent } from './lib/audit.js'
+import { noticeContractChange } from './lib/contract-change-notice.js'
 
 export async function buildApp() {
+  // Y5 — a development-only relaxation (BULL_BOARD_OPEN, INBOUND_EMAIL_ALLOW_ALL)
+  // left on in a strict environment stops the boot, before anything opens.
+  assertNoDevOnlyFlags()
   const app = Fastify({
     logger:
-      process.env.NODE_ENV === 'development'
+      isDevelopment()
         ? devLogger()
         : {
-            level: process.env.LOG_LEVEL ?? 'info',
-            // Production observability — pino's default JSON output
-            // is the right shape for ingest into DataDog / Loki /
-            // CloudWatch. Add the commit SHA so we can correlate logs
-            // to a release; the deploy script sets GIT_COMMIT_SHA.
-            base: {
-              pid: process.pid,
-              env: process.env.NODE_ENV ?? 'production',
-              commit: process.env.GIT_COMMIT_SHA ?? 'unknown',
-              service: 'clm-api',
-            },
-            // Pino redacts these on every log line so headers/cookies
-            // never end up in the logs by accident.
-            redact: {
-              paths: [
-                'req.headers.authorization',
-                'req.headers.cookie',
-                'req.headers["x-internal-secret"]',
-                'res.headers["set-cookie"]',
-                '*.password',
-                '*.passwordHash',
-                '*.refreshToken',
-                '*.accessToken',
-              ],
-              censor: '[REDACTED]',
-            },
+            // Production observability: JSON lines, masked as the
+            // development logger's are, through the log scrubber (lib/logger.ts).
+            ...productionLoggerOptions(),
             // Request-id propagation: trust an upstream X-Request-Id
             // (set by load balancer / CDN) so traces correlate across
             // services. Otherwise Fastify generates one.
@@ -112,6 +95,20 @@ export async function buildApp() {
     requestIdHeader: 'x-request-id',
     requestIdLogLabel: 'reqId',
     maxParamLength: 500,   // Portal JWT tokens can be ~400 chars
+    // X30 — resolve req.ip through the trusted proxy hop(s) (lib/trust-proxy.ts).
+    trustProxy: trustProxyHops(),
+  })
+
+  // Z4 — tell a contract's owner when someone else changes it.
+  afterAuditEvent(noticeContractChange)
+
+  // Y1 — the list of every route, for the cross-org route crawl, with the
+  // permission each needs (Y3: the web app's route table). Before any route
+  // is registered, so it sees them all.
+  const routes: RegisteredRoute[] = []
+  app.decorate('registeredRoutes', routes)
+  app.addHook('onRoute', route => {
+    recordRoute(routes, { method: route.method, url: route.url, permission: routePermission(route.preHandler) })
   })
 
   // Echo the request id back on every response so the client can log
@@ -155,6 +152,8 @@ export async function buildApp() {
       cb(Object.assign(new Error(`Origin ${origin} not allowed`), { statusCode: 403 }), false)
     },
     credentials: true,
+    // BB2 — the web reads a redline's counts from its download.
+    exposedHeaders: ['content-disposition', 'x-redline-stats'],
   })
 
   await app.register(helmet, { contentSecurityPolicy: false })
@@ -169,7 +168,8 @@ export async function buildApp() {
   // skew. `skip`'s req is typed explicitly to keep that callback safe.
   await app.register(rateLimit as any, {
     redis,
-    max: process.env.NODE_ENV === 'production' ? 1000 : 10_000,
+    // Y5 — 1000 in any NODE_ENV but development and test; staging had 10,000.
+    max: globalRateLimitPerMinute(),
     timeWindow: '1 minute',
     // Wave 1.4 (2026-07): key the global limiter on the client IP, NOT
     // the attacker-controlled `x-org-id` header. The header is only
@@ -202,17 +202,25 @@ export async function buildApp() {
     queues: [new BullMQAdapter(documentQueue), new BullMQAdapter(agentQueue), new BullMQAdapter(notificationQueue), new BullMQAdapter(scanQueue), new BullMQAdapter(webhookQueue), new BullMQAdapter(signingQueue)] as any,
     serverAdapter: bullBoardAdapter,
   })
-  app.addHook('onRequest', async (req, reply) => {
-    if (!req.url.startsWith('/admin/queues')) return
-    if (process.env.NODE_ENV !== 'production') return // open in dev
-    const secret = req.headers['x-internal-secret']
-    if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
-      return reply.status(401).send({ error: 'Unauthorized' })
-    }
-  })
-  await app.register(bullBoardAdapter.registerPlugin(), {
-    prefix: '/admin/queues',
-    basePath: '/admin/queues',
+  // X35 — the internal secret in every environment. "Open in dev" also
+  // opened it on staging and previews (job payloads; add, retry, remove).
+  // A developer's own stack can opt in with BULL_BOARD_OPEN=true, which
+  // stops a strict boot (Y5, lib/runtime-mode.ts). The hook is scoped to Bull Board's own routes by
+  // registering both in one plugin: a check on req.url (the raw request
+  // line) was skipped by `/%61dmin/queues/…` or an absolute-form URL, which
+  // the router still matched.
+  await app.register(async board => {
+    board.addHook('onRequest', async (req, reply) => {
+      if (devFlag('BULL_BOARD_OPEN')) return
+      const expected = process.env.INTERNAL_SERVICE_SECRET
+      if (!expected || req.headers['x-internal-secret'] !== expected) {
+        return reply.status(401).send({ error: 'Unauthorized' })
+      }
+    })
+    await board.register(bullBoardAdapter.registerPlugin(), {
+      prefix: '/admin/queues',
+      basePath: '/admin/queues',
+    })
   })
 
   // Error handler MUST be set BEFORE route plugins are registered —
@@ -223,6 +231,16 @@ export async function buildApp() {
   // JSON in `message` instead of the structured 422. (Found in the
   // 2026-06-10 full-app review via POST /search with a bad body.)
   app.setErrorHandler(errorHandler)
+
+  // X3 — request counters for GET /api/v1/metrics.
+  app.addHook('onResponse', async (req, reply) => { recordRequest(req, reply) })
+
+  // Y1 — each request runs in its own tenant store, which authentication fills
+  // in (middleware/auth.ts). The first preHandler, after the body is parsed:
+  // a store opened earlier would be lost across the body parser's stream
+  // events. Registered before the routes so it runs ahead of their own
+  // preHandlers.
+  app.addHook('preHandler', (_req, _reply, done) => { runInTenantStore(done) })
 
   // Routes
   await app.register(healthRoutes)
@@ -239,6 +257,7 @@ export async function buildApp() {
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })
+  await app.register(externalEditRoutes,    { prefix: '/api/v1/contracts' })
   await app.register(portalRoutes,          { prefix: '/api/v1/portal' })
   await app.register(approvalRoutes,        { prefix: '/api/v1/approvals' })
   await app.register(dashboardRoutes,      { prefix: '/api/v1/dashboard' })

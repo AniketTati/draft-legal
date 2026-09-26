@@ -112,3 +112,28 @@ describe('playbook_check artifact', () => {
     expect(artifactFromToolResult({ name: 'playbook_check', result: { checks: [] } })).toBeNull()
   })
 })
+
+describe('search results', () => {
+  it('V2 follow-up — lists each contract once, and says when the list is partial', () => {
+    const hit = (contractId: string, sectionRef: string) => ({ contractId, contractTitle: `Contract ${contractId}`, sectionRef, excerpt: 'Limitation of Liability…' })
+    const a = artifactFromToolResult({
+      name: 'portfolio_search',
+      result: {
+        query: 'limitation of liability',
+        hits: [hit('a', '8'), hit('b', '12'), hit('a', '8.2'), hit('c', '9'), hit('a', '14')],
+        total: 5,
+        coverage: { returned: 3, totalMatching: 104, complete: false, note: 'Showing the 3 most relevant contracts; 104 match.' },
+      },
+    } as never)
+    expect(a).toMatchObject({ kind: 'table', subtitle: '3 of 104 matching contracts' })
+    expect((a as unknown as { rows: Array<{ id: string }> }).rows.map(r => r.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('a complete list just counts its contracts', () => {
+    const a = artifactFromToolResult({
+      name: 'contract_search',
+      result: { results: [{ id: 'x', title: 'X' }, { id: 'y', title: 'Y' }], total: 2, coverage: { returned: 2, totalMatching: 2, complete: true } },
+    } as never)
+    expect(a).toMatchObject({ subtitle: '2 matching contracts' })
+  })
+})

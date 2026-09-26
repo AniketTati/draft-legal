@@ -8,7 +8,8 @@
  * Behaviour:
  *   • Always logs the link to console — invaluable in dev where SMTP
  *     isn't set, so devs can copy/paste from the log into the browser.
- *   • If SMTP_HOST is set, also fires off a real email asynchronously.
+ *   • If an email provider is configured (lib/mailer.ts: SendGrid or SMTP),
+ *     also fires off a real email asynchronously.
  *     Email failure is non-fatal (link is in the DB regardless via the
  *     SignatureRequest record + Signer.token).
  *   • Idempotent — caller may call once per signer per send; we don't
@@ -16,6 +17,7 @@
  */
 import type { Signer } from '@prisma/client'
 import { sendEmail } from './mailer.js'
+import { devPrint } from './log-scrub.js'
 
 interface SendSigningEmailArgs {
   to: string
@@ -36,7 +38,10 @@ export function sendSigningEmail(args: SendSigningEmailArgs): void {
   const expiresStr = args.expiresAt
     ? ` · expires ${args.expiresAt.toISOString().slice(0, 10)}`
     : ''
-  console.info(
+  // X18 — the link IS the signer's credential. Print it whole only in
+  // development, where the console is the delivery channel: Y4's devPrint,
+  // the scrubber's one exception.
+  devPrint(
     `[signing] ✉  ${args.to}  →  ${args.signingUrl}` +
     `  (${args.contractType} "${args.contractTitle}", signer "${args.signerName}"${expiresStr})`,
   )

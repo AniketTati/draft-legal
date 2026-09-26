@@ -102,7 +102,7 @@ def model_for(provider: str, tier: str = "smart") -> str:
     smart = {
         "openai":     "gpt-4o",
         "anthropic":  "claude-sonnet-4-6",
-        "google":     "gemini-2.5-pro",
+        "google":     "gemini-2.5-flash",
         # OpenRouter — gpt-4.1 is the chat/reasoning pick.
         "openrouter": "openai/gpt-4.1",
     }
@@ -128,7 +128,7 @@ def smart_model() -> str:
     best = {
         "openai":     "gpt-4o",
         "anthropic":  "claude-sonnet-4-6",
-        "google":     "gemini-2.5-pro",
+        "google":     "gemini-2.5-flash",
         "openrouter": "openai/gpt-4.1",
     }
     return best[p]

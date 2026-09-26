@@ -30,7 +30,8 @@
  * the user's last choice.
  */
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash } from 'lucide-react'
+import { summarizeArgs } from '@/lib/tool-args-summary'
+import { ChevronRight, ChevronLeft, ChevronDown, Send, MessageSquarePlus, X, Loader2, AlertTriangle, CheckCircle2, PauseCircle, Trash2, Square, CircleSlash, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 // One glyph for the machine: the diamond replaces every sparkle in the rail.
 import { AssistMark } from '@/components/ui/assist'
@@ -184,6 +185,10 @@ export function SideAgentRail() {
   const [pendingEntityMentions, setPendingEntityMentions] = useState<EntityResult[]>([])
   const accessToken = useAuthStore((s) => s.accessToken)
   const sessionIdRef = useRef<string>('')
+  // What actually answered the current turn, filled from the done frame.
+  const answeredByRef = useRef<{ provider: string; model: string; tier: string }>({
+    provider: '', model: '', tier: 'default',
+  })
   // D.1.6a — persistent AgentThread id. Null until the first user message of
   // a thread creates one. Reset by newThread(). Kept as a ref so concurrent
   // turns in the same thread can share it without triggering re-renders.
@@ -509,8 +514,10 @@ export function SideAgentRail() {
           // thread. AgentThread persistence lands in D.1.6; this keeps the
           // existing chat memory in Redis working in the meantime.
           sessionId: sessionIdRef.current || threadIdRef.current || undefined,
-          provider: 'openai',
-          modelId: 'gpt-4.1-mini',
+          // No provider/model pin. The router picks per tier from the org's AI
+          // config (apps/api/src/lib/aiRouter.ts), which is where the
+          // gemini-2.5-flash default lives — a hardcoded pin here silently
+          // overrode all of it, and overrode per-org BYOK with it.
           // D.1.4a — opt into tool-binding + typed event stream.
           agentMode: true,
           // D.1.4a — let the agent know what page the user is on so
@@ -568,6 +575,15 @@ export function SideAgentRail() {
                 break
               }
               if (parsed.session_id) sessionIdRef.current = parsed.session_id
+              // docs/37 E2 — record what ACTUALLY answered. The done frame
+              // carries provider/model/tier; the persistence payload below used
+              // to hardcode 'openai' / 'gpt-4.1-mini', so every stored turn
+              // claimed a model that in general did not answer it. That makes
+              // per-model quality and cost analysis wrong at the source, and it
+              // is wrong silently.
+              if (parsed.provider) answeredByRef.current.provider = String(parsed.provider)
+              if (parsed.model)    answeredByRef.current.model    = String(parsed.model)
+              if (parsed.tier)     answeredByRef.current.tier     = String(parsed.tier)
 
               // D.1.4a — tool-call envelopes. `type` drives the dispatch.
               // "token" (or legacy untyped {delta}) → append delta
@@ -770,9 +786,9 @@ export function SideAgentRail() {
               userMessage: clean,
               assistant: {
                 content: finalText,
-                provider: 'openai',
-                model: 'gpt-4.1-mini',
-                tier: 'default',
+                provider: answeredByRef.current.provider || undefined,
+                model:    answeredByRef.current.model    || undefined,
+                tier:     answeredByRef.current.tier     || 'default',
               },
               toolCalls,
             }),
@@ -1554,6 +1570,7 @@ export function SideAgentRail() {
                 <MessageBubble
                   key={m.id}
                   msg={m}
+                  sessionId={sessionIdRef.current || threadIdRef.current || ''}
                   onActionApply={applyAction}
                   onActionCancel={cancelAction}
                   onActionUndo={undoAction}
@@ -1971,10 +1988,80 @@ function SuggestedPrompt({ text, onSelect }: { text: string; onSelect: (t: strin
   )
 }
 
+/**
+ * Was this answer any good?
+ *
+ * The score goes to Langfuse via POST /api/v1/agent/feedback, landing on the
+ * same trace the judge scored — so a turn the judge liked and the user did not
+ * becomes a visible, findable row rather than a complaint nobody can locate.
+ *
+ * One vote per message, and it stays. Letting people toggle endlessly turns a
+ * quality signal into a fidget toy, and the second vote is never more honest
+ * than the first. The API fails open, so a Langfuse outage shows the same
+ * "Thanks" the success path does — the user gave feedback either way, and
+ * telling them our observability stack is down helps nobody.
+ */
+function MessageFeedback({ messageId, sessionId }: { messageId: string; sessionId?: string }) {
+  const accessToken = useAuthStore((s) => s.accessToken)
+  const [sent, setSent] = useState<'up' | 'down' | null>(null)
+
+  if (!sessionId) return null
+
+  async function vote(rating: 'up' | 'down') {
+    if (sent) return
+    setSent(rating)   // optimistic: the vote is recorded for the user regardless
+    try {
+      await fetch('/api/v1/agent/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken ?? ''}` },
+        body: JSON.stringify({ sessionId, rating }),
+      })
+    } catch {
+      // Deliberately swallowed — see the note above.
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1 pl-0.5" data-testid="side-agent-feedback" data-msg={messageId}>
+      {sent ? (
+        <span className="text-[10.5px] text-ink-500">
+          Thanks — {sent === 'up' ? 'glad that helped' : 'noted, we review these'}
+        </span>
+      ) : (
+        <>
+          <span className="text-[10.5px] text-ink-400 mr-0.5">Helpful?</span>
+          <button
+            type="button"
+            aria-label="This answer was helpful"
+            data-testid="side-agent-feedback-up"
+            onClick={() => vote('up')}
+            className="p-1 rounded text-ink-400 hover:text-assist-700 hover:bg-paper-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-assist-500 transition-colors"
+          >
+            <ThumbsUp className="size-3" />
+          </button>
+          <button
+            type="button"
+            aria-label="This answer was not helpful"
+            data-testid="side-agent-feedback-down"
+            onClick={() => vote('down')}
+            className="p-1 rounded text-ink-400 hover:text-risk-700 hover:bg-paper-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-risk-500 transition-colors"
+          >
+            <ThumbsDown className="size-3" />
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
 function MessageBubble({
-  msg, onActionApply, onActionCancel, onActionUndo, onChipSelect, streaming,
+  msg, sessionId, onActionApply, onActionCancel, onActionUndo, onChipSelect, streaming,
 }: {
   msg: RailMessage
+  /** Chat thread id — the agents service sets Langfuse's session_id from it,
+   *  which is how feedback finds the turn it belongs to without the browser
+   *  ever seeing a trace id. */
+  sessionId?: string
   onActionApply?:  (msgId: string, actionId: string, args: Record<string, unknown>) => void
   onActionCancel?: (msgId: string, actionId: string) => void
   onActionUndo?:   (msgId: string, actionId: string) => void
@@ -2102,6 +2189,13 @@ function MessageBubble({
           <Square className="size-2 fill-current text-ink-400" />
           Stopped — this answer is incomplete
         </div>
+      )}
+      {/* Was this answer any good? The only quality signal that comes from a
+          real person. Shown on finished, non-error assistant turns only —
+          asking about a half-streamed answer, or an error the user already
+          knows about, trains people to ignore the control. */}
+      {!isUser && !msg.error && !msg.streaming && (msg.content?.length ?? 0) > 0 && (
+        <MessageFeedback messageId={msg.id} sessionId={sessionId} />
       )}
       {/* P1 fix — render parsed action chips below the assistant bubble.
           U10 — and skeletons during streaming so the row reserves space
@@ -2552,48 +2646,6 @@ function formatRel(iso: string): string {
   return `${days}d`
 }
 
-/**
- * Turn an args object into a compact one-liner for the chip's closed state.
- * Knows about our four read tools' argument shapes so the summary is useful
- * at a glance; falls through to JSON for unknown tools.
- */
-function summarizeArgs(
-  args: Record<string, unknown>,
-  entityHint?: RailToolCall['entityHint'],
-): string {
-  const keys = Object.keys(args)
-  if (keys.length === 0 && !entityHint) return ''
-  const pick = (k: string) => (typeof args[k] === 'string' ? (args[k] as string) : undefined)
-
-  // A2/U5 — when the result hinted at a resolved entity title, lead with that.
-  // Truncate long titles so the chip stays a single line.
-  if (entityHint?.title) {
-    const title = entityHint.title.length > 36
-      ? entityHint.title.slice(0, 35) + '…'
-      : entityHint.title
-    const q = pick('query')
-    return q ? `${title} · "${q}"` : title
-  }
-
-  // contract_get / contract_summarize / clause_search
-  if (pick('contract_id')) {
-    const id = pick('contract_id')!.slice(0, 6)
-    const q = pick('query')
-    return q ? `${id}… · "${q}"` : `${id}…`
-  }
-  // contract_search
-  const bits: string[] = []
-  if (pick('query'))             bits.push(`"${pick('query')}"`)
-  if (pick('type'))              bits.push(`type=${pick('type')}`)
-  if (pick('status'))            bits.push(`status=${pick('status')}`)
-  if (pick('counterpartyName'))  bits.push(`cp=${pick('counterpartyName')}`)
-  if (typeof args.limit === 'number' && args.limit !== 10) bits.push(`limit=${args.limit}`)
-  if (bits.length > 0) return bits.join(' · ')
-
-  // Fallback — stringify; truncate.
-  const s = JSON.stringify(args)
-  return s.length > 60 ? s.slice(0, 60) + '…' : s
-}
 
 /**
  * TOOL TRANSPARENCY — what the tool actually found, from its real payload.

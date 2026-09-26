@@ -2,16 +2,24 @@ import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
 import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
 import { indexContract } from '../lib/elasticsearch.js'
-
-const ALLOWED_MIME = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'])
+import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
+import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 
 export async function requestRoutes(app: FastifyInstance) {
+  // X7 — the list honoured `own` (requestedById) but GET/PATCH/convert by id
+  // did not, so a SALES_REP could read any request in the org.
+  guardOwnScopeRoutes(app, /\/:id(\/|$)/, ownScopeGuard(
+    async (req, id) => (await prisma.contractRequest.count({ where: { id, orgId: req.user.orgId, requestedById: req.user.sub } })) > 0,
+    'Request not found',
+  ))
+
   // GET /api/v1/requests
   app.get('/', { preHandler: requirePermission('view', 'request') }, async (req, reply) => {
     const query = req.query as { status?: string; cursor?: string; limit?: string; search?: string }
@@ -98,13 +106,12 @@ export async function requestRoutes(app: FastifyInstance) {
         if (part.type === 'field') {
           fields[part.fieldname] = part.value as string
         } else if (part.type === 'file') {
-          if (!ALLOWED_MIME.has(part.mimetype)) {
-            await part.toBuffer() // drain
-            return reply.status(400).send({ detail: 'Only PDF and DOCX files are supported' })
-          }
           fileBuffer = await part.toBuffer()
+          // S3 — validate the bytes, not the declared mimetype.
+          const checked = checkUpload(fileBuffer, part.mimetype, PDF_OR_DOCX)
+          if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
           filename = part.filename
-          mimeType = part.mimetype
+          mimeType = checked.mimeType
         }
       }
 
@@ -241,6 +248,13 @@ export async function requestRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
 
+    // X21 — converting creates a contract (and queues an AI draft), so it
+    // needs create:contract too: a key or role with only request rights could
+    // create contracts here that POST /contracts refuses it.
+    if (!await permissionScopeFor(req, 'create', 'contract')) {
+      return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail: 'Missing permission: create:contract' })
+    }
+
     const request = await prisma.contractRequest.findFirst({
       where: { id, orgId, deletedAt: null },
     })
@@ -266,6 +280,18 @@ export async function requestRoutes(app: FastifyInstance) {
       estimatedValue:    request.estimatedValue != null ? Number(request.estimatedValue) : undefined,
     } : undefined
 
+    // X21 — the contract belongs to whoever asked for it. It went to the
+    // converter, so a requester with own scope could never open the contract
+    // their request became. The converter keeps it only when the requester is
+    // no longer an active member.
+    const requester = await prisma.user.findFirst({
+      where: { id: request.requestedById, orgId, deletedAt: null, status: 'ACTIVE' },
+      select: { id: true },
+    })
+    // X45 — the converter is a user too: for an API key, the one who made it.
+    const ownerId = requester?.id ?? actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
+
     // Create the contract from request data
     const contract = await prisma.contract.create({
       data: {
@@ -276,7 +302,8 @@ export async function requestRoutes(app: FastifyInstance) {
         analysisStatus:   hasAttachments ? 'PENDING' : 'DRAFTING',
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
-        ownerId:          userId,
+        ownerId,
+        createdBy:        userId,
         ...(draftContext && { metadata: { _draftContext: draftContext } }),
       },
     })

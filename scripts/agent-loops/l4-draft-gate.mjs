@@ -15,14 +15,13 @@
  *
  * ── What this check does and does not enforce ────────────────────────────────
  *
- * Drafting immediately, without a confirmation card, is a DELIBERATE
- * draft-first product choice — `orchestrator.py` instructs the model to draft
- * before asking. This check therefore does NOT assert that a card appears.
- * It asserts the three gaps that the missing card opened and that nobody chose:
- * no permission check, no audit trail, and an owner picked arbitrarily.
- *
- * Whether drafting should move behind the confirmation gate is an open question
- * for the founder in docs/36, and deliberately not answered here.
+ * Update (FIX_TRACKER C12, 2026-09-23): drafting now sits behind the same
+ * confirmation card as the other write tools. `/tools/contract_draft` only
+ * PLANS (template + the user's stated terms) and creates nothing; the contract
+ * is created by `/tools/contract_create_from_template` when the user applies
+ * the card, and is undoable. This check asserts the plan creates nothing, and
+ * that the create it leads to is attributed and audited. It still asserts the
+ * three original gaps: permission, audit, owner.
  *
  * Run BEFORE: a VIEWER can create contracts by asking, no audit row is written,
  *             and the owner is whichever user the org lists first.
@@ -133,14 +132,26 @@ section('2. A VIEWER cannot create a contract by asking')
 // on the model's mood. Section 2 above is where the model's access is asserted;
 // these three assert what the endpoint does once it IS called.
 
-section('3-5. The drafting endpoint creates, attributes and audits')
+section('3-5. The plan creates nothing; the confirmed create attributes and audits')
 {
-  const res = await internal('/tools/contract_draft', {
+  const planned = await internal('/tools/contract_draft', {
     orgId, userId: admin.user.id,
     userMessage: DRAFT_ASK,
     contractType: 'NDA',
     counterpartyName: 'Initech',
     title: 'L4 endpoint draft probe',
+  }, orgId)
+  check('planning creates nothing', planned.status === 200 && planned.body?.persisted === false && !planned.body?.contractId,
+    planned.status === 200 ? `planned from "${planned.body?.templateName}"` : `status ${planned.status}: ${JSON.stringify(planned.body).slice(0, 160)}`)
+
+  // What Apply on the confirm card dispatches (agent-threads.ts → this route).
+  const res = await internal('/tools/contract_create_from_template', {
+    orgId, userId: admin.user.id,
+    templateId:       planned.body?.templateId,
+    variables:        planned.body?.variables ?? {},
+    title:            planned.body?.title,
+    contractType:     planned.body?.contractType,
+    counterpartyName: 'Initech',
   }, orgId)
 
   check('the endpoint drafts a contract', res.status === 200 && !!res.body?.contractId,

@@ -55,7 +55,7 @@ export const industries: Record<string, Industry> = {
       },
       {
         title: 'CRM-native drafting',
-        body: 'Pull customer data from Salesforce or HubSpot directly into the contract — no copy-paste from CRM to Word.',
+        body: 'Planned: pull customer data from Salesforce or HubSpot directly into the contract — no copy-paste from CRM to Word.',
       },
     ],
     persona: { org: 'Vertex Cloud-shaped B2B SaaS', size: '~800 employees, ~$80M ARR' },
@@ -143,7 +143,7 @@ export const industries: Record<string, Industry> = {
       },
       {
         title: 'ERP integration',
-        body: 'Sync supplier records with SAP / Oracle / NetSuite. Contract metadata flows into your purchasing systems.',
+        body: 'Planned: sync supplier records with SAP / Oracle / NetSuite so contract metadata flows into your purchasing systems.',
       },
       {
         title: 'Supplier pages',

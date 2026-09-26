@@ -24,11 +24,11 @@ class ComplianceGetArgs(BaseModel):
     contract_id: str = Field(..., description="Contract CUID (from a prior contract_search/contract_get call).")
 
 
-def build_compliance_get(org_id: str) -> StructuredTool:
+def build_compliance_get(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(contract_id: str) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/compliance_get"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload = {"orgId": org_id, "contractId": contract_id}
+        payload = {"orgId": org_id, "userId": user_id, "contractId": contract_id}
         async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code == 404:

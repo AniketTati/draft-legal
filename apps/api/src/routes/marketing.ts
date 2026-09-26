@@ -11,6 +11,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
+import { sendEmail, isEmailConfigured } from '../lib/mailer.js'
 
 const ContactSchema = z.object({
   name:    z.string().trim().min(1, 'name is required').max(200),
@@ -70,6 +71,21 @@ export async function marketingRoutes(app: FastifyInstance) {
         },
         '[marketing] new contact submission',
       )
+
+      // H1 — tell a human. The page promises a reply, but submissions used to
+      // land in the table with nobody told. Fire-and-forget: a mail failure
+      // must not fail the visitor's submission (it is already saved).
+      const notifyTo = process.env.MARKETING_CONTACT_EMAIL
+      if (notifyTo && isEmailConfigured()) {
+        sendEmail({
+          to: notifyTo,
+          subject: `New contact: ${parsed.data.name}${parsed.data.company ? ` (${parsed.data.company})` : ''}`,
+          text: `${parsed.data.name} <${parsed.data.email}>${parsed.data.company ? `, ${parsed.data.company}` : ''}`
+            + `${parsed.data.source ? `\nSource: ${parsed.data.source}` : ''}\n\n${parsed.data.message}\n\n(submission ${row.id})`,
+        }).catch(err => app.log.warn({ err, marketingContactId: row.id }, '[marketing] contact notification failed'))
+      } else {
+        app.log.warn({ marketingContactId: row.id }, '[marketing] contact saved but nobody notified — set MARKETING_CONTACT_EMAIL and an email provider')
+      }
 
       return reply.status(201).send({ ok: true, id: row.id, createdAt: row.createdAt })
     },

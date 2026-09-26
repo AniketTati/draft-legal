@@ -8,9 +8,10 @@
  * loopback / link-local / metadata addresses.
  *
  * Self-host tension: a self-hosted deployment may legitimately POST to a
- * service on its own private network. So the guard is ON by default only in
- * production, and can be turned off with WEBHOOK_ALLOW_PRIVATE_URLS=true. In
- * dev it is OFF so local receivers (localhost) work for testing.
+ * service on its own private network. So the guard can be turned off with
+ * WEBHOOK_ALLOW_PRIVATE_URLS=true — which is also how to test with a local
+ * receiver (localhost). It is ON everywhere else (X35: it used to be off
+ * whenever NODE_ENV wasn't 'production', staging and previews included).
  *
  * Residual TOCTOU: we resolve DNS then fetch, so a rebinding attacker could in
  * theory flip the record between the two. The creation-time shape check + the
@@ -22,8 +23,10 @@ import net from 'node:net'
 
 /** Whether the guard actively blocks private targets in this environment. */
 export function ssrfGuardEnabled(): boolean {
-  if (process.env.WEBHOOK_ALLOW_PRIVATE_URLS === 'true') return false
-  return process.env.NODE_ENV === 'production'
+  // X35 — on in every environment unless turned off explicitly: keyed on
+  // NODE_ENV it was off on staging and previews, where an org admin could
+  // point a webhook at the cloud metadata address.
+  return process.env.WEBHOOK_ALLOW_PRIVATE_URLS !== 'true'
 }
 
 /** True if an IP literal is in a private / loopback / link-local / ULA range. */
@@ -64,7 +67,7 @@ export function assertUrlShape(raw: string): URL {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') {
     throw new Error('Only http(s) webhook URLs are allowed')
   }
-  const host = u.hostname.toLowerCase()
+  const host = bareHost(u).toLowerCase()
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) {
     throw new Error('Webhook URL host is not allowed')
   }
@@ -93,13 +96,25 @@ export function isUrlShapeAllowed(raw: string): boolean {
 export async function assertPublicUrl(raw: string): Promise<void> {
   if (!ssrfGuardEnabled()) return
   const u = assertUrlShape(raw)
-  const host = u.hostname
+  const host = bareHost(u)
   if (net.isIP(host)) return // literal IP already validated by assertUrlShape
   const records = await lookup(host, { all: true })
   if (records.length === 0) throw new Error('Webhook URL host did not resolve')
   for (const { address } of records) {
     if (isPrivateIp(address)) {
-      throw new Error(`Webhook URL resolves to a private address (${address})`)
+      // X39 follow-up — not which address: the message is stored on the
+      // delivery and shown to the webhook's owner, who could map the
+      // internal network with it.
+      throw new Error('Webhook URL resolves to a private or internal address')
     }
   }
+}
+
+/**
+ * X39 follow-up — the URL's host without the brackets an IPv6 literal keeps
+ * in `URL.hostname` ("[::1]"): with them net.isIP says no, so a private IPv6
+ * literal went unchecked (and was stopped only because it failed to resolve).
+ */
+function bareHost(u: URL): string {
+  return u.hostname.replace(/^\[(.*)\]$/, '$1')
 }

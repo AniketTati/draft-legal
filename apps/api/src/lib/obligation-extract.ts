@@ -15,6 +15,8 @@ import { applyPiiPolicy } from './pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from './costCap.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { fireWebhook } from './webhook-events.js'
+import { modelFetch } from './model-boundary.js'
 
 export interface ExtractParams {
   orgId:      string
@@ -137,7 +139,7 @@ export async function extractObligationsForContract({
   })
 
   const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
-  const pyRes = await fetch(`${agentsUrl}/extract_obligations`, {
+  const pyRes = await modelFetch(`${agentsUrl}/extract_obligations`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -151,7 +153,7 @@ export async function extractObligationsForContract({
       effectiveDate: contract.effectiveDate ? contract.effectiveDate.toISOString().slice(0, 10) : undefined,
       orgId,   // Wave 3.5 — lets the agents service resolve the org's BYOK key
     }),
-  })
+  }, { orgId, surface: 'extract_obligations', contractId: contract.id, userId })
   if (!pyRes.ok) {
     const errText = await pyRes.text()
     return { ok: false, count: 0, summary: '', error: `agents service error: ${errText.slice(0, 300)}` }
@@ -180,6 +182,8 @@ export async function extractObligationsForContract({
     await prisma.obligation.createMany({
       data: toObligationRows(incoming, { orgId, contractId }),
     })
+    // H2 — advertised to webhook subscribers, never emitted until now.
+    fireWebhook(orgId, 'obligation.extracted', { contractId, count: Math.min(incoming.length, 100) })
   }
 
   // Update metadata with summary + extraction timestamp.

@@ -10,11 +10,20 @@ import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob } from '../lib/queue.js'
+import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
+import { docsToSplitSpecs } from '../lib/binder-pages.js'
+import { onAgentJobFailed } from '../lib/agent-job-failure.js'
+import { redlineTargets, uncheckedClauses, type ReviewFinding } from '../lib/playbook-redline-targets.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
+import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
+import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
+import { modelFetch } from '../lib/model-boundary.js'
+import { liabilityCaps } from '../lib/liability-cap.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -36,11 +45,40 @@ const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 async function callAgents(
   path: string,
   init: RequestInit,
-  meta: { orgId: string; toolName: string },
+  meta: {
+    orgId: string; toolName: string
+    /** Round-trip token scope: the contract's id, or the request's. */
+    scope: string
+    contractId?: string
+    /**
+     * The text whose personal data is replaced (see redactJson's valuesFrom):
+     * the whole document when the body carries parts of it, or the request's
+     * own text. The body's other strings (org name, field labels, playbook
+     * text) are configuration, which the callbacks couldn't restore.
+     */
+    context?: string | null
+  },
 ): Promise<Response> {
   await assertCostCapNotExceeded(meta.orgId)
 
-  const res = await fetch(`${AGENTS_URL}${path}`, init)
+  // X23 — contract text leaves our trust zone here, so the org's PII policy
+  // applies, as it does on the chat tools (it was skipped for every job).
+  // What comes back is stored — a draft, findings, and (through the
+  // extraction's callbacks, see contracts.ts) the clause text itself — so the
+  // values go out as round-trip tokens and are put back below. Jobs whose body
+  // carries only ids (/redline, /approval-summary) are unaffected: the agents
+  // service fetches that text itself.
+  let sent: unknown
+  const source = () => (meta.context != null ? [meta.context] : [sent])
+  if (typeof init.body === 'string') {
+    sent = JSON.parse(init.body)
+    const redacted = await redactJson(meta.orgId, sent, {
+      surface: `worker:${meta.toolName}`, contractId: meta.contractId, roundTrip: meta.scope, valuesFrom: source(),
+    })
+    init = { ...init, body: JSON.stringify(redacted) }
+  }
+
+  const res = await modelFetch(`${AGENTS_URL}${path}`, init, { orgId: meta.orgId, surface: `worker:${meta.toolName}`, contractId: meta.contractId })
 
   // Size-based estimate, the same heuristic the chat path uses. Recorded even
   // on a non-2xx: a failed generation still burned tokens upstream.
@@ -60,7 +98,18 @@ async function callAgents(
     outputChars,
   }).catch(() => { /* accounting must never fail a job */ })
 
-  return res
+  if (sent === undefined || !res.ok) return res
+  const text = await res.text()
+  const headers = { 'content-type': res.headers.get('content-type') ?? 'application/json' }
+  if (!text) return new Response(null, { status: res.status, headers })
+  let reply: unknown
+  try { reply = JSON.parse(text) } catch { return new Response(text, { status: res.status, headers }) }
+  const restored = restorePii(reply, source(), meta.scope)
+  const left = unresolvedPiiTokens(restored, [sent, meta.context ?? '']).length
+  if (left) {
+    console.warn('[agent-worker] %s scope=%s: %d PII token(s) the model altered or invented stay as tokens', meta.toolName, meta.scope, left)
+  }
+  return new Response(JSON.stringify(restored), { status: res.status, headers })
 }
 
 // playbook_check lives on THIS service's internal-ai plugin, not on the Python
@@ -98,7 +147,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
 
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
-    select: { plainText: true },
+    select: { plainText: true, mimeType: true },
   })
   if (!version?.plainText) {
     // Stale job from a previous run — a fresh parse job will re-queue detect-binder. Skip silently.
@@ -110,7 +159,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  }, { orgId, toolName: 'detect_binder' })
+  }, { orgId, toolName: 'detect_binder', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /detect-binder returned ${res.status}: ${text.slice(0, 200)}`)
@@ -123,6 +172,28 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
   console.info('[agent-worker] detect-binder result contractId=%s isBinder=%s confidence=%.2f',
     contractId, result.isBinder, result.confidence)
 
+  // C10 — splitting is PDF-only. A DOCX binder used to be auto-split anyway
+  // and die inside pdf-lib after three retries. Flag it with the fix and
+  // analyse it as one document instead.
+  if (result.isBinder && result.confidence >= 0.7 && version.mimeType && version.mimeType !== 'application/pdf') {
+    const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
+    await prisma.contract.update({
+      where: { id: contractId },
+      data: {
+        metadata: {
+          ...((contract?.metadata as Record<string, unknown>) ?? {}),
+          _binderDetected: true,
+          _binderDocumentCount: result.documents.length,
+          _binderSplitUnsupported: SPLIT_REQUIRES_PDF,
+        } as never,
+        analysisStatus: 'CLASSIFYING',
+      },
+    })
+    queueClassifyDocument({ contractId, versionId, orgId })
+    console.info('[agent-worker] detect-binder: non-PDF binder contractId=%s — not split, analysed as one document', contractId)
+    return
+  }
+
   if (result.isBinder && result.confidence >= 0.7) {
     // Fetch existing metadata (_totalPages stored by parse worker)
     const contract = await prisma.contract.findUnique({
@@ -132,8 +203,9 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     const existingMeta = (contract?.metadata as Record<string, unknown>) ?? {}
     const totalPages = (existingMeta._totalPages as number) ?? 100  // fallback if not PDF
 
-    // Compute concrete page ranges from LLM pageHint strings ("~page N")
-    const splits = docsToSplitSpecs(result.documents, totalPages)
+    // Concrete page ranges: from each agreement's offset in the text, else
+    // from the model's "~page N" hints.
+    const splits = docsToSplitSpecs(result.documents, totalPages, version.plainText.length)
 
     const metadata = {
       ...existingMeta,
@@ -171,62 +243,6 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
   }
 }
 
-// Convert LLM pageHint strings ("~page N") to concrete {pageStart,
-// pageEnd} ranges. Resilient to an LLM that hands us bad hints:
-//   • "~page 1" for all 3 docs (all same) → distribute evenly
-//   • "~page 5" on a 2-page PDF (out of range) → clamp + distribute
-//   • missing hints → index-proportional default
-// If after parsing we end up with <2 unique page starts but docs.length >= 2,
-// we FALL BACK to even distribution across the PDF.
-function docsToSplitSpecs(
-  docs: Array<{ title: string; docType: string; charStart?: number; pageHint?: string }>,
-  totalPages: number
-): SplitBinderJob['splits'] {
-  if (docs.length === 0) return []
-  const evenShare = Math.max(1, Math.floor(totalPages / docs.length))
-
-  let withPages = docs.map((doc, i) => {
-    const match = doc.pageHint?.match(/\d+/)
-    const rawPage = match ? parseInt(match[0], 10) : NaN
-    // Valid if within [1, totalPages]
-    const pageNum = Number.isFinite(rawPage) && rawPage >= 1 && rawPage <= totalPages
-      ? rawPage
-      : i * evenShare + 1
-    return { ...doc, pageNum }
-  })
-
-  // Sort by LLM-suggested start (usable when hints vary).
-  withPages.sort((a, b) => a.pageNum - b.pageNum)
-
-  // Collapsed starts? Example: LLM gave pageHint="~page 1" for every
-  // agreement → all pageNums equal. Detect + re-distribute so we
-  // actually carve N pieces.
-  const uniqueStarts = new Set(withPages.map(w => w.pageNum))
-  if (uniqueStarts.size < withPages.length && withPages.length >= 2) {
-    console.warn(
-      '[agent-worker] docsToSplitSpecs: %d unique starts for %d docs — redistributing evenly',
-      uniqueStarts.size, withPages.length,
-    )
-    // Preserve the original order from the LLM (insertion order) for
-    // the title sequence, then space them across totalPages.
-    withPages = docs.map((doc, i) => ({
-      ...doc,
-      pageNum: Math.min(totalPages, i * evenShare + 1),
-    }))
-  }
-
-  return withPages.map((doc, i) => {
-    const nextStart = i < withPages.length - 1 ? withPages[i + 1].pageNum : totalPages + 1
-    const pageEnd   = Math.max(doc.pageNum, nextStart - 1)
-    return {
-      title:     doc.title,
-      type:      doc.docType,
-      pageStart: doc.pageNum,
-      pageEnd,
-    }
-  })
-}
-
 // ─── classify-document ────────────────────────────────────────────────────────
 
 async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> {
@@ -247,7 +263,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ plainText: version.plainText, orgId }),
-  }, { orgId, toolName: 'classify_document' })
+  }, { orgId, toolName: 'classify_document', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -335,7 +351,7 @@ async function handleExtractAi(data: ExtractAiJob): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body: JSON.stringify(body),
-  }, { orgId, toolName: 'redline_analysis' })
+  }, { orgId, toolName: 'redline_analysis', scope: contractId, contractId, context: version.plainText })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -366,7 +382,12 @@ async function handleClassifyRequest(data: ClassifyRequestJob): Promise<void> {
       counterpartyName: request.counterpartyName ?? undefined,
       orgId,
     }),
-  }, { orgId, toolName: 'classify_request' })
+  }, {
+    orgId, toolName: 'classify_request', scope: requestId,
+    // One text, so a card number in the description counts as one when the
+    // word "card" is in the title.
+    context: [request.title, request.description, request.counterpartyName].filter(Boolean).join('\n'),
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /intake-classify returned ${res.status}: ${text.slice(0, 200)}`)
@@ -407,7 +428,7 @@ async function handleRedlineAnalysis(data: RedlineAnalysisJob): Promise<void> {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
     body:    JSON.stringify({ contractId, v1Id, v2Id, orgId, userId, contractType }),
-  }, { orgId, toolName: 'redline' })
+  }, { orgId, toolName: 'redline', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /redline returned ${res.status}: ${text.slice(0, 200)}`)
@@ -478,15 +499,21 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       checks?: Array<{ clauseId: string; clauseType: string; passed: boolean; failedCount: number; worstSeverity: string | null; excerpt?: string }>
     }
 
-    const deviating = (checked.checks ?? []).filter(c => c.failedCount > 0)
-    if (deviating.length === 0) {
+    // What the rail's playbook review flagged, as well as what the rules
+    // caught (lib/playbook-redline-targets.ts has why).
+    const row = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
+    const review = (row?.metadata as { _playbookReview?: { versionId?: string; findings?: ReviewFinding[]; clausesReviewed?: number } } | null)?._playbookReview
+    const { clauseIds: deviatingIds, hints, severity: bySeverity } = redlineTargets(checked.checks ?? [], review, versionId)
+    // "Could not be checked" means neither the rules nor the review judged it.
+    const uncoveredClauses = await uncheckedClauses(versionId, review, checked.summary?.uncoveredClauses ?? 0)
+    if (deviatingIds.length === 0) {
       await setMeta({
         _playbookRedlineStatus: 'DONE',
         _playbookRedline: {
           versionId, aggression, proposals: [], deviationCount: 0,
           worstSeverity: checked.summary?.worstSeverity ?? null,
           truncated: checked.summary?.truncated ?? false,
-          uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+          uncoveredClauses,
           stagedAt: new Date().toISOString(),
           note: 'No clause deviated from the playbook.',
         },
@@ -497,8 +524,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     // 2. One batched rewrite for all of them.
     const proposed = await proposeClauseBatch({
       orgId, contractId,
-      clauseIds: deviating.map(c => c.clauseId),
+      clauseIds: deviatingIds,
       aggression,
+      hints,
     })
     if (!proposed.ok) {
       throw new Error(`${proposed.detail}${proposed.upstream ? `: ${proposed.upstream}` : ''}`)
@@ -508,11 +536,10 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     //    sees both sides without another round-trip, and so the apply step can
     //    verify it is replacing what the reviewer actually saw.
     const clauses = await prisma.contractClause.findMany({
-      where:  { id: { in: deviating.map(c => c.clauseId) } },
+      where:  { id: { in: deviatingIds } },
       select: { id: true, content: true, sectionRef: true },
     })
     const contentById = new Map(clauses.map(c => [c.id, c]))
-    const bySeverity = new Map(deviating.map(c => [c.clauseId, c.worstSeverity]))
 
     const proposals = proposed.data.proposals.map(p => ({
       clauseId:     p.clauseId,
@@ -521,6 +548,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       originalText: contentById.get(p.clauseId)?.content ?? '',
       proposedText: p.proposedText,
       rationale:    p.rationale,
+      // The rewrite's own edits: how a clause that runs across paragraphs is
+      // applied (lib/clause-apply.ts planEdits).
+      changes:      p.changes,
       severity:     bySeverity.get(p.clauseId) ?? null,
       // Present instead of proposedText when this clause could not be
       // rewritten. Reported rather than omitted: an omitted clause reads as
@@ -532,12 +562,12 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       _playbookRedlineStatus: 'DONE',
       _playbookRedline: {
         versionId, aggression, proposals,
-        deviationCount:   deviating.length,
+        deviationCount:   deviatingIds.length,
         proposedCount:    proposals.filter(p => p.proposedText).length,
         failedCount:      proposals.filter(p => p.error).length,
         worstSeverity:    checked.summary?.worstSeverity ?? null,
         truncated:        checked.summary?.truncated ?? false,
-        uncoveredClauses: checked.summary?.uncoveredClauses ?? 0,
+        uncoveredClauses,
         stagedAt:         new Date().toISOString(),
       },
     })
@@ -547,7 +577,7 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
       action:       AuditAction.AGENT_TOOL_APPLIED,
       resourceType: 'contract',
       resourceId:   contractId,
-      metadata: { via: 'playbook-redline', deviationCount: deviating.length, proposed: proposals.filter(p => p.proposedText).length },
+      metadata: { via: 'playbook-redline', deviationCount: deviatingIds.length, proposed: proposals.filter(p => p.proposedText).length },
     }).catch(() => {})
   } catch (err) {
     // Surface the reason. A run that fails silently looks identical to one
@@ -561,16 +591,19 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
 }
 
 async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
-  const { contractId, orgId, versionId } = data
+  const { contractId, orgId } = data
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, type: true },
+    select: { id: true, type: true, currentVersionId: true },
   })
   if (!contract) {
     console.info('[agent-worker] playbook-review skip contractId=%s — contract gone', contractId)
     return
   }
+  // DD2 — a review after edits takes the version the contract stands on now.
+  const versionId = data.versionId ?? contract.currentVersionId
+  if (!versionId) return
 
   // Review the version that was just extracted, not whatever is "current" by
   // the time this runs — the pointer may have moved on, and the stamp below
@@ -608,7 +641,12 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     body:    JSON.stringify({
       contractId,
       orgId,
-      clauses,
+      // DD1 — a clause's caps, measured from its words, so the review states
+      // them instead of working them out.
+      clauses: clauses.map(c => {
+        const facts = liabilityCaps(c.content).map(x => x.statement)
+        return facts.length ? { ...c, facts } : c
+      }),
       playbookPositions: relevant.map(p => ({
         clauseType:   p.clauseCategory?.name ?? 'other',
         positionType: p.positionType,
@@ -617,7 +655,11 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
       })),
       contractType: contract.type,
     }),
-  }, { orgId, toolName: 'playbook_review' })
+  }, {
+    orgId, toolName: 'playbook_review', scope: contractId, contractId,
+    // The clauses are sent one by one; the document decides what counts as PII.
+    context: (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText,
+  })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /playbook-review returned ${res.status}: ${text.slice(0, 200)}`)
@@ -670,7 +712,7 @@ async function handleApprovalSummary(data: ApprovalSummaryJob): Promise<void> {
       'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
     },
     body: JSON.stringify({ instanceId, contractId, versionId, orgId, approverIds }),
-  }, { orgId, toolName: 'approval_summary' })
+  }, { orgId, toolName: 'approval_summary', scope: contractId, contractId })
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /approval-summary returned ${res.status}: ${text.slice(0, 200)}`)
@@ -712,7 +754,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
       user_id: userId,
       context,
     }),
-  }, { orgId, toolName: 'draft_contract' })
+  }, { orgId, toolName: 'draft_contract', scope: contractId, contractId })
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
@@ -737,7 +779,7 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
       contractId,
       versionNumber: nextVersion,
       htmlContent:   result.html,
-      plainText:     result.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+      plainText:     htmlToText(result.html),
       mimeType:      'text/html',
       fileSize:      Buffer.byteLength(result.html),
       changeNote:    'AI-generated first draft',
@@ -752,6 +794,24 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
   })
 
   console.info('[agent-worker] draft-contract done contractId=%s', contractId)
+}
+
+// ─── backfill-custom-field (X2) ──────────────────────────────────────────────
+// See lib/custom-field-backfill.ts. The extraction goes through callAgents, so
+// the org's PII policy and cost cap apply as on every other job.
+
+async function handleBackfillCustomField(data: BackfillCustomFieldJob): Promise<void> {
+  const state = await runCustomFieldBackfill(data, async ({ orgId, contractId, body }) => {
+    const res = await callAgents('/extract-fields', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
+      body:    JSON.stringify(body),
+    }, { orgId, toolName: 'backfill_custom_field', scope: contractId, contractId })
+    if (!res.ok) throw new Error(`Agents /extract-fields returned ${res.status}`)
+    return ((await res.json()) as { customFields?: Record<string, ExtractedField> }).customFields ?? null
+  })
+  console.info('[agent-worker] backfill-custom-field field=%s status=%s processed=%d filled=%d failed=%d',
+    data.fieldDefinitionId, state?.status, state?.processed ?? 0, state?.filled ?? 0, state?.failed ?? 0)
 }
 
 export const agentWorker = new Worker(
@@ -776,6 +836,8 @@ export const agentWorker = new Worker(
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {
       await handleDraftContract(job.data as DraftContractJobData)
+    } else if (job.name === 'backfill-custom-field') {
+      await handleBackfillCustomField(job.data as BackfillCustomFieldJob)
     }
   },
   { connection: redis, concurrency: 2 }
@@ -788,19 +850,8 @@ agentWorker.on('completed', (job) => {
 agentWorker.on('failed', async (job, err) => {
   console.error('[worker:agents] ✗ job failed name=%s id=%s attempt=%d/%d err=%s',
     job?.name, job?.id, job?.attemptsMade ?? 0, job?.opts?.attempts ?? 2, err.message)
-  const contractId = (job?.data as { contractId?: string })?.contractId
-  // playbook-review is a supplementary pass that runs AFTER extraction has
-  // already succeeded. Failing it (no model key, provider error) must not mark
-  // the contract's analysis FAILED — the document is extracted and perfectly
-  // usable; only the playbook scoring is missing.
-  if (job?.name === 'playbook-review') {
-    console.warn('[worker:agents] playbook-review failed for contractId=%s — leaving analysisStatus untouched', contractId)
-    return
-  }
-  if (contractId && job && job.attemptsMade >= (job.opts.attempts ?? 2)) {
-    await prisma.contract.update({
-      where: { id: contractId },
-      data: { analysisStatus: 'FAILED', analysisError: err.message.slice(0, 500) },
-    }).catch(() => {})
-  }
+  // Follow-on jobs (playbook review and redline, redline analysis, approval
+  // summary) run after extraction succeeded: they record their own failure,
+  // never the contract's analysis (lib/agent-job-failure.ts, X57).
+  await onAgentJobFailed(job, err)
 })

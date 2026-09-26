@@ -16,12 +16,15 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser } from '../middleware/auth.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { advanceWorkflow } from '../lib/workflow-engine.js'
+import { fireWebhook } from '../lib/webhook-events.js'
 import { queueNotification, notificationQueue } from '../lib/queue.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, TriggerRulesSchema } from '@clm/types'
+import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
+import { clauseVersionId } from '../lib/clause-version.js'
 
 // Wave 3.8 — validate workflow step definitions at save time. Each step must
 // name at least one approver, and a parallel step's requiredApprovals must be
@@ -54,6 +57,19 @@ function validateWorkflowSteps(steps: unknown[]): string | null {
     }
   }
   return null
+}
+
+/**
+ * Z3 — the rules that choose a workflow and approve without a person went in
+ * unchecked: a misspelt type or a missing limit was stored and then silently
+ * never matched. Returns what is wrong, or null.
+ */
+function triggerRulesError(triggerRules: unknown): string | null {
+  const parsed = TriggerRulesSchema.safeParse(triggerRules)
+  if (parsed.success) return null
+  const issue = parsed.error.issues[0]
+  const where = issue.path.length ? `triggerRules.${issue.path.join('.')}` : 'triggerRules'
+  return `${where}: ${issue.message}`
 }
 
 export async function approvalRoutes(app: FastifyInstance) {
@@ -155,13 +171,16 @@ export async function approvalRoutes(app: FastifyInstance) {
   app.get('/all', { preHandler: requirePermission('configure', 'workflow') }, async (req, reply) => {
     const { orgId } = req.user
 
+    // ESCALATED is included for oversight: older escalations with no target
+    // parked instances in that state (C2), and an admin is who can unstick them.
     const instances = await prisma.approvalInstance.findMany({
-      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
       include: {
         steps: {
           where: { status: 'PENDING' },
           orderBy: { stepOrder: 'asc' },
         },
+        definition: { select: { steps: true } },
       },
       orderBy: { submittedAt: 'desc' },
       take: 100,
@@ -195,7 +214,15 @@ export async function approvalRoutes(app: FastifyInstance) {
     const approverMap  = new Map(approvers.map(u => [u.id, u]))
 
     const data = instances.map(instance => {
-      const currentStep = instance.steps.find(s => s.stepOrder === (instance.currentStepOrder > 0 ? instance.currentStepOrder : 1))
+      // Step orders are whatever the workflow definition uses — the builder
+      // and seed number from 0, older definitions from 1. Match exactly
+      // (as /my-queue does); coercing 0 to 1 hid every first-step approval.
+      const currentStep = instance.steps.find(s => s.stepOrder === instance.currentStepOrder)
+      const defOrders = [...new Set(
+        ((instance.definition?.steps ?? []) as Array<{ order?: number }>)
+          .map(d => d.order).filter((o): o is number => typeof o === 'number'),
+      )].sort((a, b) => a - b)
+      const position = defOrders.indexOf(instance.currentStepOrder)
       const submitter = submitterMap.get(instance.submittedById)
       const contract  = contractMap.get(instance.contractId)
       const currentApprover = currentStep ? approverMap.get(currentStep.approverId) : null
@@ -207,7 +234,10 @@ export async function approvalRoutes(app: FastifyInstance) {
         status:            instance.status,
         submittedAt:       instance.submittedAt,
         submittedByName:   submitter?.name ?? 'Unknown',
-        currentStepOrder:  instance.currentStepOrder > 0 ? instance.currentStepOrder : 1,
+        currentStepOrder:  instance.currentStepOrder,
+        // 1-based "step N of M" for display, from the workflow definition.
+        currentStepPosition: position >= 0 ? position + 1 : null,
+        stepCount:         defOrders.length || null,
         currentStepName:   currentStep?.stepName ?? null,
         currentApproverName: currentApprover?.name ?? null,
         currentApproverEmail: currentApprover?.email ?? null,
@@ -381,6 +411,11 @@ export async function approvalRoutes(app: FastifyInstance) {
     await advanceWorkflow(instanceId, prisma)
 
     const updatedInstance = await prisma.approvalInstance.findUnique({ where: { id: instanceId } })
+    // H2 — advertised to subscribers since P10A, never emitted until now.
+    fireWebhook(orgId, 'approval.decided', {
+      instanceId, contractId: instance.contractId, stepId, decision,
+      instanceStatus: updatedInstance?.status ?? null, decidedBy: userId,
+    })
     return reply.send({
       instanceId,
       instanceStatus:     updatedInstance?.status,
@@ -394,16 +429,47 @@ export async function approvalRoutes(app: FastifyInstance) {
   // Called by the Python approval agent after it finishes generating the summary.
   // Protected by internal secret header rather than user JWT.
   app.patch('/:instanceId/summary', async (req, reply) => {
-    const secret = req.headers['x-internal-secret']
-    if (!secret || secret !== process.env.INTERNAL_SERVICE_SECRET) {
-      // In dev with no secret set, allow all — in prod this header is required
-      if (process.env.NODE_ENV === 'production') {
-        return reply.status(401).send({ error: 'Unauthorized' })
-      }
+    // X31 — the agents service's secret, in every environment. The check
+    // used to apply only in production, so on staging or a preview anyone
+    // could rewrite any approval's summary, risks and recommendation.
+    const expected = process.env.INTERNAL_SERVICE_SECRET
+    if (!expected || req.headers['x-internal-secret'] !== expected) {
+      return reply.status(401).send({ error: 'Unauthorized' })
     }
+    // The org it acts for (approval.py sends x-org-id): another org's
+    // instance is not found.
+    const orgId = (req.headers['x-org-id'] as string | undefined)?.trim()
 
     const { instanceId } = req.params as { instanceId: string }
-    const { aiSummary, keyRisks, nonStandardTerms, approvalRecommendation } = req.body as {
+    // X27 — the summary was written from clauses the agents service read with
+    // round-trip tokens (GET /contracts/:id/clauses); put the values back.
+    const instance = await prisma.approvalInstance.findFirst({
+      where: { id: instanceId, ...(orgId ? { orgId } : {}) },
+      select: { contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
+    })
+    if (!instance) return reply.status(404).send({ error: 'Approval not found' })
+    let summary = req.body as Record<string, unknown>
+    if (JSON.stringify(summary ?? null).includes('[PII:')) {
+      // The same text the agents service was given: the clauses of the
+      // version GET /contracts/:id/clauses picks and that version's text, and
+      // the key terms and summary GET /contracts/:id handed over (tokenized
+      // against the current version's text, or the latest one's).
+      const { contract } = instance
+      const versionId = await clauseVersionId(contract.id, contract.currentVersionId)
+      const latest = await prisma.contractVersion.findFirst({ where: { contractId: contract.id }, orderBy: { versionNumber: 'desc' }, select: { id: true } })
+      const ids = [...new Set([versionId, contract.currentVersionId, latest?.id].filter((v): v is string => !!v))]
+      const [versions, clauses] = await Promise.all([
+        prisma.contractVersion.findMany({ where: { id: { in: ids }, contractId: contract.id }, select: { plainText: true } }),
+        versionId
+          ? prisma.contractClause.findMany({ where: { versionId, isSubChunk: false }, orderBy: { sortOrder: 'asc' }, select: { content: true } })
+          : Promise.resolve([]),
+      ])
+      const source = [versions.map(v => v.plainText), clauses.map(c => c.content), contract.keyTerms, contract.summary]
+      summary = restorePii(summary, source, contract.id)
+      const left = unresolvedPiiTokens(summary, source).length
+      if (left) req.log.warn({ instanceId, contractId: contract.id, left }, 'PII placeholders left unresolved in an approval summary')
+    }
+    const { aiSummary, keyRisks, nonStandardTerms, approvalRecommendation } = summary as {
       aiSummary?:              string
       keyRisks?:               unknown[]
       nonStandardTerms?:       string[]
@@ -452,6 +518,8 @@ export async function approvalRoutes(app: FastifyInstance) {
     if (!Array.isArray(steps) || steps.length === 0) return reply.status(400).send({ error: 'steps must be a non-empty array' })
     const stepError = validateWorkflowSteps(steps)
     if (stepError) return reply.status(400).send({ error: stepError })
+    const rulesError = triggerRulesError(triggerRules ?? {})
+    if (rulesError) return reply.status(400).send({ error: rulesError })
 
     // If setting as default, clear any existing default
     if (isDefault) {
@@ -500,6 +568,10 @@ export async function approvalRoutes(app: FastifyInstance) {
       const stepError = validateWorkflowSteps(steps)
       if (stepError) return reply.status(400).send({ error: stepError })
     }
+    if (triggerRules !== undefined) {
+      const rulesError = triggerRulesError(triggerRules)
+      if (rulesError) return reply.status(400).send({ error: rulesError })
+    }
 
     if (isDefault) {
       await prisma.workflowDefinition.updateMany({
@@ -544,7 +616,7 @@ export async function approvalRoutes(app: FastifyInstance) {
 
 
   // ── GET /notifications — notifications for current user ───────────────────
-  app.get('/notifications', { preHandler: requireAuth }, async (req, reply) => {
+  app.get('/notifications', { preHandler: requireUser }, async (req, reply) => {
     const { sub: userId } = req.user
     const { cursor, limit = '25' } = req.query as Record<string, string>
 
@@ -564,7 +636,7 @@ export async function approvalRoutes(app: FastifyInstance) {
 
 
   // ── POST /notifications/mark-read — mark notifications as read ────────────
-  app.post('/notifications/mark-read', { preHandler: requireAuth }, async (req, reply) => {
+  app.post('/notifications/mark-read', { preHandler: requireUser }, async (req, reply) => {
     const { sub: userId } = req.user
     const { ids } = req.body as { ids?: string[] }
 

@@ -64,7 +64,7 @@ def install(rounds):
             source="platform", tier="fast", callbacks=[])
     o.resolve_llm = _resolve
     async def _hist(*a, **k): return []
-    async def _app(sid, role, content, tool_calls=None, tool_results=None):
+    async def _app(sid, role, content, tool_calls=None, tool_results=None, **_owner):
         PERSISTED.append([role, content])
     o.get_session_history = _hist
     o.append_to_session = _app

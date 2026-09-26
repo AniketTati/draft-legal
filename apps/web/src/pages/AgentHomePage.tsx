@@ -62,6 +62,7 @@ import { CitationPills, type CitationBundle } from '@/components/agent/CitationP
 import { RedlinePreview, type RedlineProposal } from '@/components/agent/RedlinePreview'
 import { ToolCallChip, type RailToolCall } from '@/components/agent/SideAgentRail'
 import { cn } from '@/lib/utils'
+import { buildAgentChatBody, readProvenance, type Provenance } from '@/lib/agent-chat'
 
 interface ThreadSummary {
   id: string
@@ -112,11 +113,11 @@ interface ChatMessage {
   stopped?: boolean
   /**
    * TRUST — which model actually produced this turn, read off the SSE
-   * envelope. The page pins a provider in its request and the server does
-   * not necessarily honour it (a live run asking for gpt-4.1-mini came back
-   * from gemini-2.5-pro), so the only truthful source is the frames.
+   * envelope. The org's AI config picks the model per tier, so the only
+   * truthful source is the frames: the `done` frame's resolved values
+   * (see lib/agent-chat.ts readProvenance).
    */
-  provenance?: { model?: string; tier?: string }
+  provenance?: Provenance
   /** Wall-clock duration of the run, shown alongside the model. */
   elapsedMs?: number
   /** The user text that produced this turn, so a failed turn can be retried. */
@@ -258,14 +259,14 @@ function groundedStarters(facts: PortfolioFacts | undefined): StarterPrompt[] {
     out.push({
       icon: CalendarClock,
       label: `${approvals} approval${approvals === 1 ? '' : 's'} waiting on you`,
-      prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, the specific off-playbook terms, and your approve / hold / reject recommendation with the reason.',
+      prompt: 'List every approval awaiting my decision. For each: contract, counterparty, value, the specific off-playbook terms, and your approve / hold / reject recommendation with the reason.',
     })
   }
   if (expiring > 0) {
     out.push({
       icon: FileText,
       label: `${expiring} contract${expiring === 1 ? '' : 's'} expire within 90 days`,
-      prompt: 'Use renewal_advice for a portfolio view of everything expiring in the next 90 days. Group by renew / renegotiate / let-expire, and put the ones with auto-renew and a notice deadline already passed at the top.',
+      prompt: 'Give me a renewal view of everything expiring in the next 90 days: which renew by themselves, whose notice deadline has passed or is close, and which to decide on first.',
     })
   }
   // Name the riskiest live negotiation outright — the single most useful
@@ -312,27 +313,27 @@ function starterPromptsFor(
       { icon: FileText, label: 'Review my contracts in negotiation',
         prompt: 'List every contract I own that\'s in UNDER_NEGOTIATION status. For each, give me: counterparty, value, the top off-playbook risk, and what I should push back on next.' },
       { icon: Search, label: 'What\'s our typical liability cap position?',
-        prompt: 'Use org_memory to retrieve our preferred / acceptable / fallback / walkaway positions on Limitation of Liability. Show me each with one example clause from a signed contract.' },
+        prompt: 'What are our preferred, acceptable, fallback and walkaway positions on Limitation of Liability? Show me each with one example clause from a signed contract.' },
     ]
     if (cp1) {
       out.push({ icon: Building2, label: `Brief me on our ${cp1} relationship`,
         prompt: `Use counterparty_memory for ${cp1}. Show me every active and historical contract, key terms across all of them, total exposure, and any open risks.` })
     }
     out.push({ icon: CalendarClock, label: 'What\'s in my approval queue?',
-      prompt: 'Use approval_list to fetch every approval awaiting my decision. For each: contract, counterparty, value, key risks, and your recommendation.' })
+      prompt: 'List every approval awaiting my decision. For each: contract, counterparty, value, key risks, and your recommendation.' })
     return withGrounded(out)
   }
   if (has('PROCUREMENT')) {
     const out: StarterPrompt[] = [
       { icon: CalendarClock, label: 'What renews in the next 90 days?',
-        prompt: 'Use renewal_advice to list every contract I own expiring in the next 90 days. For each, show: counterparty, days to expiry, auto-renew status, and your renew/renegotiate/let-expire recommendation with rationale.' },
+        prompt: 'List every contract I own expiring in the next 90 days. For each: counterparty, days to expiry, whether it auto-renews, and the date notice must be given by.' },
     ]
     if (cp1) {
       out.push({ icon: Search, label: `Decide on ${cp1}`,
         prompt: `Pull the most recent ${cp1} agreement details. What are the obligations, the renewal terms, and what should I do at the next renewal?` })
     }
     out.push({ icon: Building2, label: 'All vendor agreements at a glance',
-      prompt: 'Use contract_search with type=VENDOR_AGREEMENT. For each, show counterparty, annual commit, expiry, and current health.' })
+      prompt: 'List our vendor agreements. For each: counterparty, annual commitment, expiry, and current health.' })
     out.push({ icon: FileText, label: 'Compare two vendors\' terms',
       prompt: 'Find every Vendor or License agreement we have. Show me a side-by-side of their payment terms, liability caps, and termination rights so I can spot the outliers.' })
     return withGrounded(out)
@@ -356,7 +357,7 @@ function starterPromptsFor(
   if (has('FINANCE') || has('APPROVER')) {
     const out: StarterPrompt[] = [
       { icon: CalendarClock, label: 'What\'s in my approval queue?',
-        prompt: 'Use approval_list. For each pending approval: contract, counterparty, value, AI-summarised key risks, and your approve/hold/reject recommendation with reasoning.' },
+        prompt: 'For each approval waiting on me: contract, counterparty, value, the key risks, and your approve / hold / reject recommendation with the reason.' },
       { icon: FileText, label: 'Renewals over $100K this year',
         prompt: 'Find every contract expiring in the next 12 months with annual value above $100K. Sort by expiry date and show total value at risk.' },
     ]
@@ -371,11 +372,11 @@ function starterPromptsFor(
     { icon: FileText, label: 'What needs my team\'s attention today?',
       prompt: 'Walk every contract that\'s currently UNDER_NEGOTIATION or PENDING_APPROVAL across the org. For each: counterparty, owner, days waiting, and what\'s blocking it.' },
     { icon: CalendarClock, label: 'Renewal pipeline next 90 days',
-      prompt: 'Use renewal_advice (no contract id) to give me a portfolio view of every contract expiring in 90 days, grouped by recommendation (renew / renegotiate / let_expire).' },
+      prompt: 'Give me a renewal view of every contract expiring in the next 90 days: which renew by themselves, and whose notice deadline has passed or is close.' },
     { icon: Building2, label: 'Top counterparties by exposure',
       prompt: 'List our top 5 counterparties by total contract value. For each, show contract count, total value, and any open risks.' },
     { icon: Search, label: 'Search across all contracts',
-      prompt: 'Use portfolio_search to find every clause that mentions "auto-renew" or "automatic renewal" — give me a count by type and flag any with no notice-period requirement.' },
+      prompt: 'Find every clause across our contracts about automatic renewal. Count them by contract type and flag any with no notice period.' },
   ])
 }
 
@@ -524,6 +525,9 @@ export function AgentHomePage() {
     // (rather than on the first guarded pass) keeps the double-run protection
     // the guard exists for, because that double-run is always same-threadId.
     justStreamedThreadIdRef.current = null
+    // Another conversation's artifacts don't belong to this one (CC6).
+    setArtifacts([])
+    setOpenArtifactId(null)
     api.get(`/agent/threads/${threadId}`).then(r => {
       // Backend stores content as Json — concretely an array of
       // `{ type: 'text', text: '...' }` blocks (Anthropic-style) so it
@@ -608,6 +612,10 @@ export function AgentHomePage() {
   const startNewConversation = () => {
     setThreadId(null)
     setMessages([])
+    // CC6 — a conversation's artifacts are its own: the last one's draft
+    // stayed listed under the next conversation's answers.
+    setArtifacts([])
+    setOpenArtifactId(null)
     setActiveThread(null)
     setSearchParams({}, { replace: true })
   }
@@ -654,20 +662,16 @@ export function AgentHomePage() {
           'authorization': `Bearer ${accessToken}`,
           'accept': 'text/event-stream',
         },
-        body: JSON.stringify({
+        // No provider/model pin (C3): the org's AI config picks per tier, as
+        // it does for the side rail. A hard-coded pin here outranked Admin →
+        // AI Config and billed a model the org had not chosen. (The old
+        // reason for pinning — gpt-4o sending query="*" — is handled by
+        // contract_search treating wildcards as match-all.)
+        body: JSON.stringify(buildAgentChatBody({
           message: clean,
           sessionId: threadId ?? undefined,
-          agentMode: true,
-          // Pin the same provider+model as the side rail (SideAgentRail) so
-          // both surfaces give identical answers to identical questions.
-          // Without this, the Assistant page silently used the org's default
-          // model (often gpt-4o) which has known tool-call quirks — e.g.
-          // passing query="*" to contract_search expecting a wildcard,
-          // which returns zero hits. See "Assistant vs Ask" bug fix.
-          provider: 'openai',
-          modelId:  'gpt-4.1-mini',
-          ...(pickedSkill ? { skillSlug: pickedSkill } : {}),
-        }),
+          skillSlug: pickedSkill,
+        })),
         signal: abortRef.current.signal,
       })
       if (!res.ok || !res.body) throw new Error(`Stream failed (${res.status})`)
@@ -677,7 +681,7 @@ export function AgentHomePage() {
       let buf = ''
       let assembled = ''
       let newSessionId: string | undefined
-      let provenance: { model?: string; tier?: string } | undefined
+      let provenance: Provenance | undefined
       const startedAt = Date.now()
       // Track tool calls locally so we can persist them after stream end.
       // Reading from React state inside this fn would be a stale-closure trap.
@@ -697,16 +701,9 @@ export function AgentHomePage() {
             const evt = JSON.parse(data)
             if (evt.session_id) newSessionId = evt.session_id
             // TRUST — record which model is actually answering. Every frame
-            // carries `model_id`; the terminal `done` frame adds `tier`. The
-            // request above asks for gpt-4.1-mini and does not always get it,
-            // so the footer under the answer must report the frames, not the
-            // request.
-            if (evt.model_id || evt.model || evt.tier) {
-              provenance = {
-                model: String(evt.model_id ?? evt.model ?? provenance?.model ?? ''),
-                tier: evt.tier ? String(evt.tier) : provenance?.tier,
-              }
-            }
+            // is stamped with the requested model_id; the terminal `done`
+            // frame carries the resolved provider/model/tier, which wins.
+            provenance = readProvenance(provenance, evt)
             if (evt.type === 'token' && (evt.delta || evt.content)) {
               assembled += (evt.delta ?? evt.content)
               setMessages(prev => prev.map(m =>
@@ -964,6 +961,11 @@ export function AgentHomePage() {
             userMessage: clean,
             assistant: {
               content: assembled,
+              // What actually answered (from the done frame), so a reloaded
+              // thread and per-model cost/quality analysis report the truth.
+              ...(provenance?.provider ? { provider: provenance.provider } : {}),
+              ...(provenance?.model ? { model: provenance.model } : {}),
+              ...(provenance?.tier ? { tier: provenance.tier } : {}),
             },
             toolCalls: localToolCalls
               .filter(tc => tc.status === 'ok' || tc.status === 'error')
@@ -1048,6 +1050,16 @@ export function AgentHomePage() {
   // orgId/authorId from the JWT, records a ToolCall row, and fires the
   // AGENT_TOOL_APPLIED audit event. Undo targets the returned toolCallId
   // within the 15-min server-side window.
+  // X58 — a card that proposes an action itself (a redline variant's Apply)
+  // adds it to its own message, where the Apply / Edit / Cancel card above
+  // takes over. It used to go through the rail's 'rail-inject-action'
+  // event, which nothing hears on /agent: the rail isn't mounted here.
+  const proposeAction = (msgId: string, action: PendingAction) => {
+    setMessages(prev => prev.map(m => m.id === msgId
+      ? { ...m, pendingActions: [...(m.pendingActions ?? []), action] }
+      : m))
+  }
+
   const patchAction = (msgId: string, actionId: string, patch: Partial<PendingAction>) => {
     setMessages(prev => prev.map(m => {
       if (m.id !== msgId) return m
@@ -1099,6 +1111,19 @@ export function AgentHomePage() {
           toolCallId: body.toolCallId,
           appliedAt: Date.now(),
         })
+        // C12 — a draft is created on Apply (not mid-stream), so its Doc
+        // artifact comes from the apply result rather than a tool result.
+        const artifact = artifactFromToolResult({ name: toolName, result: body.result })
+        if (artifact) {
+          setArtifacts(prev => {
+            const existing = artifact.dedupeKey ? prev.findIndex(a => a.dedupeKey === artifact.dedupeKey) : -1
+            if (existing < 0) return [...prev, artifact]
+            const next = prev.slice()
+            next[existing] = artifact
+            return next
+          })
+          setOpenArtifactId(artifact.id)
+        }
       } else {
         const errDetail = typeof body?.error === 'object'
           ? (body.error?.detail ?? JSON.stringify(body.error).slice(0, 200))
@@ -1412,6 +1437,7 @@ export function AgentHomePage() {
                     if (!streaming) send(text)
                   }}
                   onActionApply={(actionId, args) => applyAction(m.id, actionId, args)}
+                  onActionPropose={(action) => proposeAction(m.id, action)}
                   onActionCancel={(actionId) => cancelAction(m.id, actionId)}
                   onActionUndo={(actionId) => undoAction(m.id, actionId)}
                   onRetry={(prompt) => { if (!streaming && prompt) send(prompt) }}
@@ -1642,6 +1668,7 @@ function MessageBubble({
   onChipSelect,
   streaming,
   onActionApply,
+  onActionPropose,
   onActionCancel,
   onActionUndo,
   onRetry,
@@ -1650,6 +1677,7 @@ function MessageBubble({
   onChipSelect?: (text: string) => void
   streaming?:   boolean
   onActionApply?:  (actionId: string, args: Record<string, unknown>) => void | Promise<void>
+  onActionPropose?: (action: PendingAction) => void
   onActionCancel?: (actionId: string) => void
   onActionUndo?:   (actionId: string) => void | Promise<void>
   onRetry?:        (prompt: string) => void
@@ -1693,9 +1721,7 @@ function MessageBubble({
                   <RedlinePreview
                     key={tc.id}
                     proposal={tc.redlineProposal as RedlineProposal}
-                    onApplyVariant={(_variant, action) => {
-                      window.dispatchEvent(new CustomEvent('rail-inject-action', { detail: action }))
-                    }}
+                    onApplyVariant={(_variant, action) => onActionPropose?.(action)}
                   />
                 )
               }

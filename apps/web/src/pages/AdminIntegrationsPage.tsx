@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { usePermission } from '@/lib/permissions'
+import { useCanRequest } from '@/lib/permissions'
 import {
   Plug, Plus, Loader2, Copy, Check, Trash2, X, Send, AlertCircle, Lock,
   Key, Webhook as WebhookIcon, ChevronRight, ChevronDown,
@@ -23,6 +23,7 @@ import {
 import { StatusPill } from '@/components/ui/status-pill'
 import { MEANING_CLASS, type Meaning } from '@/lib/status'
 import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
+import { API_KEY_EXPIRY_OPTIONS, buildCreateApiKeyBody } from '@/lib/api-keys'
 
 interface ApiKey {
   id:         string
@@ -33,6 +34,8 @@ interface ApiKey {
   expiresAt:  string | null
   revokedAt:  string | null
   createdAt:  string
+  /** X43 — who made the key (null when that user is gone). */
+  createdBy?: { id: string; name: string | null; email: string | null } | null
 }
 
 interface Webhook {
@@ -69,7 +72,12 @@ export function AdminIntegrationsPage() {
   // api-keys flood that surfaced in the rail console + felt broken.
   // Render a clean access-denied state instead — the route is reachable
   // by URL even though the sidebar hides the nav item for non-admins.
-  const canConfigureIntegrations = usePermission('configure', 'integration')
+  // X61 — gate on what every route behind these tabs requires,
+  // configure:organization. configure:integration (LEGAL_OPS has it) let
+  // them in to a page whose every call was refused, and the API Keys tab
+  // read the refusal as "No API keys yet."
+  // Y3 — by the route table: what the API keys tab's list needs.
+  const canConfigureIntegrations = useCanRequest('GET /admin/integrations/api-keys')
 
   if (!canConfigureIntegrations) {
     return (
@@ -199,6 +207,8 @@ function ApiKeysSection() {
               <tr>
                 <th className="text-left px-4 py-2 font-semibold">Name</th>
                 <th className="text-left px-4 py-2 font-semibold">Prefix</th>
+                <th className="text-left px-4 py-2 font-semibold">Scopes</th>
+                <th className="text-left px-4 py-2 font-semibold">Created by</th>
                 <th className="text-left px-4 py-2 font-semibold">Last used</th>
                 <th className="text-left px-4 py-2 font-semibold">Status</th>
                 <th className="text-right px-4 py-2 font-semibold"></th>
@@ -209,6 +219,14 @@ function ApiKeysSection() {
                 <tr key={k.id} data-testid={`api-key-row-${k.id}`}>
                   <td className="px-4 py-2 font-medium text-ink-950">{k.name}</td>
                   <td className="px-4 py-2 font-mono text-[11px] text-ink-700">{k.prefix}…</td>
+                  <td className="px-4 py-2 font-mono text-[11px] text-ink-700" data-testid={`api-key-scopes-${k.id}`}>
+                    {/* A key with no scopes can call nothing — keys made before scopes
+                        could be chosen look like this and need re-issuing. */}
+                    {k.scopes.length ? k.scopes.join(', ') : <span className="text-risk-700 font-sans">none — can’t call any endpoint</span>}
+                  </td>
+                  <td className="px-4 py-2 text-[11px] text-ink-700" data-testid={`api-key-creator-${k.id}`}>
+                    {k.createdBy ? (k.createdBy.name ?? k.createdBy.email ?? k.createdBy.id) : '—'}
+                  </td>
                   <td className="px-4 py-2 text-[11px] tabular-nums text-ink-500">
                     {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : 'never'}
                   </td>
@@ -295,9 +313,19 @@ function ApiKeysSection() {
 
 function CreateApiKeyDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string, key: string) => void }) {
   const [name, setName] = useState('')
+  const [scopes, setScopes] = useState<string[]>([])
+  const [expiresInDays, setExpiresInDays] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A key's scopes are its permissions; the vocabulary comes from the server
+  // so the dialog can't offer a scope the API would reject.
+  const { data: scopesData } = useQuery<{ scopes: string[] }>({
+    queryKey: ['api-key-scopes'],
+    queryFn:  () => api.get('/admin/integrations/api-key-scopes').then(r => r.data),
+  })
+  const available = scopesData?.scopes ?? []
+  const body = buildCreateApiKeyBody(name, scopes, expiresInDays)
   const create = useMutation({
-    mutationFn: async () => (await api.post('/admin/integrations/api-keys', { name: name.trim() })).data as { id: string; key: string },
+    mutationFn: async () => (await api.post('/admin/integrations/api-keys', body)).data as { id: string; key: string },
     onSuccess: (data) => { onCreated(data.id, data.key); onClose() },
     onError: (err: { response?: { data?: { detail?: string } } }) => setError(err.response?.data?.detail ?? 'Failed to create.'),
   })
@@ -319,13 +347,45 @@ function CreateApiKeyDialog({ onClose, onCreated }: { onClose: () => void; onCre
               autoFocus
             />
           </div>
+          <div>
+            <label className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Scopes</label>
+            <p className="text-[11px] text-ink-500 mb-1.5">What this key may do. Choose at least one.</p>
+            <div className="grid grid-cols-2 gap-1.5 max-h-56 overflow-y-auto p-2 border border-paper-200 rounded-md">
+              {available.map(sc => (
+                <label key={sc} className="flex items-center gap-1.5 text-dense text-ink-700 cursor-pointer hover:bg-paper-50 px-1.5 py-1 rounded-chip">
+                  <input
+                    type="checkbox"
+                    checked={scopes.includes(sc)}
+                    onChange={(ev) => setScopes(ev.target.checked ? [...scopes, sc] : scopes.filter(x => x !== sc))}
+                    data-testid={`scope-${sc}`}
+                    className="size-3.5 rounded-chip border-paper-300 accent-ink-950"
+                  />
+                  <span className="font-mono">{sc}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label htmlFor="api-key-expiry" className="block text-[11.5px] font-semibold text-ink-950 mb-1.5">Expires</label>
+            <select
+              id="api-key-expiry"
+              value={expiresInDays ?? ''}
+              onChange={(e) => setExpiresInDays(e.target.value ? Number(e.target.value) : null)}
+              data-testid="api-key-expiry"
+              className="w-full h-9 rounded-md border border-paper-200 bg-card px-2 text-dense text-ink-950"
+            >
+              {API_KEY_EXPIRY_OPTIONS.map(o => (
+                <option key={o.label} value={o.days ?? ''}>{o.label}</option>
+              ))}
+            </select>
+          </div>
           {error && <div className="text-dense text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">{error}</div>}
         </div>
         <div className="px-5 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button
             onClick={() => create.mutate()}
-            disabled={!name.trim() || create.isPending}
+            disabled={!body || create.isPending}
             data-testid="create-key-confirm"
           >
             {create.isPending ? <><Loader2 className="size-4 animate-spin mr-1" /> Creating…</> : 'Create key'}
@@ -971,6 +1031,7 @@ interface SlackConfig {
   configuredAt?: string | null
   hasSigningSecret?: boolean
   hasBotToken?: boolean
+  teamVerified?: boolean
 }
 
 const API_BASE = `${window.location.origin}/api/v1`
@@ -1046,6 +1107,13 @@ function SlackSection() {
               {/* Missing bot token is a setup step still waiting on this admin. */}
               <dd className={data.hasBotToken ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
                 {data.hasBotToken ? 'configured' : 'not set — buttons fall back to web links'}
+              </dd>
+            </div>
+            <div className="flex justify-between">
+              <dt className="text-ink-500">Workspace ownership</dt>
+              {/* X6 — Slack confirmed the bot token belongs to this workspace, so no other org's claim on the same team ID can take its requests. */}
+              <dd className={data.teamVerified ? 'text-brand-700 text-[11px]' : 'text-attention-700 text-[11px]'}>
+                {data.teamVerified ? 'verified by the bot token' : 'unverified — reconnect with the bot token so no other org can claim this workspace'}
               </dd>
             </div>
             {data.configuredAt && (

@@ -47,7 +47,7 @@ class CounterpartyMemoryArgs(BaseModel):
     )
 
 
-def build_counterparty_memory(org_id: str) -> StructuredTool:
+def build_counterparty_memory(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(counterparty_name: str, clause_type: str | None = None, limit: int = 10) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/counterparty_memory"
@@ -58,6 +58,7 @@ def build_counterparty_memory(org_id: str) -> StructuredTool:
         }
         payload: dict = {
             "orgId":            org_id,
+            "userId":           user_id,  # S2 — Node resolves the caller's view scope from this
             "counterpartyName": counterparty_name,
             "limit":            limit,
         }

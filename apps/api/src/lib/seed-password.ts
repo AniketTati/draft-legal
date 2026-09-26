@@ -1,0 +1,29 @@
+import { randomBytes } from 'node:crypto'
+import { isStrict } from './runtime-mode.js'
+
+/**
+ * X41 — the password prisma/seed.ts gives its demo users.
+ *
+ * `password123` is fine on a developer's machine (the README logs in with
+ * it). But the self-host guide runs the seed to create an install's first
+ * admin, and a password the seed prints and the README repeats is no
+ * password. In production it comes from SEED_ADMIN_PASSWORD (12 characters or
+ * more, not containing password123), or a random one is generated for the seed to
+ * print once.
+ */
+export function seedPassword(env: NodeJS.ProcessEnv = process.env): { password: string; generated: boolean } {
+  // Y5 — any NODE_ENV but development and test: a staging install's first
+  // admin got the demo password too.
+  const production = isStrict(env)
+  const given = env.SEED_ADMIN_PASSWORD
+  if (given) {
+    // X64 — the demo password first, and anywhere in the value: checked
+    // after the length rule it could never be reached (it is 11 characters),
+    // and `Password123!` passed both.
+    if (production && given.toLowerCase().includes('password123')) throw new Error('SEED_ADMIN_PASSWORD must not contain password123 in production')
+    if (production && given.length < 12) throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters in production')
+    return { password: given, generated: false }
+  }
+  if (production) return { password: randomBytes(18).toString('base64url'), generated: true }
+  return { password: 'password123', generated: false }
+}

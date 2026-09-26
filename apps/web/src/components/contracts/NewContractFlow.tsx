@@ -17,14 +17,20 @@ import type { Template } from '@clm/types'
 interface Props {
   onClose: () => void
   onCreated: (contractId: string) => void
+  /** Z6 — started from a counterparty's page: filled in, and the new contract is linked to it. */
+  initialCounterparty?: { id: string; name: string }
 }
 
-export function NewContractFlow({ onClose, onCreated }: Props) {
+export function NewContractFlow({ onClose, onCreated, initialCounterparty }: Props) {
   const user = useAuthStore(s => s.user)
   const [step, setStep] = useState<'template' | 'details'>('template')
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null)
   const [title, setTitle] = useState('')
-  const [counterparty, setCounterparty] = useState('')
+  const [counterparty, setCounterparty] = useState(initialCounterparty?.name ?? '')
+  // Linked only while the name is still that counterparty's.
+  const linkedCounterpartyId = initialCounterparty && counterparty.trim() === initialCounterparty.name
+    ? initialCounterparty.id
+    : undefined
   const [context, setContext] = useState('')
 
   const draftMutation = useMutation({
@@ -44,6 +50,7 @@ export function NewContractFlow({ onClose, onCreated }: Props) {
           title,
           orgId: user?.orgId,
           createdById: user?.id,
+          ...(linkedCounterpartyId && { counterpartyId: linkedCounterpartyId }),
         },
       })
       return res.data

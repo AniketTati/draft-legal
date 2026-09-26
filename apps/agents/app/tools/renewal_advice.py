@@ -13,9 +13,15 @@ class RenewalAdviceArgs(BaseModel):
         None,
         description=(
             "Target a single contract's cached renewal advice. Omit to "
-            "get the portfolio view — every contract expiring within "
-            "lead_days days, with per-contract advice and portfolio "
-            "recommendation counts (renew / renegotiate / let_expire / pause)."
+            "get the portfolio view.\n\n"
+            "IMPORTANT — the portfolio window reaches BACKWARD as well as "
+            "forward: it returns contracts expiring within lead_days days AND "
+            "contracts that expired in the previous 30 days, so recently "
+            "lapsed renewals still surface. `total` is the row count and "
+            "therefore covers BOTH. When the user asks how many contracts are "
+            "expiring, answer with `expiringSoon`; `recentlyExpired` is the "
+            "already-lapsed half. A row with a negative `daysUntilExpiry` has "
+            "already expired — never describe it as upcoming."
         ),
     )
     lead_days: int = Field(
@@ -25,11 +31,11 @@ class RenewalAdviceArgs(BaseModel):
     limit: int = Field(20, ge=1, le=50)
 
 
-def build_renewal_advice(org_id: str) -> StructuredTool:
+def build_renewal_advice(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(contract_id=None, lead_days: int = 90, limit: int = 20) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/renewal_advice"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload: dict = {"orgId": org_id, "leadDays": lead_days, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "leadDays": lead_days, "limit": limit}
         if contract_id: payload["contractId"] = contract_id
         async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:
             r = await client.post(url, json=payload, headers=headers)

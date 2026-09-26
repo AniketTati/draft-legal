@@ -22,6 +22,8 @@ import { prisma } from './prisma.js'
 import { queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { renewalNotice } from './renewal-notice.js'
+import { fireWebhook } from './webhook-events.js'
 
 export interface ScanOptions {
   /** Only walk this one org. Omit to scan all orgs. */
@@ -92,6 +94,10 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
   const obWhere: Record<string, unknown> = {
     status:  'OPEN',
     dueDate: { gte: graceStart, lte: windowEnd },
+    // X17 — only the org's own live contracts: a diligence room's belong to
+    // a target (no reminders, no overdue webhooks), and a deleted contract's
+    // obligations are gone with it.
+    contract: { is: { deletedAt: null, diligenceRoomId: null } },
   }
   if (opts.orgId) obWhere.orgId = opts.orgId
 
@@ -186,6 +192,11 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
               dueDate: o.dueDate?.toISOString().slice(0, 10),
             },
           })
+          // H2 — once per obligation, like the audit event it rides on.
+          fireWebhook(o.contract.orgId, 'obligation.overdue', {
+            contractId: o.contract.id, obligationId: o.id, description: o.description,
+            dueDate: o.dueDate?.toISOString().slice(0, 10) ?? null, daysOverdue: -daysOut,
+          })
         }
       } catch (err) {
         res.errors.push(`overdue-audit ${o.id}: ${(err as Error).message.slice(0, 120)}`)
@@ -208,6 +219,12 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
  *
  * A renewal notification is *high-value, low-frequency* — we only ping
  * the owner once per 7 days until they record a decision.
+ *
+ * C6 — an auto-renewing contract is also due when its NOTICE DEADLINE
+ * (expiry − notice-to-terminate period, lib/renewal-notice.ts) is within
+ * NOTICE_LEAD_DAYS or has passed. That deadline, not expiry, is the date
+ * that can't be undone: with a 120-day notice period, an expiry-only 90-day
+ * window alerted 30 days after the chance to opt out was gone.
  */
 export interface ScanRenewalsOptions {
   orgId?:       string
@@ -218,6 +235,11 @@ export interface ScanRenewalsOptions {
   /** Min ms between renotifications. Default 7 days. */
   cooldownMs?:  number
 }
+
+/** Alert this many days before an auto-renewal notice deadline. */
+export const NOTICE_LEAD_DAYS = 30
+/** How far past the lead window a notice deadline can sit: notice periods run up to a year. */
+const MAX_NOTICE_DAYS = 366
 
 export interface RenewalScanResult {
   scannedContracts:  number
@@ -241,10 +263,15 @@ export async function scanRenewals(
     skippedCooldown: 0, skippedNoOwner: 0, errors: [],
   }
 
+  // Candidates: expiring inside the lead window, or far enough out that an
+  // auto-renewal notice deadline could already be close. Which ones are
+  // actually due is decided per contract below.
+  const noticeWindowEnd = now + (MAX_NOTICE_DAYS + NOTICE_LEAD_DAYS) * 24 * 60 * 60 * 1000
   const where: Record<string, unknown> = {
     deletedAt:     null,
+    diligenceRoomId: null,   // X17 — a target's contracts don't renew with us
     status:        'EXECUTED',
-    expiryDate:    { lte: new Date(windowEnd), gte: new Date(now - 30 * 24 * 60 * 60 * 1000) },
+    expiryDate:    { lte: new Date(Math.max(windowEnd, noticeWindowEnd)), gte: new Date(now - 30 * 24 * 60 * 60 * 1000) },
   }
   if (opts.orgId) where.orgId = opts.orgId
 
@@ -253,14 +280,20 @@ export async function scanRenewals(
     select: {
       id: true, orgId: true, title: true, ownerId: true,
       counterpartyName: true, metadata: true, expiryDate: true,
-      type: true, value: true, currency: true,
+      type: true, value: true, currency: true, keyTerms: true,
     },
-    take: 2_000,
+    orderBy: { expiryDate: 'asc' },
+    take: 5_000,
   })
   res.scannedContracts = contracts.length
 
   for (const c of contracts) {
     if (!c.expiryDate) continue
+    const notice = renewalNotice({ expiryDate: c.expiryDate, keyTerms: c.keyTerms })
+    const expiringSoon = c.expiryDate.getTime() <= windowEnd
+    const noticeDue = notice.deadline != null
+      && notice.deadline.getTime() <= now + NOTICE_LEAD_DAYS * 24 * 60 * 60 * 1000
+    if (!expiringSoon && !noticeDue) continue
     res.candidates++
 
     const md = (c.metadata ?? {}) as {
@@ -296,12 +329,28 @@ export async function scanRenewals(
 
     const valueStr = c.value ? `${c.currency ?? 'USD'} ${c.value.toString()}` : ''
 
+    // The notice deadline, when it is what makes this due, leads the alert.
+    let title = `${label} · ${c.title}`
+    let action = 'review renewal options now.'
+    if (noticeDue && notice.deadline) {
+      const dlMid = new Date(notice.deadline); dlMid.setHours(0, 0, 0, 0)
+      const dlDays = Math.round((dlMid.getTime() - todayMid.getTime()) / (24 * 60 * 60 * 1000))
+      const dlStr = notice.deadline.toISOString().slice(0, 10)
+      const dlLabel = dlDays < 0 ? 'Notice deadline passed'
+                    : dlDays === 0 ? 'Notice deadline today'
+                    : `Notice deadline in ${dlDays}d`
+      title = `${dlLabel} · ${c.title}`
+      action = dlDays < 0
+        ? `auto-renews: the ${notice.noticeDays}-day notice deadline (${dlStr}) has passed. Check whether it can still be stopped.`
+        : `auto-renews unless ${notice.noticeDays} days' notice is served by ${dlStr}.`
+    }
+
     queueNotification({
       orgId:        c.orgId,
       userId:       owner.id,
       type:         'RENEWAL_DUE',
-      title:        `${label} · ${c.title}`,
-      body:         `${c.counterpartyName ?? 'Counterparty'}${valueStr ? ` · ${valueStr}` : ''} — review renewal options now.`.slice(0, 400),
+      title,
+      body:         `${c.counterpartyName ?? 'Counterparty'}${valueStr ? ` · ${valueStr}` : ''} — ${action}`.slice(0, 400),
       resourceType: 'contract',
       resourceId:   c.id,
       email:        owner.email ?? undefined,

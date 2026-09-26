@@ -64,6 +64,90 @@ def sanitize_untrusted(text: str) -> str:
     return text
 
 
+# Our framing, echoed back into an answer. Asked to "quote the clause", a model
+# pasted a whole tool result into its reply: the markers, the warning text and
+# the tool's JSON, shown to the user as if it were the answer.
+_FRAME_OPENS = ("<<<UNTRUSTED_TOOL_DATA>>>", "<<<UNTRUSTED_DOCUMENT>>>")
+_FRAME_CLOSES = ("<<<END_UNTRUSTED_TOOL_DATA>>>", "<<<END_UNTRUSTED_DOCUMENT>>>")
+_ECHOED_FRAME_RE = re.compile(
+    r"(?s)<<<UNTRUSTED_(?:TOOL_DATA|DOCUMENT)>>>.*?(?:<<<END_UNTRUSTED_(?:TOOL_DATA|DOCUMENT)>>>|$)"
+)
+
+
+def strip_framing(text: str) -> str:
+    """Remove a framed block (markers and all it framed) from model output."""
+    return _ECHOED_FRAME_RE.sub("", text or "")
+
+
+class FramingFilter:
+    """
+    strip_framing for a stream: feed() returns what can be shown now, holding
+    back a tail that could be the start of a marker until the next piece says
+    whether it is one; flush() at the end of the turn.
+    """
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._inside = False
+
+    def feed(self, piece: str) -> str:
+        self._buf += piece or ""
+        out: list[str] = []
+        while True:
+            if self._inside:
+                ends = [(self._buf.find(c), c) for c in _FRAME_CLOSES if c in self._buf]
+                if not ends:
+                    self._buf = self._buf[-(max(len(c) for c in _FRAME_CLOSES) - 1):]
+                    return "".join(out)
+                at, close = min(ends)
+                self._buf = self._buf[at + len(close):]
+                self._inside = False
+                continue
+            starts = [(self._buf.find(o), o) for o in _FRAME_OPENS if o in self._buf]
+            if starts:
+                at, opener = min(starts)
+                out.append(self._buf[:at])
+                self._buf = self._buf[at + len(opener):]
+                self._inside = True
+                continue
+            hold = 0
+            for opener in _FRAME_OPENS:
+                for k in range(min(len(opener) - 1, len(self._buf)), 0, -1):
+                    if self._buf.endswith(opener[:k]):
+                        hold = max(hold, k)
+                        break
+            emit = self._buf[: len(self._buf) - hold]
+            self._buf = self._buf[len(emit):]
+            out.append(emit)
+            return "".join(out)
+
+    def flush(self) -> str:
+        rest = "" if self._inside else self._buf
+        self._buf = ""
+        self._inside = False
+        return rest
+
+
+# Text in a document addressed to an AI rather than to the parties. The model
+# is told not to obey it, and didn't; it also didn't mention it, and a lawyer
+# reading "no risks found" should know the document tried to say so.
+_INSTRUCTION_RE = re.compile(
+    r"(?i)(?:ignore|disregard|forget)\s+(?:all\s+|any\s+)?(?:(?:previous|prior|above|earlier|your|the)\s+){1,2}(?:instructions|rules|prompts?)"
+    r"|\b(?:system|admin)\s+(?:override|mode|prompt)\b"
+    r"|\byou\s+are\s+now\s+(?:in\s+)?\w+"
+    r"|\b(?:note|message|instructions?)\s+(?:to|for)\s+(?:the\s+)?(?:ai|assistant|llm|model|chatbot)s?\b"
+)
+
+
+def instruction_attempt(text: str) -> str | None:
+    """The first passage of `text` that addresses an AI, with a little context, or None."""
+    m = _INSTRUCTION_RE.search(text or "")
+    if not m:
+        return None
+    start, end = max(0, m.start() - 80), min(len(text), m.end() + 160)
+    return " ".join(text[start:end].split())
+
+
 def wrap_untrusted_document(text: str, *, source: str = "counterparty document") -> str:
     """
     Frame document text as clearly-labeled DATA that must never be read as

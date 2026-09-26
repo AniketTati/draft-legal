@@ -22,7 +22,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireUser } from '../middleware/auth.js'
 import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -56,6 +56,11 @@ const WRITE_TOOLS = new Map<string, [action: string, resource: string]>([
   ['approval_decide',               ['approve', 'workflow']], // approvals.ts:277
 ])
 
+// Write tools that act on an existing contract, named by `args.contractId`.
+// (contract_create_from_template and request_create create the caller's own
+// records; approval_decide acts only on the caller's own step.)
+const CONTRACT_TARGET_TOOLS = new Set(['comment_add', 'contract_update', 'approval_route', 'redline_apply'])
+
 /**
  * Evaluate the permission a write tool requires for the calling user.
  *
@@ -68,6 +73,8 @@ async function checkToolPermission(
   req: FastifyRequest,
   reply: FastifyReply,
   toolName: string,
+  // The record the call acts on, when it is an existing one (X10).
+  target?: { contractId?: unknown; requestId?: unknown } | null,
 ): Promise<boolean> {
   const mapped = WRITE_TOOLS.get(toolName)
   if (!mapped) {
@@ -77,7 +84,8 @@ async function checkToolPermission(
   const [action, resource] = mapped
   const { orgId, roles } = req.user
   const permissions = req.user.apiPermissions ?? await getPermissionsForRoles(orgId, roles)
-  if (!evaluatePermission(permissions, action, resource).granted) {
+  const result = evaluatePermission(permissions, action, resource)
+  if (!result.granted) {
     reply.status(403).send({
       type:   'https://httpstatuses.com/403',
       title:  'Forbidden',
@@ -86,7 +94,38 @@ async function checkToolPermission(
     })
     return false
   }
+  // X10 — the grant alone isn't enough. At `own` scope a tool may only touch
+  // the caller's own records, as REST's own-scope guard enforces; otherwise a
+  // custom own-scope editor could, e.g., make itself owner of any contract.
+  if (result.scope === 'own' && target) {
+    if ('contractId' in target) {
+      const id = typeof target.contractId === 'string' ? target.contractId : null
+      const owned = id ? await prisma.contract.count({ where: { id, orgId, ownerId: req.user.sub } }) : 0
+      if (!owned) {
+        reply.status(404).send({ detail: 'Contract not found' })
+        return false
+      }
+    }
+    if ('requestId' in target) {
+      const id = typeof target.requestId === 'string' ? target.requestId : null
+      const owned = id ? await prisma.contractRequest.count({ where: { id, orgId, requestedById: req.user.sub } }) : 0
+      if (!owned) {
+        reply.status(404).send({ detail: 'Request not found' })
+        return false
+      }
+    }
+  }
   return true
+}
+
+/** The existing record an undo acts on: the one the tool targeted, or created. */
+function undoTarget(toolName: string, input: unknown, output: unknown): { contractId?: unknown; requestId?: unknown } | null {
+  const inp = (input ?? {}) as { contractId?: unknown }
+  const out = (output ?? {}) as { contractId?: unknown; request?: { id?: unknown } }
+  if (CONTRACT_TARGET_TOOLS.has(toolName))              return { contractId: inp.contractId }
+  if (toolName === 'contract_create_from_template')     return { contractId: out.contractId }
+  if (toolName === 'request_create')                    return { requestId: out.request?.id }
+  return null
 }
 
 // D.5.5 — contract_update actions that are reversible (we snapshot the
@@ -159,7 +198,7 @@ function defaultTitle(firstMessage: string): string {
 
 export async function agentThreadRoutes(app: FastifyInstance) {
   // Every route here requires an authenticated user + scopes to their org.
-  app.addHook('preHandler', requireAuth)
+  app.addHook('preHandler', requireUser)   // X44 — a user's threads: not for API keys
 
   // ── GET /threads — list recent (non-archived) threads ──────────────────────
   app.get('/', async (req, reply) => {
@@ -357,7 +396,8 @@ export async function agentThreadRoutes(app: FastifyInstance) {
 
     // W0-1 — allowlist *and* per-tool permission. Both replies are sent by the
     // helper, so an early return here is a completed response.
-    if (!await checkToolPermission(req, reply, body.toolName)) return
+    if (!await checkToolPermission(req, reply, body.toolName,
+      CONTRACT_TARGET_TOOLS.has(body.toolName) ? { contractId: body.args?.contractId } : null)) return
 
     const thread = await prisma.agentThread.findFirst({
       where: { id: threadId, orgId, userId },
@@ -514,7 +554,7 @@ export async function agentThreadRoutes(app: FastifyInstance) {
     // W0-1 — undoing a write is itself a write: it needs the same permission
     // the original tool did. The tool name is only knowable from the row, which
     // is why this check lives here rather than in a preHandler.
-    if (!await checkToolPermission(req, reply, toolCall.toolName)) return
+    if (!await checkToolPermission(req, reply, toolCall.toolName, undoTarget(toolCall.toolName, toolCall.input, toolCall.output))) return
 
     if (!toolCall.reversible) {
       return reply.status(400).send({ detail: 'This action is not reversible' })

@@ -22,15 +22,24 @@ SESSION_TTL = 60 * 60 * 24  # 24 hours
 MAX_SESSION_BYTES = 256 * 1024
 
 
-async def get_session_history(session_id: str) -> list[dict]:
+def _session_key(session_id: str, org_id: str, user_id: str) -> str:
+    """X8 — the client chooses `session_id`, so it cannot be the whole key: a
+    user who learned another user's id (thread ids show in a matter view)
+    replayed that user's turns, tool results included, into their own chat.
+    History is keyed by its owner as well. `org_id` / `user_id` come from the
+    verified JWT (the API proxy forwards them), never from the client."""
+    return f"session:{org_id}:{user_id}:{session_id}"
+
+
+async def get_session_history(session_id: str, *, org_id: str, user_id: str) -> list[dict]:
     r = await get_redis()
-    raw = await r.get(f"session:{session_id}")
+    raw = await r.get(_session_key(session_id, org_id, user_id))
     if raw:
         return json.loads(raw)
     return []
 
 
-async def append_to_session(session_id: str, role: str, content: str, *, tool_calls: list | None = None, tool_results: list | None = None) -> None:
+async def append_to_session(session_id: str, role: str, content: str, *, org_id: str, user_id: str, tool_calls: list | None = None, tool_results: list | None = None) -> None:
     """Persist a turn to the session log.
 
     P64 audit (2026-05-02). The agent's tool calls + their results
@@ -49,7 +58,7 @@ async def append_to_session(session_id: str, role: str, content: str, *, tool_ca
     real tool history (and the real ids) just like within a turn.
     """
     r = await get_redis()
-    history = await get_session_history(session_id)
+    history = await get_session_history(session_id, org_id=org_id, user_id=user_id)
     entry: dict = {"role": role, "content": content}
     if tool_calls:
         entry["tool_calls"] = tool_calls
@@ -74,4 +83,4 @@ async def append_to_session(session_id: str, role: str, content: str, *, tool_ca
         history = history[1:]
         encoded = json.dumps(history)
 
-    await r.setex(f"session:{session_id}", SESSION_TTL, encoded)
+    await r.setex(_session_key(session_id, org_id, user_id), SESSION_TTL, encoded)

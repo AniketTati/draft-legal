@@ -21,6 +21,7 @@ from typing_extensions import TypedDict
 
 from ..router import resolve_llm
 from ..untrusted import wrap_untrusted_document
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +52,14 @@ Extract all meaningful changes as a JSON array. Ignore whitespace-only changes.
 
 Return ONLY valid JSON — no markdown, no explanation:
 [
-  {
+  {{
     "changeId": "<short unique slug, e.g. change_001>",
     "clauseType": "<payment|liability|indemnification|term|termination|confidentiality|ip|governing_law|notice|other>",
     "ourText": "<the original text that was removed (del content), or empty string if pure addition>",
     "theirText": "<the new text the counterparty proposed (ins content), or empty string if pure deletion>",
     "context": "<1–2 sentences of surrounding contract text for context>",
     "sectionRef": "<Section X or null>"
-  }
+  }}
 ]
 
 Diff HTML:
@@ -141,7 +142,7 @@ async def step_extract_changes(state: RedlineState) -> RedlineState:
 
     try:
         response = await resolved.llm.ainvoke([
-            SystemMessage(content="You extract structured changes from HTML diffs. Return only valid JSON."),
+            SystemMessage(content="You extract structured changes from HTML diffs. Return only valid JSON." + PII_TOKEN_RULE),
             HumanMessage(content=prompt),
         ], config={"callbacks": resolved.callbacks})
         changes = _parse_json(response.content)
@@ -182,7 +183,7 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
 
     try:
         response = await resolved.llm.ainvoke([
-            SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON."),
+            SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON." + PII_TOKEN_RULE),
             HumanMessage(content=prompt),
         ], config={"callbacks": resolved.callbacks})
         scored = _parse_json(response.content)
@@ -238,7 +239,7 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
 
         try:
             response = await resolved.llm.ainvoke([
-                SystemMessage(content="You draft contract counter-proposals. Return only valid JSON."),
+                SystemMessage(content="You draft contract counter-proposals. Return only valid JSON." + PII_TOKEN_RULE),
                 HumanMessage(content=prompt),
             ], config={"callbacks": resolved.callbacks})
             countered = _parse_json(response.content)

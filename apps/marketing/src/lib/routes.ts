@@ -77,11 +77,11 @@ export const allRoutes: RouteDef[] = [
     description: `Plain-English guide to ${slug.replace(/-/g, ' ')} for legal, ops, and procurement teams.`,
     priority: 0.6,
   })),
-  { path: '/templates', title: 'Free Contract Templates', description: 'Lawyer-reviewed NDA, MSA, DPA, BAA, SOW templates. Free download — or generate one with Draft Legal.', priority: 0.7 },
+  { path: '/templates', title: 'Contract Template Guides', description: 'Plain-English guides to NDA, MSA, DPA, BAA and SOW contracts — or generate one with Draft Legal.', priority: 0.7 },
   ...templateSlugs.map((slug) => ({
     path: `/templates/${slug}`,
-    title: `Free ${slug.toUpperCase()} Template`,
-    description: `Free, lawyer-reviewed ${slug.toUpperCase()} template with key clauses explained. Download or generate one.`,
+    title: `${slug.toUpperCase()} Template Guide`,
+    description: `The ${slug.toUpperCase()}'s key clauses explained in plain English — or generate one with Draft Legal.`,
     priority: 0.6,
   })),
 ]

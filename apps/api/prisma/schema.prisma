@@ -197,6 +197,11 @@ model Contract {
   overallConfidence Float? // Avg extraction confidence 0-1
   tags              String[]  @default([])
   metadata          Json      @default("{}") // Custom field values (field_key → value)
+  // BB3 — set while a working copy is out for editing in Google Docs; the
+  // contract's own document is read-only until it is published back or
+  // discarded (lib/external-edit.ts). Its own column so no metadata write
+  // can drop it.
+  externalEdit      Json?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   deletedAt         DateTime?
@@ -350,6 +355,9 @@ model ContractFieldDefinition {
   options      Json      @default("[]") // For select/multiselect: ["Option A", "Option B"]
   sortOrder    Int       @default(0)
   helpText     String? // Optional UI hint shown below the field
+  // X2 — progress of filling this field in on existing contracts:
+  // { status, cursor, processed, filled, failed, total, error, updatedAt }
+  backfill     Json?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   deletedAt    DateTime?
@@ -972,12 +980,15 @@ model Notification {
   resourceId   String
   read         Boolean   @default(false)
   readAt       DateTime?
+  // Z4 — held for the recipient's daily digest email; cleared once it is sent.
+  emailDigest  Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
   org Organization @relation(fields: [orgId], references: [id])
 
   @@index([userId, read])
   @@index([userId, createdAt])
+  @@index([emailDigest, userId])
   @@map("notifications")
 }
 

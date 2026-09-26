@@ -14,7 +14,18 @@
     "test": "pnpm -r test",
     "db:migrate": "pnpm --filter api db:migrate",
     "db:studio": "pnpm --filter api db:studio",
-    "db:seed": "pnpm --filter api db:seed"
+    "db:seed": "pnpm --filter api db:seed",
+    "demo:seed": "pnpm --filter api demo:seed",
+    "langfuse:up": "docker compose -f docker-compose.langfuse.yml up -d",
+    "langfuse:down": "docker compose -f docker-compose.langfuse.yml down",
+    "langfuse:reset": "docker compose -f docker-compose.langfuse.yml down -v",
+    "langfuse:logs": "docker compose -f docker-compose.langfuse.yml logs -f langfuse-web langfuse-worker",
+    "evals": "node scripts/evals/langfuse/cli.mjs",
+    "evals:setup": "node scripts/evals/langfuse/cli.mjs setup",
+    "evals:check": "node scripts/evals/langfuse/cli.mjs check",
+    "evals:review": "node scripts/evals/langfuse/cli.mjs review",
+    "evals:rehearse": "node scripts/evals/langfuse/cli.mjs rehearse",
+    "evals:guardrails": "node scripts/evals/langfuse/cli.mjs guardrails"
   },
   "workspaces": [
     "apps/*",
@@ -31,7 +42,7 @@
   },
   "pnpm": {
     "overrides": {
-      "@xmldom/xmldom": ">=0.8.13",
+      "@xmldom/xmldom": "^0.8.13",
       "fast-xml-parser": ">=5.5.7",
       "follow-redirects": ">=1.16.0",
       "axios": ">=1.8.2",

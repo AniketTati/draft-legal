@@ -11,26 +11,10 @@ export { signingWorker } from './signing.worker.js'
 
 // ─── Stuck-contract recovery ─────────────────────────────────────────────────
 // Contracts stuck in an in-progress status (e.g. agents service restarted
-// mid-flight) are reset to FAILED so users can retry.
+// mid-flight), or whose parse job was lost while PENDING (C13), are reset to
+// FAILED so users can retry. The rules live in lib/stuck-contracts.ts.
 
-import { prisma } from '../lib/prisma.js'
-
-const IN_PROGRESS_STATUSES = ['PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING']
-const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
-
-async function recoverStuckContracts(): Promise<void> {
-  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS)
-  const result = await prisma.contract.updateMany({
-    where: {
-      analysisStatus: { in: IN_PROGRESS_STATUSES },
-      updatedAt: { lt: cutoff },
-    },
-    data: { analysisStatus: 'FAILED', analysisError: 'Processing timed out — the job may have crashed mid-flight. Click Re-analyze to retry.' },
-  })
-  if (result.count > 0) {
-    console.warn(`[recovery] reset ${result.count} stuck contract(s) to FAILED`)
-  }
-}
+import { recoverStuckContracts, STUCK_THRESHOLD_MS } from '../lib/stuck-contracts.js'
 
 // Run once on startup to catch any from a previous crash, then every 5 min
 recoverStuckContracts().catch(err => console.error('[recovery] startup scan failed:', err))

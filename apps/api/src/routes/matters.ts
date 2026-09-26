@@ -19,8 +19,9 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { prisma } from '../lib/prisma.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 
 // Wave 1.7 — matters group contracts; there is no dedicated MATTER permission
 // resource, so matter operations are gated on the corresponding CONTRACT
@@ -34,20 +35,56 @@ const CreateMatterSchema = z.object({
   name:             z.string().min(1).max(200),
   description:      z.string().max(5_000).optional(),
   status:           z.enum(MATTER_STATUSES).default('OPEN'),
-  counterpartyId:   z.string().optional(),
+  counterpartyId:   z.string().min(1).optional(),
   counterpartyName: z.string().max(200).optional(),
   tags:             z.array(z.string().max(40)).max(20).default([]),
 })
 
 const UpdateMatterSchema = CreateMatterSchema.partial().extend({
-  ownerId: z.string().optional(),
+  ownerId: z.string().min(1).optional(),
 })
+
+/**
+ * X25 — ids a matter points at must be this org's: another org's counterparty
+ * or user id was stored as given, and the matter view then showed that org's
+ * counterparty and that user's name, email and avatar. Returns the reason
+ * when one isn't.
+ */
+async function foreignReference(orgId: string, ids: { counterpartyId?: string | null; ownerId?: string | null }): Promise<string | null> {
+  if (ids.counterpartyId) {
+    const found = await prisma.counterparty.count({ where: { id: ids.counterpartyId, orgId, deletedAt: null } })
+    if (!found) return 'Counterparty not found'
+  }
+  if (ids.ownerId) {
+    const found = await prisma.user.count({ where: { id: ids.ownerId, orgId, deletedAt: null } })
+    if (!found) return 'Owner not found'
+  }
+  return null
+}
+
+/**
+ * X25, Y1 — a matter's owners, only those in its org. The repair migration
+ * leaves a foreign owner it has no creator to fall back on, for the views to
+ * hide. Loaded apart from the matter: the owner is a required relation, and
+ * under row-level security another org's user doesn't load, which would fail
+ * the whole query rather than hide the owner.
+ */
+async function matterOwners(orgId: string, ids: string[]) {
+  const users = await prisma.user.findMany({
+    where:  { orgId, id: { in: [...new Set(ids)] } },
+    select: { id: true, name: true, email: true, avatarUrl: true },
+  })
+  return new Map(users.map(u => [u.id, u]))
+}
 
 export async function matterRoutes(app: FastifyInstance) {
 
   // ── GET /api/v1/matters ────────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
+    // X7 — counts cover only what the caller can open (as GET /:id does).
+    const own = req.permissionScope === 'own'
+    const requestScope = await permissionScopeFor(req, 'view', 'request')
     const q = z.object({
       status:  z.enum([...MATTER_STATUSES, 'all']).default('all'),
       ownerId: z.string().optional(),
@@ -67,13 +104,19 @@ export async function matterRoutes(app: FastifyInstance) {
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
       take: q.limit,
       include: {
-        owner: { select: { id: true, name: true, email: true } },
-        counterparty: { select: { id: true, name: true } },
+        counterparty: { select: { id: true, name: true, orgId: true } },
         _count: {
-          select: { contracts: true, requests: true, threads: true },
+          select: {
+            // Only this org's live rows (X25, as GET /:id counts them), and for
+            // own scope only the caller's (X7).
+            contracts: { where: { orgId, deletedAt: null, ...(own ? { ownerId: req.user.sub } : {}) } },
+            requests:  { where: { orgId, deletedAt: null, ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }) } },
+            threads:   { where: { orgId, ...(own ? { userId: req.user.sub } : {}) } },
+          },
         },
       },
     })
+    const owners = await matterOwners(orgId, matters.map(m => m.ownerId))
     return reply.send({
       items: matters.map(m => ({
         id:               m.id,
@@ -81,9 +124,11 @@ export async function matterRoutes(app: FastifyInstance) {
         description:      m.description,
         status:           m.status,
         counterpartyId:   m.counterpartyId,
-        counterpartyName: m.counterpartyName ?? m.counterparty?.name ?? null,
+        // X25 — a link stored before the fix can name another org's
+        // counterparty or user; their names aren't this org's to see.
+        counterpartyName: m.counterpartyName ?? (m.counterparty?.orgId === orgId ? m.counterparty.name : null),
         ownerId:          m.ownerId,
-        ownerName:        m.owner?.name ?? null,
+        ownerName:        owners.get(m.ownerId)?.name ?? null,
         tags:             m.tags,
         contractCount:    m._count.contracts,
         requestCount:     m._count.requests,
@@ -100,13 +145,17 @@ export async function matterRoutes(app: FastifyInstance) {
   app.get('/:id', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { orgId } = req.user
     const { id } = req.params as { id: string }
+    // Requests follow their own permission (view:request): own-scope callers
+    // see the ones they raised; a role without it sees none.
+    const requestScope = await permissionScopeFor(req, 'view', 'request')
     const matter = await prisma.matter.findFirst({
       where: { id, orgId, deletedAt: null },
       include: {
-        owner: { select: { id: true, name: true, email: true, avatarUrl: true } },
-        counterparty: { select: { id: true, name: true, website: true } },
+        counterparty: { select: { id: true, name: true, website: true, orgId: true } },
+        // X7 — an own-scope caller sees only their own contracts in the matter,
+        // and only their own chat threads (a thread id is a way into its content).
         contracts: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, orgId, ...(req.permissionScope === 'own' ? { ownerId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, type: true, status: true,
@@ -116,7 +165,11 @@ export async function matterRoutes(app: FastifyInstance) {
           },
         },
         requests: {
-          where: { deletedAt: null },
+          where: {
+            deletedAt: null,
+            orgId,
+            ...(requestScope === 'own' ? { requestedById: req.user.sub } : requestScope ? {} : { id: { in: [] as string[] } }),
+          },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true, requestNumber: true, title: true, type: true,
@@ -125,7 +178,7 @@ export async function matterRoutes(app: FastifyInstance) {
           },
         },
         threads: {
-          where: { archivedAt: null },
+          where: { archivedAt: null, orgId, ...(req.permissionScope === 'own' ? { userId: req.user.sub } : {}) },
           orderBy: { updatedAt: 'desc' },
           select: {
             id: true, title: true, scopeType: true, scopeId: true,
@@ -135,7 +188,14 @@ export async function matterRoutes(app: FastifyInstance) {
       },
     })
     if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
-    return reply.send(matter)
+    // X25 — a reference stored before the org check (until the repair
+    // migration runs) must not show another org's user or counterparty.
+    const { counterparty, ...rest } = matter
+    return reply.send({
+      ...rest,
+      owner:        (await matterOwners(orgId, [matter.ownerId])).get(matter.ownerId) ?? null,
+      counterparty: counterparty && counterparty.orgId === orgId ? { id: counterparty.id, name: counterparty.name, website: counterparty.website } : null,
+    })
   })
 
   // ── POST /api/v1/matters ───────────────────────────────────────────────
@@ -146,6 +206,11 @@ export async function matterRoutes(app: FastifyInstance) {
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid body', issues: (err as { issues?: unknown }).issues })
     }
+    const foreign = await foreignReference(orgId, { counterpartyId: body.counterpartyId })
+    if (foreign) return reply.status(404).send({ detail: foreign })
+    // X45 — a matter's owner is a user: for an API key, the one who made it.
+    const ownerId = actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
     const matter = await prisma.matter.create({
       data: {
         orgId,
@@ -155,7 +220,7 @@ export async function matterRoutes(app: FastifyInstance) {
         counterpartyId:   body.counterpartyId,
         counterpartyName: body.counterpartyName,
         tags:             body.tags,
-        ownerId:          userId,
+        ownerId,
         createdById:      userId,
       },
     })
@@ -176,6 +241,8 @@ export async function matterRoutes(app: FastifyInstance) {
       select: { id: true, status: true },
     })
     if (!existing) return reply.status(404).send({ detail: 'Matter not found' })
+    const foreign = await foreignReference(orgId, { counterpartyId: patch.counterpartyId, ownerId: patch.ownerId })
+    if (foreign) return reply.status(404).send({ detail: foreign })
 
     // If transitioning to CLOSED / ARCHIVED, stamp closedAt.
     const closedAt = (patch.status === 'CLOSED' || patch.status === 'ARCHIVED') && existing.status === 'OPEN'
@@ -215,7 +282,9 @@ export async function matterRoutes(app: FastifyInstance) {
 
   // ── POST /api/v1/matters/:id/attach — link a contract/request/thread ──
   app.post('/:id/attach', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
-    const { orgId } = req.user
+    const { orgId, sub: userId } = req.user
+    // X7 — an own-scope editor attaches only what it owns.
+    const own = req.permissionScope === 'own'
     const { id } = req.params as { id: string }
     const body = z.object({
       kind: z.enum(['contract', 'request', 'thread']),
@@ -238,17 +307,17 @@ export async function matterRoutes(app: FastifyInstance) {
     let result: { count: number }
     if (body.data.kind === 'contract') {
       result = await prisma.contract.updateMany({
-        where: { id: body.data.entityId, orgId, deletedAt: null },
+        where: { id: body.data.entityId, orgId, deletedAt: null, ...(own ? { ownerId: userId } : {}) },
         data:  { matterId: id },
       })
     } else if (body.data.kind === 'request') {
       result = await prisma.contractRequest.updateMany({
-        where: { id: body.data.entityId, orgId, deletedAt: null },
+        where: { id: body.data.entityId, orgId, deletedAt: null, ...(own ? { requestedById: userId } : {}) },
         data:  { matterId: id },
       })
     } else {
       result = await prisma.agentThread.updateMany({
-        where: { id: body.data.entityId, orgId },
+        where: { id: body.data.entityId, orgId, ...(own ? { userId } : {}) },
         data:  { matterId: id },
       })
     }

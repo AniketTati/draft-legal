@@ -99,7 +99,10 @@ services:
   gotenberg:
     <<: *restart
     image: gotenberg/gotenberg:8
-    command: ['gotenberg', '--api-port=3000']
+    # X11 — no JavaScript and no network: a render may read only its own
+    # index.html. The API also sanitises the HTML (lib/render-html.ts); this is
+    # the backstop if something slips through. Inline data: images still render.
+    command: ['gotenberg', '--api-port=3000', '--chromium-disable-javascript=true', '--chromium-allow-list=^file:///tmp/.*']
     # Private — only api/worker reach it on the internal network.
 
   # One-shot: apply pending Prisma migrations before the API/worker start.
@@ -203,6 +206,17 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # LLM observability (optional). Unset = agents run untraced. Point
+      # LANGFUSE_HOST at your own Langfuse — for a self-hosted deployment that
+      # is the whole point, so prefer running Langfuse's production compose or
+      # Helm chart on your own infrastructure rather than sending traces (which
+      # contain contract text) to a hosted SaaS. If Langfuse runs in another
+      # compose project on this host, use http://host.docker.internal:3100
+      # rather than localhost — localhost inside this container is the
+      # container itself. See docs/operations/LANGFUSE.md.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
 
   web:
     <<: *restart

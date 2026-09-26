@@ -35,6 +35,8 @@ export interface SendEmailArgs {
   html?: string
   /** Overrides SMTP_FROM / EMAIL_FROM. Must be a verified SendGrid sender. */
   from?: string
+  /** Where replies go, when not to the sender. */
+  replyTo?: string
 }
 
 export type EmailResult =
@@ -60,6 +62,7 @@ export async function sendEmail(args: SendEmailArgs): Promise<EmailResult> {
         body: JSON.stringify({
           personalizations: [{ to: [{ email: args.to }] }],
           from: { email: from },
+          ...(args.replyTo && { reply_to: { email: args.replyTo } }),
           subject: args.subject,
           content,
         }),
@@ -84,7 +87,10 @@ export async function sendEmail(args: SendEmailArgs): Promise<EmailResult> {
         secure: process.env.SMTP_SECURE === 'true',
         auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
       })
-      await transporter.sendMail({ from, to: args.to, subject: args.subject, text: args.text, html: args.html })
+      await transporter.sendMail({
+        from, to: args.to, subject: args.subject, text: args.text, html: args.html,
+        ...(args.replyTo && { replyTo: args.replyTo }),
+      })
       return { sent: true, via: 'smtp' }
     } catch (err) {
       return { sent: false, via: 'none', reason: `smtp send failed: ${(err as Error).message}` }

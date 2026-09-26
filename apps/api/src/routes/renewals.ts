@@ -14,7 +14,9 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
+import { portfolioWhere } from '../lib/own-scope-guard.js'
 import { buildCsv } from '../lib/csv.js'
+import { renewalNotice } from '../lib/renewal-notice.js'
 
 const ListSchema = z.object({
   bucket: z.enum(['all', 'this_week', 'next_30', 'next_60', 'next_90', 'overdue']).default('all'),
@@ -38,6 +40,9 @@ interface RenewalRow {
   // noticeDays to show the notice-to-terminate deadline, which is the date
   // that actually binds — expiry alone is too late to act on.
   keyTerms:         Record<string, unknown> | null
+  // C6 — the auto-renewal notice deadline, derived server-side by the same
+  // function the daily scan alerts on, so the page and the alert agree.
+  notice: { autoRenew: boolean; days: number | null; deadline: string | null }
   // Renewal-specific from metadata
   renewalDecision:    string | null   // renew | renegotiate | let_expire | pause | unknown
   renewalDecisionAt:  string | null
@@ -66,6 +71,7 @@ export async function renewalRoutes(app: FastifyInstance) {
     const contracts = await prisma.contract.findMany({
       where: {
         orgId, deletedAt: null,
+        ...portfolioWhere(req),   // X7, X17 (no diligence-room documents)
         status:     'EXECUTED',
         expiryDate: { gte: lookback, lte: lookahead },
       },
@@ -100,6 +106,10 @@ export async function renewalRoutes(app: FastifyInstance) {
         keyTerms:         (c.keyTerms && typeof c.keyTerms === 'object' && !Array.isArray(c.keyTerms))
           ? (c.keyTerms as Record<string, unknown>)
           : null,
+        notice:           (() => {
+          const n = renewalNotice({ expiryDate: c.expiryDate, keyTerms: c.keyTerms })
+          return { autoRenew: n.autoRenew, days: n.noticeDays, deadline: n.deadline?.toISOString() ?? null }
+        })(),
         renewalDecision:    md.renewalDecision ?? null,
         renewalDecisionAt:  md.renewalDecisionAt ?? null,
         renewalAdvice:    md.renewalAdvice
@@ -176,6 +186,7 @@ export async function renewalRoutes(app: FastifyInstance) {
     const contracts = await prisma.contract.findMany({
       where: {
         orgId, deletedAt: null, status: 'EXECUTED',
+        ...portfolioWhere(req),   // X7, X17 (no diligence-room documents)
         expiryDate: { gte: lookback, lte: lookahead },
       },
       select: {
@@ -224,14 +235,15 @@ export async function renewalRoutes(app: FastifyInstance) {
     const cut90 = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
     const back30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
+    const own = portfolioWhere(req)   // X7, X17
     const [overdue, thisWeek, next30, next60, next90, totalIn90] = await Promise.all([
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: back30, lt: now } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: cut7 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: cut30 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: cut60 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: back30, lt: now } } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut7 } } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut30 } } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut60 } } }),
+      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } } }),
       prisma.contract.findMany({
-        where:  { orgId, deletedAt: null, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } },
+        where:  { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } },
         select: { value: true, currency: true, metadata: true },
         take: 500,
       }),

@@ -24,6 +24,7 @@ from typing_extensions import TypedDict
 
 from ..router import resolve_llm
 from ..config import settings
+from ..pii_tokens import PII_TOKEN_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ async def step_understand(state: DraftState) -> DraftState:
 
     prompt = _UNDERSTAND_PROMPT.format(user_message=state["user_message"])
     response = await resolved.llm.ainvoke([
-        SystemMessage(content="You are a legal assistant. Extract structured information from contract requests."),
+        SystemMessage(content="You are a legal assistant. Extract structured information from contract requests." + PII_TOKEN_RULE),
         HumanMessage(content=prompt),
     ], config={"callbacks": resolved.callbacks})
 
@@ -316,7 +317,7 @@ async def step_fill_variables(state: DraftState) -> DraftState:
     )
 
     response = await resolved.llm.ainvoke([
-        SystemMessage(content="You are a legal contract drafting assistant. Populate template variables with appropriate values."),
+        SystemMessage(content="You are a legal contract drafting assistant. Populate template variables with appropriate values." + PII_TOKEN_RULE),
         HumanMessage(content=prompt),
     ], config={"callbacks": resolved.callbacks})
 

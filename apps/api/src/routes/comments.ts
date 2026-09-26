@@ -8,8 +8,11 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
 export async function commentRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
 
   // ── List comments for a contract ──────────────────────────────────────────
   app.get('/:id/comments', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
@@ -26,7 +29,9 @@ export async function commentRoutes(app: FastifyInstance) {
       orgId,
       parentId: null,       // top-level threads only — replies fetched inline
       deletedAt: null,
-      ...(clauseRef && { clauseRef }),
+      // Z7 — a clause's thread: comments anchored to its reference, alone or
+      // followed by its title ("Section 8.2 — Limitation of Liability").
+      ...(clauseRef && { OR: [{ clauseRef }, { clauseRef: { startsWith: `${clauseRef} ` } }] }),
       ...(resolved !== undefined && { resolved: resolved === 'true' }),
       ...(cursor && { id: { lt: cursor } }),
     }
@@ -37,7 +42,9 @@ export async function commentRoutes(app: FastifyInstance) {
       take: parseInt(limit, 10),
       include: {
         replies: {
-          where: { deletedAt: null },
+          // Only replies filed on this contract (X10 — a reply once pointed its
+          // parentId at another contract's comment).
+          where: { deletedAt: null, contractId, orgId },
           orderBy: { createdAt: 'asc' },
         },
       },

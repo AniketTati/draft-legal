@@ -4,13 +4,16 @@ import type { Permission } from '@clm/types'
 import { verifyToken, type JwtPayload } from '../lib/jwt.js'
 import { prisma } from '../lib/prisma.js'
 import { resolveApiScopePermissions } from '../lib/permissions.js'
+import { keyMaker } from '../lib/acting-user.js'
+import { setTenant } from '../lib/tenant-context.js'
 
 declare module 'fastify' {
   interface FastifyRequest {
     // `apiPermissions` is set only on public-API-key requests (Wave 1.2):
     // the key's scopes resolved to a concrete permission set. When present,
     // requirePermission evaluates it directly instead of role lookup.
-    user: JwtPayload & { apiPermissions?: Permission[] }
+    // `keyMakerId` (X46) is the user behind such a key (lib/acting-user.ts).
+    user: JwtPayload & { apiPermissions?: Permission[]; keyMakerId?: string }
   }
 }
 
@@ -44,6 +47,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
       roles: ['ADMIN'],
       type: 'access',
     } as any
+    setTenant(orgIdHeader)   // Y1 — none without x-org-id (the legacy 'system' scope)
     return
   }
 
@@ -66,13 +70,23 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
       const keyHash = hashApiKey(token)
       const key = await prisma.apiKey.findUnique({
         where: { keyHash },
-        select: { id: true, orgId: true, scopes: true, expiresAt: true, revokedAt: true },
+        select: { id: true, orgId: true, scopes: true, expiresAt: true, revokedAt: true, createdById: true },
       })
       if (!key || key.revokedAt) {
         return reply.status(401).send({ title: 'Unauthorized', detail: 'API key invalid or revoked', status: 401 })
       }
       if (key.expiresAt && key.expiresAt < new Date()) {
         return reply.status(401).send({ title: 'Unauthorized', detail: 'API key expired', status: 401 })
+      }
+      // X46 — a key works only while the user behind it could still make it:
+      // an active member of the org who can manage its API keys. X43 revoked a
+      // user's keys when they were deactivated, but not keys of users gone
+      // before it, keys made through other keys, or a demoted maker's keys.
+      // The holder is told no more than for a revoked key.
+      const keyMakerId = await keyMaker(key.orgId, key.createdById)
+      if (!keyMakerId) {
+        req.log.info({ apiKeyId: key.id }, 'API key refused: no active member who can manage API keys behind it')
+        return reply.status(401).send({ title: 'Unauthorized', detail: 'API key invalid or revoked', status: 401 })
       }
       // Best-effort lastUsedAt update.
       prisma.apiKey.update({ where: { id: key.id }, data: { lastUsedAt: new Date() } })
@@ -87,7 +101,9 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
         roles: [],
         type:  'access',
         apiPermissions: resolveApiScopePermissions(key.scopes),
+        keyMakerId,
       }
+      setTenant(key.orgId)   // Y1
       return
     } catch {
       return reply.status(401).send({ title: 'Unauthorized', detail: 'API key auth failed', status: 401 })
@@ -99,6 +115,7 @@ export async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
     const payload = verifyToken(token)
     if (payload.type !== 'access') throw new Error('Not an access token')
     req.user = payload
+    setTenant(payload.orgId)   // Y1
   } catch {
     return reply.status(401).send({
       type: 'https://httpstatuses.com/401',
@@ -124,4 +141,41 @@ export function requireRole(...roles: string[]) {
       })
     }
   }
+}
+
+// X44 — routes that check no permission, only that someone signed in. A
+// public-API key passed them all, a scope-less legacy one included, because a
+// key's scopes are evaluated only by requirePermission. Users and the agents
+// service (neither carries key permissions) are unaffected by either guard.
+
+/** An API key without the `admin` scope (which grants every permission). */
+export function isLimitedApiKey(user: FastifyRequest['user'] | undefined): boolean {
+  const keyPermissions = user?.apiPermissions
+  return !!keyPermissions && !keyPermissions.some(p => p.action === '*' && p.resource === '*')
+}
+
+function refuseKey(reply: FastifyReply, detail: string) {
+  return reply.status(403).send({ type: 'https://httpstatuses.com/403', title: 'Forbidden', status: 403, detail })
+}
+
+/**
+ * A person's own things — their profile, password, notifications, agent
+ * threads. No API key has a person behind it here (it authenticates as
+ * `apikey:<id>`), so every key is refused, the admin scope included.
+ */
+export async function requireUser(req: FastifyRequest, reply: FastifyReply) {
+  await requireAuth(req, reply)
+  if (reply.sent) return
+  if (req.user?.apiPermissions) return refuseKey(reply, 'This endpoint is for signed-in users, not API keys')
+}
+
+/**
+ * The org's shared data that any member may read — the member list, the org's
+ * settings, roles, skills, the dashboard, team workload, the model list. An
+ * API key may read it only with the `admin` scope.
+ */
+export async function requireUserOrAdminKey(req: FastifyRequest, reply: FastifyReply) {
+  await requireAuth(req, reply)
+  if (reply.sent) return
+  if (isLimitedApiKey(req.user)) return refuseKey(reply, 'This endpoint is not available to API keys without the admin scope')
 }

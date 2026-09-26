@@ -4,9 +4,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 // B.5.2 — PDF viewer re-enabled as the "Original" view via the
 // [Styled | Original] toggle. Styled (TipTap / DocumentCanvas) remains the
 // default; Legal users typically flip to Original for pixel fidelity.
-import { Worker, Viewer } from '@react-pdf-viewer/core'
+import { Worker, Viewer, type RenderPageProps } from '@react-pdf-viewer/core'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
+import { parseCitationTarget, highlightRect } from '@/lib/citation-target'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { Button } from '@/components/ui/button'
@@ -18,7 +20,7 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
-  PanelRightClose, PanelRightOpen,
+  PanelRightClose, PanelRightOpen, FileDown,
 } from 'lucide-react'
 import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
@@ -33,6 +35,7 @@ import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
 import { ComplianceRailSection } from '@/components/contracts/ComplianceRailSection'
+import { PlaybookReviewRailSection } from '@/components/contracts/PlaybookReviewRailSection'
 import { PlaybookRedlineRailSection } from '@/components/contracts/PlaybookRedlineRailSection'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
@@ -63,6 +66,14 @@ import { SignatureStatusRailSection } from '@/components/contracts/SignatureStat
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
+import { useCanRequest } from '@/lib/permissions'
+import { Can } from '@/components/auth/Can'
+import {
+  ExternalEditBanner, GoogleDocsStartDialog, RedlineNoticeBanner, downloadForCounterparty,
+  type ExternalEditLock, type RedlineNotice,
+} from '@/components/contracts/GoogleDocsEdit'
+
+import { currentVersionOf } from '@/lib/current-version'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -279,13 +290,15 @@ function formatTermValue(_key: string, v: unknown): string {
 }
 
 function ClauseCard({
-  typeLabel, sectionRef, badge, interpretation, content,
+  typeLabel, sectionRef, badge, interpretation, content, onReview,
 }: {
   typeLabel: string
   sectionRef?: string | null
   badge: { label: string; cls: string } | null
   interpretation?: string | null
   content: string
+  /** Opens the clause in the review drawer: playbook, alternative language, comments. */
+  onReview?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
   return (
@@ -308,13 +321,20 @@ function ClauseCard({
       ) : (
         <p className="text-body text-ink-400 italic mb-2">No interpretation available.</p>
       )}
-      <button
-        onClick={() => setExpanded(e => !e)}
-        className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
-      >
-        {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-        {expanded ? 'Hide' : 'View'} verbatim text
-      </button>
+      <div className="flex items-center gap-4">
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium"
+        >
+          {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+          {expanded ? 'Hide' : 'View'} verbatim text
+        </button>
+        {onReview && (
+          <button onClick={onReview} className="text-dense text-ink-700 hover:text-ink-950 font-medium underline underline-offset-2" data-testid="clause-card-review">
+            Review and suggest changes
+          </button>
+        )}
+      </div>
       {expanded && (
         <div className="mt-2 p-3 bg-paper-50 rounded-md border border-paper-200">
           <p className="text-micro text-ink-700 font-mono whitespace-pre-wrap">{content}</p>
@@ -327,12 +347,24 @@ function ClauseCard({
 // B.1 — `hideIfEmpty` suppresses the row entirely when the value is an
 // empty/placeholder string. Previously the Contract Details panel showed
 // 6+ rows of `—` on contracts that had no extraction yet.
-function DetailRow({ label, value, hideIfEmpty = true }: { label: string; value: string; hideIfEmpty?: boolean }) {
+function DetailRow({ label, value, hideIfEmpty = true, evidence }: {
+  label: string
+  value: string
+  hideIfEmpty?: boolean
+  /** X2 — an extracted value's confidence and source quote (custom fields). */
+  evidence?: { confidence?: number; quote?: string | null }
+}) {
   if (hideIfEmpty && (!value || value === '—' || value === '-')) return null
   return (
     <div className="flex items-start justify-between gap-4 py-2.5 border-b border-paper-100 last:border-0">
       <span className="text-dense text-ink-500 whitespace-nowrap pt-0.5">{label}</span>
-      <span className="text-dense text-ink-950 font-medium text-right">{value}</span>
+      <span
+        className="text-dense text-ink-950 font-medium text-right inline-flex items-center gap-1.5"
+        title={evidence?.quote ? `Source: “${evidence.quote}”` : undefined}
+      >
+        {value}
+        {evidence?.confidence != null && <ConfidenceIcon confidence={evidence.confidence} />}
+      </span>
     </div>
   )
 }
@@ -346,6 +378,8 @@ export function ContractDetailPage() {
   // the TipTap view to that heading + flash the matching TOC entry.
   const [searchParams] = useSearchParams()
   const highlightSection = searchParams.get('section') ?? null
+  // X1 — ?page=&bbox= from a citation pill: open the original PDF there.
+  const citeTarget = useMemo(() => parseCitationTarget(searchParams), [searchParams])
   // B.1 — default to 'document' so the contract itself is the first thing
   // a user sees, instead of a wall of AI-generated analysis panels.
   const [tab, setTab] = useState<Tab>('document')
@@ -355,6 +389,10 @@ export function ContractDetailPage() {
   const [pdfError, setPdfError] = useState<string | null>(null)
   // L6 #7 — Download had no error state at all; a 404 closed the menu silently.
   const [downloadError, setDownloadError] = useState<string | null>(null)
+  // BB4 — Edit in Google Docs, and the counterparty's redline.
+  const [googleDocsOpen, setGoogleDocsOpen] = useState(false)
+  const [redlineNotice, setRedlineNotice] = useState<RedlineNotice | null>(null)
+  const [redlinePending, setRedlinePending] = useState(false)
   const [showAllFlags, setShowAllFlags] = useState(false)
   const [editingType, setEditingType] = useState(false)
   const [showFindings, setShowFindings] = useState(false)
@@ -390,7 +428,10 @@ export function ContractDetailPage() {
     const saved = window.localStorage.getItem('clm.doc-view')
     return saved === 'original' ? 'original' : 'styled'
   })
+  // X1 — a citation opening the original PDF is not a change of preference.
+  const citationSwitchedView = useRef(false)
   useEffect(() => {
+    if (citationSwitchedView.current) { citationSwitchedView.current = false; return }
     window.localStorage.setItem('clm.doc-view', docView)
   }, [docView])
 
@@ -411,6 +452,19 @@ export function ContractDetailPage() {
   // Seed effect + mutation live lower in the file, after clausesData is
   // declared (the query for contract-clauses uses `id` from useParams).
   const [focusedClauseId, setFocusedClauseId] = useState<string | null>(null)
+  // Scroll a clause's marker into view (the risk-markers extension labels
+  // spans with data-clause-id); fall back to the focused-review drawer.
+  // Shared by the approver DecisionStrip and the playbook review rail.
+  const jumpToClause = (clauseId: string) => {
+    const el = document.querySelector(`[data-clause-id="${clauseId}"]`) as HTMLElement | null
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.classList.add('ring-2', 'ring-attention-600')
+      setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
+    } else {
+      setFocusedClauseId(clauseId)
+    }
+  }
   // P7.4.4 — Expand the REVIEW PROGRESS row into a checklist so users
   // can mark items reviewed without hunting for each red underline.
   const [reviewExpanded, setReviewExpanded] = useState(false)
@@ -421,6 +475,14 @@ export function ContractDetailPage() {
   // flips the TipTap editor to editable=true and debounces saves to the
   // existing /html-version endpoint. Exits on click, Esc, or Save.
   const [isEditing, setIsEditing] = useState(false)
+  // X75, Y3 — each action is offered only to a user who may make the request
+  // it sends, by the permission the server's route for it needs: a viewer was
+  // let into Edit mode, and every save failed (403) behind "Save failed".
+  const mayEdit = useCanRequest('POST /contracts/:id/html-version')
+  const canChangeStatus = useCanRequest('PATCH /contracts/:id')
+  const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
+  const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
+  const canUpload = useCanRequest('POST /contracts/upload')
 
   // B.5.9 — ⌘K command palette.
   // Single entry point for every AI interaction. Opens from anywhere on the
@@ -562,7 +624,15 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract', id] })
       qc.invalidateQueries({ queryKey: ['contract-versions', id] })
     },
-    onError: () => setSaveState('error'),
+    onError: (err) => {
+      setSaveState('error')
+      // BB4 — someone took a Google Docs copy while this was open for editing.
+      const data = (err as { response?: { data?: { code?: string; detail?: string } } })?.response?.data
+      if (data?.code === 'EDITING_IN_GOOGLE_DOCS') {
+        toast.error('Not saved: this contract is being edited in Google Docs', { description: data.detail, durationMs: 9000 })
+        qc.invalidateQueries({ queryKey: ['contract', id] })
+      }
+    },
   })
 
   const flushPendingSave = () => {
@@ -578,6 +648,7 @@ export function ContractDetailPage() {
   }
 
   const enterEdit = () => {
+    if (!canEdit) return   // the button, ⌘E and a clause's "Edit manually"
     // Edit requires Styled view (can't edit a PDF).
     if (docView !== 'styled') setDocView('styled')
     setIsEditing(true)
@@ -637,9 +708,16 @@ export function ContractDetailPage() {
         (s && IN_PROGRESS_STATUSES.includes(s)) ||
         rm === 'ANALYZING' ||
         pr === 'QUEUED' || pr === 'RUNNING'
-      return inFlight ? 4000 : false
+      // BB4 — a Google Docs copy is out: notice when it comes back.
+      return inFlight ? 4000 : q.state.data?.externalEdit ? 15000 : false
     },
   })
+  // BB4 — while a Google Docs copy is out, the document here is read-only.
+  const externalEdit = (contract?.externalEdit ?? null) as ExternalEditLock | null
+  const canEdit = mayEdit && !externalEdit
+  useEffect(() => {
+    if (externalEdit && isEditing) setIsEditing(false)
+  }, [externalEdit, isEditing])
 
   const { data: versionsData } = useQuery({
     queryKey: ['contract-versions', id],
@@ -683,11 +761,31 @@ export function ContractDetailPage() {
 
   const updateReviewState = useMutation({
     mutationFn: ({ clauseId, state }: { clauseId: string; state: ReviewState }) =>
-      api.patch(`/contracts/clauses/${clauseId}/review-state`, { state }).then(r => r.data),
+      api.patch(`/contracts/clauses/${clauseId}/review-state`, { state }).then(r => r.data as { requestedId?: string }),
+    onSuccess: (data) => {
+      // DD2 — the clause was an older version's (the drawer marks the one it
+      // has just rewritten): the server marked the same clause in the version
+      // the contract stands on, which the page shows.
+      if (data?.requestedId) qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
     onError: () => {
       qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
     },
   })
+
+  // DD2 — the focused clause by its place, so the review drawer follows it
+  // into a new version (an applied rewrite, an edit) instead of closing: the
+  // page's clauses are then the new version's, with new ids.
+  const focusedPlaceRef = useRef<{ sortOrder: number; clauseType: string } | null>(null)
+  useEffect(() => {
+    if (!focusedClauseId) { focusedPlaceRef.current = null; return }
+    const list = (clausesData?.data ?? []) as Array<{ id: string; sortOrder: number; clauseType: string }>
+    const here = list.find(c => c.id === focusedClauseId)
+    if (here) { focusedPlaceRef.current = { sortOrder: here.sortOrder, clauseType: here.clauseType }; return }
+    const place = focusedPlaceRef.current
+    const moved = place && list.find(c => c.sortOrder === place.sortOrder && c.clauseType === place.clauseType)
+    if (moved) setFocusedClauseId(moved.id)
+  }, [focusedClauseId, clausesData])
 
   const { data: fieldDefsData } = useQuery({
     queryKey: ['field-definitions'],
@@ -802,6 +900,9 @@ export function ContractDetailPage() {
   const suggestedSplits: any[] = (contract as any)?.metadata?._suggestedSplits ?? []
   const binderDetected = !!(contract as any)?.metadata?._binderDetected
   const splitInto: string[] = (contract as any)?.metadata?._splitInto ?? []
+  // C10 — set when a binder can't be split (not a PDF) or a re-split was refused.
+  const binderSplitUnsupported: string | null = (contract as any)?.metadata?._binderSplitUnsupported ?? null
+  const splitError: string | null = (contract as any)?.metadata?._splitError ?? null
   const autoSplitDone = splitInto.length > 0
 
   // Stuck detection: in-progress but updatedAt hasn't changed in 3 minutes
@@ -826,6 +927,10 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract-family', id] })
       navigate('/contracts')
     },
+    // The route refuses a non-PDF binder (422) or a re-split that would
+    // replace contracts that have moved on (409) — say which, and why.
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Could not split this document', { description: err.response?.data?.detail ?? 'Try again.' }),
   })
 
   // Contract Family
@@ -845,6 +950,8 @@ export function ContractDetailPage() {
     queryKey: ['contract-diff', id, diffV1Id, diffV2Id],
     queryFn: () => api.get(`/contracts/${id}/versions/${diffV1Id}/diff/${diffV2Id}`).then(r => r.data),
     enabled: !!diffV1Id && !!diffV2Id && diffV1Id !== diffV2Id && tab === 'negotiate',
+    // X32 — a pair too large to diff took the whole time limit to say so.
+    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 422 && count < 1,
   })
 
   const redlineMutation = useMutation({
@@ -863,6 +970,8 @@ export function ContractDetailPage() {
       return api.post(`/contracts/${id}/attach`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    onError: (err: { response?: { data?: { detail?: string } } }) =>
+      toast.error('Attachment not added', { description: err.response?.data?.detail ?? 'Upload failed. Try again.' }),
   })
   const deleteAttachment = useMutation({
     mutationFn: (idx: number) => api.delete(`/contracts/${id}/attachments/${idx}`),
@@ -917,11 +1026,34 @@ export function ContractDetailPage() {
 
   // ── Hooks that must run before early returns (Rules of Hooks) ─────────────
   const versions = versionsData?.data ?? contract?.versions ?? []
+  // DD4 — the version the contract stands on, which an undo moves back; not
+  // the newest.
+  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null }>, contract?.currentVersionId)
+  // …and the version before it: what the negotiation diff compares by default.
+  const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
+  const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
 
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
   // toggle would crash with "Invalid PDF structure". We disable it instead.
-  const hasOriginal = !!(versions[0]?.s3Key && versions[0]?.mimeType)
+  // X49 — only a PDF: now that the version list carries the key, a DOCX or
+  // TXT latest version would otherwise open the viewer on a file it can't read.
+  const hasOriginal = !!(standing?.s3Key && standing?.mimeType === 'application/pdf')
+  // …but a Word or text upload still has an original: say that, not "created
+  // from text or a template".
+  const originalNotPdf = !!standing?.s3Key && !hasOriginal
+
+  // X1 — a citation that knows its page opens the original PDF at it (the
+  // passage is outlined there); without a source file, ?section= still
+  // scrolls the styled view.
+  useEffect(() => {
+    if (!citeTarget.page || !hasOriginal) return
+    setTab('document')
+    if (docView !== 'original') {
+      citationSwitchedView.current = true
+      setDocView('original')
+    }
+  }, [citeTarget.page, hasOriginal])
 
   const { data: commentsData } = useQuery({
     queryKey: ['comments', id],
@@ -973,8 +1105,8 @@ export function ContractDetailPage() {
   // Auto-populate version dropdowns when switching to negotiate tab
   useEffect(() => {
     if (tab === 'negotiate' && versions.length >= 2 && !diffV1Id && !diffV2Id) {
-      setDiffV1Id(versions[1]?.id ?? '')
-      setDiffV2Id(versions[0]?.id ?? '')
+      setDiffV1Id(diffDefaults.v1 ?? versions[1]?.id ?? '')
+      setDiffV2Id(diffDefaults.v2 ?? versions[0]?.id ?? '')
     }
     if (tab !== 'negotiate' && (diffV1Id || diffV2Id)) {
       setDiffV1Id('')
@@ -1002,8 +1134,12 @@ export function ContractDetailPage() {
 
   const keyTerms = contract.keyTerms ?? {}
   const fieldConfidence: Record<string, any> = contract.fieldConfidence ?? {}
+  // C5 — unverified fields under the Extraction Queue's default bar (0.7).
+  const lowConfidenceCount = Object.values(fieldConfidence).filter(
+    (e: any) => e && !e.verifiedAt && typeof e.confidence === 'number' && e.confidence < 0.7,
+  ).length
   const riskFactors: string[] = contract.riskFactors ?? []
-  const clauseFlags: Record<string, boolean> = contract.versions?.[0]?.clauseFlags ?? {}
+  const clauseFlags: Record<string, boolean> = currentVersionOf(contract.versions as Array<{ id: string; clauseFlags?: Record<string, boolean> }>, contract.currentVersionId)?.clauseFlags ?? {}
   // P2.1 — trust-signal: was this version's text produced by OCR? If
   // yes, the badge in the header lets Legal eyeball "this is scan-
   // derived text; extraction confidence is lower than a digital PDF".
@@ -1012,7 +1148,10 @@ export function ContractDetailPage() {
   // that actually carries structure (or extraction), falling back to
   // versions[0] so existing code paths don't regress.
   const latestVersionMeta = (() => {
-    const versions = (contract.versions ?? []) as Array<{ metadata?: Record<string, unknown> }>
+    const all = (contract.versions ?? []) as Array<{ id: string; metadata?: Record<string, unknown> }>
+    // DD4 — the standing version first, then the most recent before it.
+    const current = currentVersionOf(all, contract.currentVersionId)
+    const versions = current ? [current, ...all.filter(v => v !== current)] : all
     const withStructure = versions.find(v => {
       const md = v.metadata ?? {}
       return md.structure || md.extraction
@@ -1151,9 +1290,11 @@ export function ContractDetailPage() {
                 title={
                   isEditing
                     ? 'Exit Edit mode to switch to Original PDF'
-                    : !hasOriginal
-                      ? 'No original file — this contract was created from text or a template.'
-                      : 'View the original PDF — pixel-exact, read-only.'
+                    : originalNotPdf
+                      ? 'The original file isn\u2019t a PDF, so it can\u2019t be shown here. Download it from Actions.'
+                      : !hasOriginal
+                        ? 'No original file — this contract was created from text or a template.'
+                        : 'View the original PDF — pixel-exact, read-only.'
                 }
                 data-testid="doc-view-original"
                 className={cn(
@@ -1305,7 +1446,7 @@ export function ContractDetailPage() {
                   <CheckCircle2 className="size-4" /> Done
                 </Button>
               </>
-            ) : (
+            ) : canEdit ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -1316,10 +1457,21 @@ export function ContractDetailPage() {
               >
                 <FileEdit className="size-4" /> Edit
               </Button>
-            )}
+            ) : mayEdit && externalEdit ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled
+                className="gap-1.5"
+                title={`${externalEdit.startedByName} is editing this contract in Google Docs`}
+                data-testid="edit-locked-btn"
+              >
+                <FileEdit className="size-4" /> In Google Docs
+              </Button>
+            ) : null}
 
             {/* Status transition buttons */}
-            {(STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
+            {canChangeStatus && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
               <Button
                 key={tr.to}
                 variant={tr.variant ?? 'default'}
@@ -1337,7 +1489,7 @@ export function ContractDetailPage() {
               routes through the workflow engine (/submit-approval); the old
               "Send for Review" manual status-flip was removed.
             */}
-            {['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
+            {canSendForReview && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
               <Button
                 variant="default" size="sm"
                 onClick={() => setSendForReviewOpen(true)}
@@ -1364,7 +1516,7 @@ export function ContractDetailPage() {
                 an ink button.) So this takes the ink primary only when
                 Send-for-Review is absent; while both are on screen, review owns
                 the single primary slot and this one steps back to outline. */}
-            {!['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
+            {canSign && !['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
               <Button
                 variant={
                   ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
@@ -1452,14 +1604,46 @@ export function ContractDetailPage() {
                 <div className="2xl:hidden">
                   <DropdownMenuSeparator />
                 </div>
-                <DropdownMenuItem onSelect={() => setShowShareDialog(true)}>
-                  <Share2 className="size-4" /> Share
-                </DropdownMenuItem>
+                {/* Y3 — offered only to those who may: sharing needs
+                    configure:contract, an amendment create:contract. */}
+                <Can request="POST /contracts/:id/share">
+                  <DropdownMenuItem onSelect={() => setShowShareDialog(true)} data-testid="share-menu-item">
+                    <Share2 className="size-4" /> Share
+                  </DropdownMenuItem>
+                </Can>
                 {/* P8 Step 8 — spawn an amendment / SOW / order-form / renewal
                     that links back to this contract via parentContractId. */}
-                <DropdownMenuItem onSelect={() => setCreateAmendmentOpen(true)} data-testid="create-amendment-menu-item">
-                  <GitBranch className="size-4" /> Create amendment
-                </DropdownMenuItem>
+                <Can request="POST /contracts/:id/amendments">
+                  <DropdownMenuItem onSelect={() => setCreateAmendmentOpen(true)} data-testid="create-amendment-menu-item">
+                    <GitBranch className="size-4" /> Create amendment
+                  </DropdownMenuItem>
+                </Can>
+                {/* BB4 — their Word file, round-tripped. */}
+                <Can request="POST /contracts/:id/external-edit/start">
+                  <DropdownMenuItem
+                    onSelect={() => setGoogleDocsOpen(true)}
+                    disabled={!!externalEdit}
+                    data-testid="edit-in-google-docs-menu-item"
+                  >
+                    <FileEdit className="size-4" /> Edit in Google Docs
+                  </DropdownMenuItem>
+                </Can>
+                <Can request="GET /contracts/:id/redline/counterparty">
+                  <DropdownMenuItem
+                    disabled={redlinePending}
+                    onSelect={async () => {
+                      if (!id) return
+                      setRedlinePending(true)
+                      setRedlineNotice(null)
+                      setRedlineNotice(await downloadForCounterparty(id))
+                      setRedlinePending(false)
+                    }}
+                    data-testid="download-for-counterparty-menu-item"
+                  >
+                    {redlinePending ? <Loader2 className="size-4 animate-spin" /> : <FileDown className="size-4" />}
+                    Download for counterparty (Word)
+                  </DropdownMenuItem>
+                </Can>
                 {/* P9 Step 6 — bundle audit trail + signers + signed PDF into
                     a single auditor-ready compliance package. */}
                 {contract?.status === 'EXECUTED' && id && (
@@ -1500,6 +1684,10 @@ export function ContractDetailPage() {
           </div>
         </div>
 
+        {externalEdit && id && (
+          <ExternalEditBanner contractId={id} lock={externalEdit} canPublish={mayEdit} />
+        )}
+        {redlineNotice && <RedlineNoticeBanner notice={redlineNotice} onDismiss={() => setRedlineNotice(null)} />}
         {downloadError && (
           <div
             role="alert"
@@ -1802,23 +1990,7 @@ export function ContractDetailPage() {
         <DecisionStrip
           awaitingMe={approvalData}
           riskScore={contract?.riskScore ?? null}
-          onJumpToClause={(clauseId) => {
-            // Scroll the underlined clause marker into view. If the risk
-            // markers extension has labelled a span with data-clause-id,
-            // this locates it. Falls back to opening the focused-review
-            // drawer on that clause.
-            const el = document.querySelector(
-              `[data-clause-id="${clauseId}"]`,
-            ) as HTMLElement | null
-            if (el) {
-              el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              // Approver mode: the clause is the approver's turn, so attention.
-              el.classList.add('ring-2', 'ring-attention-600')
-              setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
-            } else {
-              setFocusedClauseId(clauseId)
-            }
-          }}
+          onJumpToClause={jumpToClause}
           onDecided={() => {
             qc.invalidateQueries({ queryKey: ['contract', id] })
             qc.invalidateQueries({ queryKey: ['contract-approval', id] })
@@ -1997,8 +2169,9 @@ export function ContractDetailPage() {
           <span className="font-medium">Multiple agreements detected</span>
           <span>
             — We found {suggestedSplits.length > 0 ? suggestedSplits.length : 'multiple'} separate agreements in this document.
+            {binderSplitUnsupported && <> {binderSplitUnsupported}</>}
           </span>
-          <Button
+          {!binderSplitUnsupported && <Button
             variant="outline"
             size="xs"
             onClick={() => {
@@ -2013,7 +2186,12 @@ export function ContractDetailPage() {
             className="ml-auto flex-shrink-0"
           >
             Review &amp; Split →
-          </Button>
+          </Button>}
+        </div>
+      )}
+      {splitError && (
+        <div className="bg-attention-50 border-b border-attention-200 text-attention-700 px-6 py-2.5 text-body" data-testid="split-error">
+          {splitError}
         </div>
       )}
 
@@ -2170,7 +2348,18 @@ export function ContractDetailPage() {
                 {keyTermEntries.length > 0 ? (
                   <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-section text-ink-950">Key Terms</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-section text-ink-950">Key Terms</h3>
+                        {lowConfidenceCount > 0 && (
+                          <button
+                            onClick={() => navigate(`/review-queue?contractId=${id}`)}
+                            className="text-dense text-attention-700 hover:underline underline-offset-2"
+                            data-testid="key-terms-review-link"
+                          >
+                            Review {lowConfidenceCount} low-confidence field{lowConfidenceCount === 1 ? '' : 's'}
+                          </button>
+                        )}
+                      </div>
                       <div className="flex items-center gap-3 text-dense text-ink-500">
                         <span className="flex items-center gap-1"><CheckCircle2 className="size-3 text-ink-400" />High</span>
                         <span className="flex items-center gap-1"><AlertTriangle className="size-3 text-attention-600" />Review</span>
@@ -2251,6 +2440,7 @@ export function ContractDetailPage() {
                           key={fd.fieldKey}
                           label={fd.fieldLabel}
                           value={formatTermValue(fd.fieldKey, customMeta[fd.fieldKey])}
+                          evidence={(customMeta._customFieldEvidence as Record<string, { confidence?: number; quote?: string | null }> | undefined)?.[fd.fieldKey]}
                         />
                       ))}
                     </div>
@@ -2402,12 +2592,15 @@ export function ContractDetailPage() {
                       <Link className="size-4 text-ink-400" />
                       <h3 className="text-section text-ink-950">Contract Family</h3>
                     </div>
-                    <button
-                      onClick={() => setShowAddRelated(true)}
-                      className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
-                    >
-                      + Add related
-                    </button>
+                    {/* X75 review — it opens the upload dialog, which creates a contract. */}
+                    {canUpload && (
+                      <button
+                        onClick={() => setShowAddRelated(true)}
+                        className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2"
+                      >
+                        + Add related
+                      </button>
+                    )}
                   </div>
 
                   {/* Parent */}
@@ -2593,6 +2786,7 @@ export function ContractDetailPage() {
                             badge={badge}
                             interpretation={clause.interpretation}
                             content={clause.content}
+                            onReview={() => setFocusedClauseId(clause.id)}
                           />
                         )
                       })}
@@ -2616,8 +2810,12 @@ export function ContractDetailPage() {
               return (
                 <div className="flex flex-col items-center justify-center h-64 bg-card rounded-card border border-paper-200 shadow-e1 m-4" data-testid="no-original-pdf">
                   <FileText className="size-8 text-ink-400 mb-3" />
-                  <p className="text-body font-medium text-ink-950">No original file</p>
-                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">This contract was created from text or a template — there's no source PDF to display.</p>
+                  <p className="text-body font-medium text-ink-950">{originalNotPdf ? 'The original isn\u2019t a PDF' : 'No original file'}</p>
+                  <p className="text-dense text-ink-500 mt-1 text-center max-w-sm">
+                    {originalNotPdf
+                      ? 'Only PDFs open in this view. Download the original from Actions, or read it in the Styled view.'
+                      : 'This contract was created from text or a template — there\'s no source PDF to display.'}
+                  </p>
                   <Button variant="outline" size="sm" className="mt-3" onClick={() => setDocView('styled')}>
                     Switch to Styled view
                   </Button>
@@ -2650,8 +2848,31 @@ export function ContractDetailPage() {
               // in the system allowed a drop shadow.
               <div className="h-full overflow-hidden bg-paper-50 p-4">
                 <div className="bg-card rounded-paper shadow-page h-full">
-                  <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
-                    <Viewer fileUrl={pdfUrl} plugins={[layoutPlugin]} />
+                  <Worker workerUrl={pdfWorkerUrl}>
+                    <Viewer
+                      // X1 — remounted per citation: initialPage applies on load.
+                      key={citeTarget.page ?? 0}
+                      fileUrl={pdfUrl}
+                      plugins={[layoutPlugin]}
+                      initialPage={citeTarget.page ? citeTarget.page - 1 : 0}
+                      renderPage={citeTarget.bbox ? (props: RenderPageProps) => (
+                        <>
+                          {props.canvasLayer.children}
+                          {props.textLayer.children}
+                          {props.annotationLayer.children}
+                          {props.pageIndex === citeTarget.page! - 1 && props.rotation === 0 && (
+                            // "You landed here" is a selection, not a state: ink,
+                            // as the TOC flash for ?section= is.
+                            <div
+                              data-testid="citation-highlight"
+                              aria-hidden
+                              className="absolute pointer-events-none rounded-sm ring-2 ring-ink-950"
+                              style={highlightRect(citeTarget.bbox!, props.scale)}
+                            />
+                          )}
+                        </>
+                      ) : undefined}
+                    />
                   </Worker>
                 </div>
               </div>
@@ -2659,7 +2880,8 @@ export function ContractDetailPage() {
           }
 
           // B.5.1 — Styled branch. TipTap + contract-paper CSS. Default.
-          const latest = (contract.versions as any[])?.[0] ?? null
+          // DD4 — the version the contract stands on (an undo moves it back), not the newest.
+          const latest = currentVersionOf(contract.versions as any[], contract.currentVersionId)
           const rawHtml = latest?.htmlContent?.trim()
             ? latest.htmlContent
             : latest?.plainText?.trim() || ''
@@ -2697,7 +2919,9 @@ export function ContractDetailPage() {
               editable={isEditing}
               onReady={(editor) => { canvasEditorRef.current = editor; setCanvasEditor(editor) }}
               onChange={(html) => {
-                if (canvasState.kind !== 'ready') return
+                // X75 review — nothing a viewer changes is saved (the server
+                // refuses it): a view-mode command still changes the canvas.
+                if (canvasState.kind !== 'ready' || !canEdit) return
                 setSaveState('dirty')
                 dirtyHtmlRef.current = html
                 if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -2805,6 +3029,11 @@ export function ContractDetailPage() {
                   <div className="flex items-center justify-center py-12">
                     <Loader2 className="size-5 animate-spin text-ink-400" />
                   </div>
+                ) : diffQuery.isError ? (
+                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-500 text-body">
+                    {(diffQuery.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+                      ?? 'The comparison could not be loaded.'}
+                  </div>
                 ) : diffQuery.data ? (
                   <DiffViewer
                     diffHtml={diffQuery.data.diffHtml}
@@ -2824,7 +3053,10 @@ export function ContractDetailPage() {
                 <RedlinePanel
                   analysis={redlineMeta}
                   isAnalyzing={isAnalyzingRedlines}
+                  failure={redlineStatus === 'FAILED' ? String(customMeta._redlineError ?? 'The analysis did not complete.') : null}
                   versions={versions.map((v: any) => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt }))}
+                  defaultV1Id={diffDefaults.v1}
+                  defaultV2Id={diffDefaults.v2}
                   onRequestAnalysis={(v1Id, v2Id) => {
                     setDiffV1Id(v1Id)
                     setDiffV2Id(v2Id)
@@ -2899,10 +3131,12 @@ export function ContractDetailPage() {
               <div className="text-center py-10 border-2 border-dashed rounded-card border-paper-200 bg-paper-50">
                 <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
                 <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
-                <p className="text-dense text-ink-500 mb-4">Send this contract to the approval workflow to start the review.</p>
+                <p className="text-dense text-ink-500 mb-4">
+                  {canSendForReview ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
+                </p>
                 {/* Same action the header CTA already offers, so it doesn't
                     take a second ink fill. */}
-                <Button
+                {canSendForReview && <Button
                   variant="outline"
                   size="sm"
                   onClick={() => submitForApproval.mutate(undefined)}
@@ -2912,7 +3146,7 @@ export function ContractDetailPage() {
                   {submitForApproval.isPending
                     ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
                     : <>Send for Review</>}
-                </Button>
+                </Button>}
                 {submitForApproval.isError && (
                   <p className="text-dense text-risk-700 mt-2">
                     {(submitForApproval.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to submit'}
@@ -2981,8 +3215,10 @@ export function ContractDetailPage() {
           interpretation: c.interpretation,
           sectionRef: c.sectionRef,
         }))
-        // Only risk/deviation clauses are navigable in the drawer.
-        const riskyClauses = allClauses.filter((c) => classifyRisk(c.riskRating) !== null)
+        // Prev / Next step through the risk and deviation clauses. Any clause
+        // can be opened, though (from the Clauses tab or a playbook finding):
+        // a contract with nothing flagged had no way to reach Suggest.
+        const riskyClauses = allClauses.filter((c) => classifyRisk(c.riskRating) !== null || c.id === focusedClauseId)
         const focusedIdx = focusedClauseId
           ? riskyClauses.findIndex((c) => c.id === focusedClauseId)
           : -1
@@ -3016,13 +3252,14 @@ export function ContractDetailPage() {
                 setReviewStates((s) => ({ ...s, [cid]: 'reviewed' }))
                 updateReviewState.mutate({ clauseId: cid, state: 'reviewed' })
               }}
-              onEditManually={() => {
+              onEditManually={canEdit ? () => {
                 // Exit drawer, enter edit mode. A future commit will also
                 // scroll to and focus the specific clause in the editor.
                 setFocusedClauseId(null)
                 enterEdit()
-              }}
+              } : undefined}
               onClose={() => setFocusedClauseId(null)}
+              canEdit={canEdit}
             />
           )
         }
@@ -3097,7 +3334,7 @@ export function ContractDetailPage() {
                 ),
           // When the focused-review drawer is showing, hide the normal rail.
           focusedClauseId != null &&
-            (clausesData?.data ?? []).some((c: any) => c.id === focusedClauseId && classifyRisk(c.riskRating) !== null) &&
+            (clausesData?.data ?? []).some((c: any) => c.id === focusedClauseId) &&
             'hidden xl:hidden',
         )}
       >
@@ -3416,6 +3653,10 @@ export function ContractDetailPage() {
           />
         )}
 
+        {/* V1 — the playbook review that runs after extraction; each
+            finding links to its clause. */}
+        {id && <PlaybookReviewRailSection contractId={id} onJumpToClause={jumpToClause} />}
+
         {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
             checks with per-framework status, grounded quotes, and
             remediation suggestions. Empty state offers a run button. */}
@@ -3430,7 +3671,7 @@ export function ContractDetailPage() {
             terms + any inconsistent author-typed variants + an
             "Apply defined term everywhere" action. Only renders when
             the doc has ≥1 defined term pattern. */}
-        <DefinedTermsRailSection editor={canvasEditor} />
+        <DefinedTermsRailSection editor={canvasEditor} canEdit={canEdit} />
 
         {/* P5.3 — Renewal advisor. Shows inside the 180-day expiry
             window; offers an LLM-backed recommendation + decision
@@ -3663,6 +3904,21 @@ export function ContractDetailPage() {
             (familyData?.children?.length ?? 0) +
             (familyData?.parent ? 1 : 0) || null
           }
+          action={
+            // X51 — the tab bar shows only outside the document view, and the
+            // way out was Clauses' "View all" or an approval: a contract with
+            // no extracted clauses could never open Negotiate to analyze its
+            // redlines. (The header's Compare is a different view, CompareMode.)
+            versions.length >= 2 ? (
+              <button
+                onClick={() => setTab('negotiate')}
+                data-testid="rail-history-negotiate"
+                className="text-[11px] font-semibold text-ink-950 hover:underline"
+              >
+                Negotiate
+              </button>
+            ) : null
+          }
         >
           <ol className="space-y-2.5">
             {/* Parent contract — hierarchical link */}
@@ -3788,7 +4044,14 @@ export function ContractDetailPage() {
         >
           {commentCount ? (
             <p className="text-body text-ink-700">
-              {commentCount} comment{commentCount === 1 ? '' : 's'}. Full thread in the editor's inline comments (coming in B.3).
+              {commentCount} comment{commentCount === 1 ? '' : 's'}.{' '}
+              <button
+                onClick={() => setTab('comments')}
+                className="text-ink-700 hover:text-ink-950 underline underline-offset-2"
+                data-testid="rail-open-comments"
+              >
+                Open the thread
+              </button>
             </p>
           ) : (
             <p className="text-body text-ink-400 italic">No comments yet.</p>
@@ -3824,6 +4087,8 @@ export function ContractDetailPage() {
 
       {/* end of two-column body */}
       </div>
+
+      {id && <GoogleDocsStartDialog contractId={id} open={googleDocsOpen} onClose={() => setGoogleDocsOpen(false)} />}
 
       {/* Share dialog */}
       {showShareDialog && id && (
@@ -3965,6 +4230,8 @@ export function ContractDetailPage() {
         <SendForReviewDialog
           contractId={id}
           contractType={contract?.type}
+          contractValue={contract?.value}
+          contractCurrency={contract?.currency}
           open={sendForReviewOpen}
           onClose={() => setSendForReviewOpen(false)}
           onSent={() => {

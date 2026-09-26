@@ -28,6 +28,7 @@ import {
   Bold, Italic, Underline as UnderlineIcon, Heading2, Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { editedHtml } from '@/lib/canvas-update'
 import { Button } from '@/components/ui/button'
 import {
   RiskHighlights,
@@ -136,7 +137,11 @@ export function DocumentCanvas({
       ],
       content: html,
       editable,
-      onUpdate: ({ editor: ed }) => onChange?.(ed.getHTML()),
+      // X47 — only an update that changed the document is an edit (lib/canvas-update).
+      onUpdate: (update) => {
+        const edited = editedHtml(update)
+        if (edited !== null) onChange?.(edited)
+      },
     },
     // Re-init if the underlying contract changes; cheap enough for now.
     [state.kind === 'ready' ? html : state.kind, editable],
@@ -156,9 +161,10 @@ export function DocumentCanvas({
   // scroll a specific clause into view without prop-drilling.
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  // Sync editable prop changes without remounting
+  // Sync editable prop changes without remounting. X47 — without emitting
+  // TipTap's default `update`, which the page took for an edit and saved.
   useEffect(() => {
-    editor?.setEditable(editable)
+    editor?.setEditable(editable, false)
   }, [editable, editor])
 
   // Expose the editor to the parent once it's ready (for undo/redo etc.)

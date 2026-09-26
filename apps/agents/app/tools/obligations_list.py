@@ -24,11 +24,11 @@ class ObligationsListArgs(BaseModel):
     limit: int = Field(30, ge=1, le=100)
 
 
-def build_obligations_list(org_id: str) -> StructuredTool:
+def build_obligations_list(org_id: str, user_id: str | None = None) -> StructuredTool:
     async def _arun(contract_id=None, due_within=None, type=None, limit: int = 30) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/obligations_list"
         headers = {"x-internal-secret": settings.internal_service_secret, "x-internal-service": "agents", "content-type": "application/json"}
-        payload: dict = {"orgId": org_id, "limit": limit}
+        payload: dict = {"orgId": org_id, "userId": user_id, "limit": limit}
         if contract_id: payload["contractId"] = contract_id
         if due_within:  payload["dueWithin"]  = due_within
         if type:        payload["type"]       = type

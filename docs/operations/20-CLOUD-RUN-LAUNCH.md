@@ -324,6 +324,12 @@ for s in database-url redis-url elasticsearch-url \
 done
 ```
 
+> **Optional — LLM tracing.** `langfuse-public-key` and `langfuse-secret-key`
+> are deliberately not in that list. Skip them and everything deploys and runs
+> normally, just without LLM traces. Add them later to see every agent call
+> (prompt, tool calls, tokens, cost) in Langfuse Cloud's free Hobby tier —
+> `LANGFUSE.md` has the four steps.
+
 ### 9.2 Fill in each secret
 
 For each secret, copy the value from your notebook and run **one** of these commands. Replace `PASTE_VALUE_HERE` with the actual value. (Keep the single quotes — they protect special characters.)

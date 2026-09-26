@@ -3,8 +3,10 @@
  *
  * Inline UI for a `contract_cite` tool result. Renders each citation
  * as a clickable pill: "§9.2 · p.2 · 'capped at 12 months of fees'".
- * Clicking routes to the contract page with ?section=9.2, which the
- * detail page reads to scroll + highlight the matching TOC entry.
+ * Clicking routes to the contract page with ?section=9.2 (scroll the
+ * styled view, flash the TOC entry) and, when the extractor recorded
+ * them, ?page=&bbox= — the original PDF opens at that page with the
+ * passage outlined (X1).
  *
  * Design reference:
  *   - Hebbia inline citations — click → PDF highlight
@@ -13,6 +15,7 @@
  */
 import { useState } from 'react'
 import { Quote, ExternalLink } from 'lucide-react'
+import { citationHref } from '@/lib/citation-target'
 
 export interface Citation {
   quote:        string
@@ -87,9 +90,9 @@ export function CitationPills({ bundle }: { bundle: CitationBundle }) {
 
       <ul className="divide-y divide-paper-100">
         {bundle.citations.map((c, i) => {
-          const targetPath = `/contracts/${bundle.contractId}` + (
-            c.sectionRef ? `?section=${encodeURIComponent(c.sectionRef)}` : ''
-          )
+          // X1 — the page and box open the original PDF at the passage;
+          // the section still scrolls the styled view when there's no PDF.
+          const targetPath = citationHref(bundle.contractId, c)
           const isExpanded = expandedIdx === i
           return (
             <li

@@ -37,7 +37,7 @@ class ClauseSearchArgs(BaseModel):
     limit: int = Field(5, ge=1, le=20, description="Max matches to return.")
 
 
-def build_clause_search(org_id: str) -> StructuredTool:
+def build_clause_search(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(contract_id: str, query: str, limit: int = 5) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/clause_search"
@@ -47,7 +47,7 @@ def build_clause_search(org_id: str) -> StructuredTool:
             "content-type": "application/json",
         }
         payload = {
-            "orgId": org_id, "contractId": contract_id,
+            "orgId": org_id, "userId": user_id, "contractId": contract_id,
             "query": query, "limit": limit,
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:

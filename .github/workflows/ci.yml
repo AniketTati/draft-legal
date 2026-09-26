@@ -162,7 +162,9 @@ jobs:
       # || true` against a directory that did not exist: three independent
       # reasons it could never fail (docs/37 E1). If pytest collects nothing,
       # exit code 5 fails this job, which is the correct answer to "the tests
-      # vanished".
+      # vanished". It runs the unit tests too (unittest-style tests are
+      # collected as they are); the model-in-the-loop checks are the
+      # `agent-evals` job below.
       - name: Run Python tests
         working-directory: apps/agents
         run: python -m pytest tests/ -q

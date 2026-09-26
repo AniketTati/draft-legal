@@ -5,8 +5,8 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
+import { requireUserOrAdminKey } from '../middleware/auth.js'
 
 const SetOooSchema = z.object({
   outOfOffice: z.boolean(),
@@ -23,9 +23,20 @@ export async function teamRoutes(app: FastifyInstance) {
   // and produced 403 console errors on every page load. Drop to
   // `requireAuth` — the response only includes name/email/role/counts,
   // not anything sensitive (no PII, no comp). Mutations (set OOO etc.)
-  // remain `requirePermission`-gated below.
-  app.get('/workload', { preHandler: requireAuth }, async (req, reply) => {
-    const { orgId } = req.user
+  // remain `requirePermission`-gated below. (X44: now
+  // `requireUserOrAdminKey`, which keeps API keys without the admin scope out.)
+  app.get('/workload', { preHandler: requireUserOrAdminKey }, async (req, reply) => {
+    const { orgId, sub: me } = req.user
+    // X21 — the directory and OOO stay visible to every member, but a count is
+    // only shown where the caller could see what it counts: other people's
+    // contracts need view:contract beyond `own`, their approval queues
+    // view:workflow beyond `own`. The caller's own counts are always shown.
+    const [contractScope, workflowScope] = await Promise.all([
+      permissionScopeFor(req, 'view', 'contract'),
+      permissionScopeFor(req, 'view', 'workflow'),
+    ])
+    const seesContracts = contractScope != null && contractScope !== 'own'
+    const seesApprovals = workflowScope != null && workflowScope !== 'own'
 
     const users = await prisma.user.findMany({
       where: { orgId, deletedAt: null, status: 'ACTIVE' },
@@ -36,7 +47,8 @@ export async function teamRoutes(app: FastifyInstance) {
     // Get contract counts per owner
     const contractCounts = await prisma.contract.groupBy({
       by: ['ownerId'],
-      where: { orgId, deletedAt: null, status: { notIn: ['ARCHIVED', 'TERMINATED', 'EXPIRED'] } },
+      // X17 — a diligence room's uploads are a target's contracts, not anyone's book.
+      where: { orgId, deletedAt: null, diligenceRoomId: null, status: { notIn: ['ARCHIVED', 'TERMINATED', 'EXPIRED'] } },
       _count: { id: true },
     })
     const contractCountMap = new Map(contractCounts.map(c => [c.ownerId, c._count.id]))
@@ -59,8 +71,8 @@ export async function teamRoutes(app: FastifyInstance) {
       outOfOffice: u.outOfOffice,
       outOfOfficeUntil: u.outOfOfficeUntil,
       delegateToId: u.delegateToId,
-      activeContracts: contractCountMap.get(u.id) ?? 0,
-      pendingApprovals: approvalCountMap.get(u.id) ?? 0,
+      activeContracts: seesContracts || u.id === me ? contractCountMap.get(u.id) ?? 0 : null,
+      pendingApprovals: seesApprovals || u.id === me ? approvalCountMap.get(u.id) ?? 0 : null,
     }))
 
     return reply.send(result)

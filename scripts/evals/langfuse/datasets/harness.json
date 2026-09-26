@@ -1,0 +1,38 @@
+{
+  "dataset": "draftlegal-harness-selftest",
+  "description": "Self-test for the eval harness itself — no services, no model, no keys, no cost. Proves dataset push, run linking, scoring and aggregation work. Proves NOTHING about the product.",
+  "metadata": { "capability": "harness", "selfTest": true },
+  "items": [
+    {
+      "id": "self-pass",
+      "target": "stub",
+      "input": { "plainText": "MUTUAL NON-DISCLOSURE AGREEMENT between A and B." },
+      "expectedOutput": { "contractType": "NDA", "reason": "explicit title" },
+      "scorers": ["field_match:contractType", "not_empty:reason", "json_subset"],
+      "metadata": { "expect": "all scorers pass — the stub echoes expectedOutput" }
+    },
+    {
+      "id": "self-fail",
+      "target": "stub",
+      "input": { "plainText": "MASTER SERVICES AGREEMENT between A and B." },
+      "expectedOutput": { "contractType": "MSA", "reason": "explicit title" },
+      "scorers": ["field_match:contractType", "json_subset"],
+      "metadata": {
+        "stubOutput": { "contractType": "NDA", "reason": "explicit title" },
+        "expect": "field_match and json_subset both FAIL",
+        "why": "docs/37 E1: a gate that has never been watched failing is not known to work. This case exists to go red on every run."
+      }
+    },
+    {
+      "id": "self-empty-field",
+      "target": "stub",
+      "input": { "plainText": "SCHEDULE 1 — deliverables and rates." },
+      "expectedOutput": { "contractType": "SOW", "reason": "inferred from deliverables" },
+      "scorers": ["field_match:contractType", "not_empty:reason"],
+      "metadata": {
+        "stubOutput": { "contractType": "SOW", "reason": "" },
+        "expect": "field_match passes, not_empty FAILS — scorers are independent, and a partial failure must not read as a whole-case pass"
+      }
+    }
+  ]
+}

@@ -12,6 +12,8 @@ import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { resolveSecret } from '../lib/secrets.js'
 import { sendShareLinkEmail } from '../lib/share-email.js'
+import { isEmailConfigured } from '../lib/mailer.js'
+import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
 // Portal tokens are signed with PORTAL_JWT_SECRET, isolated from the user
 // JWT_SECRET. Resolved lazily + cached; production fails closed if missing/
@@ -49,6 +51,8 @@ export function verifyPortalToken(token: string): PortalTokenPayload {
 }
 
 export async function shareRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
 
   // ── Create a share link ───────────────────────────────────────────────────
   app.post('/:id/share', { preHandler: requirePermission('configure', 'contract') }, async (req, reply) => {
@@ -143,11 +147,11 @@ export async function shareRoutes(app: FastifyInstance) {
       shareLink,
       portalUrl,
       emailedTo: inviteEmail,
-      // Report honestly whether an email could actually go out. Without SMTP
-      // configured the send is a no-op (the link is only logged server-side),
-      // and telling the user "sent" would be a lie — the caller uses this to
-      // say "copy this manually" instead.
-      emailDelivered: inviteEmail ? Boolean(process.env.SMTP_HOST) : null,
+      // Report honestly whether an email could actually go out. Without an
+      // email provider the send is a no-op (the link is only logged
+      // server-side), and telling the user "sent" would be a lie — the caller
+      // uses this to say "copy this manually" instead. Z5 — SendGrid counts.
+      emailDelivered: inviteEmail ? isEmailConfigured() : null,
     })
   })
 

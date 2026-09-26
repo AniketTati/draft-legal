@@ -1,0 +1,89 @@
+# Production LLM health — the scheduled check that tells you when to look.
+#
+# Langfuse has no alerting of its own (there is no alert or webhook endpoint in
+# its API), and a dashboard nobody opens at 3am is not monitoring. This is the
+# outside observer: it reads the metrics API, applies thresholds, and FAILS the
+# job when something is off — which is what turns GitHub's existing
+# failed-workflow notifications into LLM alerting without adding a service.
+#
+# It needs ONLY Langfuse credentials. No database, no model key, no app running.
+# That is deliberate: a health check with heavy preconditions is a health check
+# that gets disabled the first week it flakes.
+#
+# Setup (one time):
+#   gh secret set LANGFUSE_HOST        # e.g. https://us.cloud.langfuse.com
+#   gh secret set LANGFUSE_PUBLIC_KEY
+#   gh secret set LANGFUSE_SECRET_KEY
+#
+# Until those exist the job SKIPS with an explanatory message rather than
+# failing — a red check that only means "unconfigured" trains people to ignore
+# red checks.
+name: LLM health
+
+on:
+  schedule:
+    # 07:00 and 19:00 UTC — once before the working day, once after it. Hourly
+    # would be noise: the thresholds here are about trends, not incidents, and
+    # a quality dip is not a pager event.
+    - cron: '0 7,19 * * *'
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Window to check, in hours'
+        required: false
+        default: '24'
+
+jobs:
+  health:
+    name: Production LLM health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check configuration
+        id: cfg
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: |
+          if [ -z "${LANGFUSE_HOST}" ] || [ -z "${LANGFUSE_PUBLIC_KEY}" ] || [ -z "${LANGFUSE_SECRET_KEY}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Langfuse secrets are not set — skipping. See docs/operations/LANGFUSE-EVALS.md."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The health check itself needs no dependencies — it is plain fetch against
+      # the Langfuse API. Skipping the install keeps this job to a few seconds,
+      # which is part of why it survives contact with a busy repo.
+      - name: Run health check
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          # Production thresholds. Tune these here, in one place, in review.
+          HEALTH_MIN_TRACES: '10'
+          HEALTH_MAX_ERROR_RATE: '0.05'
+          HEALTH_MAX_P95_MS: '45000'
+          HEALTH_MIN_QUALITY: '0.70'
+          HEALTH_MIN_ASSESSMENTS: '5'
+          HEALTH_MAX_SPEND_USD: '50'
+        run: |
+          node scripts/evals/langfuse/health.mjs \
+            --hours "${{ github.event.inputs.hours || '24' }}" \
+            --json health.json
+
+      # Uploaded even when the check fails — the JSON is what you read to find
+      # out WHICH threshold went, without re-running anything.
+      - name: Upload health report
+        if: always() && steps.cfg.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-health
+          path: health.json
+          if-no-files-found: ignore

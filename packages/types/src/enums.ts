@@ -140,6 +140,12 @@ export enum AuditAction {
   // Versions
   VERSION_CREATED = 'VERSION_CREATED',
   VERSION_RESTORED = 'VERSION_RESTORED',
+  // BB2/BB3 — their Word file round-tripped: a working copy out to Google
+  // Docs and back, and a redline sent to the counterparty.
+  EXTERNAL_EDIT_STARTED = 'EXTERNAL_EDIT_STARTED',
+  EXTERNAL_EDIT_PUBLISHED = 'EXTERNAL_EDIT_PUBLISHED',
+  EXTERNAL_EDIT_DISCARDED = 'EXTERNAL_EDIT_DISCARDED',
+  REDLINE_EXPORTED = 'REDLINE_EXPORTED',
   // Requests
   REQUEST_CREATED = 'REQUEST_CREATED',
   REQUEST_ASSIGNED = 'REQUEST_ASSIGNED',
@@ -174,6 +180,9 @@ export enum AuditAction {
   ROLE_CHANGED = 'ROLE_CHANGED',
   PASSWORD_CHANGED = 'PASSWORD_CHANGED',
   PASSWORD_RESET_REQUESTED = 'PASSWORD_RESET_REQUESTED',
+  // API keys (X43)
+  API_KEY_CREATED = 'API_KEY_CREATED',
+  API_KEY_REVOKED = 'API_KEY_REVOKED',
   // AI admin (D.0.6) — model overrides, cost cap, BYOK key lifecycle
   AI_SETTINGS_UPDATED = 'AI_SETTINGS_UPDATED',
   AI_KEY_CREATED = 'AI_KEY_CREATED',
@@ -188,6 +197,8 @@ export enum AuditAction {
   AGENT_TOOL_UNDONE = 'AGENT_TOOL_UNDONE',
   // Security / governance (P7.5)
   PII_REDACTED = 'PII_REDACTED',
+  // Y2 — the model boundary replaced a value a call site's own redaction missed.
+  PII_BOUNDARY_REDACTED = 'PII_BOUNDARY_REDACTED',
   // Portal-side actions (P7.6.2) — counterparty does something via the
   // tokenized share link.
   PORTAL_UPLOADED_VERSION = 'PORTAL_UPLOADED_VERSION',

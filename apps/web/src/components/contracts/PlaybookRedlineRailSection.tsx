@@ -105,8 +105,15 @@ export function PlaybookRedlineRailSection({
     () => (staged?.proposals ?? []).filter(p => p.proposedText),
     [staged],
   )
+  // A passage whose automatic label was wrong (say, a contact line labelled
+  // governing law) is left as written, not reported as a failure to fix.
+  const isMislabelled = (p: { error?: string }) => p.error?.startsWith('not_this_clause_type') ?? false
   const failed = useMemo(
-    () => (staged?.proposals ?? []).filter(p => p.error),
+    () => (staged?.proposals ?? []).filter(p => p.error && !isMislabelled(p)),
+    [staged],
+  )
+  const mislabelled = useMemo(
+    () => (staged?.proposals ?? []).filter(isMislabelled),
     [staged],
   )
 
@@ -197,6 +204,13 @@ export function PlaybookRedlineRailSection({
               This contract was too long to check in full — some clauses were not examined.
             </p>
           )}
+          {mislabelled.length > 0 && (
+            <p className="text-[11px] text-ink-500 bg-paper-50 border border-paper-200 rounded-md px-2 py-1">
+              Left as written: {mislabelled.length} passage{mislabelled.length === 1 ? ' was' : 's were'} labelled as a
+              kind of clause {mislabelled.length === 1 ? 'it isn\'t' : 'they aren\'t'}
+              ({mislabelled.map(m => `${(m.clauseType ?? 'clause').replace(/_/g, ' ')}: ${m.error!.replace(/^not_this_clause_type:\s*/, '') || 'not that kind of clause'}`).join('; ')}).
+            </p>
+          )}
           {failed.length > 0 && (
             <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
               {failed.length} clause{failed.length === 1 ? '' : 's'} could not be rewritten
@@ -205,9 +219,15 @@ export function PlaybookRedlineRailSection({
           )}
 
           {usable.length === 0 ? (
-            <p className="text-dense text-ink-500">
-              {staged.note ?? 'No changes to propose.'}
-            </p>
+            <div className="space-y-2">
+              <p className="text-dense text-ink-500">
+                {staged.note ?? 'No changes to propose.'}
+              </p>
+              <Button size="sm" variant="assistOutline" className="w-full gap-1.5" onClick={() => start.mutate()} disabled={start.isPending} data-testid="rerun-playbook-redline">
+                <AssistMark />
+                {start.isPending ? 'Starting…' : 'Run again'}
+              </Button>
+            </div>
           ) : (
             <>
               <ul className="space-y-1.5" data-testid="staged-proposals">
@@ -312,11 +332,25 @@ export function PlaybookRedlineRailSection({
                     ?.response?.data?.detail ?? 'Those changes could not be applied.'}
                 </p>
               )}
-              {applyAccepted.isSuccess && (
-                <p className="text-[11px] text-brand-700">
-                  Applied as a new version. Everything you did not accept was left alone.
-                </p>
-              )}
+              {applyAccepted.isSuccess && (() => {
+                // Say what went in. "Applied" over a batch that placed two of
+                // seven changes read as all seven.
+                const r = applyAccepted.data as { appliedCount?: number; skippedCount?: number; applied?: Array<{ clauseType: string | null; spliced: boolean }> }
+                const left = (r.applied ?? []).filter(a => !a.spliced)
+                return (
+                  <div className="space-y-1" data-testid="playbook-redline-applied">
+                    <p className="text-[11px] text-ink-700">
+                      Applied {r.appliedCount ?? 0} change{r.appliedCount === 1 ? '' : 's'} as a new version. Everything you did not accept was left alone.
+                    </p>
+                    {left.length > 0 && (
+                      <p className="text-[11px] text-attention-700 bg-attention-50 border border-attention-200 rounded-md px-2 py-1">
+                        {left.length} couldn&rsquo;t be placed in the document, so {left.length === 1 ? 'it was' : 'they were'} left as written
+                        ({left.map(a => (a.clauseType ?? 'clause').replace(/_/g, ' ')).join(', ')}). Edit {left.length === 1 ? 'it' : 'them'} by hand.
+                      </p>
+                    )}
+                  </div>
+                )
+              })()}
             </>
           )}
         </div>

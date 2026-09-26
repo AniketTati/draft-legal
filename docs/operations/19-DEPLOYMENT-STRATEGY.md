@@ -231,6 +231,12 @@ Auto-scaling: HPA based on CPU (target 70%) and custom metrics (queue depth for 
 
 ## Monitoring & Observability
 
+> **What is wired today (X3):**
+> - The API serves Prometheus text at `GET /api/v1/metrics`: HTTP requests and durations by route pattern, process memory, and job-queue depths. It is off unless `METRICS_TOKEN` is set, and a scraper sends that as a bearer token.
+> - Unhandled 5xx errors go to Cloud Error Reporting, written to stderr as `ReportedErrorEvent`s on Cloud Run.
+> - Admins can read and verify the hash-chained org audit log (Admin → Audit Log; `GET /api/v1/admin/audit`, `/verify`).
+> - Nothing else here exists yet: no scrape config, dashboards or alert rules, and no Sentry or PostHog. The sections below are the plan.
+
 ### Infrastructure Monitoring (Prometheus + Grafana)
 
 | Metric | Alert Threshold |
@@ -246,7 +252,7 @@ Auto-scaling: HPA based on CPU (target 70%) and custom metrics (queue depth for 
 | Disk usage (any volume) | > 85% |
 | Certificate expiry | < 14 days |
 
-### Application Monitoring (Sentry)
+### Application Monitoring (planned: Sentry — today, Cloud Error Reporting; see above)
 
 - All unhandled exceptions captured with full stack trace
 - Agent errors include: model used, prompt hash, token count, confidence score

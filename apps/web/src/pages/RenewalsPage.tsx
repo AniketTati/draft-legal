@@ -41,36 +41,13 @@ interface KeyTerms {
    * rawFields), `noticePeriod` is what a human writes when they correct the
    * field in the review queue (FIELD_LABELS in api/routes/review-queue.ts) and
    * is a phrase like "90 days", `renewalNoticeDays` comes from the audit seed,
-   * and `noticeDays` from the demo portfolio seed. See noticeDays() below —
-   * reading only one of these is why a contract whose notice period was known
-   * still reported it as unknown.
+   * and `noticeDays` from the demo portfolio seed. The server reads all four
+   * (apps/api/src/lib/renewal-notice.ts) and returns the result as `notice`.
    */
   noticeDays?:       number | string | null
   noticePeriodDays?: number | string | null
   renewalNoticeDays?: number | string | null
   noticePeriod?:     number | string | null
-}
-
-/**
- * The notice period in whole days, across every spelling the codebase writes
- * and both shapes it stores them in — 90 or "90 days".
- *
- * Only a leading integer counts. "30-60 days" would be a guess about which
- * bound binds, and this feeds a date people diarise against, so it is left
- * unknown instead.
- */
-function noticeDaysOf(kt: KeyTerms): number | null {
-  for (const raw of [kt.noticeDays, kt.noticePeriodDays, kt.renewalNoticeDays, kt.noticePeriod]) {
-    if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.round(raw)
-    if (typeof raw === 'string') {
-      const m = raw.trim().match(/^(\d+)\s*(?:days?|d)?\s*$/i)
-      if (m) {
-        const n = Number(m[1])
-        if (n > 0) return n
-      }
-    }
-  }
-  return null
 }
 
 interface RenewalRow {
@@ -85,6 +62,11 @@ interface RenewalRow {
   ownerId:          string
   ownerName:        string | null
   keyTerms:         KeyTerms | null
+  /**
+   * The auto-renewal notice deadline, derived server-side (C6) by the same
+   * function the daily renewal scan alerts on, so this row and the alert agree.
+   */
+  notice?: { autoRenew: boolean; days: number | null; deadline: string | null }
   renewalDecision:    string | null
   renewalDecisionAt:  string | null
   renewalAdvice: {
@@ -166,8 +148,6 @@ function dueText(iso: string | null): { text: string; tone: string } {
   return { text: `${dateStr} · in ${d}d`, tone: 'text-ink-500' }
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 /**
  * The auto-renewal notice deadline: expiry minus the notice-to-terminate
  * period — the last day anyone can stop the contract renewing.
@@ -190,16 +170,15 @@ function noticeDeadline(r: RenewalRow): {
   title: string
   atRisk: boolean
 } | null {
-  const kt = r.keyTerms
-  if (!kt?.autoRenew) return null
+  const n = r.notice
+  if (!n?.autoRenew) return null
 
-  const days  = noticeDaysOf(kt)
-  const expiry = r.expiryDate ? new Date(r.expiryDate) : null
+  const days = n.days
 
   // Auto-renewing, but there is no notice period (or no expiry) to subtract.
   // Say so — a fabricated date is worse than an admitted gap, because this is
   // a date people diarise against.
-  if (days == null || !expiry || isNaN(expiry.getTime())) {
+  if (days == null || !n.deadline) {
     return {
       text:   'Auto-renews · notice period unknown',
       tone:   'text-ink-500',
@@ -208,7 +187,7 @@ function noticeDeadline(r: RenewalRow): {
     }
   }
 
-  const deadline = new Date(expiry.getTime() - days * DAY_MS)
+  const deadline = new Date(n.deadline)
   const dateStr  = deadline.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   const d        = daysUntil(deadline.toISOString())
   const title    = `Auto-renews. ${days} days' notice to terminate, so notice must be served by ${dateStr}.`

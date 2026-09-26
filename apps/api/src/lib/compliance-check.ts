@@ -15,6 +15,7 @@ import { applyPiiPolicy } from './pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from './costCap.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { modelFetch } from './model-boundary.js'
 
 export const COMPLIANCE_FRAMEWORKS = ['GDPR', 'HIPAA', 'SOX', 'CCPA'] as const
 export type ComplianceFramework = typeof COMPLIANCE_FRAMEWORKS[number]
@@ -115,7 +116,7 @@ export async function runComplianceCheck({
   })
 
   const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
-  const pyRes = await fetch(`${agentsUrl}/check_compliance`, {
+  const pyRes = await modelFetch(`${agentsUrl}/check_compliance`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -130,7 +131,7 @@ export async function runComplianceCheck({
       jurisdiction: contract.jurisdiction ?? undefined,
       orgId,   // Wave 3.5 — lets the agents service resolve the org's BYOK key
     }),
-  })
+  }, { orgId, surface: 'compliance_check', contractId: contract.id, userId })
   if (!pyRes.ok) {
     const errText = await pyRes.text()
     return { ok: false, report: null, error: `agents service error: ${errText.slice(0, 300)}` }

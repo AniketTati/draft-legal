@@ -9,6 +9,7 @@
  */
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { s3, S3_BUCKET } from './storage.js'
+import { renderableHtml } from './render-html.js'
 
 const GOTENBERG_URL = process.env.GOTENBERG_URL ?? 'http://localhost:3002'
 
@@ -42,25 +43,33 @@ async function gotenbergAuthHeaders(): Promise<Record<string, string>> {
   return { Authorization: `Bearer ${token}` }
 }
 
-const DEFAULT_STYLES = `
-  body { font-family: Georgia, serif; font-size: 12pt; line-height: 1.6; margin: 2.5cm; color: #1a1a1a; }
-  h1 { font-size: 18pt; margin-top: 1.2em; } h2 { font-size: 14pt; } h3 { font-size: 12pt; }
-  table { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
-  td, th { border: 1px solid #ccc; padding: 6px 10px; vertical-align: top; }
-  ul, ol { padding-left: 1.5em; }
-  blockquote { border-left: 3px solid #ccc; margin-left: 0; padding-left: 1em; color: #555; }
-`
-
 export interface RenderResult {
   s3Key: string
   size: number
 }
 
-function wrapHtml(html: string): string {
-  if (html.trimStart().toLowerCase().startsWith('<!doctype')) return html
-  return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>${DEFAULT_STYLES}</style></head>
-<body>${html}</body></html>`
+/**
+ * Render HTML to PDF bytes. X11 — every render is sanitised first: Gotenberg's
+ * Chromium runs inside the server's network and fetched whatever the HTML
+ * named, printing internal responses into the PDF. See render-html.ts.
+ */
+export async function renderHtmlToPdf(html: string): Promise<Buffer> {
+  if (!html?.trim()) throw new Error('renderHtmlToPdf: html is empty')
+
+  const formData = new FormData()
+  formData.append('files', new Blob([renderableHtml(html)], { type: 'text/html' }), 'index.html')
+
+  const upstream = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
+    method:  'POST',
+    headers: await gotenbergAuthHeaders(),
+    body:    formData,
+  })
+
+  if (!upstream.ok) {
+    const errText = await upstream.text().catch(() => '')
+    throw new Error(`Gotenberg HTML→PDF failed (${upstream.status}): ${errText.slice(0, 200)}`)
+  }
+  return Buffer.from(await upstream.arrayBuffer())
 }
 
 /**
@@ -81,24 +90,7 @@ export async function renderHtmlToPdfAndStore({
   keyPrefix: string
   filename?: string
 }): Promise<RenderResult> {
-  if (!html?.trim()) throw new Error('renderHtmlToPdfAndStore: html is empty')
-
-  const fullHtml = wrapHtml(html)
-  const formData = new FormData()
-  formData.append('files', new Blob([fullHtml], { type: 'text/html' }), 'index.html')
-
-  const upstream = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
-    method:  'POST',
-    headers: await gotenbergAuthHeaders(),
-    body:    formData,
-  })
-
-  if (!upstream.ok) {
-    const errText = await upstream.text().catch(() => '')
-    throw new Error(`Gotenberg HTML→PDF failed (${upstream.status}): ${errText.slice(0, 200)}`)
-  }
-
-  const pdfBuffer = Buffer.from(await upstream.arrayBuffer())
+  const pdfBuffer = await renderHtmlToPdf(html)
   const key = `${keyPrefix.replace(/\/+$/, '')}/${Date.now()}-${filename}`
 
   await s3.send(new PutObjectCommand({

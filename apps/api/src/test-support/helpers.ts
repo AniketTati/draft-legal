@@ -57,6 +57,21 @@ export async function makeUser(orgId: string): Promise<string> {
   return user.id
 }
 
+/**
+ * Give `userId` the role `name` in `orgId`: an org copy of the system role,
+ * with its default permissions. The JWT from `auth()` carries roles for the
+ * request itself; this is for code that reads a user's roles from the
+ * database, such as the check that an API key's maker can still make keys.
+ */
+export async function grantRole(orgId: string, userId: string, name: string): Promise<void> {
+  const role = await prisma.role.upsert({
+    where: { orgId_name: { orgId, name } },
+    create: { orgId, name, isSystem: true },
+    update: {},
+  })
+  await prisma.userRole.create({ data: { userId, roleId: role.id } })
+}
+
 /** Bearer header for a principal in `orgId` holding `roles`. */
 export function auth(orgId: string, roles: string[] = ['ADMIN'], sub?: string): Record<string, string> {
   const token = signAccessToken({ sub: sub ?? `it-user-${randomUUID()}`, orgId, roles })
@@ -105,31 +120,40 @@ export async function makeWorkflow(orgId: string, createdById: string, approverI
 /** Delete every row created for the test orgs, leaf tables first (few relations
  *  cascade). Resilient — a missing table/row never fails teardown. */
 export async function cleanupAll(): Promise<void> {
-  for (const orgId of createdOrgs) {
-    const contracts = await prisma.contract.findMany({ where: { orgId }, select: { id: true } }).catch(() => [])
-    const cids = contracts.map(c => c.id)
-    const srs = cids.length
-      ? await prisma.signatureRequest.findMany({ where: { contractId: { in: cids } }, select: { id: true } }).catch(() => [])
-      : []
-    const srIds = srs.map(s => s.id)
-
-    const del = async (fn: () => Promise<unknown>) => { await fn().catch(() => {}) }
-    await del(() => prisma.signatureEvent.deleteMany({ where: { signatureRequestId: { in: srIds } } }))
-    await del(() => prisma.signer.deleteMany({ where: { signatureRequestId: { in: srIds } } }))
-    await del(() => prisma.signatureRequest.deleteMany({ where: { id: { in: srIds } } }))
-    await del(() => prisma.approvalStep.deleteMany({ where: { orgId } }))
-    await del(() => prisma.approvalInstance.deleteMany({ where: { orgId } }))
-    await del(() => prisma.contractVersion.deleteMany({ where: { contractId: { in: cids } } }))
-    await del(() => prisma.notification.deleteMany({ where: { orgId } }))
-    await del(() => prisma.auditEvent.deleteMany({ where: { orgId } }))
-    await del(() => prisma.contract.deleteMany({ where: { orgId } }))
-    await del(() => prisma.workflowDefinition.deleteMany({ where: { orgId } }))
-    // Agent threads hold a userId FK, so they have to go before the users do.
-    // Tool calls and messages cascade from the thread.
-    await del(() => prisma.agentThread.deleteMany({ where: { orgId } }))
-    await del(() => prisma.userRole.deleteMany({ where: { user: { orgId } } }))
-    await del(() => prisma.user.deleteMany({ where: { orgId } }))
-    await del(() => prisma.organization.delete({ where: { id: orgId } }))
-  }
+  for (const orgId of createdOrgs) await cleanupOrg(orgId)
   createdOrgs.clear()
+}
+
+/** Delete one org's rows, as cleanupAll does, e.g. what an interrupted run left behind. */
+export async function cleanupOrg(orgId: string): Promise<void> {
+  const contracts = await prisma.contract.findMany({ where: { orgId }, select: { id: true } }).catch(() => [])
+  const cids = contracts.map(c => c.id)
+  const srs = cids.length
+    ? await prisma.signatureRequest.findMany({ where: { contractId: { in: cids } }, select: { id: true } }).catch(() => [])
+    : []
+  const srIds = srs.map(s => s.id)
+
+  const del = async (fn: () => Promise<unknown>) => { await fn().catch(() => {}) }
+  await del(() => prisma.signatureEvent.deleteMany({ where: { signatureRequestId: { in: srIds } } }))
+  await del(() => prisma.signer.deleteMany({ where: { signatureRequestId: { in: srIds } } }))
+  await del(() => prisma.signatureRequest.deleteMany({ where: { id: { in: srIds } } }))
+  await del(() => prisma.approvalStep.deleteMany({ where: { orgId } }))
+  await del(() => prisma.approvalInstance.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contractClause.deleteMany({ where: { version: { contractId: { in: cids } } } }))
+  await del(() => prisma.contractVersion.deleteMany({ where: { contractId: { in: cids } } }))
+  await del(() => prisma.contractShareLink.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contractComment.deleteMany({ where: { orgId, parentId: { not: null } } }))
+  await del(() => prisma.contractComment.deleteMany({ where: { orgId } }))
+  await del(() => prisma.notification.deleteMany({ where: { orgId } }))
+  await del(() => prisma.auditEvent.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contract.deleteMany({ where: { orgId } }))
+  await del(() => prisma.counterparty.deleteMany({ where: { orgId } }))
+  await del(() => prisma.workflowDefinition.deleteMany({ where: { orgId } }))
+  // Agent threads hold a userId FK, so they have to go before the users do.
+  // Tool calls and messages cascade from the thread.
+  await del(() => prisma.agentThread.deleteMany({ where: { orgId } }))
+  await del(() => prisma.userRole.deleteMany({ where: { user: { orgId } } }))
+  await del(() => prisma.role.deleteMany({ where: { orgId } }))
+  await del(() => prisma.user.deleteMany({ where: { orgId } }))
+  await del(() => prisma.organization.delete({ where: { id: orgId } }))
 }

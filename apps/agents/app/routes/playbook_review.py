@@ -29,6 +29,8 @@ class Clause(BaseModel):
     clauseType: Optional[str] = None
     content: Optional[str] = ""
     sectionRef: Optional[str] = None
+    # DD1 — the clause's caps, measured from its words by the API.
+    facts: list[str] = []
 
 
 class PlaybookReviewRequest(BaseModel):

@@ -14,6 +14,7 @@ import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { CalendarClock, DollarSign, Shield, RefreshCw, FileSearch, Bell, Check, AlertTriangle, Sparkles, CheckCircle2 } from 'lucide-react'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
+import { ObligationDrawer, sectionLabel } from '@/components/obligations/ObligationDrawer'
 
 export interface ObligationShape {
   id: string
@@ -102,6 +103,7 @@ export function ObligationsRailSection({
 
   const [showAll, setShowAll] = useState(false)
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
 
   const sorted = useMemo(() => {
     return [...obligations].sort((a, b) => {
@@ -189,7 +191,11 @@ export function ObligationsRailSection({
                   data-type={o.type}
                   data-severity={o.severity}
                   data-status={o.status ?? 'OPEN'}
-                  className={`group text-[11.5px] border rounded-md px-2 py-1.5 ${
+                  tabIndex={0}
+                  aria-label={`Open obligation: ${o.description}`}
+                  onClick={() => setOpenId(o.id)}
+                  onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); setOpenId(o.id) } }}
+                  className={`group cursor-pointer hover:border-paper-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-[11.5px] border rounded-md px-2 py-1.5 ${
                     o.status === 'COMPLETED'
                       ? 'border-brand-200 bg-brand-50 opacity-90'
                       : 'border-border bg-card'
@@ -204,7 +210,7 @@ export function ObligationsRailSection({
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
                         <span className="font-mono uppercase tracking-wider text-ink-400">{o.type}</span>
                         <span className="text-muted-foreground">· {o.owner}</span>
-                        {o.sectionRef && <span className="font-mono text-ink-500">§{o.sectionRef}</span>}
+                        {sectionLabel(o.sectionRef) && <span className="font-mono text-ink-500">{sectionLabel(o.sectionRef)}</span>}
                         {o.dueDate && (
                           <span className={dueColor}>
                             {days == null ? new Date(o.dueDate).toLocaleDateString()
@@ -216,10 +222,10 @@ export function ObligationsRailSection({
                         {!o.dueDate && o.trigger && (
                           <span className="text-muted-foreground italic truncate">{o.trigger}</span>
                         )}
-                        {o.status === 'OPEN' && (
+                        {o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
                           <button
                             type="button"
-                            onClick={() => setCompleteTarget({ id: o.id, description: o.description })}
+                            onClick={(e) => { e.stopPropagation(); setCompleteTarget({ id: o.id, description: o.description }) }}
                             data-testid={`obligation-complete-${o.id}`}
                             // `opacity-0 group-hover:opacity-100` alone meant a
                             // keyboard user could Tab onto "complete" and never
@@ -288,6 +294,7 @@ export function ObligationsRailSection({
           }}
         />
       )}
+      <ObligationDrawer obligationId={openId} onClose={() => setOpenId(null)} />
     </RailSection>
   )
 }

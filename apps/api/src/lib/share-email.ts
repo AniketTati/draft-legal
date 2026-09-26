@@ -2,13 +2,19 @@
  * Share-link email — delivers a portal link to an external counterparty.
  *
  * Follows the same shape as signing-email.ts (the other counterparty-facing
- * mailer): always log the link so it's recoverable when SMTP isn't configured,
- * then attempt a real send, with failures non-fatal because the link already
- * exists in the DB and can still be copied from the dialog.
+ * mailer): always log the link so it's recoverable when no email provider is
+ * configured, then attempt a real send, with failures non-fatal because the
+ * link already exists in the DB and can still be copied from the dialog.
  *
  * Before this, "send for review to the other party" was clipboard-only — the
  * user copied a URL and pasted it into their own mail client.
+ *
+ * Z5 — it sent through SMTP only, so a deployment on SendGrid (the provider
+ * that works on Cloud Run, lib/mailer.ts) sent nothing. It uses the unified
+ * mailer now, as signing emails do.
  */
+import { devPrint } from './log-scrub.js'
+import { isEmailConfigured, sendEmail } from './mailer.js'
 
 interface SendShareLinkEmailArgs {
   to: string
@@ -32,40 +38,28 @@ interface SendShareLinkEmailArgs {
 }
 
 export function sendShareLinkEmail(args: SendShareLinkEmailArgs): void {
-  // Always log — in dev (and whenever SMTP is unset) this is the only way to
-  // recover the link without reopening the dialog.
-  console.info(
+  // Always log — in dev (and whenever no email provider is configured) this is
+  // the only way to recover the link without reopening the dialog.
+  // X77 — the link carries the portal token, a credential that opens the
+  // contract for up to 30 days: whole only in development, as X18 does for
+  // signing links. It was printed in every environment. Y4 — devPrint is the
+  // scrubber's one exception, for exactly this.
+  devPrint(
     `[share] ✉  ${args.to}  →  ${args.portalUrl}` +
     `  (${args.contractType} "${args.contractTitle}", expires ${args.expiresAt.toISOString().slice(0, 10)})`,
   )
 
-  if (!process.env.SMTP_HOST) return
+  if (!isEmailConfigured()) return
 
-  const subject = `[${args.orgName}] ${args.canUpload ? 'Review and return' : 'Review'}: ${args.contractTitle}`
-  const text = renderTextBody(args)
-  const html = renderHtmlBody(args)
-
-  import('nodemailer').then((nodemailer) => {
-    const transporter = nodemailer.createTransport({
-      host:   process.env.SMTP_HOST,
-      port:   parseInt(process.env.SMTP_PORT ?? '587', 10),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: process.env.SMTP_USER ? {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      } : undefined,
-    })
-    return transporter.sendMail({
-      from: process.env.SMTP_FROM ?? process.env.EMAIL_FROM ?? `${args.orgName} <noreply@clm.app>`,
-      to:   args.to,
-      ...(args.replyToAddress ? { replyTo: args.replyToAddress } : {}),
-      subject,
-      text,
-      html,
-    })
-  }).catch((err) => {
+  sendEmail({
+    to:      args.to,
+    subject: `[${args.orgName}] ${args.canUpload ? 'Review and return' : 'Review'}: ${args.contractTitle}`,
+    text:    renderTextBody(args),
+    html:    renderHtmlBody(args),
+    ...(args.replyToAddress ? { replyTo: args.replyToAddress } : {}),
+  }).then((result) => {
     // Non-fatal — the share link is already persisted and copyable.
-    console.warn(`[share] email send failed for ${args.to}: ${(err as Error).message}`)
+    if (!result.sent) console.warn(`[share] email not sent: ${result.reason}`)
   })
 }
 

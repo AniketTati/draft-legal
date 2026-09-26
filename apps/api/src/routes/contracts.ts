@@ -1,37 +1,51 @@
 import type { FastifyInstance } from 'fastify'
-import type { Prisma } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
-// @ts-ignore — no type definitions for node-htmldiff
-import htmldiff from 'node-htmldiff'
+import { computeVersionDiff, htmlDiff, DiffTooLargeError } from '../lib/diff.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { renderHtmlToPdf, renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { RenderRefusedError } from '../lib/render-html.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { generateRedlineDocx, generatePlainDocx } from '../lib/docx-export.js'
 import { resolveRevisionAuthors } from '../lib/revision-author.js'
+import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { runComplianceCheck, COMPLIANCE_FRAMEWORKS } from '../lib/compliance-check.js'
 import { generateCompliancePackage } from '../lib/compliance-export.js'
 import { buildCsv, parseCsv } from '../lib/csv.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { applyPiiPolicy } from '../lib/pii-policy.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
-import { indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
+import { indexContract, deleteContractFromIndex, reindexContract } from '../lib/elasticsearch.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
-import { applyClauseProposal } from '../lib/clause-apply.js'
-import { storeClauseSegments, searchClauses } from '../lib/embeddings.js'
+import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-apply.js'
+import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms, sliceOutsideTokens } from '../lib/pii-policy.js'
+import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
+import { clauseVersionId } from '../lib/clause-version.js'
+import { afterEdit } from '../lib/version-refresh.js'
+import { standingVersion } from '../lib/standing-version.js'
 import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
+import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
+import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
+import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
+import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
+import { htmlToText } from '../lib/html-text.js'
+import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   CreateContractSchema,
   UpdateContractSchema,
   ContractFilterSchema,
   AuditAction,
   normalizeRiskScore,
+  pickWorkflow,
 } from '@clm/types'
+import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
 // the row happens to hold, so a client never has to guess which one it got.
@@ -40,7 +54,31 @@ function withNormalizedRisk<T extends { riskScore: number | null }>(row: T) {
   return { ...row, riskScore: normalizeRiskScore(row.riskScore) }
 }
 
+/**
+ * X27 — each form of a version's text a value can be found in: the redline
+ * diff tokenizes the values of all of them, and the analysis written from it
+ * is restored against the same.
+ */
+function versionForms(v: { plainText: string; htmlContent: string }): string[] {
+  return [v.plainText, ...htmlTextForms(v.htmlContent)]
+}
+
+/** X33 — how much of each version's text the agents service's version list carries (the approval prompt reads 8,000). */
+const AGENT_TEXT_EXCERPT = 20_000
+
+/**
+ * X47 — whether a saved HTML body is the document already stored. Line
+ * breaks between tags don't count: the extractor writes them and the editor
+ * never does. Any other difference is an edit, a single space included.
+ */
+function sameDocumentHtml(stored: string, saved: string): boolean {
+  const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
+  return norm(stored) === norm(saved)
+}
+
 export async function contractRoutes(app: FastifyInstance) {
+  // X7 — own-scope callers may only reach their own contracts by id.
+  guardOwnScopeContractRoutes(app)
   // ── List ────────────────────────────────────────────────────────────────
   app.get('/', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const query = ContractFilterSchema.parse(req.query)
@@ -160,7 +198,10 @@ export async function contractRoutes(app: FastifyInstance) {
   // Each row creates a Contract row with ownerId = current user.
   // Returns a summary with per-row success/failure for the UI to render.
   app.post('/bulk-import', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
-    const { sub: userId, orgId } = req.user
+    const { orgId } = req.user
+    // X45 — an API key's rows belong to the user who made the key.
+    const ownerId = actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
     let csv = ''
@@ -209,6 +250,12 @@ export async function contractRoutes(app: FastifyInstance) {
       const type = ALLOWED_TYPES.has(rawType) ? rawType : 'OTHER'
       const rawStatus = get('status').toUpperCase() || 'DRAFT'
       const status = ALLOWED_STATUS.has(rawStatus) ? rawStatus : 'DRAFT'
+      // X24 follow-up — approval statuses are the approval workflow's to set,
+      // on import as by hand: a row marked APPROVED had no approval behind it.
+      if (setByWorkflow(status)) {
+        results.push({ row: rowNo, ok: false, title, error: `${status} is set by the approval workflow, not by import. Import the row as DRAFT (or EXECUTED if it is signed) and submit it for approval.` })
+        continue
+      }
       const valueStr = get('value')
       const value = valueStr && !isNaN(Number(valueStr)) ? Number(valueStr) : undefined
       const eff = get('effectivedate') || get('effective_date') || get('effective date')
@@ -223,7 +270,7 @@ export async function contractRoutes(app: FastifyInstance) {
         const jur = get('jurisdiction') || null
         const created = await prisma.contract.create({
           data: {
-            orgId, ownerId: userId,
+            orgId, ownerId, createdBy: req.user.sub,   // X45 — for a key, the key; the owner is its maker
             title, type, status,
             counterpartyName: cp,
             value: value as never,
@@ -284,6 +331,8 @@ export async function contractRoutes(app: FastifyInstance) {
     if (q.type)            where.type = q.type
     if (q.counterpartyId)  where.counterpartyId = q.counterpartyId
     if (q.ownerId)         where.ownerId = q.ownerId
+    // X7 — an own-scope caller exports only their own contracts.
+    if (req.permissionScope === 'own') where.ownerId = req.user.sub
     // 0-100 bands, matching riskBand() in the web app so an exported row lands
     // in the same band the user saw on screen. These read 0.67/0.34 before,
     // which on real 0-100 data put the entire portfolio in "high".
@@ -339,7 +388,16 @@ export async function contractRoutes(app: FastifyInstance) {
   // ── Create (manual, no file) ─────────────────────────────────────────────
   app.post('/', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const body = CreateContractSchema.parse(req.body)
-    const { sub: ownerId, orgId } = req.user
+    const { orgId } = req.user
+    // X26 follow-up — as for PATCH: `_` metadata keys are server state (a
+    // forged _compliance or _playbookReview showed on the rail as real).
+    const reserved = req.user.sub === 'system' ? [] : Object.keys(body.metadata ?? {}).filter(k => k.startsWith('_'))
+    if (reserved.length) {
+      return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
+    }
+    // X45 — an API key's contract belongs to the user who made the key.
+    const ownerId = actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     // P27 audit (2026-05-02). Blank-create has no file → no parse
     // pipeline → no worker will ever advance analysisStatus past
@@ -375,7 +433,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await createAuditEvent({
       orgId,
-      userId: ownerId,
+      userId: req.user.sub,
       action: AuditAction.CONTRACT_CREATED,
       resourceType: 'contract',
       resourceId: contract.id,
@@ -392,6 +450,9 @@ export async function contractRoutes(app: FastifyInstance) {
   // ── Upload (multipart PDF/DOCX → S3 → extract → index) ──────────────────
   app.post('/upload', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const { sub: userId, orgId } = req.user
+    // X45 — an API key's upload belongs to the user who made the key.
+    const ownerId = actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const parts = req.parts()
     let fileBuffer: Buffer | null = null
@@ -411,7 +472,11 @@ export async function contractRoutes(app: FastifyInstance) {
         mimeType = part.mimetype
         filename = part.filename
       } else {
-        const val = (part as any).value as string
+        const val = (part as any).value as unknown
+        // X20 — form fields are text. A part sent as application/json arrives
+        // as an object, which a Prisma where clause reads as a FILTER (so a
+        // parent check could match any contract).
+        if (typeof val !== 'string') continue
         if (part.fieldname === 'title') title = val
         if (part.fieldname === 'type') type = val
         if (part.fieldname === 'counterpartyName') counterpartyName = val
@@ -422,37 +487,26 @@ export async function contractRoutes(app: FastifyInstance) {
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
 
+    // X20 — a parent link must name a live contract of this org (one the
+    // caller owns, for own scope, as the /:id/amendments guard requires).
+    // It was stored unchecked, and the parent's family view then listed this
+    // contract — across orgs, too.
+    if (parentContractId) {
+      const parent = await prisma.contract.count({
+        where: { id: parentContractId, orgId, deletedAt: null, ...ownContractWhere(req) },
+      })
+      if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
+    }
+
     // Wave 1.8 — validate the upload by MAGIC BYTES, not the client-declared
     // mimetype (which is spoofable). A user could otherwise store HTML/SVG/
     // executables as a "contract" and have the download endpoint serve them
     // back with an attacker-chosen Content-Type (content-confusion / stored
     // XSS). We sniff the real type and use it; text/plain is allowed only when
     // no binary signature is present. Everything else is rejected.
-    const detectBinaryType = (b: Buffer): string | null => {
-      if (b.subarray(0, 4).toString('latin1') === '%PDF') return 'application/pdf'
-      if (b.subarray(0, 4).toString('hex') === '504b0304') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' // DOCX (zip)
-      if (b.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1') return 'application/msword' // legacy DOC (OLE)
-      return null
-    }
-    const detected = detectBinaryType(fileBuffer)
-    // Legacy .doc is detectable, but the extraction pipeline has no OLE reader
-    // (lib/document.ts handles PDF/DOCX/TXT and throws on anything else).
-    // Accepting it meant the upload succeeded and analysis then failed with an
-    // opaque "Unsupported file type" — reject up front with a fix instead.
-    if (detected === 'application/msword') {
-      return reply.status(415).send({
-        detail: 'Legacy .doc files are not supported. Open the file in Word, save it as .docx, and upload again.',
-      })
-    }
-    if (detected) {
-      mimeType = detected // trust the bytes, not the client
-    } else if ((mimeType === 'text/plain' || mimeType === '') && fileBuffer.length > 0) {
-      mimeType = 'text/plain'
-    } else {
-      return reply.status(415).send({
-        detail: 'Unsupported or mismatched file type. Allowed: PDF, DOCX, TXT.',
-      })
-    }
+    const checked = checkUpload(fileBuffer, mimeType, CONTRACT_DOCUMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType // trust the bytes, not the client
 
     // Clean filename → readable title
     const cleanFilename = filename
@@ -481,7 +535,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const contract = await prisma.contract.create({
       data: {
         orgId,
-        ownerId: userId,
+        ownerId,
         title: title || cleanFilename || filename.replace(/\.[^.]+$/, ''),
         type,
         status: 'DRAFT',
@@ -571,6 +625,19 @@ export async function contractRoutes(app: FastifyInstance) {
       resourceId: id,
     })
 
+    // X27 — the agents service reads the key terms and summary here for the
+    // approval summary's prompt: the org's PII policy applies (round-trip
+    // tokens, put back when the summary is stored, see approvals.ts).
+    // `metadata` stays as it is: redline.py writes it back merged.
+    if (req.user.sub === 'system') {
+      const current = contract.versions.find(v => v.id === contract.currentVersionId) ?? contract.versions[0]
+      const read = await redactJson(contract.orgId, { keyTerms: contract.keyTerms, summary: contract.summary }, {
+        surface: 'agents_contract_read', contractId: id, roundTrip: id,
+        valuesFrom: [current?.plainText ?? '', contract.keyTerms, contract.summary],
+      })
+      return reply.send(withNormalizedRisk({ ...contract, ...read }))
+    }
+
     return reply.send(withNormalizedRisk(contract))
   })
 
@@ -599,18 +666,21 @@ export async function contractRoutes(app: FastifyInstance) {
 
     let version = versionId
       ? await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: id } })
-      : contract.versions[0]
+      // DD4 — the version the contract stands on (an undo moves it back), not
+      // the newest: after undoing a redline, the PDF was the undone text.
+      : await standingVersion(contract.id, contract.currentVersionId)
 
     // Pick the artifact key: canonical = renderedPdfKey (if present) else s3Key.
     const canonicalKey = (v: typeof version) =>
       artifact === 'source' ? v?.s3Key : (v?.renderedPdfKey ?? v?.s3Key)
 
     // If the selected version has no usable key, fall back to the most recent
-    // version that does.
+    // version that does, up to the one the contract stands on.
     if (!canonicalKey(version) && !versionId) {
       version = await prisma.contractVersion.findFirst({
         where: {
           contractId: id,
+          ...(version && { versionNumber: { lte: version.versionNumber } }),
           OR: artifact === 'source'
             ? [{ s3Key: { not: null } }]
             : [{ renderedPdfKey: { not: null } }, { s3Key: { not: null } }],
@@ -622,9 +692,12 @@ export async function contractRoutes(app: FastifyInstance) {
     const key = canonicalKey(version)
     if (!key) return reply.status(404).send({ detail: 'No file stored for this version' })
 
+    // Serve as an allowlisted type only: objects stored before upload
+    // validation (S3) may carry a client-declared text/html or SVG type.
+    const storedType = key === version?.renderedPdfKey ? 'application/pdf' : version?.mimeType
     const url = await getSignedUrl(
       s3,
-      new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
+      new GetObjectCommand({ Bucket: S3_BUCKET, Key: key, ResponseContentType: servableContentType(storedType) }),
       { expiresIn: 3600 },
     )
 
@@ -648,6 +721,11 @@ export async function contractRoutes(app: FastifyInstance) {
       orderBy: { versionNumber: 'desc' },
       select: {
         id: true, versionNumber: true, mimeType: true, fileSize: true,
+        // X1 follow-up — the contract page enables its Original (PDF) view,
+        // and opens a citation there, only when the latest version has a
+        // stored file; without the key here it never did. GET /:id already
+        // returns it for every version.
+        s3Key: true,
         changeNote: true, changeSummary: true, createdById: true, createdAt: true,
       },
     })
@@ -658,6 +736,26 @@ export async function contractRoutes(app: FastifyInstance) {
     // (`portal:<shareLinkId>`, `email:<addr>`), so this needs the same ladder
     // the DOCX export uses for w:author, and both stay consistent by sharing it.
     const authors = await resolveRevisionAuthors(versions.map(v => v.createdById))
+
+    // X33 — the approval summary (approval.py) reads a version's text from
+    // this list for its prompt, and none was ever here, so every summary was
+    // written without the contract. The agents service gets the opening of
+    // each version's text, tokenized with the contract scope as /clauses is
+    // (PATCH /approvals/:id/summary restores it); users' list is unchanged.
+    if (req.user.sub === 'system') {
+      const texts = new Map((await prisma.contractVersion.findMany({
+        where: { contractId: id }, select: { id: true, plainText: true },
+      })).map(v => [v.id, v.plainText]))
+      const tokenized = await redactJson(contract.orgId, versions.map(v => texts.get(v.id) ?? ''), {
+        surface: 'approval_summary.text', contractId: id, roundTrip: id,
+      })
+      return reply.send({
+        data: versions.map((v, i) => ({
+          ...v, createdByName: authors.get(v.createdById) ?? null,
+          plainText: sliceOutsideTokens(tokenized[i], 0, AGENT_TEXT_EXCERPT),
+        })),
+      })
+    }
 
     return reply.send({
       data: versions.map(v => ({ ...v, createdByName: authors.get(v.createdById) ?? null })),
@@ -671,6 +769,9 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    // BB3 — a Google Docs copy is out: publish it back (or discard it) instead.
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const parts = req.parts()
     let fileBuffer: Buffer | null = null
@@ -691,6 +792,10 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
+    // S3 — same content check as /upload: the version is parsed and served back.
+    const checked = checkUpload(fileBuffer, mimeType, CONTRACT_DOCUMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType
 
     const s3Key = `${orgId}/contracts/${id}/${Date.now()}-${filename}`
     await s3.send(new PutObjectCommand({
@@ -721,7 +826,8 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await prisma.contract.update({
       where: { id },
-      data: { currentVersionId: version.id, updatedAt: new Date() },
+      // X42 — a new document on an approved contract needs approving again.
+      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
     })
 
     // Reset analysis state and queue the full pipeline (parse → classify → extract → embed)
@@ -760,13 +866,29 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    // BB3 — read-only while a Google Docs copy is out.
+    const lock = lockOf(contract.externalEdit)
+    if (lock) return reply.status(409).send(lockedBody(lock))
 
     const lastVersion = await prisma.contractVersion.findFirst({
       where: { contractId: id },
       orderBy: { versionNumber: 'desc' },
     })
+    // X47 — a save that changes nothing makes nothing. Opening a contract made
+    // the web editor report a change, and the page saves every change: each
+    // view added a version, moved the current version off the uploaded PDF,
+    // rendered a PDF and, since X42, sent an approved contract back to DRAFT.
+    // "Nothing" is judged against the version the contract stands on — the
+    // latest, unless an undo moved it back, when saving the latest again is
+    // a real change.
+    const standing = contract.currentVersionId && contract.currentVersionId !== lastVersion?.id
+      ? await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: id } })
+      : lastVersion
+    if (standing && sameDocumentHtml(standing.htmlContent, htmlContent)) {
+      return reply.status(200).send(standing)
+    }
 
-    const plainText = htmlContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const plainText = htmlToText(htmlContent)
 
     const version = await prisma.contractVersion.create({
       data: {
@@ -803,9 +925,24 @@ export async function contractRoutes(app: FastifyInstance) {
       }
     })()
 
+    const status = statusAfterTermsChange(contract.status)
     await prisma.contract.update({
       where: { id },
-      data: { currentVersionId: version.id, updatedAt: new Date() },
+      // X42 — an edited document on an approved contract needs approving again.
+      data: { currentVersionId: version.id, updatedAt: new Date(), status },
+    })
+    // DD2 — the edit keeps the clauses of the version it was made on, and the
+    // search index follows the new text.
+    await afterEdit({ contractId: id, orgId, versionId: version.id, fromVersionId: standing?.id })
+    // X47 follow-up — the document changed, and perhaps its approval with it:
+    // on the record, as any other change to the contract is.
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'contract',
+      resourceId: id,
+      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status && status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
+      ipAddress: req.ip,
     })
 
     return reply.status(201).send(version)
@@ -826,7 +963,14 @@ export async function contractRoutes(app: FastifyInstance) {
     const version = await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: id } })
     if (!version) return reply.status(404).send({ detail: 'Version not found' })
 
-    const { clauseSegments, clauseFlags } = req.body as {
+    // X23 — the extraction read this version with round-trip tokens in place
+    // of personal data (agent.worker.ts callAgents). Its segments are verbatim
+    // quotes that become the stored clause text, which later redlines must find
+    // in the document: put the values back.
+    const restored = restorePii(req.body, version.plainText, contract.id)
+    const left = unresolvedPiiTokens(restored, version.plainText).length
+    if (left) req.log.warn({ contractId: contract.id, versionId, left }, 'PII tokens left unresolved in extracted clauses')
+    const { clauseSegments, clauseFlags } = restored as {
       clauseSegments?: Array<{
         clauseType: string
         content: string
@@ -848,6 +992,9 @@ export async function contractRoutes(app: FastifyInstance) {
         where: { id: versionId },
         data: { clauseFlags },
       })
+      // C7 — the flags arrive after the contract was indexed at parse time;
+      // re-index so the clause-flag filters and facets can see them.
+      reindexContract(id).catch(err => app.log.warn({ err }, 'ES re-index after clause flags failed'))
     }
 
     return reply.status(201).send({ stored: clauseSegments?.length ?? 0 })
@@ -964,21 +1111,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // version has no clauses yet (happens when a user saves a new version
     // from the editor before re-analysis runs). Otherwise the rail/drawer
     // look empty until extraction catches up.
-    let versionId = contract.currentVersionId
-    if (versionId) {
-      const count = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
-      if (count === 0) {
-        const fallback = await prisma.contractVersion.findFirst({
-          where: {
-            contractId: id,
-            clauses: { some: { isSubChunk: false } },
-          },
-          orderBy: { versionNumber: 'desc' },
-          select: { id: true },
-        })
-        if (fallback) versionId = fallback.id
-      }
-    }
+    const versionId = await clauseVersionId(id, contract.currentVersionId)
     if (!versionId) return reply.send({ data: [] })
 
     const clauses = await prisma.contractClause.findMany({
@@ -992,6 +1125,15 @@ export async function contractRoutes(app: FastifyInstance) {
       },
     })
 
+    // X27 — the agents service reads these for the approval summary, which a
+    // model writes: the org's PII policy applies (round-trip tokens, put back
+    // when the summary is stored, see approvals.ts).
+    if (req.user.sub === 'system') {
+      const text = (await prisma.contractVersion.findUnique({ where: { id: versionId }, select: { plainText: true } }))?.plainText ?? ''
+      return reply.send({ data: await redactJson(orgId, clauses, {
+        surface: 'approval_summary.clauses', contractId: id, roundTrip: id, valuesFrom: [clauses.map(c => c.content), text],
+      }) })
+    }
     return reply.send({ data: clauses })
   })
 
@@ -1010,22 +1152,39 @@ export async function contractRoutes(app: FastifyInstance) {
     // Scope check: ensure the clause belongs to a contract in this org.
     const clause = await prisma.contractClause.findUnique({
       where: { id: clauseId },
-      select: { version: { select: { contract: { select: { orgId: true, id: true } } } } },
+      select: {
+        versionId: true, sortOrder: true, clauseType: true, isSubChunk: true,
+        version: { select: { contract: { select: { orgId: true, id: true, ownerId: true, currentVersionId: true } } } },
+      },
     })
-    if (!clause || clause.version.contract.orgId !== orgId) {
+    if (!clause || clause.version.contract.orgId !== orgId
+      // X7 — an own-scope editor may only mark clauses on contracts it owns.
+      || (req.permissionScope === 'own' && clause.version.contract.ownerId !== userId)) {
       return reply.status(404).send({ detail: 'Clause not found' })
     }
 
-    const updated = await prisma.contractClause.update({
-      where: { id: clauseId },
-      data: {
-        reviewState: state,
-        reviewedAt: state === 'unreviewed' ? null : new Date(),
-        reviewedById: state === 'unreviewed' ? null : userId,
-      },
-      select: { id: true, reviewState: true, reviewedAt: true, reviewedById: true },
-    })
-
+    // DD2 — a clause of a version the contract has moved on from (the page
+    // held its id across an edit; the review drawer marks the clause it has
+    // just rewritten) marks the same clause in the version the contract
+    // stands on: same place, same type.
+    const currentVersionId = clause.version.contract.currentVersionId
+    const target = currentVersionId && clause.versionId !== currentVersionId && !clause.isSubChunk
+      ? await prisma.contractClause.findFirst({
+          where: { versionId: currentVersionId, isSubChunk: false, sortOrder: clause.sortOrder, clauseType: clause.clauseType },
+          select: { id: true },
+        })
+      : null
+    const data = {
+      reviewState: state,
+      reviewedAt: state === 'unreviewed' ? null : new Date(),
+      reviewedById: state === 'unreviewed' ? null : userId,
+    }
+    const select = { id: true, reviewState: true, reviewedAt: true, reviewedById: true }
+    const updated = await prisma.contractClause.update({ where: { id: clauseId }, data, select })
+    if (target) {
+      const now = await prisma.contractClause.update({ where: { id: target.id }, data, select })
+      return reply.send({ ...now, requestedId: clauseId })
+    }
     return reply.send(updated)
   })
 
@@ -1050,8 +1209,6 @@ export async function contractRoutes(app: FastifyInstance) {
   app.patch('/:id', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
-    const body = UpdateContractSchema.parse(req.body)
-
     // Internal service calls use orgId='system' — find by id only
     const where = orgId === 'system'
       ? { id, deletedAt: null }
@@ -1060,30 +1217,123 @@ export async function contractRoutes(app: FastifyInstance) {
     const existing = await prisma.contract.findFirst({ where })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
 
+    // X23 — the extraction read the contract with round-trip tokens in place of
+    // personal data (agent.worker.ts callAgents); put the values back in what
+    // it writes here (summary, key terms and their quotes, findings), against
+    // the version it read (?versionId=, from review.py), else the newest one.
+    // Before validation: a date still tokenized fails the schema and loses the
+    // whole update.
+    let raw: unknown = req.body
+    if (req.user.sub === 'system' && JSON.stringify(raw ?? null).includes('[PII:')) {
+      const { versionId } = req.query as { versionId?: string }
+      const version = (versionId && await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: existing.id }, select: { plainText: true } }))
+        || (existing.currentVersionId && await prisma.contractVersion.findUnique({ where: { id: existing.currentVersionId }, select: { plainText: true } }))
+        || await prisma.contractVersion.findFirst({ where: { contractId: existing.id }, orderBy: { versionNumber: 'desc' }, select: { plainText: true } })
+      // A redline analysis quotes both versions it compared (X27).
+      const analysis = (raw as { metadata?: { _redlineAnalysis?: { v1Id?: unknown; v2Id?: unknown } } } | null)?.metadata?._redlineAnalysis
+      const compared = analysis
+        ? await prisma.contractVersion.findMany({
+            where: { contractId: existing.id, id: { in: [analysis.v1Id, analysis.v2Id].filter((v): v is string => typeof v === 'string') } },
+            select: { plainText: true, htmlContent: true },
+          })
+        : []
+      const source = [version ? version.plainText : '', ...compared.flatMap(versionForms)]
+      raw = restorePii(raw, source, existing.id)
+      const left = unresolvedPiiTokens(raw, source).length
+      if (left) req.log.warn({ contractId: existing.id, left }, 'PII placeholders left unresolved in an agents-service update')
+      // review.py makes dates full ISO, but it can't for a token; a restored
+      // date-only value gets the same treatment here.
+      if (raw && typeof raw === 'object') {
+        const r = raw as Record<string, unknown>
+        for (const k of ['effectiveDate', 'expiryDate']) {
+          if (typeof r[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r[k] as string)) r[k] = `${r[k]}T00:00:00.000Z`
+        }
+      }
+    }
+    const body = UpdateContractSchema.parse(raw)
+
+    // An analysis of a later version (the counterparty's return, a redline)
+    // renamed the contract after the other side's document, and could retype
+    // it. What the contract is called, what it is and who it's with are set
+    // by the first version's analysis or by a person; later analyses leave them.
+    if (req.user.sub === 'system' && (body.title !== undefined || body.type !== undefined || body.counterpartyName !== undefined)) {
+      const versions = await prisma.contractVersion.count({ where: { contractId: existing.id } })
+      if (versions > 1) {
+        delete (body as Record<string, unknown>).title
+        delete (body as Record<string, unknown>).type
+        delete (body as Record<string, unknown>).counterpartyName
+      }
+    }
+
+    // X25 — a matter link must name a live matter of the contract's own org.
+    // It was stored unchecked, and the other org's matter view listed this
+    // contract (and new amendments inherited the foreign matter).
+    if (body.matterId) {
+      const matter = await prisma.matter.count({ where: { id: body.matterId, orgId: existing.orgId, deletedAt: null } })
+      if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
+    }
+
     // Validate status transitions
     if (body.status && body.status !== existing.status) {
-      const VALID_TRANSITIONS: Record<string, string[]> = {
-        DRAFT:              ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-        PENDING_REVIEW:     ['DRAFT', 'UNDER_NEGOTIATION', 'PENDING_APPROVAL'],
-        UNDER_NEGOTIATION:  ['PENDING_REVIEW', 'PENDING_APPROVAL'],
-        PENDING_APPROVAL:   ['APPROVED', 'REJECTED'],
-        APPROVED:           ['EXECUTED', 'PENDING_SIGNATURE'],
-        EXECUTED:           ['ARCHIVED'],
-        EXPIRED:            ['ARCHIVED'],
-        REJECTED:           ['DRAFT'],
-      }
-      const allowed = VALID_TRANSITIONS[existing.status] ?? []
-      if (!allowed.includes(body.status)) {
-        return reply.status(409).send({
-          detail: `Cannot transition from ${existing.status} to ${body.status}`,
-        })
-      }
+      // X24 — one table with the agent's set_status; approval statuses are the
+      // workflow's to set.
+      const refusal = manualStatusRefusal(existing.status, body.status)
+      if (refusal) return reply.status(409).send({ detail: refusal })
+    }
+
+    // X42 — a user changing an approved contract's type, value or currency
+    // changes what was approved: it goes back to DRAFT for approval again.
+    // (The agents service's extraction writes these from the document, whose
+    // own changes reset approval where a version is saved.)
+    const num = (v: unknown) => (v == null ? null : Number(v))
+    const termsChanged = req.user.sub !== 'system' && !!statusAfterTermsChange(existing.status) && (
+      (body.type !== undefined && body.type !== existing.type)
+      || (body.value !== undefined && num(body.value) !== num(existing.value))
+      || (body.currency !== undefined && body.currency !== existing.currency))
+    if (termsChanged && body.status && body.status !== existing.status) {
+      return reply.status(409).send({ detail: 'Changing the type, value or currency of an approved contract returns it to DRAFT for approval again. Change the status separately.' })
     }
 
     // Use the contract's real orgId (internal calls come in with orgId='system')
     const effectiveOrgId = existing.orgId
 
-    const updated = await prisma.contract.update({ where: { id }, data: body as Prisma.ContractUncheckedUpdateInput })
+    // C4 — metadata is MERGED into what is stored, never replaced. Several
+    // writers own different keys (extraction, compliance, playbook review,
+    // binder split, redline); a JSON column update replaces the whole object,
+    // so re-analysis used to erase every report it did not itself produce.
+    // A null value deletes its key (JSON merge patch, top level).
+    const data: Record<string, unknown> = { ...body }
+    if (termsChanged) data.status = statusAfterTermsChange(existing.status)
+    // X26 follow-up — _splitInto is written by the binder split itself
+    // (lib/binder-split.ts), never changed through here, not even by the
+    // agents service, whose writes follow a model that read the document.
+    // (redline.py writes the whole metadata back, so an unchanged value
+    // passes.)
+    if (body.metadata && '_splitInto' in body.metadata) {
+      const stored = (existing.metadata as Record<string, unknown> | null)?._splitInto ?? null
+      if (JSON.stringify(body.metadata._splitInto ?? null) !== JSON.stringify(stored)) {
+        return reply.status(400).send({ detail: 'Metadata key "_splitInto" is set by the binder split only' })
+      }
+    }
+    if (body.metadata && req.user.sub !== 'system') {
+      // X26 — `_` keys are server state (analysis reports, the binder split's
+      // _splitInto). A user who wrote _splitInto made the next re-split
+      // soft-delete whatever it named. Only the agents service writes them.
+      const reserved = Object.keys(body.metadata).filter(k => k.startsWith('_'))
+      if (reserved.length) {
+        return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
+      }
+    }
+    if (body.metadata) {
+      const merged: Record<string, unknown> = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) }
+      for (const [k, v] of Object.entries(body.metadata)) {
+        if (v === null) delete merged[k]
+        else merged[k] = v
+      }
+      data.metadata = merged
+    }
+
+    const updated = await prisma.contract.update({ where: { id }, data: data as Prisma.ContractUncheckedUpdateInput })
 
     // Re-index if searchable fields changed. indexContract is a full-document
     // overwrite (elasticsearch.ts), so we must carry the existing full text and
@@ -1115,6 +1365,12 @@ export async function contractRoutes(app: FastifyInstance) {
       }).catch(() => {})
     }
 
+    // H2 — advertised to subscribers since P10A, never emitted until now.
+    fireWebhook(effectiveOrgId, 'contract.updated', {
+      contractId: id, title: updated.title, status: updated.status,
+      changes: Object.keys(body), source: userId === 'system' ? 'system' : 'user',
+    })
+
     await createAuditEvent({
       orgId: effectiveOrgId,
       userId: userId === 'system' ? undefined : userId,
@@ -1143,7 +1399,9 @@ export async function contractRoutes(app: FastifyInstance) {
 
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
-    const version = contract.versions[0]
+    // DD4 — analyse the version the contract stands on, not the newest (an
+    // undone redline).
+    const version = await standingVersion(contract.id, contract.currentVersionId)
 
     // If no version exists, re-queue draft agent (using stored context or contract fields as fallback)
     if (!version) {
@@ -1241,19 +1499,31 @@ export async function contractRoutes(app: FastifyInstance) {
       include: { versions: { orderBy: { versionNumber: 'desc' }, take: 1 } },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    if (!contract.versions[0]?.plainText) {
+    // DD4 — the version the contract stands on, not the newest.
+    const standing = await standingVersion(contract.id, contract.currentVersionId)
+    if (!standing?.plainText) {
       return reply.status(422).send({ detail: 'No extracted text available.' })
     }
 
-    // Update type immediately so UI shows it
+    // Update type immediately so UI shows it. X56 — X42's rule: a new type
+    // changes what was approved, so an approved contract goes back to DRAFT
+    // for approval again, and the change is on the record.
+    const retyped = contractType !== contract.type
+    const status = retyped ? statusAfterTermsChange(contract.status) : undefined
     await prisma.contract.update({
       where: { id },
-      data: { type: contractType, analysisStatus: 'ANALYZING' },
+      data: { type: contractType, analysisStatus: 'ANALYZING', ...(status && { status }) },
     })
+    if (retyped) {
+      await createAuditEvent({
+        orgId, userId: req.user.sub, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: id,
+        metadata: { action: 'retype', typeFrom: contract.type, typeTo: contractType, ...(status && { statusFrom: contract.status, statusTo: status }) },
+      })
+    }
 
     queueExtractAi({
       contractId: id,
-      versionId:  contract.versions[0].id,
+      versionId:  standing.id,
       orgId,
       contractType,
       triggeredBy: 'retype',
@@ -1264,9 +1534,10 @@ export async function contractRoutes(app: FastifyInstance) {
 
   // ── Internal: trigger chunk-and-index (called by agents after clauses stored) ─
   app.post('/:id/versions/:versionId/chunk', async (req, reply) => {
-    // Internal-only — validated via x-internal-secret header
-    const secret = req.headers['x-internal-secret']
-    if (secret !== process.env.INTERNAL_SERVICE_SECRET) {
+    // Internal-only — validated via x-internal-secret header. X35: an unset
+    // secret refuses everyone (a missing header used to equal it).
+    const expected = process.env.INTERNAL_SERVICE_SECRET
+    if (!expected || req.headers['x-internal-secret'] !== expected) {
       return reply.status(401).send({ detail: 'Unauthorized' })
     }
     const { id, versionId } = req.params as { id: string; versionId: string }
@@ -1296,20 +1567,35 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.send({ answer: null, sources: [], message: 'No relevant clauses found — try re-uploading to extract text' })
     }
 
-    const agentRes = await fetch(
+    // X27 — the clauses go to the model under the org's PII policy, as
+    // round-trip tokens (values found against the whole text of the versions
+    // the clauses come from, scoped to this request); the answer comes back
+    // to the user with the values.
+    const scope = randomUUID()
+    const documents = (await prisma.contractVersion.findMany({
+      where:  { id: { in: [...new Set(clauseMatches.map(m => m.versionId))] }, contractId: id },
+      select: { plainText: true },
+    })).map(v => v.plainText)
+    const sent = await redactJson(orgId, clauseMatches, {
+      surface: 'contract_ask', contractId: id, roundTrip: scope, valuesFrom: [clauseMatches.map(m => m.content), documents],
+    })
+    const agentRes = await modelFetch(
       `${process.env.AGENTS_URL ?? 'http://localhost:8002'}/agent/ask`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, orgId, contractId: id, clauseMatches }),
+        // X55 — the agents service refuses any call without the shared secret,
+        // so without it every question here answered "Agent unavailable".
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
+        body: JSON.stringify({ question, orgId, contractId: id, clauseMatches: sent }),
       },
+      { orgId, surface: 'contract_ask', contractId: id, userAuthored: ['question'] },
     ).catch(() => null)
 
     if (!agentRes?.ok) {
       return reply.send({ answer: null, sources: clauseMatches, message: 'Agent unavailable — showing relevant clauses' })
     }
 
-    const agentData = await agentRes.json()
+    const agentData = restorePii(await agentRes.json(), [clauseMatches.map(m => m.content), documents], scope)
     return reply.send({ ...agentData, sources: clauseMatches })
   })
 
@@ -1337,13 +1623,13 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const selfRiskScore = normalizeRiskScore(contract.riskScore)
 
-    // Query-contract avg embedding (from all clauses across all its versions).
+    // Query-contract avg embedding, over its effective version's clauses (X17:
+    // it averaged every version's, so superseded text weighed in — C11's rule).
     const selfAvg = await prisma.$queryRaw<Array<{ avg_vec: string | null }>>`
       SELECT AVG(cc.embedding)::text AS avg_vec
       FROM   contract_clauses cc
-      JOIN   contract_versions cv ON cv.id = cc."versionId"
-      WHERE  cv."contractId" = ${id}
-             AND cc.embedding IS NOT NULL
+      JOIN   (${effectiveVersionsSql(orgId, id)}) ev ON ev.id = cc."versionId"
+      WHERE  cc.embedding IS NOT NULL
              AND cc."isSubChunk" = FALSE
     `
 
@@ -1359,7 +1645,9 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     // Top-3 signed peers of the same type by cosine similarity on avg
-    // clause embedding. Excludes this contract and unsigned drafts.
+    // clause embedding. Excludes this contract and unsigned drafts. X7 — an
+    // own-scope caller's peers come only from contracts they own.
+    const peerOwnerId = req.permissionScope === 'own' ? req.user.sub : null
     const peers = await prisma.$queryRaw<Array<{
       contract_id:   string
       title:         string
@@ -1381,12 +1669,19 @@ export async function contractRoutes(app: FastifyInstance) {
                AVG(cc.embedding) AS avg_embedding
         FROM   contracts c
         JOIN   contract_versions cv ON cv."contractId" = c.id
+        -- X17: one version per peer, chosen among the candidates only (the
+        -- DISTINCT ON would otherwise rank every version in the org).
+        JOIN   (${effectiveVersionsSql(orgId, undefined, Prisma.sql`
+                  AND c2."deletedAt" IS NULL AND c2."diligenceRoomId" IS NULL
+                  AND c2.status IN ('APPROVED','EXECUTED') AND c2.type = ${contract.type}`)}) ev ON ev.id = cv.id
         JOIN   contract_clauses cc  ON cc."versionId"  = cv.id
         WHERE  c."orgId"       = ${orgId}
                AND c.id        <> ${id}
                AND c."deletedAt" IS NULL
+               AND c."diligenceRoomId" IS NULL   -- X17: a target's contracts are not our precedents
                AND c.status IN ('APPROVED','EXECUTED')
                AND c.type      = ${contract.type}
+               AND (${peerOwnerId}::text IS NULL OR c."ownerId" = ${peerOwnerId}::text)
                AND cc.embedding IS NOT NULL
                AND cc."isSubChunk" = FALSE
         GROUP  BY c.id, c.title, c.type, c.value, c."counterpartyName", c."updatedAt", c."riskScore"
@@ -1472,10 +1767,10 @@ export async function contractRoutes(app: FastifyInstance) {
         parentContractId: true,
         relationshipType: true,
         parentContract: {
-          select: { id: true, title: true, type: true, status: true, relationshipType: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true },
         },
         amendments: {
-          where: { deletedAt: null },
+          where: { deletedAt: null, orgId, ...ownContractWhere(req) },
           select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
@@ -1483,6 +1778,12 @@ export async function contractRoutes(app: FastifyInstance) {
     })
 
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    // X7 — an own-scope caller sees only the relatives it owns.
+    const p = contract.parentContract
+    const parent = p && p.orgId === orgId && !p.deletedAt && (req.permissionScope !== 'own' || p.ownerId === req.user.sub)
+      ? { id: p.id, title: p.title, type: p.type, status: p.status, relationshipType: p.relationshipType }
+      : null
 
     // Siblings: other children of the same parent (excluding this contract)
     const siblings = contract.parentContractId
@@ -1492,13 +1793,14 @@ export async function contractRoutes(app: FastifyInstance) {
             id: { not: id },
             orgId,
             deletedAt: null,
+            ...ownContractWhere(req),
           },
           select: { id: true, title: true, type: true, status: true, relationshipType: true },
         })
       : []
 
     return reply.send({
-      parent:   contract.parentContract ?? null,
+      parent,
       children: contract.amendments,
       siblings,
     })
@@ -1555,16 +1857,24 @@ export async function contractRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyId: true, counterpartyName: true,
-        currency: true, matterId: true,
+        currency: true, matterId: true, diligenceRoomId: true,
       },
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
+    // X45 — an API key's amendment belongs to the user who made the key.
+    const ownerId = actingUserId(req.user)
+    if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
     const relationshipType = (body.relationshipType ?? 'amendment').toLowerCase()
     const ALLOWED = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit_only']
     if (!ALLOWED.includes(relationshipType)) {
       return reply.status(400).send({ detail: `relationshipType must be one of ${ALLOWED.join(', ')}` })
     }
+
+    // X25 — inherit the parent's matter only if it is a live matter of this
+    // org: a link stored before the fix could name another org's.
+    const matterId = parent.matterId && await prisma.matter.count({ where: { id: parent.matterId, orgId, deletedAt: null } })
+      ? parent.matterId : null
 
     const title = (body.title?.trim()) || `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`
     // Default type by relationship: amendments inherit parent type;
@@ -1589,7 +1899,7 @@ export async function contractRoutes(app: FastifyInstance) {
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
     const created = await prisma.contract.create({
       data: {
-        orgId, ownerId: userId,
+        orgId, ownerId,
         title,
         type,
         status: 'DRAFT',
@@ -1602,7 +1912,9 @@ export async function contractRoutes(app: FastifyInstance) {
         value:            value != null && !isNaN(value) ? value : null,
         effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
         expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
-        matterId:         parent.matterId ?? undefined,
+        matterId:         matterId ?? undefined,
+        // C11 — an amendment to a diligence-room document stays in that room.
+        diligenceRoomId:  parent.diligenceRoomId ?? undefined,
         metadata:         body.description ? { amendmentDescription: body.description } : {},
         versions: {
           create: {
@@ -1650,6 +1962,13 @@ export async function contractRoutes(app: FastifyInstance) {
       metadata: { relationshipType, parentContractId: parent.id, source: 'amendment_flow' },
       ipAddress: req.ip,
     })
+    // H2 — `amendment.created` was advertised but never emitted. This route
+    // creates every related document (amendment, SOW, order form, renewal,
+    // exhibit); the event names the relationship so subscribers can filter.
+    fireWebhook(orgId, 'amendment.created', {
+      contractId: created.id, parentContractId: parent.id, relationshipType,
+      title: created.title, type: created.type,
+    })
 
     return reply.status(201).send({
       id:               created.id,
@@ -1692,6 +2011,10 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     if (!fileBuffer) return reply.status(400).send({ detail: 'No file uploaded' })
+    // S3 — attachments are served back by presigned URL with the stored type.
+    const checked = checkUpload(fileBuffer, mimeType, ATTACHMENT_TYPES)
+    if (!checked.ok) return reply.status(checked.status).send({ detail: checked.detail })
+    mimeType = checked.mimeType
 
     const s3Key = `${orgId}/contracts/${id}/attachments/${Date.now()}-${filename}`
     await s3.send(new PutObjectCommand({
@@ -1769,6 +2092,7 @@ export async function contractRoutes(app: FastifyInstance) {
         Bucket: S3_BUCKET,
         Key: attachment.s3Key,
         ResponseContentDisposition: `attachment; filename="${attachment.filename}"`,
+        ResponseContentType: servableContentType(attachment.mimeType),
       }),
       { expiresIn: 300 },
     )
@@ -1794,8 +2118,23 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
+    // C10 — say now, not after three failed retries, when the split can't run.
+    const original = await prisma.contractVersion.findFirst({
+      where: { contractId: id }, orderBy: { createdAt: 'asc' }, select: { mimeType: true },
+    })
+    if (original?.mimeType && original.mimeType !== 'application/pdf') {
+      return reply.status(422).send({ detail: SPLIT_REQUIRES_PDF })
+    }
+    const blocker = resplitBlocker(await previousSplitChildren(id, orgId))
+    if (blocker) return reply.status(409).send({ detail: blocker })
+
     // Queue the split job — worker handles S3 download, slicing, child creation
-    queueSplitBinder({ contractId: id, orgId, userId, splits })
+    // (and replaces any children from a previous split). X45 — a child's owner
+    // is a user, and a key is none: a split a key asks for leaves the children
+    // with the binder's owner, as the automatic split does, and records the
+    // key as their creator.
+    const byKey = req.user.sub.startsWith('apikey:')
+    queueSplitBinder({ contractId: id, orgId, userId, splits, ...(byKey ? { ownerId: contract.ownerId } : {}) })
 
     await createAuditEvent({
       orgId, userId,
@@ -1822,35 +2161,19 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'html is required' })
     }
 
-    const GOTENBERG_URL = process.env.GOTENBERG_URL ?? 'http://localhost:3001'
-
     if (format === 'pdf') {
-      // Wrap bare HTML in a minimal document if needed
-      const fullHtml = html.trimStart().startsWith('<!DOCTYPE') ? html : `<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<style>
-  body { font-family: Georgia, serif; font-size: 12pt; line-height: 1.6; margin: 2.5cm; color: #1a1a1a; }
-  h1 { font-size: 18pt; } h2 { font-size: 14pt; } h3 { font-size: 12pt; }
-  table { border-collapse: collapse; width: 100%; }
-  td, th { border: 1px solid #ccc; padding: 6px 10px; }
-</style>
-</head><body>${html}</body></html>`
-
-      const formData = new FormData()
-      formData.append('files', new Blob([fullHtml], { type: 'text/html' }), 'index.html')
-
-      const upstream = await fetch(`${GOTENBERG_URL}/forms/chromium/convert/html`, {
-        method: 'POST',
-        body: formData,
-      }).catch(() => null)
-
-      if (!upstream?.ok) {
-        const errText = upstream ? await upstream.text() : 'Gotenberg unavailable'
-        app.log.error({ errText }, 'Gotenberg PDF conversion failed')
+      // X11 — the request body is arbitrary HTML, and this rendered it as
+      // given: Gotenberg fetched what it named from inside the network and
+      // printed the response into the PDF returned here. It now goes through
+      // the one sanitising renderer (this fetch also skipped the Cloud Run
+      // auth header and defaulted to the API's own port).
+      let pdfBuffer: Buffer
+      try { pdfBuffer = await renderHtmlToPdf(html) }
+      catch (err) {
+        if (err instanceof RenderRefusedError) return reply.status(422).send({ detail: err.message })
+        app.log.error({ err }, 'Gotenberg PDF conversion failed')
         return reply.status(502).send({ detail: 'PDF generation failed' })
       }
-
-      const pdfBuffer = Buffer.from(await upstream.arrayBuffer())
       reply.header('Content-Type', 'application/pdf')
       reply.header('Content-Disposition', `attachment; filename="${filename}.pdf"`)
       return reply.send(pdfBuffer)
@@ -1895,9 +2218,6 @@ export async function contractRoutes(app: FastifyInstance) {
     ])
     if (!v1 || !v2) return reply.status(404).send({ error: 'Version not found' })
 
-    const cached = await prisma.versionDiffCache.findUnique({ where: { v1Id_v2Id: { v1Id, v2Id } } })
-    if (cached) return reply.send({ diffHtml: cached.diffHtml, stats: cached.stats, v1Id, v2Id })
-
     // A version whose text has not been extracted yet (freshly uploaded, or a
     // counterparty turn still moving through the parse pipeline) has
     // htmlContent ''. Diffing against '' renders the entire other version as
@@ -1908,22 +2228,50 @@ export async function contractRoutes(app: FastifyInstance) {
       ...(v1.htmlContent?.trim() ? [] : [v1Id]),
       ...(v2.htmlContent?.trim() ? [] : [v2Id]),
     ]
-    if (pendingVersionIds.length > 0) {
-      return reply.status(409).send({
-        error:  'Version still processing',
-        detail: 'This version is still being extracted. The comparison will be available once processing finishes.',
-        pendingVersionIds,
+    const pending = () => reply.status(409).send({
+      error:  'Version still processing',
+      detail: 'This version is still being extracted. The comparison will be available once processing finishes.',
+      pendingVersionIds,
+    })
+    const tooLarge = () => reply.status(422).send({ error: 'Comparison too large', detail: new DiffTooLargeError().message })
+
+    // X27 — the agents service reads diffs for the redline analysis, which a
+    // model writes: the org's PII policy applies (round-trip tokens, put back
+    // when the analysis is stored through PATCH /:id). Tokens go into each
+    // version BEFORE diffing: htmldiff splits words at '-' and '.', so a value
+    // changed between versions came out as `123-45-<del>6789</del>…`, which no
+    // replacement over the finished diff could find. Not cached (users' diffs
+    // are): the tokens are the agents' alone.
+    if (req.user.sub === 'system') {
+      if (pendingVersionIds.length > 0) return pending()
+      const [h1, h2, t1, t2] = await redactJson(contract.orgId, [plainSpacesHtml(v1.htmlContent), plainSpacesHtml(v2.htmlContent), v1.plainText, v2.plainText], {
+        surface: 'redline_diff', contractId, roundTrip: contractId, valuesFrom: [...versionForms(v1), ...versionForms(v2)],
       })
+      // The HTML diff, as users get it; the plain text's when the markup
+      // splits a value the replacement couldn't reach.
+      const para = (t: string) => t.split(/\n+/).map(l => `<p>${escapeText(l)}</p>`).join('')
+      const [a, b] = await getOrgPiiMode(contract.orgId) !== 'off' && [h1, h2].some(valueLeftInMarkup)
+        ? [para(t1), para(t2)]
+        : [h1, h2]
+      const diffHtml = await withWholeTokens([a, b], ([x, y]) => htmlDiff(x, y))
+        .catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
+      if (diffHtml === null) return tooLarge()
+      const stats = { insertions: (diffHtml.match(/<ins[\s>]/g) ?? []).length, deletions: (diffHtml.match(/<del[\s>]/g) ?? []).length }
+      return reply.send({ diffHtml, stats, v1Id, v2Id })
     }
 
-    const diffHtml: string = htmldiff(v1.htmlContent, v2.htmlContent)
+    const cached = await prisma.versionDiffCache.findUnique({ where: { v1Id_v2Id: { v1Id, v2Id } } })
+    if (cached) return reply.send({ diffHtml: cached.diffHtml, stats: cached.stats, v1Id, v2Id })
 
-    // Count insertions / deletions from <ins> and <del> tags
-    const insertions = (diffHtml.match(/<ins[\s>]/g) ?? []).length
-    const deletions  = (diffHtml.match(/<del[\s>]/g) ?? []).length
-    const stats = { insertions, deletions }
+    if (pendingVersionIds.length > 0) return pending()
 
-    await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats } })
+    // X32 — computed on a worker thread, within a time limit.
+    const computed = await computeVersionDiff(v1.htmlContent, v2.htmlContent)
+      .catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
+    if (!computed) return tooLarge()
+    const { diffHtml, stats } = computed
+
+    await prisma.versionDiffCache.create({ data: { contractId, v1Id, v2Id, diffHtml, stats: { ...stats } } })
 
     return reply.send({ diffHtml, stats, v1Id, v2Id })
   })
@@ -1959,6 +2307,8 @@ export async function contractRoutes(app: FastifyInstance) {
           detail: 'This version is still being extracted. The redline will be available once processing finishes.',
         })
       }
+      // X32 — the diff it is built from ran past its time limit.
+      if (err instanceof DiffTooLargeError) return reply.status(422).send({ error: 'Comparison too large', detail: msg })
       req.log.error({ err }, '[redline-docx] failed')
       return reply.status(500).send({ detail: 'Redline export failed', error: msg.slice(0, 200) })
     }
@@ -2043,7 +2393,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const meta = (contract.metadata as Record<string, unknown> | null) ?? {}
     const staged = meta._playbookRedline as
-      { proposals?: Array<{ clauseId: string; proposedText?: string; rationale?: string }> } | undefined
+      { proposals?: Array<{ clauseId: string; proposedText?: string; rationale?: string; changes?: Array<{ before: string; after: string; reason?: string }> }> } | undefined
     if (!staged?.proposals?.length) {
       return reply.status(409).send({ detail: 'No staged redline to apply', code: 'NO_STAGED_REDLINE' })
     }
@@ -2054,7 +2404,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const changes = accepted
       .map(id => byId.get(id))
       .filter((p): p is NonNullable<typeof p> => !!p)
-      .map(p => ({ clauseId: p.clauseId, proposedText: p.proposedText!, rationale: p.rationale }))
+      .map(p => ({ clauseId: p.clauseId, proposedText: p.proposedText!, rationale: p.rationale, changes: p.changes }))
 
     if (changes.length === 0) {
       return reply.status(409).send({
@@ -2102,15 +2452,68 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { metadata: true },
+      select: { metadata: true, type: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
-    const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview
+    const review = (contract.metadata as Record<string, unknown> | null)?._playbookReview as
+      { findings?: Array<Record<string, unknown>>; versionId?: string } | undefined
     if (!review) {
-      return reply.status(404).send({ detail: 'No playbook review has been run for this contract' })
+      // V1 — say WHY there is no review: the job skips contracts whose type
+      // has no playbook positions (same filter as handlePlaybookReview).
+      const positions = await prisma.playbookPosition.findMany({ where: { orgId }, select: { contractTypes: true } })
+      const playbookPositionCount = positions.filter(p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type)).length
+      return reply.status(404).send({
+        detail: playbookPositionCount === 0
+          ? `No playbook positions apply to ${contract.type} contracts, so this contract has not been reviewed against a playbook.`
+          : 'No playbook review has been run for this contract yet. It runs automatically after extraction.',
+        reason: playbookPositionCount === 0 ? 'no_positions' : 'not_run',
+        playbookPositionCount,
+        contractType: contract.type,
+      })
     }
-    return reply.send(review)
+
+    // V1 — findings in DOCUMENT order (the model returns them in its own
+    // order), each joined to its clause's position, section and excerpt so
+    // the rail can link to it.
+    const findings = Array.isArray(review.findings) ? review.findings : []
+    const clauseIds = findings.map(f => f.clauseId).filter((x): x is string => typeof x === 'string')
+    const clauses = clauseIds.length
+      ? await prisma.contractClause.findMany({
+          where:  { id: { in: clauseIds }, version: { contractId } },
+          select: { id: true, sortOrder: true, sectionRef: true, content: true, clauseType: true },
+        })
+      : []
+    const byId = new Map(clauses.map(c => [c.id, c]))
+    // DD2 — a review of an earlier version, read on the version the contract
+    // stands on: each finding follows its clause there (same place, same
+    // type), so its link opens the clause as it now reads. The page's clauses
+    // are the current version's; the reviewed ones' ids are not among them.
+    const now = new Map<string, (typeof clauses)[number]>()
+    if (review.versionId && contract.currentVersionId && review.versionId !== contract.currentVersionId) {
+      const rows = await prisma.contractClause.findMany({
+        where:  { versionId: contract.currentVersionId, isSubChunk: false },
+        select: { id: true, sortOrder: true, sectionRef: true, content: true, clauseType: true },
+      })
+      for (const r of rows) now.set(`${r.sortOrder}|${r.clauseType}`, r)
+    }
+    const ordered = findings
+      .map(f => {
+        const reviewed = typeof f.clauseId === 'string' ? byId.get(f.clauseId) : undefined
+        const current = reviewed ? now.get(`${reviewed.sortOrder}|${reviewed.clauseType}`) : undefined
+        const c = current ?? reviewed
+        return {
+          ...f,
+          ...(current && { clauseId: current.id }),
+          sortOrder:  c?.sortOrder ?? null,
+          sectionRef: c?.sectionRef ?? null,
+          excerpt:    c ? c.content.slice(0, 240) : null,
+          // The clause's words changed after the review: its finding may no longer hold.
+          ...(current && reviewed && current.content !== reviewed.content && { changedSinceReview: true }),
+        }
+      })
+      .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
+    return reply.send({ ...review, findings: ordered })
   })
 
   app.post('/:id/redline', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
@@ -2164,21 +2567,19 @@ export async function contractRoutes(app: FastifyInstance) {
     let workflow = workflowDefinitionId
       ? await prisma.workflowDefinition.findFirst({ where: { id: workflowDefinitionId, orgId, deletedAt: null, isActive: true } })
       : null
+    // Z3 — the workflow the sender chose, or none: never another in its place.
+    if (workflowDefinitionId && !workflow) {
+      return reply.status(422).send({ error: 'That workflow is inactive or no longer exists. Choose another.' })
+    }
 
+    const routed = { type: contract.type, value: contract.value != null ? Number(contract.value) : null, currency: contract.currency }
     if (!workflow) {
-      // Auto-select: find a workflow that matches this contract type / value
+      // Z3 — the workflow whose rules fit this contract most closely, by the
+      // rule the Send for review dialog shows the sender.
       const candidates = await prisma.workflowDefinition.findMany({
         where: { orgId, isActive: true, deletedAt: null },
-        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
       })
-      for (const candidate of candidates) {
-        const rules = candidate.triggerRules as Record<string, unknown>
-        const types = (rules.contractTypes as string[] | undefined) ?? []
-        if (types.length === 0 || types.includes(contract.type)) {
-          workflow = candidate
-          break
-        }
-      }
+      workflow = pickWorkflow(candidates, routed)
     }
 
     if (!workflow) {
@@ -2198,8 +2599,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
 
     // ── Auto-approval check ──────────────────────────────────────────────────
-    const contractValue = contract.value ? Number(contract.value) : null
-    if (checkAutoApprove(contract.type, contractValue, triggerRules)) {
+    if (checkAutoApprove(contract.type, routed.value, triggerRules, contract.currency)) {
       // Instantly approve without creating pending steps
       const instance = await prisma.approvalInstance.create({
         data: {
@@ -2287,11 +2687,9 @@ export async function contractRoutes(app: FastifyInstance) {
       await prisma.approvalStep.update({ where: { id: step.id }, data: { escalationJobId: escalationJob.id?.toString() } })
     }))
 
-    // Queue AI summary generation
-    const latestVersion = await prisma.contractVersion.findFirst({
-      where:   { contractId },
-      orderBy: { versionNumber: 'desc' },
-    })
+    // Queue AI summary generation, of the version the contract stands on
+    // (DD4: after an undo, the newest is the undone one).
+    const latestVersion = await standingVersion(contractId, contract.currentVersionId)
     if (latestVersion) {
       queueApprovalSummary({
         instanceId:  instance.inst.id,
@@ -2548,7 +2946,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
 
     const agentsUrl = process.env.AGENTS_URL ?? 'http://localhost:8002'
-    const pyRes = await fetch(`${agentsUrl}/renewal_advice`, {
+    const pyRes = await modelFetch(`${agentsUrl}/renewal_advice`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -2565,7 +2963,7 @@ export async function contractRoutes(app: FastifyInstance) {
         obligations:   obligations.slice(0, 10),
         orgId,   // Wave 3.5 — lets the agents service resolve the org's BYOK key
       }),
-    })
+    }, { orgId, surface: 'renewal_advice', contractId: contract.id, userId: req.user.sub })
     if (!pyRes.ok) {
       const err = await pyRes.text()
       return reply.status(502).send({ detail: 'renewal advisor failed', upstream: err.slice(0, 300) })

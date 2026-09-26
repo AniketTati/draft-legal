@@ -22,6 +22,9 @@
  *   ordering when no Voyage key is configured.
  */
 
+import { redactJson } from './pii-policy.js'
+import { modelFetch, type ModelCall } from './model-boundary.js'
+import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 
 // ─── Provider routing ───────────────────────────────────────────────────────
@@ -48,6 +51,13 @@ export function activeEmbedProvider(): EmbedProvider {
 
 const PG_VECTOR_DIMS = 1536
 
+/**
+ * Y2 — the org and surface an embedding or rerank call is made for: the text
+ * goes to a model provider, through the model boundary. A query is the
+ * user's own words, sent as typed; a clause was redacted by its caller.
+ */
+export type EmbedCall = Pick<ModelCall, 'orgId' | 'surface'>
+
 /** Right-pad a shorter vector with zeros so it fits the schema's pgvector column. */
 function padTo(vec: number[], dims: number): number[] {
   if (vec.length >= dims) return vec.slice(0, dims)
@@ -56,7 +66,7 @@ function padTo(vec: number[], dims: number): number[] {
 
 // ─── Voyage AI embeddings ───────────────────────────────────────────────────
 
-async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
+async function voyageEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.VOYAGE_API_KEY!
   // Voyage caps at 128 inputs and ~10k tokens per call. Slice each
   // input down to a safe length first; chunk over the inputs as needed.
@@ -66,7 +76,7 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
   const all: number[][] = []
   for (const batch of chunks) {
-    const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+    const res = await modelFetch('https://api.voyageai.com/v1/embeddings', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -74,7 +84,7 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
         input: batch,
         input_type: inputType,
       }),
-    })
+    }, { ...call, userAuthored: inputType === 'query' ? ['input'] : [] })
     if (!res.ok) {
       const err = await res.text()
       throw new Error(`Voyage embeddings error: ${res.status} ${err}`)
@@ -89,9 +99,9 @@ async function voyageEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
 // ─── OpenAI embeddings (legacy default) ─────────────────────────────────────
 
-async function openaiEmbed(texts: string[]): Promise<number[][]> {
+async function openaiEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.OPENAI_API_KEY!
-  const res = await fetch('https://api.openai.com/v1/embeddings', {
+  const res = await modelFetch('https://api.openai.com/v1/embeddings', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -99,7 +109,7 @@ async function openaiEmbed(texts: string[]): Promise<number[][]> {
       input: texts.map(t => t.slice(0, 8192)),
       dimensions: 1536,
     }),
-  })
+  }, { ...call, userAuthored: inputType === 'query' ? ['input'] : [] })
   if (!res.ok) {
     const err = await res.text()
     throw new Error(`OpenAI embeddings error: ${res.status} ${err}`)
@@ -114,7 +124,7 @@ async function openaiEmbed(texts: string[]): Promise<number[][]> {
 // document/query split: RETRIEVAL_DOCUMENT for indexing, RETRIEVAL_QUERY for
 // search. Endpoint caps batches at 100 inputs per call.
 
-async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
+async function geminiEmbed(texts: string[], inputType: 'document' | 'query', call: EmbedCall): Promise<number[][]> {
   const apiKey = process.env.GOOGLE_API_KEY!
   const taskType = inputType === 'query' ? 'RETRIEVAL_QUERY' : 'RETRIEVAL_DOCUMENT'
   // gemini-embedding-001 cap: 2048 tokens per input. Be generous — char-trim
@@ -125,7 +135,7 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
   const all: number[][] = []
   for (const batch of chunks) {
-    const res = await fetch(
+    const res = await modelFetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents?key=${apiKey}`,
       {
         method: 'POST',
@@ -139,6 +149,7 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
           })),
         }),
       },
+      { ...call, userAuthored: inputType === 'query' ? ['requests'] : [] },
     )
     if (!res.ok) {
       const err = await res.text()
@@ -152,18 +163,18 @@ async function geminiEmbed(texts: string[], inputType: 'document' | 'query'): Pr
 
 // ─── Public embed API — routes to the active provider ───────────────────────
 
-export async function embedText(text: string): Promise<number[]> {
+export async function embedText(text: string, call: EmbedCall): Promise<number[]> {
   const provider = activeEmbedProvider()
-  if (provider === 'voyage') return (await voyageEmbed([text], 'query'))[0]
-  if (provider === 'google') return (await geminiEmbed([text], 'query'))[0]
-  return (await openaiEmbed([text]))[0]
+  if (provider === 'voyage') return (await voyageEmbed([text], 'query', call))[0]
+  if (provider === 'google') return (await geminiEmbed([text], 'query', call))[0]
+  return (await openaiEmbed([text], 'query', call))[0]
 }
 
-async function embedTexts(texts: string[]): Promise<number[][]> {
+async function embedTexts(texts: string[], call: EmbedCall): Promise<number[][]> {
   const provider = activeEmbedProvider()
-  if (provider === 'voyage') return voyageEmbed(texts, 'document')
-  if (provider === 'google') return geminiEmbed(texts, 'document')
-  return openaiEmbed(texts)
+  if (provider === 'voyage') return voyageEmbed(texts, 'document', call)
+  if (provider === 'google') return geminiEmbed(texts, 'document', call)
+  return openaiEmbed(texts, 'document', call)
 }
 
 // ─── Voyage reranker (P7.7.1) ───────────────────────────────────────────────
@@ -188,6 +199,7 @@ export interface RerankOutput<T> {
 export async function rerankClauses<T = unknown>(
   query: string,
   candidates: Array<RerankInput & { ref: T }>,
+  call: EmbedCall,
   topK = candidates.length,
 ): Promise<Array<RerankOutput<T>>> {
   if (candidates.length === 0) return []
@@ -201,7 +213,7 @@ export async function rerankClauses<T = unknown>(
     }))
   }
 
-  const res = await fetch('https://api.voyageai.com/v1/rerank', {
+  const res = await modelFetch('https://api.voyageai.com/v1/rerank', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -211,7 +223,7 @@ export async function rerankClauses<T = unknown>(
       top_k: topK,
       return_documents: false,
     }),
-  })
+  }, { ...call, userAuthored: ['query'] })
   if (!res.ok) {
     const err = await res.text()
     // Don't blow up the search — log + fall back to identity.
@@ -283,13 +295,22 @@ export async function embedContractVersion(versionId: string): Promise<void> {
   // Look up contractId for failure reporting
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
-    select: { contractId: true },
+    select: { contractId: true, plainText: true, contract: { select: { orgId: true } } },
   })
 
   // Batch all clause texts into a single OpenAI call (up to 2048 inputs)
   let vectors: number[][]
   try {
-    vectors = await embedTexts(clauses.map(c => c.content))
+    // X23 — the embedding provider is outside our trust zone too: the org's
+    // PII policy applies to what it is sent (the stored clause stays as is),
+    // judged against the whole document — a clause alone can lack the word
+    // that makes its card number one. No org, no call.
+    if (!version?.contract?.orgId) throw new Error('contract of this version not found')
+    const texts = clauses.map(c => c.content)
+    const outbound = await redactJson(version.contract.orgId, texts, {
+      surface: 'embeddings', contractId: version.contractId, roundTrip: version.contractId, valuesFrom: [texts, version.plainText ?? ''],
+    })
+    vectors = await embedTexts(outbound, { orgId: version.contract.orgId, surface: 'embeddings' })
   } catch (err) {
     console.error('[embeddings] batch embed failed for versionId=%s:', versionId, (err as Error).message)
     if (version?.contractId) {
@@ -340,47 +361,129 @@ export interface ClauseMatch {
   similarity: number
 }
 
+/**
+ * The version each contract's clauses should be read from (C11): the current
+ * version if it has clauses, else the latest version that does. Contracts
+ * with no extracted clauses at all yield nothing.
+ */
+export function effectiveVersionsSql(orgId: string, contractId?: string, contractFilter: Prisma.Sql = Prisma.empty) {
+  return Prisma.sql`
+    SELECT DISTINCT ON (v."contractId") v.id
+    FROM   contract_versions v
+    JOIN   contracts c2 ON c2.id = v."contractId"
+    WHERE  c2."orgId" = ${orgId}
+           ${contractId ? Prisma.sql`AND c2.id = ${contractId}` : Prisma.empty}
+           ${contractFilter}
+           AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
+    ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
+}
+
+/** Effective clause version ids for these contracts (see effectiveVersionsSql). */
+export async function effectiveClauseVersionIds(orgId: string, contractIds: string[]): Promise<string[]> {
+  if (contractIds.length === 0) return []
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT DISTINCT ON (v."contractId") v.id
+    FROM   contract_versions v
+    JOIN   contracts c2 ON c2.id = v."contractId"
+    WHERE  c2."orgId" = ${orgId} AND c2.id = ANY(${contractIds})
+           AND EXISTS (SELECT 1 FROM contract_clauses x WHERE x."versionId" = v.id AND x."isSubChunk" = false)
+    ORDER  BY v."contractId", COALESCE(v.id = c2."currentVersionId", false) DESC, v."versionNumber" DESC`
+  return rows.map(r => r.id)
+}
+
+/** X17 — pgvector 0.8 added iterative index scans; earlier versions reject the setting. Checked once (a failed check is retried). */
+let iterativeScan: Promise<boolean> | null = null
+function iterativeScanSupported(): Promise<boolean> {
+  iterativeScan ??= prisma.$queryRaw<Array<{ v: string }>>`SELECT extversion AS v FROM pg_extension WHERE extname = 'vector'`
+    .then(rows => {
+      const [major, minor] = (rows[0]?.v ?? '0.0').split('.').map(Number)
+      return major > 0 || minor >= 8
+    }, () => {
+      iterativeScan = null
+      return false
+    })
+  return iterativeScan
+}
+
 export async function searchClauses(
   queryText: string,
   orgId: string,
   limit = 20,
   contractId?: string, // scope to a single contract for Q&A
+  ownerId?: string,    // own-scope callers: filter BEFORE top-k, not after
+  opts: {
+    /** Include superseded versions' clauses (default: the current version only). */
+    allVersions?: boolean
+    /** Search one diligence room's documents (they are excluded otherwise). */
+    diligenceRoomId?: string
+  } = {},
 ): Promise<ClauseMatch[]> {
-  const vec = await embedText(queryText)
+  const vec = await embedText(queryText, { orgId, surface: 'clause_search' })
   const vectorLiteral = `[${vec.join(',')}]`
+  const ownerFilter = ownerId ? Prisma.sql`AND c."ownerId" = ${ownerId}` : Prisma.empty
+  // C11 — one version per contract: its current version, or — when that has
+  // no extracted clauses yet (sealing, redline_apply and editor saves create
+  // clause-less versions) — the latest version that does (the B.5.6 rule in
+  // GET /contracts/:id/clauses). Superseded text is never cited as the terms.
+  // Computed once per query (not per candidate row) so it stays cheap.
+  const versionJoin = opts.allVersions ? Prisma.empty : Prisma.sql`
+        JOIN   (${effectiveVersionsSql(orgId, contractId)}) ev ON ev.id = cv.id`
+  // C11 — diligence-room documents are a target's contracts, not the org's:
+  // out of ordinary search unless a room is named, or one contract is asked
+  // about by id (room-scoped access).
+  const diligenceFilter = opts.diligenceRoomId
+    ? Prisma.sql`AND c."diligenceRoomId" = ${opts.diligenceRoomId}`
+    : contractId ? Prisma.empty : Prisma.sql`AND c."diligenceRoomId" IS NULL`
 
-  // Raw SQL: pgvector cosine similarity, join to contracts for org scoping
-  const rows = contractId
-    ? await prisma.$queryRaw<Array<{
-        contract_id: string; version_id: string; clause_id: string
-        clause_type: string; content: string; similarity: number
-      }>>`
+  // Raw SQL: pgvector cosine similarity, join to contracts for org scoping.
+  // X17 — the HNSW index covers every org's clauses and the org, version and
+  // room filters apply after it, so a plain index scan can come back with
+  // fewer than `limit` rows (its ef_search candidates, mostly other orgs').
+  // pgvector 0.8+ keeps scanning until enough rows pass; relaxed_order may
+  // return them slightly out of order, hence the sort below.
+  type Row = {
+    contract_id: string; version_id: string; clause_id: string
+    clause_type: string; content: string; similarity: number
+  }
+  const query = contractId
+    ? Prisma.sql`
         SELECT c.id AS contract_id, cv.id AS version_id, cc.id AS clause_id,
                cc."clauseType" AS clause_type, cc.content,
                1 - (cc.embedding <=> ${vectorLiteral}::vector) AS similarity
         FROM   contract_clauses cc
         JOIN   contract_versions cv ON cv.id = cc."versionId"
         JOIN   contracts c ON c.id = cv."contractId"
+        ${versionJoin}
         WHERE  c."orgId" = ${orgId} AND c.id = ${contractId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
+               ${ownerFilter} ${diligenceFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
-    : await prisma.$queryRaw<Array<{
-        contract_id: string; version_id: string; clause_id: string
-        clause_type: string; content: string; similarity: number
-      }>>`
+    : Prisma.sql`
         SELECT c.id AS contract_id, cv.id AS version_id, cc.id AS clause_id,
                cc."clauseType" AS clause_type, cc.content,
                1 - (cc.embedding <=> ${vectorLiteral}::vector) AS similarity
         FROM   contract_clauses cc
         JOIN   contract_versions cv ON cv.id = cc."versionId"
         JOIN   contracts c ON c.id = cv."contractId"
+        ${versionJoin}
         WHERE  c."orgId" = ${orgId}
                AND c."deletedAt" IS NULL AND cc.embedding IS NOT NULL
+               ${ownerFilter} ${diligenceFilter}
         ORDER  BY cc.embedding <=> ${vectorLiteral}::vector
         LIMIT  ${limit}
       `
+  // One contract's clauses are few enough to scan exactly: no transaction.
+  // Otherwise wait for a connection as long as a plain query would (the pool
+  // timeout), not an interactive transaction's 2 s default.
+  const rows = await (!contractId && await iterativeScanSupported()
+    ? prisma.$transaction(async tx => {
+        await tx.$executeRaw`SET LOCAL hnsw.iterative_scan = relaxed_order`
+        return tx.$queryRaw<Row[]>(query)
+      }, { maxWait: 10_000, timeout: 20_000 })
+    : prisma.$queryRaw<Row[]>(query))
+  rows.sort((a, b) => Number(b.similarity) - Number(a.similarity))
 
   return rows.map(r => ({
     contractId: r.contract_id,

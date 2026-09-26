@@ -18,6 +18,7 @@ Returns:
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -40,7 +41,7 @@ class PlaybookCheckArgs(BaseModel):
     )
 
 
-def build_playbook_check(org_id: str) -> StructuredTool:
+def build_playbook_check(org_id: str, user_id: str | None = None) -> StructuredTool:
 
     async def _arun(contract_id: str, max_clauses: int = 10) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/playbook_check"
@@ -51,11 +52,19 @@ def build_playbook_check(org_id: str) -> StructuredTool:
         }
         payload = {
             "orgId": org_id,
+            "userId": user_id,  # S2 — Node resolves the caller's view scope from this
             "contractId": contract_id,
             "maxClauses": max_clauses,
         }
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
+        if r.status_code == 403:
+            # X9 — say why, so the model tells the user rather than guessing.
+            try:
+                detail = r.json().get("detail")
+            except ValueError:
+                detail = None
+            return json.dumps({"error": "permission_denied", "detail": detail or "The user does not have permission for this."})
         if r.status_code == 404:
             return '{"error":"contract_not_found","contract_id":"' + contract_id + '"}'
         if r.status_code >= 400:

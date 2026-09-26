@@ -24,12 +24,13 @@ is also the first time the full stack has been stood up anywhere. t3 remains
 derived, because nothing has ever run it.
 
 t1 and t2 need **no API key**, which is what makes them safe to block fork PRs
-on — this repo is public, and forks cannot read secrets.
+on — this repo is public, and forks cannot read secrets. Today only t1 blocks
+PRs; t2 needs CI services first (see the `agent-evals` job in `ci.yml`).
 
 A t2 check may stub the model rather than replay it. `l15-empty-turn` drives
 `run_agent_chat_stream` with a stub LLM and `needs: ['venv']` only — no
-database, no API, no key — which is how model-response HANDLING gets tested on
-every PR while the model itself stays out of the loop.
+database, no API, no key — which is how model-response HANDLING can be tested
+without the model in the loop — once t2 runs in CI, on every PR.
 
 **Tier 2 now has a CI job** — `agent-evals-t2` in `ci.yml`. It stands up
 Postgres, Redis, the API, the web dev server, Chromium, a Python venv and the

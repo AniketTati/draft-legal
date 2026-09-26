@@ -11,6 +11,7 @@ import { Chip, CountBadge, EmptyState, Eyebrow, RiskMeter } from '@/components/u
 import { UploadModal } from '@/components/contracts/UploadModal'
 import { BulkImportDialog } from '@/components/contracts/BulkImportDialog'
 import { NewContractFlow } from '@/components/contracts/NewContractFlow'
+import { useCanRequest } from '@/lib/permissions'
 import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw } from 'lucide-react'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -166,9 +167,27 @@ export function ContractsPage() {
       queryClient.invalidateQueries({ queryKey: ['contracts'] })
     },
   })
+  // X75, Y3 — importing, uploading and drafting all create a contract, which
+  // the server refuses without what POST /contracts needs; a viewer was
+  // offered all three.
+  const canCreate = useCanRequest('POST /contracts')
   const [showUpload, setShowUpload] = useState(false)
   const [showBulkImport, setShowBulkImport] = useState(false)
-  const [showNewContract, setShowNewContract] = useState(false)
+  // Z6 — Counterparties › New contract links here with new=1 and the
+  // counterparty: open "Draft new" with it filled in, once.
+  const [newFor] = useState(() => {
+    const id = searchParams.get('counterpartyId')
+    const name = searchParams.get('counterpartyName')
+    return searchParams.get('new') === '1' && id && name ? { id, name } : undefined
+  })
+  const [showNewContract, setShowNewContract] = useState(() => searchParams.get('new') === '1')
+  useEffect(() => {
+    if (!searchParams.has('new')) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('new')
+    setSearchParams(next, { replace: true })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [showFacets, setShowFacets] = useState(false)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -391,32 +410,36 @@ export function ContractsPage() {
                 </CountBadge>
               )}
             </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowBulkImport(true)}
-              data-testid="bulk-import-button"
-              title="Bulk import contracts from CSV"
-              className="gap-2"
-            >
-              <Upload className="size-4" /> Bulk import
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowUpload(true)}
-              data-testid="upload-pdf-button"
-              title="Upload an existing signed or draft contract file"
-              className="gap-2"
-            >
-              <Upload className="size-4" /> Upload PDF
-            </Button>
-            <Button
-              onClick={() => setShowNewContract(true)}
-              data-testid="draft-new-button"
-              title="Start a new contract from a template"
-              className="gap-2"
-            >
-              <PenSquare className="size-4" /> Draft new
-            </Button>
+            {canCreate && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowBulkImport(true)}
+                  data-testid="bulk-import-button"
+                  title="Bulk import contracts from CSV"
+                  className="gap-2"
+                >
+                  <Upload className="size-4" /> Bulk import
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowUpload(true)}
+                  data-testid="upload-pdf-button"
+                  title="Upload an existing signed or draft contract file"
+                  className="gap-2"
+                >
+                  <Upload className="size-4" /> Upload PDF
+                </Button>
+                <Button
+                  onClick={() => setShowNewContract(true)}
+                  data-testid="draft-new-button"
+                  title="Start a new contract from a template"
+                  className="gap-2"
+                >
+                  <PenSquare className="size-4" /> Draft new
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -591,8 +614,10 @@ export function ContractsPage() {
                 className="w-full max-w-md"
                 icon={<FileText />}
                 title={hasFilters ? 'No contracts match your filters' : 'No contracts yet'}
-                description={hasFilters ? 'Try adjusting or clearing your filters' : 'Upload your first contract to get started'}
-                action={!hasFilters ? (
+                description={hasFilters ? 'Try adjusting or clearing your filters'
+                  : canCreate ? 'Upload your first contract to get started'
+                  : 'Contracts appear here once your team adds them'}
+                action={!hasFilters && canCreate ? (
                   <Button onClick={() => setShowUpload(true)} className="gap-2">
                     <Upload className="size-4" /> Upload Contract
                   </Button>
@@ -833,8 +858,9 @@ export function ContractsPage() {
           onSuccess={() => queryClient.invalidateQueries({ queryKey: ['contracts'] })}
         />
       )}
-      {showNewContract && (
+      {showNewContract && canCreate && (
         <NewContractFlow
+          initialCounterparty={newFor}
           onClose={() => setShowNewContract(false)}
           onCreated={(id) => { setShowNewContract(false); navigate(`/contracts/${id}`) }}
         />

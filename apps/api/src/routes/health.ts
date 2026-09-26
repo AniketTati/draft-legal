@@ -28,6 +28,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
+import { environmentName } from '../lib/runtime-mode.js'
 
 const READY_CACHE_MS = 1_000
 let _readyCache: { at: number; healthy: boolean; checks: Record<string, 'ok' | 'error'>; latencyMs: Record<string, number> } | null = null
@@ -95,7 +96,7 @@ export async function healthRoutes(app: FastifyInstance) {
       uptime: Math.round(process.uptime()),
       versions: {
         node:   process.version,
-        env:    process.env.NODE_ENV ?? 'development',
+        env:    environmentName(),
         commit: process.env.GIT_COMMIT_SHA ?? 'unknown',
       },
       timestamp: new Date().toISOString(),

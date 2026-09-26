@@ -44,6 +44,10 @@ interface ApiSignatureRequest {
   totalSigners: number
   signers: ApiSigner[]
   contract: { id: string; title: string; type: string; counterpartyName: string | null } | null
+  /** False for a signer who doesn't own the contract (own scope): /contracts/:id would 404. */
+  canOpenContract?: boolean
+  /** The caller's own signing page, while their signature is pending. */
+  mySignPath?: string | null
 }
 
 const STATUS_FILTERS: { key: SrStatus | 'ALL'; label: string }[] = [
@@ -286,13 +290,21 @@ export function SignaturesPage() {
                   return (
                     <tr key={it.id} className="hover:bg-paper-50 align-top" data-testid={`signature-row-${it.id}`}>
                       <td className="px-5 py-2.5">
-                        <Link
-                          to={`/contracts/${it.contract?.id ?? ''}`}
-                          className="font-medium text-ink-950 truncate block hover:underline underline-offset-2 decoration-paper-300"
-                          title={it.contract?.title}
-                        >
-                          {it.contract?.title ?? '(deleted contract)'}
-                        </Link>
+                        {it.canOpenContract !== false ? (
+                          <Link
+                            to={`/contracts/${it.contract?.id ?? ''}`}
+                            className="font-medium text-ink-950 truncate block hover:underline underline-offset-2 decoration-paper-300"
+                            title={it.contract?.title}
+                          >
+                            {it.contract?.title ?? '(deleted contract)'}
+                          </Link>
+                        ) : (
+                          // A signer who can't open the contract: the title is
+                          // not a way in (it would 404); the Sign link is.
+                          <span className="font-medium text-ink-950 truncate block" title={it.contract?.title}>
+                            {it.contract?.title ?? '(deleted contract)'}
+                          </span>
+                        )}
                         <div className="text-[11px] text-ink-500 mt-0.5 truncate">
                           <span className="uppercase tracking-[0.08em]">{it.contract?.type?.replace(/_/g, ' ') ?? ''}</span>
                           {it.contract?.counterpartyName && <span> · {it.contract.counterpartyName}</span>}
@@ -354,7 +366,7 @@ export function SignaturesPage() {
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-right">
-                        {it.contract?.id && (
+                        {it.contract?.id && it.canOpenContract !== false ? (
                           <Link
                             to={`/contracts/${it.contract.id}`}
                             className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
@@ -362,7 +374,17 @@ export function SignaturesPage() {
                             Open
                             <ArrowRight className="size-3.5" />
                           </Link>
-                        )}
+                        ) : it.mySignPath ? (
+                          // A signer who can't open the contract signs it on
+                          // their own signing page instead.
+                          <Link
+                            to={it.mySignPath}
+                            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
+                          >
+                            Sign
+                            <ArrowRight className="size-3.5" />
+                          </Link>
+                        ) : null}
                       </td>
                     </tr>
                   )

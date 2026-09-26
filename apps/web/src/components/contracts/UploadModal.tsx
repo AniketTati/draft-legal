@@ -47,10 +47,12 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
   const [parentSearch, setParentSearch] = useState('')
   const [uploadedIds, setUploadedIds] = useState<string[]>([])
 
-  // Search for existing contracts to link as parent
+  // Search for existing contracts to link as parent. The contracts list reads
+  // `search` (X60): it ignored the `q` this sent and returned the first eight
+  // contracts whatever was typed.
   const { data: parentSearchResults } = useQuery({
     queryKey: ['contracts-search', parentSearch],
-    queryFn: () => api.get('/contracts', { params: { q: parentSearch, limit: 8 } }).then(r => {
+    queryFn: () => api.get('/contracts', { params: { search: parentSearch, limit: 8 } }).then(r => {
       const list = r.data?.data ?? r.data ?? []
       return Array.isArray(list) ? list : []
     }),

@@ -24,20 +24,20 @@ export const NOTIFICATION_PREF_DEFAULTS: Record<string, boolean> = {
   approvalDecided:      true,
   contractUpdated:      false,
   contractExpiringSoon: true,
-  mentioned:            true,
 }
 
 // Which stored toggle governs which notification type. A type with no entry is
 // deliberately unmapped and always sends — ESCALATION and DELEGATION are
 // direct, time-sensitive assignments to a named person rather than digestible
 // updates, and the settings page offers no control to switch them off.
+// Z4 — every toggle names a type the API sends; "@mentions" was removed with
+// its MENTION type, which nothing ever sent.
 export const TYPE_TO_PREF: Record<string, string> = {
   APPROVAL_REQUEST: 'approvalRequested',
   APPROVAL_DECIDED: 'approvalDecided',
   CONTRACT_UPDATED: 'contractUpdated',
   OBLIGATION_DUE:   'contractExpiringSoon',
   RENEWAL_DUE:      'contractExpiringSoon',
-  MENTION:          'mentioned',
 }
 
 /**
@@ -46,11 +46,15 @@ export const TYPE_TO_PREF: Record<string, string> = {
  * Returns a reason as well as a verdict so the worker can log WHY something
  * was suppressed — "no email arrived" is otherwise indistinguishable from a
  * broken mailer, which is the class of bug this whole fix is about.
+ *
+ * Z4 — `digest` is set when the email is wanted but belongs in the user's
+ * daily digest (lib/notification-digest.ts) rather than going now. "Daily
+ * digest" used to send every email at once.
  */
 export async function shouldEmail(
   userId: string,
   type: string,
-): Promise<{ emailed: boolean; reason: string }> {
+): Promise<{ emailed: boolean; reason: string; digest?: boolean }> {
   let prefs: Record<string, unknown> = {}
   try {
     const user = await prisma.user.findUnique({
@@ -80,7 +84,7 @@ export async function shouldEmail(
     ? prefs[key] as boolean
     : NOTIFICATION_PREF_DEFAULTS[key] ?? true
 
-  return value
-    ? { emailed: true,  reason: `${key} is on` }
-    : { emailed: false, reason: `${key} is off` }
+  if (!value) return { emailed: false, reason: `${key} is off` }
+  if (prefs.digest === 'daily') return { emailed: false, digest: true, reason: `${key} is on; held for the daily digest` }
+  return { emailed: true, reason: `${key} is on` }
 }
