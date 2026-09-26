@@ -4,6 +4,9 @@
  * bytes as a PDF), so the signed contract never got its sealed copy. The
  * sealed copy is also a new version, which keeps the signed version's
  * clauses (DD2).
+ *
+ * CI runs no MinIO and no Gotenberg: object storage is faked, and a one-page
+ * PDF stands in for the render. The signing and sealing are real.
  */
 import { randomBytes } from 'node:crypto'
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
@@ -15,9 +18,27 @@ vi.mock('./queue.js', async importOriginal => ({
   ...(await importOriginal<typeof import('./queue.js')>()),
   queueRefreshVersion: vi.fn(),
 }))
+vi.mock('./storage.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./storage.js')>()),
+  s3: (await import('../test-support/fake-s3.js')).fakeS3(),
+}))
+vi.mock('./gotenberg.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('./gotenberg.js')>()),
+  renderHtmlToPdfAndStore: vi.fn(async ({ keyPrefix }: { html: string; keyPrefix: string }) => {
+    const { PDFDocument } = await import('pdf-lib')
+    const { s3, S3_BUCKET } = await import('./storage.js')
+    const doc = await PDFDocument.create()
+    doc.addPage()
+    const body = await doc.save()
+    const s3Key = `${keyPrefix}/rendered.pdf`
+    await s3.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: s3Key, Body: body, ContentType: 'application/pdf' }))
+    return { s3Key, size: body.length }
+  }),
+}))
 
 import { makeOrg, makeUser, makeContract, cleanupAll, prisma } from '../test-support/helpers.js'
 import { s3, S3_BUCKET } from './storage.js'
+import { renderHtmlToPdfAndStore } from './gotenberg.js'
 import { extractDocument } from './document.js'
 import { sealSignedContract } from './seal-contract.js'
 
@@ -63,7 +84,8 @@ describe('sealing a contract signed on a Word file', () => {
     const sealed = await prisma.contractVersion.findUnique({ where: { id: (out as { versionId: string }).versionId } })
     expect(sealed).toMatchObject({ mimeType: 'application/pdf', versionNumber: 2, plainText })
     expect((await prisma.contract.findUnique({ where: { id: contractId } }))?.currentVersionId).toBe(sealed!.id)
-    // The signed version's text was rendered to be sealed.
+    // The signed version's text was rendered to be sealed, not the Word file.
+    expect(vi.mocked(renderHtmlToPdfAndStore)).toHaveBeenCalledWith(expect.objectContaining({ html: htmlContent }))
     expect((await prisma.contractVersion.findUnique({ where: { id: signed.id } }))?.renderedPdfKey).toBeTruthy()
     const clauses = await prisma.contractClause.findMany({ where: { versionId: sealed!.id }, orderBy: { sortOrder: 'asc' } })
     expect(clauses.map(c => [c.clauseType, c.riskRating])).toEqual([['payment', 'favorable'], ['limitation_of_liability', 'neutral']])

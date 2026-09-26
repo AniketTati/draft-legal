@@ -3140,6 +3140,7 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
   - Four failed at `pnpm install --frozen-lockfile`. This branch pins `@xmldom/xmldom` to `0.8.15` in `apps/api` (BB1), and `main` added a root override of `^0.8.13` (35a217f). After the merge, the lockfile's `apps/api` entry still showed the pin instead of the override. The lockfile now records the override; the installed version is still 0.8.15. A frozen install with pnpm 9.0.0, the version CI uses, passes.
   - Tier-1 evals failed `e1-gate-bites`: main's eval manifest must list every check, and `v2-coverage` (V2) was not listed. It is now a tier-3 check, since it asks a real model. Tier 1: 6 of 6 pass, with no regressions against the baseline.
   - Also run: the web bundle budget passes. The two tier-2 checks that don't sign in, `l15-empty-turn` (16/16) and `l5-redline-reach` (13/13), pass. The others sign in with the seed admin's password or write data, so only CI runs them.
+  - The second run: Test API failed 7 integration tests, DD8's seal test and the six BB2/BB3 tests in `external-edit.integration.test.ts`. CI's API job runs no MinIO and no Gotenberg; these tests passed locally only because the local stack has both. They now keep files in an in-memory S3 (`test-support/fake-s3.ts`), as `binder-split`'s test already did, and the seal test uses a one-page PDF in place of the render and checks that the render was given the signed version's HTML. Reproduced with storage and Gotenberg pointed at a closed port: 7 of 8 failed before, and all 8 pass after.
 
 ---
 

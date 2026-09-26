@@ -17,6 +17,11 @@ vi.mock('../lib/queue.js', async importOriginal => ({
   queueNotification: vi.fn(),
   queueRefreshVersion: vi.fn(),
 }))
+// Object storage is faked: CI runs no MinIO.
+vi.mock('../lib/storage.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../lib/storage.js')>()),
+  s3: (await import('../test-support/fake-s3.js')).fakeS3(),
+}))
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
