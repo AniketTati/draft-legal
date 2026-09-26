@@ -3147,6 +3147,27 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
 
 ---
 
+## Redline review actions (2026-09-26, afternoon)
+
+- **EE1 — Every action in the review drawer is a decision, and a decided clause leaves the queue. — DONE.**
+  - Reported: taking an action on a clause didn't finalise it or remove it from the queue, so the stack never shrank.
+  - Found, in `ContractDetailPage.tsx` and `FocusedReviewDrawer.tsx`:
+    - The drawer's list held every flagged clause, whatever its state. Accepting one moved the drawer on, but the count ("3 / 7") never went down, and the clause came round again.
+    - Reject saved the same state as Mark reviewed (`reviewed`), because the API took only unreviewed | reviewed | resolved. A rejected clause couldn't be told from a read one.
+    - Mark reviewed didn't move on. An applied rewrite was saved as `reviewed`, not resolved.
+  - Fix:
+    - `lib/review-queue.ts`: the queue is the flagged clauses still waiting on a decision, plus the one open in the drawer. Accept (`resolved`), Reject (`rejected`, a new state), Mark reviewed (`reviewed`) and Apply a rewrite (`resolved`) each take the clause out and move to the next pending clause; with none left, the drawer closes.
+    - A decided clause opened again says what was decided and can be reopened (`unreviewed`, back in the queue).
+    - The rail's checklist names each decision (accepted, rejected, reviewed) instead of "done".
+    - The API accepts `rejected`. `reviewState` is a plain text column, so no migration.
+    - Edit manually is unchanged. It opens the editor and records no decision, since an edit may or may not deal with the issue.
+  - Tests:
+    - `review-queue.test.ts` (11): the queue logic, and checks that the page gives the drawer the queue and records each action as its own state. The three checks on the page failed before.
+    - `review-decision.integration.test.ts` (3): a rejection is kept as one, a clause can be reopened, and an unknown state is refused. The rejection test failed before with a 400.
+  - Checks: web typecheck and lint clean (existing warnings only); web 99; API unit 486; API integration for review state 30 (with `clause-carry` and `own-scope-rest`).
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.

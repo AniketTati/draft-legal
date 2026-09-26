@@ -51,8 +51,10 @@ import { DocumentCanvas, type CanvasState } from '@/components/contracts/Documen
 import {
   FocusedReviewDrawer,
   type FocusedClause,
-  type ReviewState,
 } from '@/components/contracts/FocusedReviewDrawer'
+import {
+  reviewQueue, nextPending, isReviewState, isDecided, DECISION_LABEL, type ReviewState,
+} from '@/lib/review-queue'
 import { classifyRisk } from '@/components/contracts/RiskDecorations'
 // U.4.1 — AiCommandPalette deleted. ⌘K now focuses the rail composer.
 import { DecisionStrip } from '@/components/contracts/DecisionStrip'
@@ -753,7 +755,7 @@ export function ContractDetailPage() {
       const next = { ...prev }
       for (const c of data) {
         const s = c.reviewState
-        if (s === 'unreviewed' || s === 'reviewed' || s === 'resolved') next[c.id] = s
+        if (isReviewState(s)) next[c.id] = s
       }
       return next
     })
@@ -3218,39 +3220,44 @@ export function ContractDetailPage() {
         // Prev / Next step through the risk and deviation clauses. Any clause
         // can be opened, though (from the Clauses tab or a playbook finding):
         // a contract with nothing flagged had no way to reach Suggest.
-        const riskyClauses = allClauses.filter((c) => classifyRisk(c.riskRating) !== null || c.id === focusedClauseId)
+        const flagged = allClauses.filter((c) => classifyRisk(c.riskRating) !== null || c.id === focusedClauseId)
+        const savedState = new Map(((clausesData?.data ?? []) as Array<{ id: string; reviewState?: string }>)
+          .map((c) => [c.id, isReviewState(c.reviewState) ? c.reviewState : undefined]))
+        const stateOf = (cid: string) => reviewStates[cid] ?? savedState.get(cid)
+        // EE1 — the drawer steps through the clauses still waiting on a
+        // decision. Each decision takes its clause out and moves on to the
+        // next one still pending, so the count goes down; with none left,
+        // the drawer closes.
+        const queue = reviewQueue(flagged, stateOf, focusedClauseId)
         const focusedIdx = focusedClauseId
-          ? riskyClauses.findIndex((c) => c.id === focusedClauseId)
+          ? queue.findIndex((c) => c.id === focusedClauseId)
           : -1
+        const decide = (cid: string, state: ReviewState) => {
+          setReviewStates((s) => ({ ...s, [cid]: state }))
+          updateReviewState.mutate({ clauseId: cid, state })
+          setFocusedClauseId(nextPending(flagged, (c) => (c === cid ? state : stateOf(c)), cid))
+        }
 
         if (focusedClauseId && focusedIdx >= 0) {
           return (
             <FocusedReviewDrawer
               contractId={id!}
-              clauses={riskyClauses}
+              clauses={queue}
               currentIndex={focusedIdx}
               reviewStates={reviewStates}
               onPrev={() => {
-                if (focusedIdx > 0) setFocusedClauseId(riskyClauses[focusedIdx - 1].id)
+                if (focusedIdx > 0) setFocusedClauseId(queue[focusedIdx - 1].id)
               }}
               onNext={() => {
-                if (focusedIdx < riskyClauses.length - 1) setFocusedClauseId(riskyClauses[focusedIdx + 1].id)
+                if (focusedIdx < queue.length - 1) setFocusedClauseId(queue[focusedIdx + 1].id)
               }}
-              onAccept={(cid) => {
-                setReviewStates((s) => ({ ...s, [cid]: 'resolved' }))
-                updateReviewState.mutate({ clauseId: cid, state: 'resolved' })
-                if (focusedIdx < riskyClauses.length - 1) setFocusedClauseId(riskyClauses[focusedIdx + 1].id)
-                else setFocusedClauseId(null)
-              }}
-              onReject={(cid) => {
-                setReviewStates((s) => ({ ...s, [cid]: 'reviewed' }))
-                updateReviewState.mutate({ clauseId: cid, state: 'reviewed' })
-                if (focusedIdx < riskyClauses.length - 1) setFocusedClauseId(riskyClauses[focusedIdx + 1].id)
-                else setFocusedClauseId(null)
-              }}
-              onMarkReviewed={(cid) => {
-                setReviewStates((s) => ({ ...s, [cid]: 'reviewed' }))
-                updateReviewState.mutate({ clauseId: cid, state: 'reviewed' })
+              onAccept={(cid) => decide(cid, 'resolved')}
+              onReject={(cid) => decide(cid, 'rejected')}
+              onMarkReviewed={(cid) => decide(cid, 'reviewed')}
+              onApplied={(cid) => decide(cid, 'resolved')}
+              onReopen={(cid) => {
+                setReviewStates((s) => ({ ...s, [cid]: 'unreviewed' }))
+                updateReviewState.mutate({ clauseId: cid, state: 'unreviewed' })
               }}
               onEditManually={canEdit ? () => {
                 // Exit drawer, enter edit mode. A future commit will also
@@ -3442,7 +3449,8 @@ export function ContractDetailPage() {
               {reviewExpanded && (
                 <div className="mt-3 space-y-1" data-testid="review-progress-list">
                   {risky.map((c: any) => {
-                    const isReviewed = (reviewStates[c.id] ?? c.reviewState ?? 'unreviewed') !== 'unreviewed'
+                    const decision: ReviewState = reviewStates[c.id] ?? (isReviewState(c.reviewState) ? c.reviewState : 'unreviewed')
+                    const isReviewed = isDecided(decision)
                     const cleanType = (c.clauseType ?? 'clause').replace(/_/g, ' ')
                     return (
                       <div
@@ -3456,7 +3464,8 @@ export function ContractDetailPage() {
                         <span
                           className={cn(
                             'size-1.5 rounded-full shrink-0',
-                            isReviewed ? MEANING_CLASS.binding.dot : riskDot(c.riskRating),
+                            !isReviewed ? riskDot(c.riskRating)
+                              : decision === 'rejected' ? MEANING_CLASS.risk.dot : MEANING_CLASS.binding.dot,
                           )}
                         />
                         <button
@@ -3483,9 +3492,15 @@ export function ContractDetailPage() {
                           </button>
                         )}
                         {isReviewed && (
-                          <span className="text-[10.5px] text-brand-700 shrink-0 inline-flex items-center gap-0.5">
+                          <span
+                            data-testid={`review-decision-${c.id}`}
+                            className={cn(
+                              'text-[10.5px] shrink-0 inline-flex items-center gap-0.5',
+                              decision === 'rejected' ? 'text-risk-700' : 'text-brand-700',
+                            )}
+                          >
                             <CheckSquare className="size-3" />
-                            done
+                            {DECISION_LABEL[decision].toLowerCase()}
                           </span>
                         )}
                       </div>
