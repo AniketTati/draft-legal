@@ -164,15 +164,18 @@ export const SUITES = [
   { id: 'persona-journeys', tier: 't3', dir: 'scripts/persona-tests', entry: 'run-personas.mjs',
     needs: ['db', 'api', 'agents', 'model', 'personas'],
     what: '86 multi-turn persona journeys — the only suite exercising lib-multi' },
-  // t2, not t3: the `stub` target makes no model call and needs no service but
-  // Langfuse, so it is deterministic and free. It grades the eval harness, not
-  // the product — the graded corpora (draftlegal-extraction, draftlegal-chat)
+  // The `stub` target makes no model call and needs no service but Langfuse,
+  // so by cost and determinism this is t2. It is t3 because CI's tier-2 job
+  // (agent-evals-t2) starts no Langfuse: as t2 it was skipped there, and
+  // --strict failed the job on the skip (PR #52). Move it back to t2 when that
+  // job starts Langfuse (docker-compose.langfuse.yml). It grades the eval harness,
+  // not the product — the graded corpora (draftlegal-extraction, draftlegal-chat)
   // are t3 and run via scripts/evals/langfuse/run.mjs, which is not a
   // pass/fail gate: quality is compared BETWEEN runs in the Langfuse UI, not
   // asserted once. Putting a judged corpus behind a pass/fail exit code is how
   // you end up loosening assertions until they stop discriminating (docs/37
   // ADR-01), so it deliberately stays out of the manifest.
-  { id: 'langfuse-harness', tier: 't2', dir: 'scripts/evals/langfuse', entry: 'selftest.mjs',
+  { id: 'langfuse-harness', tier: 't3', dir: 'scripts/evals/langfuse', entry: 'selftest.mjs',
     needs: ['langfuse'],
     what: 'the Langfuse eval harness scores known-good and known-bad cases correctly, and the run reads back' },
 ]

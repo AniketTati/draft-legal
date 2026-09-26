@@ -73,7 +73,7 @@ secrets.
 | `scorers.mjs` | Deterministic scorers + the LLM judge and its rubrics |
 | `push.mjs` | `datasets/*.json` → Langfuse (idempotent) |
 | `run.mjs` | Execute a dataset as a run, score it, report |
-| `selftest.mjs` | Grades the harness itself — registered as `langfuse-harness` (t2) |
+| `selftest.mjs` | Grades the harness itself — registered as `langfuse-harness` (t3 until CI starts Langfuse) |
 | `traffic.mjs` | Drive real user journeys across every surface (dev only — spends budget) |
 | `analyze.mjs` | The production review, out of the metrics API |
 | `score-production.mjs` | Judge every step of real traces and post the scores (online eval) |

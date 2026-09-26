@@ -93,7 +93,12 @@ section('1. Turning a notification off turns it off')
   // block sitting between them has a return of its own. That is the identical
   // window-swallowing mistake this audit was cleaning up, reproduced while
   // cleaning it up.
-  const gateBlock = (/if \(!gate\.emailed\) \{([\s\S]*?)\n {2}\}/.exec(delivery) || ['', ''])[1]
+  //
+  // The condition may carry more clauses: the daily digest (Z4) made it
+  // `!gate.emailed && !gate.digest`, and the old pattern, which required the
+  // bare `(!gate.emailed)`, then located nothing. `[^)]*` keeps the match
+  // inside the if's own parentheses.
+  const gateBlock = (/if \(!gate\.emailed(?: && [^)]*)?\) \{([\s\S]*?)\n {2}\}/.exec(delivery) || ['', ''])[1]
   check('the delivery path was located', delivery.length > 0,
     'an unreadable path makes every assertion below pass trivially')
   check('it awaits the preference gate', /await shouldEmail\(/.test(delivery),

@@ -126,9 +126,12 @@ than one that reports the failure.
 ### What gates, and what does not
 
 `langfuse-harness` (the self-test) is registered in `scripts/evals/manifest.mjs`
-as **t2** — deterministic, free, needs no model — and gates PRs. Its `langfuse`
-precondition probes that the server *answers* and all three keys are present,
-so an unconfigured machine gets a loud SKIP rather than a false pass.
+as **t3**. It is deterministic, free and needs no model, but it needs a Langfuse
+server, and CI's tier-2 job does not start one, so it does not gate PRs. Run it
+by hand with `node scripts/evals/langfuse/selftest.mjs`. It belongs in t2 once
+that job starts Langfuse. Its `langfuse` precondition
+probes that the server *answers* and all three keys are present, so an
+unconfigured machine gets a loud SKIP rather than a false pass.
 
 The graded corpora deliberately **do not** gate. Quality is read by comparing
 runs in the UI, not asserted once; putting a judge score behind a pass/fail exit
