@@ -3136,6 +3136,10 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
     - Under the full suite, Postgres crashed and recovered four times (a process killed by a broken pipe, then processes exiting with code 2; one checkpoint took 33 s to sync). Gotenberg's browser fell over twice.
     - Asked to give Postgres more memory: shared_buffers 128 MB → 512 MB, maintenance_work_mem 64 MB → 256 MB, work_mem 4 MB → 8 MB (ALTER SYSTEM, kept on the data volume). The container also has a 1 GB memory reservation (`docker update`, lost if the container is recreated). Postgres and Gotenberg restarted.
 - **Checks for DD1–DD8:** typecheck and lint clean (warnings only); unit 450; web 88; agents 16. Integration 464: 461 in one run. The seal test and two render tests need Gotenberg, which had fallen over in that run; they pass on a rerun.
+- **After merging `main` (PR #52): the first CI run failed in five jobs. — DONE.**
+  - Four failed at `pnpm install --frozen-lockfile`. This branch pins `@xmldom/xmldom` to `0.8.15` in `apps/api` (BB1), and `main` added a root override of `^0.8.13` (35a217f). After the merge, the lockfile's `apps/api` entry still showed the pin instead of the override. The lockfile now records the override; the installed version is still 0.8.15. A frozen install with pnpm 9.0.0, the version CI uses, passes.
+  - Tier-1 evals failed `e1-gate-bites`: main's eval manifest must list every check, and `v2-coverage` (V2) was not listed. It is now a tier-3 check, since it asks a real model. Tier 1: 6 of 6 pass, with no regressions against the baseline.
+  - Also run: the web bundle budget passes. The two tier-2 checks that don't sign in, `l15-empty-turn` (16/16) and `l5-redline-reach` (13/13), pass. The others sign in with the seed admin's password or write data, so only CI runs them.
 
 ---
 

@@ -13,7 +13,8 @@
  * demo org, and asserts (1) the tool result carried a coverage block that
  * says it is incomplete, and (2) the assistant's prose says so.
  *
- * Needs the live stack (API + agents service + an LLM key). Not run in CI.
+ * Needs the live stack (API + agents service + an LLM key), so it is tier 3
+ * in scripts/evals/manifest.mjs and never gates a PR.
  *
  * Run BEFORE: no coverage block; the answer lists rows as if they were all.
  * Run AFTER:  coverage.complete=false is surfaced as "N of M" / "a sample".

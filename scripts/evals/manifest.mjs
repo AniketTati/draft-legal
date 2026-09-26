@@ -130,6 +130,8 @@ export const CHECKS = [
     what: 'the daily cost cap fails closed and BYOK is not bypassed' },
   { id: 'l12-memory-budget',   tier: 't3', needs: ['db', 'api', 'agents', 'model'],
     what: 'session memory is bounded and listings survive into the next turn' },
+  { id: 'v2-coverage',         tier: 't3', needs: ['db', 'api', 'agents', 'model'],
+    what: 'an answer built from a sample of the matching contracts says it is partial (A13)' },
   { id: 'l6b-ui-verify',       tier: 't3', needs: ['db', 'api', 'web', 'agents', 'model', 'playwright'],
     what: 'the nine UI fixes, driven through a real browser' },
 ]

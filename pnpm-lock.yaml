@@ -97,7 +97,7 @@ importers:
         specifier: ^3.3.0
         version: 3.3.0
       '@xmldom/xmldom':
-        specifier: 0.8.15
+        specifier: ^0.8.13
         version: 0.8.15
       bcryptjs:
         specifier: ^3.0.3
