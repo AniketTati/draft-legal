@@ -3043,7 +3043,7 @@ Asked after the end-to-end report: fix the three limits it listed. Each was repr
     - The seeded rules (now `lib/demo-liability-rules.ts`) read "each party's aggregate liability" as mutual and "two (2) times … twelve (12) months" as a stated cap.
     - `contract_get` and `portfolio_compare` (when comparing caps) carry `liabilityCaps`. The automatic playbook review gets each clause's caps as `facts`. Rule A17 and the review skill say to quote these figures and never work a cap out.
   - Tests:
-    - `liability-cap.test.ts` (12); `playbook-rules.test.ts` (5, on the Brightwave §3 with the seeded rules).
+    - `liability-cap.test.ts` (13); `playbook-rules.test.ts` (5, on the Brightwave §3 with the seeded rules).
     - `playbook-cap.integration.test.ts` (4): `playbook_check`, `contract_get`, `portfolio_compare`. All four failed on the old code.
     - `test_playbook_review_facts.py`. It failed on the old agent.
   - Live, on the round-trip contract (rules and skill re-seeded):
@@ -3051,6 +3051,10 @@ Asked after the end-to-end report: fix the three limits it listed. Each was repr
     - The review skill lists only that gap for §3.
     - Asked the cap's size: "24 months of fees, or 2 times the annual value … within our playbook's preferred limit … Super-cap … 36 months … 3 times."
     - The automatic review no longer flags §3.
+  - Checked against the demo workspace: the reader ran over the 179 versions that mention liability.
+    - It read "two times (2x) the fees" as 1×, reporting a 24-month cap as 12. It now reads a number restated in brackets.
+    - It now names the party a one-sided cap limits ("Supplier's cap") and writes "1 month".
+    - After those fixes, all 21 distinct cap sentences read right. The three near misses are not caps: a fragment, a definition with a placeholder amount, and "shall be uncapped".
 - **DD2 — A version made by editing had no clauses. — DONE.**
   - Found: on the round-trip contract, v2 and v3 (the applied playbook redline) have no clause rows; v1 and v4 (uploads, analysed) have 10 and 9. Only an upload is analysed; an edit, an applied redline or an assistant change never is.
   - Effect: on such a version the playbook check finds nothing to check. The Clauses tab, approvals, and semantic search fall back to the last analysed version, showing text the contract no longer has. The search index keeps the old full text: saving an edit didn't re-index it.
@@ -3090,7 +3094,7 @@ Asked after the end-to-end report: fix the three limits it listed. Each was repr
     - The API's download default, re-analysis and retype use the version the contract stands on. When that version has no file yet, the download falls back only to a file at or before it.
   - Tests: `current-version.test.ts` (3), `standing-version.integration.test.ts` (2). Both failed on the old code.
   - Live: the page shows v4's Delaware law and two-year term, although v6 is newer. The test edit's v6 is left in the contract's history; the contract points at v4 again, re-indexed and reviewed.
-- **Checks for DD1–DD4:** typecheck and lint clean (warnings only); unit 445; web 85; integration 450; agents 16.
+- **Checks for DD1–DD4:** typecheck and lint clean (warnings only); unit 446; web 85; integration 450; agents 16.
 
 ---
 

@@ -20,6 +20,8 @@ export interface LiabilityCap {
   condition: string | null
   /** Whose liability it limits: both parties ("each party's"), one of them, or not said. */
   binds: 'both' | 'one' | null
+  /** The one party it limits, as the contract names it ("Supplier"). */
+  party: string | null
   /** A fixed amount. */
   amount: { value: number; currency: string } | null
   /** A multiple of the fees over the months before the claim. Null months: the fees in total. */
@@ -72,6 +74,8 @@ export function numeralized(text: string): string {
   s = s.replace(/\btwice\b/gi, '2 times').replace(/\bdouble\b(?=\s+(?:the|all|any|its|such)\b)/gi, '2 times')
   s = s.replace(WORDS_RUN, run => String(wordsToNumber(run) ?? run))
   s = s.replace(/(\d)\s*(?:per\s*cent|percent)\b/gi, '$1%')
+  // The same number restated in brackets after its unit: "2 times (2x)", "12 months (12)".
+  s = s.replace(/(\d+(?:\.\d+)?)\s*(times|months?|years?|%)\s*\(\s*\d+(?:\.\d+)?\s*(?:x|×|%|times|months?|years?)?\s*\)/gi, '$1 $2')
   return s
 }
 
@@ -135,20 +139,21 @@ const FEES = /\b(fees|charges|amounts?|sums|consideration|payments?|price|compen
 const MONTHS_OF_FEES = /(\d+(?:\.\d+)?)\s*[- ]?\s*(months?|years?)'?\s*(?:worth\s+)?(?:of\s+)?(?:the\s+)?(?:total\s+|aggregate\s+)?(?:fees|charges|payments|amounts)/i
 
 const WHO_BOTH = /\b(?:each|either|neither)\s+party\b|\bthe\s+parties\b|\bboth\s+parties\b|\bmutual/gi
-const WHO_ONE = /\b(?:supplier|provider|service\s+provider|vendor|licensor|licensee|company|contractor|consultant|customer|client|seller|buyer|processor|controller)(?:'s)?\s+(?:(?:total|aggregate|cumulative|entire|maximum|overall)\s+)*liabilit/gi
+const WHO_ONE = /\b(supplier|provider|service\s+provider|vendor|licensor|licensee|company|contractor|consultant|customer|client|seller|buyer|processor|controller)(?:'s)?\s+(?:(?:total|aggregate|cumulative|entire|maximum|overall)\s+)*liabilit/gi
 
 /** The claims a super-cap is for. Only a specific kind: "for all claims" is the general cap. */
 const LEADING_CONDITION = /^\s*(?:(?:provided,?\s+(?:however,?\s+)?that|however|except\s+that|notwithstanding[^,]{0,160}),?\s*)?(?:for|with\s+respect\s+to|in\s+respect\s+of|in\s+relation\s+to|in\s+the\s+case\s+of|as\s+to|as\s+regards|regarding)\s+([^,]{5,260}),/i
 const TRAILING_CONDITION = /\b(?:for|with\s+respect\s+to|in\s+respect\s+of|in\s+relation\s+to)\s+((?:any\s+)?(?:claims?|breach(?:es)?|losses|liabilit(?:y|ies)|damages)\b[^.;]{0,220})/i
 const SPECIFIC = /\bbreach(?:es)?\s+of\b|\bsection\b|\bclause\b|confidential|\bdata\b|privacy|security|indemni|intellectual\s+property|infring|gross\s+negligence|wil+ful|fraud|death|personal\s+injury/i
 
-function lastIndexOf(re: RegExp, s: string): number {
-  let at = -1
-  for (const m of s.matchAll(re)) at = m.index ?? at
-  return at
+function lastMatch(re: RegExp, s: string): RegExpMatchArray | null {
+  let last: RegExpMatchArray | null = null
+  for (const m of s.matchAll(re)) last = m
+  return last
 }
 
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100))
+const months = (n: number) => `${fmt(n)} month${n === 1 ? '' : 's'}`
 const money = (m: { value: number; currency: string }) => `${m.currency} ${m.value.toLocaleString('en-US', { maximumFractionDigits: 2 })}`
 
 /** The fees part of a measure: its multiple and period, or null when it names no fees. */
@@ -175,15 +180,15 @@ function feesMeasure(measure: string): { multiple: number; periodMonths: number 
 }
 
 function describe(cap: Omit<LiabilityCap, 'statement'>): string {
-  const who = cap.condition ? `For ${cap.condition}` : cap.binds === 'both' ? "Each party's cap" : 'The cap'
+  const who = cap.condition ? `For ${cap.condition}` : cap.binds === 'both' ? "Each party's cap" : cap.party ? `${cap.party}'s cap` : 'The cap'
   const fees = cap.multiple == null ? null
     : cap.periodMonths == null
       ? `${fmt(cap.multiple)} × the fees paid under the agreement in total (how many months of fees that is depends on how long it has run)`
-      : `${fmt(cap.multiple)} × the fees of the ${fmt(cap.periodMonths)} months before the claim`
+      : `${fmt(cap.multiple)} × the fees of the ${months(cap.periodMonths)} before the claim`
   const amount = cap.amount ? money(cap.amount) : null
   const measure = cap.combine && amount && fees ? `the ${cap.combine} of ${amount} and ${fees}` : fees ?? amount ?? ''
   const sum = cap.monthsOfFees != null && cap.timesAnnualFees != null
-    ? ` = ${fmt(cap.monthsOfFees)} months of fees, ${fmt(cap.timesAnnualFees)} times a year's fees`
+    ? ` = ${months(cap.monthsOfFees)} of fees, ${fmt(cap.timesAnnualFees)} times a year's fees`
     : ''
   return `${who}: ${measure}${sum}.`
 }
@@ -221,13 +226,17 @@ export function liabilityCaps(text: string): LiabilityCap[] {
     const combined = !!(combine && amount && fees)
     const measured = amount && !combined ? null : fees
 
-    const both = lastIndexOf(WHO_BOTH, subject), one = lastIndexOf(WHO_ONE, subject)
-    const binds: LiabilityCap['binds'] = both < 0 && one < 0 ? null : both > one ? 'both' : 'one'
+    const bothAt = lastMatch(WHO_BOTH, subject)?.index ?? -1
+    const oneMatch = lastMatch(WHO_ONE, subject)
+    const oneAt = oneMatch?.index ?? -1
+    const binds: LiabilityCap['binds'] = bothAt < 0 && oneAt < 0 ? null : bothAt > oneAt ? 'both' : 'one'
+    const party = binds === 'one' && oneMatch ? oneMatch[1].replace(/\s+/g, ' ').replace(/^./, c => c.toUpperCase()) : null
     const monthsOfFees = !combined && measured?.periodMonths != null ? measured.multiple * measured.periodMonths : null
     const cap: Omit<LiabilityCap, 'statement'> = {
       sentence,
       condition,
       binds,
+      party,
       amount,
       multiple: measured?.multiple ?? null,
       periodMonths: measured?.periodMonths ?? null,
@@ -240,7 +249,7 @@ export function liabilityCaps(text: string): LiabilityCap[] {
   // A super-cap that doesn't say whose liability it limits limits the same as the general cap.
   const general = caps.find(c => !c.condition)
   for (const c of caps) {
-    if (c.condition && !c.binds && general?.binds) c.binds = general.binds
+    if (c.condition && !c.binds && general?.binds) { c.binds = general.binds; c.party = general.party; c.statement = describe(c) }
   }
   return [...caps.filter(c => !c.condition), ...caps.filter(c => c.condition)]
 }
@@ -272,7 +281,7 @@ function rangeText(b: CapBound): string {
 }
 
 const sizeOf = (c: LiabilityCap) => c.monthsOfFees != null
-  ? `${fmt(c.monthsOfFees)} months of fees (${fmt(c.timesAnnualFees ?? 0)} times a year's fees)`
+  ? `${months(c.monthsOfFees)} of fees (${fmt(c.timesAnnualFees ?? 0)} times a year's fees)`
   : c.amount && !c.combine ? money(c.amount) : 'a size the words don\'t give'
 
 /**
@@ -297,7 +306,8 @@ export function evaluateCapBound(caps: readonly LiabilityCap[], bound: CapBound)
   }
   const within = (v: number) => (bound.min == null || v >= bound.min) && (bound.max == null || v <= bound.max)
   const unitWord = metric === 'monthsOfFees' ? ' months of fees' : metric === 'timesAnnualFees' ? " times a year's fees" : ''
-  const shown = (v: number) => metric === 'amount' ? money({ value: v, currency: general.amount?.currency ?? '' }) : `${fmt(v)}${unitWord}`
+  const shown = (v: number) => metric === 'amount' ? money({ value: v, currency: general.amount?.currency ?? '' })
+    : metric === 'monthsOfFees' ? `${months(v)} of fees` : `${fmt(v)}${unitWord}`
 
   let value: number | null = null
   if (metric === 'monthsOfFees') value = general.monthsOfFees

@@ -99,7 +99,7 @@ describe('the other tools state the cap measured', () => {
     const out = await tool('portfolio_compare', { contractIds: [contractId, otherId], topics: ['liability cap'] })
     const capsOf = (id: string) => out.contracts.find((c: { id: string }) => c.id === id)?.liabilityCaps
     expect(capsOf(contractId)?.[0]).toBe(GENERAL)
-    expect(capsOf(otherId)).toEqual(['The cap: USD 500,000.'])
+    expect(capsOf(otherId)).toEqual(["Supplier's cap: USD 500,000."])
     const other = await tool('portfolio_compare', { contractIds: [contractId, otherId], topics: ['indemnification'] })
     expect(other.contracts.every((c: { liabilityCaps?: unknown }) => c.liabilityCaps === undefined)).toBe(true)
   })

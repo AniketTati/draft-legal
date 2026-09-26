@@ -40,8 +40,8 @@ describe('liabilityCaps', () => {
 
   it('reads an amount, and leaves a months limit unjudged for it', () => {
     const [cap] = liabilityCaps("Supplier's total liability under this Agreement shall not exceed $500,000.")
-    expect(cap).toMatchObject({ binds: 'one', amount: { value: 500_000, currency: 'USD' }, multiple: null, monthsOfFees: null })
-    expect(cap.statement).toBe('The cap: USD 500,000.')
+    expect(cap).toMatchObject({ binds: 'one', party: 'Supplier', amount: { value: 500_000, currency: 'USD' }, multiple: null, monthsOfFees: null })
+    expect(cap.statement).toBe("Supplier's cap: USD 500,000.")
     expect(evaluateCapBound([cap], MONTHS)).toMatchObject({ passed: null })
     expect(evaluateCapBound([cap], { max: 1_000_000, units: 'USD' })).toMatchObject({ passed: true, value: 500_000 })
     expect(liabilityCaps('Each party’s liability shall not exceed one million US dollars (US$1,000,000).')[0].amount).toEqual({ value: 1_000_000, currency: 'USD' })
@@ -61,8 +61,18 @@ describe('liabilityCaps', () => {
       .toMatchObject({ binds: 'both', multiple: 1.5, periodMonths: 12, monthsOfFees: 18 })
     expect(liabilityCaps('Liability shall be limited to twice the annual fees.')[0]).toMatchObject({ multiple: 2, periodMonths: 12, monthsOfFees: 24 })
     expect(liabilityCaps('Each party’s liability shall not exceed one and one-half times the fees paid in the prior year.')[0]).toMatchObject({ multiple: 1.5, monthsOfFees: 18 })
-    expect(liabilityCaps('The Provider’s liability is limited to twelve (12) months of fees.')[0]).toMatchObject({ binds: 'one', multiple: 1, periodMonths: 12, monthsOfFees: 12 })
+    expect(liabilityCaps('The Provider’s liability is limited to twelve (12) months of fees.')[0]).toMatchObject({ binds: 'one', party: 'Provider', multiple: 1, periodMonths: 12, monthsOfFees: 12 })
     expect(liabilityCaps('Liability shall not exceed the fees paid during the two (2) year period before the claim.')[0]).toMatchObject({ periodMonths: 24, monthsOfFees: 24 })
+  })
+
+  it('reads a multiple restated in brackets, and a one-month cap', () => {
+    // Both from redlined versions of the Brightwave agreement in the demo workspace.
+    const [twice] = liabilityCaps("Except for the excluded liabilities set forth below, each party's aggregate liability arising out of or related to this Agreement shall not exceed two times (2x) the fees paid or payable by Customer in the twelve (12) months immediately preceding the event giving rise to the claim.")
+    expect(twice).toMatchObject({ binds: 'both', multiple: 2, periodMonths: 12, monthsOfFees: 24 })
+    const [month] = liabilityCaps('LIMITATION OF LIABILITY Supplier’s aggregate liability under this Agreement shall not exceed the fees paid in the one (1) month preceding the claim.')
+    expect(month.statement).toBe("Supplier's cap: 1 × the fees of the 1 month before the claim = 1 month of fees, 0.08 times a year's fees.")
+    expect(evaluateCapBound([month], MONTHS)).toMatchObject({ passed: false, value: 1 })
+    expect(evaluateCapBound([month], MONTHS)!.reason).toContain('That is 1 month of fees, outside the limit.')
   })
 
   it('says when the fees have no period, instead of guessing one', () => {
@@ -98,6 +108,7 @@ describe('numeralized and sentencesOf', () => {
     expect(numeralized('one hundred fifty percent (150%) of')).toBe('150% of')
     expect(numeralized('twenty-four months and thirty six months')).toBe('24 months and 36 months')
     expect(numeralized('two and three')).toBe('2 and 3')
+    expect(numeralized('two times (2x) the fees in the twelve (12) months')).toBe('2 times the fees in the 12 months')
   })
 
   it('parts sentences run together, and keeps a list with its sentence', () => {
