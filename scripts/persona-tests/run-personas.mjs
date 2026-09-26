@@ -101,13 +101,14 @@ for (const slug of personas) {
 
   const turnTotal = personaResults.reduce((s, r) => s + r.turns.length, 0)
   const turnPass  = personaResults.reduce((s, r) => s + r.turns.filter(t => t.ok).length, 0)
+  const turnShrug = personaResults.reduce((s, r) => s + r.turns.filter(t => t.shrugPass).length, 0)
   const convPass  = personaResults.filter(r => r.ok).length
-  console.log(`\n  ${persona}: ${convPass}/${personaResults.length} conversations · ${turnPass}/${turnTotal} turns`)
+  console.log(`\n  ${persona}: ${convPass}/${personaResults.length} conversations · ${turnPass}/${turnTotal} turns${turnShrug ? ` · ${turnShrug} passed on a shrug` : ''}`)
 
   allResults.push({
     persona,
     convPass, convTotal: personaResults.length,
-    turnPass, turnTotal,
+    turnPass, turnTotal, turnShrug,
     results: personaResults,
   })
 }
@@ -117,6 +118,7 @@ const totalConv = allResults.reduce((s, p) => s + p.convTotal, 0)
 const totalConvPass = allResults.reduce((s, p) => s + p.convPass, 0)
 const totalTurn = allResults.reduce((s, p) => s + p.turnTotal, 0)
 const totalTurnPass = allResults.reduce((s, p) => s + p.turnPass, 0)
+const totalShrug = allResults.reduce((s, p) => s + p.turnShrug, 0)
 
 console.log(`\n${'═'.repeat(72)}`)
 console.log(`✓ Done — ${totalConvPass}/${totalConv} conversations · ${totalTurnPass}/${totalTurn} turns · ${(totalDuration / 1000).toFixed(1)}s`)
@@ -124,24 +126,34 @@ console.log(`✓ Done — ${totalConvPass}/${totalConv} conversations · ${total
 // Turns rather than conversations: the turn is what lib-multi actually grades,
 // so it is the number that drops when coverage is lost.
 console.log(`Persona journeys: ${totalTurnPass}/${totalTurn} passed`)
+// Read this NEXT TO the pass count, never instead of it. A shrug pass is a
+// turn that went green while the agent declined to answer — the rubric's
+// graceful-empty bypass suppressed the checks, or the only mustMentionAny
+// phrase it matched was one meaning "no answer". They are not failures; they
+// are turns the suite did not actually examine. If this number climbs while
+// the pass rate holds, the agent is getting more evasive and the headline
+// cannot see it.
+console.log(`  of which passed on a shrug: ${totalShrug}/${totalTurnPass} (${totalTurnPass ? ((totalShrug / totalTurnPass) * 100).toFixed(0) : 0}%)`)
 console.log('═'.repeat(72))
 for (const p of allResults) {
-  console.log(`  ${p.persona.padEnd(24)} ${p.convPass}/${p.convTotal} conv · ${p.turnPass}/${p.turnTotal} turns`)
+  console.log(`  ${p.persona.padEnd(24)} ${p.convPass}/${p.convTotal} conv · ${p.turnPass}/${p.turnTotal} turns · ${p.turnShrug} shrug`)
 }
 
 // Persist scorecard
 fs.writeFileSync(path.join(OUT, 'scorecard.json'), JSON.stringify({
   ranAt: new Date().toISOString(),
-  totalConv, totalConvPass, totalTurn, totalTurnPass, totalDurationMs: totalDuration,
+  totalConv, totalConvPass, totalTurn, totalTurnPass, totalShrug,
+  totalDurationMs: totalDuration,
   personas: allResults.map(p => ({
     persona: p.persona,
     convPass: p.convPass, convTotal: p.convTotal,
-    turnPass: p.turnPass, turnTotal: p.turnTotal,
+    turnPass: p.turnPass, turnTotal: p.turnTotal, turnShrug: p.turnShrug,
     conversations: p.results.map(r => ({
       id: r.id, title: r.title, type: r.type, user: r.user,
       ok: r.ok,
       turns: r.turns.length,
       turnsPassed: r.turns.filter(t => t.ok).length,
+      turnsShrug: r.turns.filter(t => t.shrugPass).length,
       latencyMsTotal: r.latencyMsTotal,
     })),
   })),
@@ -153,11 +165,13 @@ md.push(`# Multi-turn persona test summary\n`)
 md.push(`**Run at:** ${new Date().toISOString()}`)
 md.push(`**Duration:** ${(totalDuration / 1000).toFixed(1)}s`)
 md.push(`**Result:** ${totalConvPass}/${totalConv} conversations · ${totalTurnPass}/${totalTurn} turns\n`)
+md.push(`**Passed on a shrug:** ${totalShrug}/${totalTurnPass} — turns that went green while the agent`)
+md.push(`declined to answer. Not failures; turns the rubric did not actually examine.\n`)
 md.push(`## Per-persona\n`)
-md.push(`| Persona | Conv | Turns |`)
-md.push(`|---|---|---|`)
+md.push(`| Persona | Conv | Turns | Shrug |`)
+md.push(`|---|---|---|---|`)
 for (const p of allResults) {
-  md.push(`| ${p.persona} | ${p.convPass}/${p.convTotal} | ${p.turnPass}/${p.turnTotal} |`)
+  md.push(`| ${p.persona} | ${p.convPass}/${p.convTotal} | ${p.turnPass}/${p.turnTotal} | ${p.turnShrug} |`)
 }
 md.push(`\n## Failures\n`)
 for (const p of allResults) {

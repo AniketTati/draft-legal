@@ -39,6 +39,11 @@ export const CHECKS = [
     what: 'no layer references a tool that does not exist' },
   { id: 'l14-agents-url',     tier: 't1', needs: [],
     what: 'the API dials the port the agents service binds, and no call site reads an env var nothing sets' },
+  // t1 despite grading agent replies: scoreMultiTurn is pure, so this drives
+  // it with synthetic responses — no stack, no key, no model. That is the only
+  // way to watch the multi-turn grader fail, and 152 asks rest on it.
+  { id: 'e14-grader-truth',   tier: 't1', needs: [],
+    what: 'the multi-turn grader reports HOW a turn passed, not just that it did' },
 
   // ── t2 — needs the stack, but no model call ─────────────────────────────
   { id: 'l4-draft-tenancy',   tier: 't2', needs: ['db', 'api'],

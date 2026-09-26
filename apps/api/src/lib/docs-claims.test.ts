@@ -40,9 +40,14 @@ describe('docs claims', () => {
 
   it('the evals README matches what CI runs', () => {
     const ci = repo('.github', 'workflows', 'ci.yml')
-    // What CI actually runs (a TODO comment in ci.yml mentions t2 — not a run step).
+    const readme = repo('scripts', 'evals', 'README.md')
+    // t1 on every PR, as the README says.
     expect(ci).toMatch(/run: node scripts\/evals\/run\.mjs --tier t1 --check-baseline/)
-    expect(ci).not.toMatch(/run:[^\n]*--tier[^\n]*t2/)
-    expect(repo('scripts', 'evals', 'README.md')).not.toMatch(/\| \*\*t2\*\* \|[^\n]*\| blocking, every PR \|/)
+    expect(readme).toMatch(/\| \*\*t1\*\* \|[^\n]*\| blocking, every PR/)
+    // t2 is "blocking, every PR" in the README only while a job runs it on
+    // pull requests (main added agent-evals-t2; before it, the README had to
+    // say t2 was not yet in CI).
+    const t2Runs = /run:[^\n]*--tier[^\n]*t2/.test(ci)
+    expect(/\| \*\*t2\*\* \|[^\n]*\| blocking, every PR \|/.test(readme)).toBe(t2Runs && /^\s*pull_request:/m.test(ci))
   })
 })
