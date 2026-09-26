@@ -13,7 +13,7 @@ import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
-import { redlineTargets, type ReviewFinding } from '../lib/playbook-redline-targets.js'
+import { redlineTargets, uncheckedClauses, type ReviewFinding } from '../lib/playbook-redline-targets.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
@@ -505,9 +505,7 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     const review = (row?.metadata as { _playbookReview?: { versionId?: string; findings?: ReviewFinding[]; clausesReviewed?: number } } | null)?._playbookReview
     const { clauseIds: deviatingIds, hints, severity: bySeverity } = redlineTargets(checked.checks ?? [], review, versionId)
     // "Could not be checked" means neither the rules nor the review judged it.
-    const uncoveredClauses = review?.versionId === versionId
-      ? Math.max(0, (await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })) - (review.clausesReviewed ?? 0))
-      : checked.summary?.uncoveredClauses ?? 0
+    const uncoveredClauses = await uncheckedClauses(versionId, review, checked.summary?.uncoveredClauses ?? 0)
     if (deviatingIds.length === 0) {
       await setMeta({
         _playbookRedlineStatus: 'DONE',

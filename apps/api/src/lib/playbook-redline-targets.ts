@@ -9,6 +9,8 @@
  * review's category and reason for each clause to the rewriter.
  */
 
+import { prisma } from './prisma.js'
+
 /** A clause the playbook review flagged (contract.metadata._playbookReview.findings). */
 export interface ReviewFinding {
   clauseId:        string
@@ -40,4 +42,20 @@ export function redlineTargets(
     hints,
     severity,
   }
+}
+
+/**
+ * How many of a version's clauses neither the rules nor the review judged:
+ * its clauses, less those the review read. Clauses, not their rows: a long
+ * clause is one clause stored as several sub-chunk windows, which were
+ * counted as clauses "left unchecked".
+ */
+export async function uncheckedClauses(
+  versionId: string,
+  review: { versionId?: string; clausesReviewed?: number } | null | undefined,
+  fromCheck: number,
+): Promise<number> {
+  if (review?.versionId !== versionId) return fromCheck
+  const clauses = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
+  return Math.max(0, clauses - (review.clausesReviewed ?? 0))
 }

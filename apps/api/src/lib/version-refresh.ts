@@ -9,7 +9,9 @@
  * Never fails the save that called it: the version exists either way, and a
  * version without clauses is what there was before.
  */
-import { carryClauses, type CarryResult } from './clause-carry.js'
+import { prisma } from './prisma.js'
+import { carryClauses, copyEmbeddings, type CarryResult } from './clause-carry.js'
+import type { RefreshVersionJob } from './queue.js'
 
 export async function afterEdit(opts: { contractId: string; orgId: string; versionId: string; fromVersionId?: string | null }): Promise<CarryResult | null> {
   let carried: CarryResult | null = null
@@ -29,4 +31,39 @@ export async function afterEdit(opts: { contractId: string; orgId: string; versi
     review: (carried?.changed ?? 0) > 0,
   })
   return carried
+}
+
+/**
+ * The refresh-version job (run by the parse worker): the search index's full
+ * text, the clauses' windows and search entries, their embeddings, and a
+ * fresh playbook review. The contract's analysis status is left as it is:
+ * nothing was analysed.
+ */
+export async function refreshVersion(data: RefreshVersionJob): Promise<void> {
+  const { contractId, versionId, orgId, fromVersionId, review } = data
+  // Loaded here: the queue opens a Redis connection, and the search client an Elasticsearch one.
+  const { queueEmbedContract, queuePlaybookReviewSoon } = await import('./queue.js')
+  const { reindexContract } = await import('./elasticsearch.js')
+  const { legalChunkAndStore } = await import('./legal-chunker.js')
+  // The review is of whatever version stands two minutes on, so it is asked
+  // for even when this one has been replaced.
+  if (review) queuePlaybookReviewSoon({ contractId, orgId })
+  const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { currentVersionId: true, title: true, type: true, jurisdiction: true } })
+  // A later save (the editor saves five seconds after typing stops) made a
+  // newer version: its own job indexes and embeds that one.
+  if (!contract || contract.currentVersionId !== versionId) return
+  try {
+    await reindexContract(contractId)
+  } catch (err) {
+    console.warn('[version-refresh] re-index failed contractId=%s: %s', contractId, (err as Error).message)
+  }
+  const clauses = await prisma.contractClause.findMany({
+    where: { versionId, isSubChunk: false },
+    orderBy: { sortOrder: 'asc' },
+  })
+  if (clauses.length) {
+    await legalChunkAndStore(versionId, contractId, orgId, clauses, contract)
+    if (fromVersionId) await copyEmbeddings(fromVersionId, versionId)
+    queueEmbedContract(versionId)
+  }
 }

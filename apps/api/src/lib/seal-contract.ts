@@ -82,14 +82,19 @@ export async function sealSignedContract(signatureRequestId: string): Promise<Se
   const ver = await prisma.contractVersion.findUnique({
     where:  { id: sr.versionId },
     select: {
-      id: true, versionNumber: true, s3Key: true,
+      id: true, versionNumber: true, s3Key: true, mimeType: true,
       renderedPdfKey: true, plainText: true, htmlContent: true,
     },
   })
   if (!ver) return { status: 'skipped', reason: 'signed version no longer exists' }
 
-  // Canonical source: renderedPdfKey wins (A.5), else the original upload.
-  let sourceKey = ver.renderedPdfKey ?? ver.s3Key
+  // Canonical source: renderedPdfKey wins (A.5), else the original upload
+  // when it is a PDF. DD8 — a Word or text upload is not one: its bytes,
+  // stamped as a PDF, failed every retry ("No PDF header found"), so a
+  // contract signed on their Word file never got its sealed copy. Its text is
+  // rendered instead, as an AI draft's is and as every editor save is.
+  const uploadIsPdf = ver.mimeType ? ver.mimeType === 'application/pdf' : /\.pdf$/i.test(ver.s3Key ?? '')
+  let sourceKey = ver.renderedPdfKey ?? (uploadIsPdf ? ver.s3Key : null)
 
   // AI-drafted HTML contracts never went through the editor's render-on-save
   // path, so there's no PDF to stamp yet — render one now. Unlike before, a

@@ -13,12 +13,13 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { extractDocument } from '../lib/document.js'
 import { embedContractVersion } from '../lib/embeddings.js'
 import { legalChunkAndStore } from '../lib/legal-chunker.js'
-import { indexContract, reindexContract } from '../lib/elasticsearch.js'
+import { indexContract } from '../lib/elasticsearch.js'
 import { getPdfPageCount } from '../lib/pdf-splitter.js'
 import { splitBinder } from '../lib/binder-split.js'
-import { queueDetectBinder, queueEmbedContract, queuePlaybookReview, queuePlaybookReviewSoon } from '../lib/queue.js'
+import { queueDetectBinder, queueEmbedContract, queuePlaybookReview } from '../lib/queue.js'
 import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob, RefreshVersionJob } from '../lib/queue.js'
-import { carryClauses, copyEmbeddings } from '../lib/clause-carry.js'
+import { carryClauses } from '../lib/clause-carry.js'
+import { refreshVersion } from '../lib/version-refresh.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
@@ -227,34 +228,7 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
 }
 
 // ─── refresh-version (DD2) ───────────────────────────────────────────────────
-// A version made by editing: the search index's full text, the clauses'
-// windows and search entries, their embeddings, and a fresh playbook review.
-// The contract's analysis status is left as it is: nothing was analysed.
-
-async function handleRefreshVersion(data: RefreshVersionJob): Promise<void> {
-  const { contractId, versionId, orgId, fromVersionId, review } = data
-  // The review is of whatever version stands two minutes on, so it is asked
-  // for even when this one has been replaced.
-  if (review) queuePlaybookReviewSoon({ contractId, orgId })
-  const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { currentVersionId: true, title: true, type: true, jurisdiction: true } })
-  // A later save (the editor saves five seconds after typing stops) made a
-  // newer version: its own job indexes and embeds that one.
-  if (!contract || contract.currentVersionId !== versionId) return
-  try {
-    await reindexContract(contractId)
-  } catch (err) {
-    console.warn('[parse-worker] refresh-version re-index failed contractId=%s: %s', contractId, (err as Error).message)
-  }
-  const clauses = await prisma.contractClause.findMany({
-    where: { versionId, isSubChunk: false },
-    orderBy: { sortOrder: 'asc' },
-  })
-  if (clauses.length) {
-    await legalChunkAndStore(versionId, contractId, orgId, clauses, contract)
-    if (fromVersionId) await copyEmbeddings(fromVersionId, versionId)
-    queueEmbedContract(versionId)
-  }
-}
+// A version made by editing: lib/version-refresh.ts (refreshVersion).
 
 // ─── split-binder ─────────────────────────────────────────────────────────────
 // The body lives in lib/binder-split.ts so it can be tested without
@@ -275,7 +249,7 @@ export const parseWorker = new Worker(
     } else if (job.name === 'split-binder') {
       await splitBinder(job.data as SplitBinderJob)
     } else if (job.name === 'refresh-version') {
-      await handleRefreshVersion(job.data as RefreshVersionJob)
+      await refreshVersion(job.data as RefreshVersionJob)
     }
   },
   { connection: redis, concurrency: 3 }

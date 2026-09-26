@@ -3125,7 +3125,17 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
   - Cause: the apply has a fallback for such clauses, the rewrite's own edits applied one by one, but the drawer never sent the edits.
   - Fix: it sends them. Test: a tripwire in `ui-promises.test.ts`; it failed before.
   - Live: the same clause's rewrite applied.
-- **Checks for DD1–DD7:** typecheck and lint clean (warnings only); unit 450; web 88; integration 459; agents 16.
+- **DD8 — The last untested pieces, run. — DONE.**
+  - The two DD5 worker fixes had no test. The refresh job and the unchecked count are now `refreshVersion` (lib/version-refresh.ts) and `uncheckedClauses` (lib/playbook-redline-targets.ts), which a test can reach without starting a worker. `worker-steps.integration.test.ts` (4): both fixes' cases failed with the old behaviour put back.
+  - A full signing, on a new test contract made from the Brightwave Word file: two signers through their signing links, in order.
+    - Found: the seal failed every retry: "Failed to parse PDF document … No PDF header found". It stamped the Word file's bytes as a PDF, so a contract signed on a Word upload never got its sealed copy. None of the workspace's 10 Word versions has a rendered PDF.
+    - Fix: the upload is sealed only when it is a PDF. Otherwise the signed version's text is rendered, as an AI draft's is and every editor save is. That render is sanitised; converting the Word file itself with LibreOffice would keep Word's layout, but can fetch what the file links to.
+    - Test: `seal-contract.integration.test.ts` (1). It failed on the old seal with the same error.
+    - Live: sealed on the job's last retry. The contract is Executed; its v2 is the sealed PDF, with the 9 clauses and their ratings and embeddings.
+  - Also, the local stack (not the repo): the Docker VM has 4 GB of this Mac's 8 GB, shared by Postgres, Elasticsearch, Gotenberg, MinIO, Redis and Langfuse (about 1.3 GB idle).
+    - Under the full suite, Postgres crashed and recovered four times (a process killed by a broken pipe, then processes exiting with code 2; one checkpoint took 33 s to sync). Gotenberg's browser fell over twice.
+    - Asked to give Postgres more memory: shared_buffers 128 MB → 512 MB, maintenance_work_mem 64 MB → 256 MB, work_mem 4 MB → 8 MB (ALTER SYSTEM, kept on the data volume). The container also has a 1 GB memory reservation (`docker update`, lost if the container is recreated). Postgres and Gotenberg restarted.
+- **Checks for DD1–DD8:** typecheck and lint clean (warnings only); unit 450; web 88; agents 16. Integration 464: 461 in one run. The seal test and two render tests need Gotenberg, which had fallen over in that run; they pass on a rerun.
 
 ---
 
