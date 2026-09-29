@@ -3186,6 +3186,57 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
   - Live, on the five changed clauses of the markup: average risk 7 in our standard, 88 as proposed, 44 with our counters. Also run on SaaS examples outside the construction playbook.
   - Not done: the risk has no field of its own in the panel (it is in the reasoning and counter-note text), and the weights are a first judgement, not calibrated against lawyers' ratings.
   - Checks: agents 49 (1 expected failure, as before).
+- **FF2 — The marketing site says only what the product does. — DONE.**
+  - Found, auditing draft-legal.com as deployed on 26 Sep (the site was current with `main`; its claims weren't):
+    - False:
+      - Contracts "never leave your network"; "air-gapped deployments … on-prem inference". Every AI call goes to a hosted provider (Anthropic, OpenAI, Google or OpenRouter).
+      - A managed cloud with single-tenant hosting and a region choice, which appeared in the homepage meta description every link preview shows. There is none; the hosted instance is a demo.
+      - Provider keys encrypted under an "org-specific master key". There is one deployment key.
+      - "PDF/A" signed output.
+      - A pen-test summary and SIG-Lite.
+      - A quickstart whose `docker compose up` started only the infrastructure.
+      - Plant- and hub-scoped permissions.
+      - Industry features with no code: sub-processor and IP-chain tracking, insurance-certificate reminders, a one-click data room, Bayh-Dole ticks.
+      - "Reference teams" and "reference portfolios", which were synthesized personas.
+    - Overstated:
+      - "12 AI agents" counted e-signature and invoice matching.
+      - "Never hallucinated".
+      - Approvals routed by jurisdiction and counterparty risk.
+      - An intake that routes and auto-approves.
+      - CRM data in drafts.
+      - "Every" deadline extracted.
+      - Portfolio answers over "150+ contracts".
+      - A model "per agent".
+      - A Discord, a community call, an RFC folder and a 48-hour PR promise.
+      - AGPL "like GitLab and Sentry".
+    - Links:
+      - The Cal.com demo link answered 404.
+      - x.com/draftlegal is an unrelated person's account.
+      - `/privacy` and `/terms` had no route.
+      - `/product#…` anchors went nowhere, and screenshots loading late pushed stages away from the link target.
+      - The README anchor was `#setup`.
+    - Stale:
+      - Four shipped agents were marked "Soon".
+      - Nothing on Word redlining, the Google Docs round trip, liability caps, sealed Word signing, renewal notice dates, PII masking or the prompt-injection warning.
+      - The build copied the sitemap before regenerating it, so every `lastmod` said 25 May, and `/industries` was missing.
+  - Fix:
+    - Every claim now fits the code.
+    - The 12 agents are the ones that call a model: Signature and Invoice gave way to Playbook Review and Compliance. E-signature and invoice matching are described as features.
+    - The data-flow, masking and key-storage text now says what happens.
+    - Roadmap items stay "not yet".
+    - Privacy and Terms point at the app's pages. The demo link is an email. The X and LinkedIn links are gone.
+    - Product stages have ids, and screenshots reserve their 1680×900 space.
+    - Comparison pages say when they were last checked.
+    - The sitemap is generated before the build and lists `/industries`.
+  - Tests: `marketing-claims.test.ts` (+17) now reads `index.html` too. Each of its 20 new phrases matched the live site's source before the fix.
+  - Checks:
+    - Marketing build: 42 sitemap URLs.
+    - Typecheck and lint for every package: 0 errors.
+    - API unit 503.
+    - On a preview: home, product anchors, security, contact, biotech and a comparison page.
+  - Not done:
+    - The product screenshots are from May, before the 8 Aug design change. Re-shooting needs a signed-in capture.
+    - Competitor facts on the comparison pages weren't re-researched.
 
 ---
 

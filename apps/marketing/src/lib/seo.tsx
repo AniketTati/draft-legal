@@ -88,5 +88,5 @@ export const softwareSchema = {
   operatingSystem: 'Web, Linux, Docker',
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
   description:
-    'Agent-first contract lifecycle management with 12 AI agents covering intake, drafting, negotiation, approval, signature, and post-signature obligations.',
+    'Agent-first contract lifecycle management: 12 AI agents handle intake, review, drafting, negotiation, approvals and post-signature obligations, with e-signature built in.',
 }

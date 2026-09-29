@@ -41,9 +41,14 @@ export function BrowserFrame({
         <span className="h-1 w-1 rounded-full bg-slate-300" />
         <span className="h-1 w-1 rounded-full bg-slate-300" />
       </div>
+      {/* Every product screenshot is 1680×900. The size reserves each image's
+          space before it loads, so the page doesn't shift and /product#stage
+          links land on their stage. */}
       <img
         src={src}
         alt={alt}
+        width={1680}
+        height={900}
         loading="lazy"
         className={cn('block h-auto w-full', imgClassName)}
       />

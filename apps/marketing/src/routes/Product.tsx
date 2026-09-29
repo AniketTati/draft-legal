@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { lifecycle } from '@/content/lifecycle'
 import { CtaStrip } from '@/components/sections/CtaStrip'
 import { AgentGrid } from '@/components/sections/AgentGrid'
@@ -27,6 +29,13 @@ const productSchema = {
 }
 
 export default function Product() {
+  // Links such as /product#negotiate land here. App scrolls to the top on
+  // every route change, so jump to the stage once it has rendered.
+  const { hash } = useLocation()
+  useEffect(() => {
+    if (hash) document.getElementById(hash.slice(1))?.scrollIntoView()
+  }, [hash])
+
   return (
     <>
       <SEO
@@ -58,6 +67,7 @@ export default function Product() {
           {lifecycle.map((stage, idx) => (
             <div
               key={stage.slug}
+              id={stage.slug}
               className="grid items-start gap-10 border-t border-slate-200 py-16 lg:grid-cols-12"
             >
               <div className="lg:col-span-5 lg:sticky lg:top-24">
@@ -75,7 +85,7 @@ export default function Product() {
                 <p className="mt-4 text-base leading-7 text-slate-600">{stage.blurb}</p>
                 <div className="mt-5 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-200">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
-                  Powered by {stage.agent}
+                  {stage.agent}
                 </div>
               </div>
 
@@ -105,17 +115,17 @@ export default function Product() {
                   </div>
                   <p className="mt-2 text-sm leading-6 text-slate-700">
                     {idx === 0 &&
-                      'Reads the inbound request, extracts counterparty and value, classifies type with confidence, and either auto-routes to the right queue or auto-approves low-risk items. You see the plan before it acts.'}
+                      'Reads the inbound request, pulls out counterparty, value and governing law, and classifies type and priority with a confidence score. A person assigns it — with the facts already filled in.'}
                     {idx === 1 &&
-                      'Pulls your template + clause library, applies playbook positions, fills CRM data, and produces a first draft with every deviation flagged. You edit; the agent doesn\'t invent legal language.'}
+                      'Picks your template, fills it from the request, the counterparty record and template defaults, and flags the terms it couldn\'t fill. You edit; the agent doesn\'t invent legal language.'}
                     {idx === 2 &&
-                      'When the redline returns, detects every change against your fallback positions, ranks by deal-breaker risk, and proposes counter-language with rationale. The negotiator stays in control.'}
+                      'When their redline returns, scores each change for risk — before, as proposed and with your counter — against your playbook, and proposes counter-language with the reasons. It goes back in their Word file as tracked changes. The negotiator stays in control.'}
                     {idx === 3 &&
-                      'Routes by your rules — by value, type, or counterparty. Each approver sees an AI summary, the diff, and the risk flags. Approvers can decide from Slack; Teams receives notification cards.'}
+                      'Routes by your rules — by contract type and value, in sequence or in parallel. Each approver sees an AI summary, the risk flags and a recommendation. Approvers can decide from Slack; Teams receives notification cards.'}
                     {idx === 4 &&
-                      'Generates the signing packet, sends tokenized links to external signers, applies cryptographic signatures with embedded certificates, and produces a tamper-evident final PDF.'}
+                      'No AI here — e-signature is built in. Each signer gets a personal link; name, time, IP and browser go on a certificate page, and the executed PDF gets a PAdES/X.509 seal, so any later change shows. Word or PDF in, sealed PDF out.'}
                     {idx === 5 &&
-                      'Extracts every renewal date, payment milestone, audit right, and compliance deadline. Routes alerts to the right owner — not just to a generic legal inbox.'}
+                      'Extracts payment, renewal, audit and reporting obligations (from the first 16,000 characters, up to 25 per contract) and reminds the contract owner a week before each is due — not a generic legal inbox. Invoices are matched to their contract, with the amount checked against the contract total; you confirm the match or file a dispute.'}
                   </p>
                 </div>
               </div>
@@ -128,7 +138,7 @@ export default function Product() {
       <TrustStrip />
       <CtaStrip
         title="See it run on your own contracts."
-        subtitle="Self-host in three commands, or sign up for cloud and import your portfolio."
+        subtitle="Self-host it in three commands, or try the hosted demo (evaluation only)."
       />
     </>
   )

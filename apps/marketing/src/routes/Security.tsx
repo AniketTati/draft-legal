@@ -6,42 +6,42 @@ const sections = [
   {
     icon: Database,
     title: 'Architecture & data isolation',
-    body: 'Each organization\'s data is kept apart twice. In the database, Postgres row-level security (RLS) policies on every table that holds tenant data confine an organization\'s queries to its own rows, raw SQL included. In the API, a data-layer guard limits every query to the caller\'s organization before it runs. On every build, an automated test calls each signed-in API endpoint with another organization\'s records and fails if anything is read, changed or linked across. On Cloud Enterprise, single-tenant infrastructure is available. On self-host, the policies ship with the schema migrations.',
+    body: 'Each organization\'s data is kept apart twice. In the database, Postgres row-level security (RLS) policies on every table that holds tenant data confine an organization\'s queries to its own rows, raw SQL included. In the API, a data-layer guard limits every query to the caller\'s organization before it runs. On every build, an automated test calls each signed-in API endpoint with another organization\'s records and fails if anything is read, changed or linked across. On self-host, the policies ship with the schema migrations.',
   },
   {
     icon: KeyRound,
     title: 'Authentication & authorization',
-    body: 'JWT (HS256) with 15-minute access tokens and 7-day refresh. SAML / OIDC SSO is on the roadmap — not available yet. Authorization is enforced server-side as {action × resource × scope} triples — there are no client-only checks.',
+    body: 'JWT (HS256) with 15-minute access tokens and 7-day refresh. SAML / OIDC SSO is on the roadmap — not available yet, and neither are MFA or SCIM. Authorization is enforced server-side as {action × resource × scope} triples — there are no client-only checks.',
   },
   {
     icon: ShieldCheck,
     title: 'Role-based access control',
-    body: 'Granular RBAC with the Permission Engine: every API call passes through requirePermission(). Each user holds one or more of the built-in roles and gets the combined permissions; a permission applies org-wide or only to the user\'s own records. Role changes are recorded in the audit log. Custom roles and matter-level scopes are planned.',
+    body: 'Granular RBAC with the Permission Engine: most API routes check a permission with requirePermission(); public routes (sign-in, signing links, the counterparty portal, webhooks) are authorised by their own tokens, signatures or secrets. Each user holds one or more of the 9 built-in roles and gets the combined permissions; a permission applies org-wide or only to the user\'s own records (Sales Reps see only their own). Role changes are recorded in the audit log. Custom roles and matter-level scopes are planned.',
   },
   {
     icon: FileSearch,
     title: 'Tamper-evident audit log',
-    body: 'State-changing actions — by humans or agents — are recorded with actor, IP, timestamp, payload, and a chained hash, so altering a past entry is detectable. Agent actions are recorded with the arguments that were applied. Admins can search the log and re-check its hash chain in the app (Admin → Organization → Audit Log); audit export and database-level append-only enforcement are planned.',
+    body: 'State-changing actions — by humans or agents — are recorded with actor, IP, timestamp, payload, and a chained hash, so altering a past entry is detectable. Agent actions are recorded with the arguments that were applied. Admins can search the log and re-check its hash chain in the app (Admin → Organization → Audit Log), and each contract\'s compliance package (PDF) includes its audit trail, checked against the chain. An org-wide audit export and database-level append-only enforcement are planned.',
   },
   {
     icon: Lock,
     title: 'Encryption',
-    body: 'TLS in transit and encryption at rest on the hosted deployment; on self-hosted installs, transport and at-rest encryption follow your own infrastructure configuration. Bring-your-own-key (BYOK) for AI provider credentials, encrypted with an org-specific master key. Document storage on S3 / MinIO / GCS — versioning and immutability supported by the underlying backend.',
+    body: 'TLS in transit and encryption at rest on the hosted demo; on self-hosted installs, transport and at-rest encryption follow your own infrastructure configuration. Bring-your-own-key (BYOK) for AI provider credentials, encrypted with AES-256-GCM under one deployment master key; only a key prefix is ever shown. Document storage on S3 / MinIO / GCS — versioning and immutability supported by the underlying backend.',
   },
   {
     icon: AlertTriangle,
     title: 'AI safety',
-    body: 'Agents propose structured plans before executing state changes. Read-only tools (search, ask) auto-execute; destructive ones (sign, send, delete) require human approval. Every extraction returns a confidence score and a citation back to the source quote — no hallucinated facts.',
+    body: 'Changes the assistant proposes — an edit, a comment, an approval decision, a redline — wait on a confirm card; read-only tools (search, cite, compare) run straight away. Before every model call, personal data is masked under your org\'s privacy mode (redact by default): ID, card and bank numbers, emails, phone numbers, dates of birth, IP addresses and API keys — not names, addresses or health details — and a miss is recorded in the audit log. When a document contains text aimed at the AI, the assistant tells you and doesn\'t act on it. Extracted values cite their source and carry a confidence score; low-confidence ones are flagged for review.',
   },
   {
     icon: Server,
     title: 'Self-host & data residency',
-    body: 'Run Draft Legal in your VPC, your region, your network. Air-gapped deployments are supported (BYO LLM or on-prem inference). Cloud lets you choose region (US, EU, APAC) and we never replicate data outside the region you choose.',
+    body: 'Run Draft Legal in your VPC, your region, your network: the database and files stay on your infrastructure. With AI features on, contract text goes to the model provider you configure (Anthropic, OpenAI, Google or OpenRouter) under your own keys. There is no on-prem or local model option, so AI features can\'t run air-gapped; without an AI key the app still runs. The hosted demo runs in one region (us-central1) and is for evaluation only.',
   },
   {
     icon: ScrollText,
     title: 'Compliance roadmap',
-    body: 'SOC 2 Type II is on our roadmap — not yet audited; in the meantime, self-hosting keeps your contracts on your own infrastructure. GDPR: dedicated data-export and deletion endpoints are planned; today, self-hosting keeps data residency and deletion in your hands. HIPAA-aligned controls are planned for Enterprise.',
+    body: 'SOC 2 Type II is on our roadmap — not yet audited; in the meantime, self-hosting keeps your database and files on your own infrastructure. GDPR: dedicated data-export and deletion endpoints are planned; today you have CSV exports and document downloads, and self-hosting keeps data residency and deletion in your hands. HIPAA-aligned controls are planned for Enterprise.',
   },
 ]
 
@@ -80,7 +80,7 @@ export default function Security() {
             </p>
             <div className="mt-8 inline-flex items-center gap-2 rounded-full border border-emerald-700/30 bg-emerald-700/10 px-3 py-1 text-xs font-medium text-emerald-300">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-              SOC 2 Type II on the roadmap · self-host today for full data control
+              SOC 2 Type II on the roadmap · self-host to keep your database and files in-house
             </div>
           </div>
         </div>
@@ -110,8 +110,8 @@ export default function Security() {
               Need our security pack?
             </h3>
             <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">
-              We can share our SIG-Lite, latest pen-test summary, sub-processor list, and
-              architecture diagram with prospects under NDA.
+              We can share our architecture documentation and sub-processor list with prospects
+              under NDA.
             </p>
             <div className="mt-5">
               <a

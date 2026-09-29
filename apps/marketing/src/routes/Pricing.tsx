@@ -135,7 +135,7 @@ export default function Pricing() {
       <Faq items={pricingFaqs} title="Pricing questions" eyebrow="Pricing FAQ" />
       <CtaStrip
         title="Try it for free."
-        subtitle="No credit card. Self-host in 3 commands or sign up for the cloud waitlist."
+        subtitle="No credit card. Self-host it in 3 commands, or try the hosted demo (evaluation only)."
       />
     </>
   )

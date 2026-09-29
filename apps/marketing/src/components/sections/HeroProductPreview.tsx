@@ -21,8 +21,8 @@ export function HeroProductPreview() {
           />
         </div>
         <p className="mx-auto mt-6 max-w-2xl text-center text-xs text-slate-500">
-          Real screenshot from the product. The Assistant panel on the right is grounded in your
-          contracts — no hallucinated answers.
+          Screenshot from the product. The Assistant panel on the right answers from your
+          contracts and cites the ones it used.
         </p>
       </div>
     </section>

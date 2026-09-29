@@ -82,14 +82,14 @@ export default function Contact() {
                 Tell us about your contracts.
               </h1>
               <p className="mt-4 text-base leading-7 text-slate-600">
-                The fastest way to get answers depends on what you need. Most teams just{' '}
+                The fastest way to get answers depends on what you need. You can just{' '}
                 <a
                   href="https://app.draft-legal.com/register"
                   className="font-semibold text-emerald-700 underline underline-offset-4"
                 >
                   start free
                 </a>{' '}
-                — but if you'd rather talk first, we read every form.
+                on the hosted demo — but if you'd rather talk first, we read every form.
               </p>
 
               <ul className="mt-10 space-y-5">
@@ -114,10 +114,10 @@ export default function Contact() {
                   <div>
                     <div className="text-sm font-semibold text-slate-900">Book a 30-min demo</div>
                     <a
-                      href="https://cal.com/draft-legal/demo"
+                      href="mailto:aniket.tatipamula@gmail.com?subject=Demo%20request"
                       className="text-sm text-slate-600 hover:text-emerald-700"
                     >
-                      Pick a time on the founder's calendar
+                      Email us to pick a time
                     </a>
                   </div>
                 </li>

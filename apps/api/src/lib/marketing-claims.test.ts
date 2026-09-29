@@ -14,7 +14,8 @@ function sources(dir: string): string[] {
     return statSync(p).isDirectory() ? sources(p) : /\.(tsx?|mdx?)$/.test(f) ? [p] : []
   })
 }
-const site = sources(ROOT).map(p => readFileSync(p, 'utf8')).join('\n')
+// index.html too: its meta description is what every link preview shows (FF2).
+const site = [...sources(ROOT), join(ROOT, '..', 'index.html')].map(p => readFileSync(p, 'utf8')).join('\n')
 
 describe('marketing claims', () => {
   it.each([
@@ -47,6 +48,36 @@ describe('marketing claims', () => {
   it('calls the audit log what it is, and its viewer shipped', () => {
     expect(site).not.toMatch(/append-only audit log/i)
     expect(site).not.toMatch(/audit viewer[^.']*planned/i)
+  })
+
+  // FF2 — the 29 Sep truth pass. Each phrase below was on the live site and
+  // false; FIX_TRACKER.md FF2 says what the code does instead.
+  it.each([
+    ['contracts never leave your network', /never leave your network/i],
+    ['air-gapped deployments', /air-gapped deployments are supported|on-prem inference/i],
+    ['a managed cloud', /use our managed cloud|sign up for cloud|Cloud Enterprise|cloud waitlist/i],
+    ['an org-specific key for provider keys', /org-specific master key/i],
+    ['PDF/A output', /PDF\/A/],
+    ['a pen test or SIG-Lite', /pen-test summary|SIG-Lite/i],
+    ['answers that are never wrong', /never hallucinat|no hallucinated|never invented/i],
+    ['approval routing by jurisdiction or counterparty risk', /\b(route|routed|routing|approvals?)\b[^.'\n]{0,40}jurisdiction|jurisdiction, counterparty risk/i],
+    ['CRM data in drafts', /data from your CRM|fills CRM data/i],
+    ['every deadline extracted', /extracts every/i],
+    ['portfolio answers over 150+ contracts', /150\+ contracts/i],
+    ['a model choice per agent', /(provider|model|LLM)[^.'\n]{0,40}per agent/i],
+    ['plant- or hub-scoped access', /(plant|hub)-scoped/i],
+    ['reference customers', /our reference\b[^'\n]{0,30}(teams|portfolios)/i],
+    ['a Discord or community call', /Discord|community call/i],
+    ['an AGPL model shared with GitLab and Sentry', /GitLab, Mattermost/i],
+  ])('does not claim %s (FF2)', (_name, pattern) => {
+    expect(site).not.toMatch(pattern)
+  })
+
+  it('links nowhere dead or wrong (FF2)', () => {
+    expect(site).not.toMatch(/cal\.com\/draft-legal/)      // Cal.com answers 404
+    expect(site).not.toMatch(/x\.com\/draftlegal/i)        // an unrelated person's account
+    expect(site).not.toMatch(/href="\/(privacy|terms)"/)  // no such routes on this site
+    expect(site).not.toMatch(/free \w+ templates?\b/i)    // "Free MSA template" led to a guide
   })
 
   it('has no email capture that reports success without sending anything', () => {

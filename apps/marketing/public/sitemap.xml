@@ -2,207 +2,212 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://draft-legal.com/</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>1</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/product</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/security</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/pricing</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/open-source</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.9</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/contact</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.5</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/alternatives</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/compare/ironclad</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/compare/harvey</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/compare/spellbook</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/compare/docusign-clm</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/compare/icertis</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://draft-legal.com/industries</loc>
+    <lastmod>2026-09-29</lastmod>
+    <priority>0.7</priority>
+  </url>
+  <url>
     <loc>https://draft-legal.com/industries/saas</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/industries/healthcare</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/industries/manufacturing</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/industries/biotech</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/industries/logistics</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/contract-lifecycle-management</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/ai-contract-review</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/ai-contract-drafting</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/contract-redlining</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/clause-library</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/contract-repository</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/contract-approval-workflow</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/contract-renewal-tracking</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/obligation-management</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/electronic-signature</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/nda</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/msa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/dpa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/baa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/learn/sow</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.7</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/nda</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/msa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/dpa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/baa</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/sow</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/employment-agreement</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
   <url>
     <loc>https://draft-legal.com/templates/mta</loc>
-    <lastmod>2026-05-25</lastmod>
+    <lastmod>2026-09-29</lastmod>
     <priority>0.6</priority>
   </url>
 </urlset>

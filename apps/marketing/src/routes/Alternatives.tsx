@@ -75,7 +75,7 @@ export default function Alternatives() {
       <CtaStrip
         eyebrow="The simplest path"
         title="Try Draft Legal yourself."
-        subtitle="No demo call required. Self-host in 3 commands or sign up free."
+        subtitle="No demo call required. Self-host it in 3 commands, or try the hosted demo (evaluation only)."
       />
     </>
   )

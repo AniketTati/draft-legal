@@ -6,11 +6,14 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const root = resolve(__dirname, '..')
 
+// Runs before `vite build` (see package.json), so vite copies the fresh file
+// from public/ into dist/. Node 22.18+ imports routes.ts directly.
 const routesModule = await import(resolve(root, 'src/lib/routes.ts')).catch(async () => {
   // Fallback: tsx not loaded — read TS via simple regex parse
   const { readFileSync } = await import('node:fs')
   const src = readFileSync(resolve(root, 'src/lib/routes.ts'), 'utf8')
-  const paths = [...src.matchAll(/path:\s*['"`](\/[^'"`]*)['"`]/g)].map((m) => m[1])
+  // Template-literal paths (`/compare/${slug}`) are rebuilt from the slug lists below.
+  const paths = [...src.matchAll(/path:\s*['"`](\/[^'"`]*)['"`]/g)].map((m) => m[1]).filter((p) => !p.includes('${'))
   // Synthesize learn/template/industry/compare paths
   const learnSlugs = ['contract-lifecycle-management','ai-contract-review','ai-contract-drafting','contract-redlining','clause-library','contract-repository','contract-approval-workflow','contract-renewal-tracking','obligation-management','electronic-signature','nda','msa','dpa','baa','sow']
   const templateSlugs = ['nda','msa','dpa','baa','sow','employment-agreement','mta']

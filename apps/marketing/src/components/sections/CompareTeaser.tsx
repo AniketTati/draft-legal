@@ -51,7 +51,7 @@ export function CompareTeaser() {
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-base leading-7 text-slate-600">
             We don't claim to win every dimension. We do think the open-source path matters for
-            most legal teams in 2026.
+            most legal teams.
           </p>
         </div>
 

@@ -86,8 +86,8 @@ export default function LearnHub() {
 
       <CtaStrip
         eyebrow="Stop reading. Start drafting."
-        title="Try the agents on your own contracts."
-        subtitle="Self-host or use the cloud — same product."
+        title="Try the agents yourself."
+        subtitle="Self-host it, or try the hosted demo (evaluation only)."
       />
     </>
   )
