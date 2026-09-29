@@ -3168,6 +3168,27 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
 
 ---
 
+## Negotiation risk and the marketing site (2026-09-29)
+
+- **FF1 — A redline's risk is scored from how far each wording sits from our standard. — DONE.**
+  - Asked for in a demo: for each clause the other side changed, show our standard, their change, the deviation, the risk it adds and why, our fallback, and the risk the fallback leaves.
+  - Found, running the redline analysis on a supplier's markup of our standard works contract:
+    - Step 1 returned 29 "changes", one per inserted or deleted fragment, several with their text lost. It now returns one change per numbered section, with the whole section before and after.
+    - Step 2 asked the model to echo every change with its scores added. The echo dropped fields, and the merge kept the echo. It now asks for scores only and merges them onto step 1's changes by `changeId`, or by position when there is one score per change (`_merge_scores`).
+    - Rejected changes got no counter-proposal, so the changes that mattered most had no alternative wording.
+  - Fix:
+    - The model rates each wording (ours, theirs and our counter) on deviation from our playbook position (0–3, or from our original text where the playbook has no position), exposure (0–4) and market practice (0–3). It rates the clause's event once on likelihood (1–3): wording changes what we could lose, not whether the event happens.
+    - The score is computed, not asked for: 100 × (0.45 × deviation/3 + 0.35 × exposure × likelihood/12 + 0.20 × market/3). The same ratings always give the same number, and each number traces to its factors.
+    - A counter is a compromise, so its score is kept between our wording's and theirs.
+    - The panel shows it where it already shows text: "Risk 9 → 93 (+84): beyond our walkaway position; severe exposure, likely; clearly off-market. …" on the change, "Revised risk if they accept: 39 (from 93, -54): …" on the counter, and in the summary the average in our standard, as proposed and with our counters.
+    - Rejected changes get a counter-proposal too.
+  - Tests: `test_redline_risk.py` (13): the formula, the clamping of the model's ratings, the counter kept between the two, the panel's text, and the merge.
+  - Live, on the five changed clauses of the markup: average risk 7 in our standard, 88 as proposed, 44 with our counters. Also run on SaaS examples outside the construction playbook.
+  - Not done: the risk has no field of its own in the panel (it is in the reasoning and counter-note text), and the weights are a first judgement, not calibrated against lawyers' ratings.
+  - Checks: agents 49 (1 expected failure, as before).
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.
