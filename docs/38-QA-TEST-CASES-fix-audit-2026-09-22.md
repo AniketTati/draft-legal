@@ -6,8 +6,8 @@ the **Covers** line of every test case names those ids, and the matrix at the en
 The commits of 24 September fix the issues found while writing this document (X55–X76), a log leak the review of
 those fixes found (X77), a gap their browser check found (X78), and follow-ups to X65, X67, X71 and X75. They are
 listed in "Issues found while writing these test cases", each with the test case that verifies it. Section 8 adds
-cases for four later follow-ups, merged to `main` on 30 September 2026: EE1, FF1, FF2 and FF3 (commits `773166f` to
-`1f92ae5`).
+cases for later follow-ups: EE1, FF1, FF2 and FF3, merged to `main` on 30 September 2026 (commits `773166f` to
+`1f92ae5`), and GG1–GG5, shipping on branch `fix/draft-purpose-ship` (commits `38edaa1` and `bebd581`).
 
 Every test case has:
 
@@ -288,7 +288,7 @@ The counts are those of `b80ad15`. A failing automated test points to the same a
   - TC-SMK-06 · Smoke: ask the Assistant a question about a contract
   - TC-SMK-07 · Smoke: search finds contracts in the caller's scope only
   - TC-SMK-08 · Smoke: the app's directions name menu items that exist (no-workflow review, clause playbook note, Google and Microsoft sign-in)
-- **8. Follow-ups merged after the branch (EE1, FF1–FF3, 26–30 Sep 2026)**
+- **8. Follow-ups after the branch (EE1, FF1–FF3, GG1–GG5, 26–30 Sep 2026)**
   - TC-REVQ-01 · Each decision in the review drawer takes its clause out of the queue: the count goes down, the next pending clause opens, and a decided clause doesn't come round again
   - TC-REVQ-02 · Applying a suggested rewrite records the clause as accepted and moves on; Edit manually records no decision
   - TC-REVQ-03 · A decided clause opened again says what was decided, and Reopen puts it back in the queue
@@ -301,6 +301,14 @@ The counts are those of `b80ad15`. A failing automated test points to the same a
   - TC-DEPLOY-01 · Before it deploys, the deploy job records what each Cloud Run service and the web app serve, and warns when it can't read the web app's release
   - TC-DEPLOY-02 · After a deploy, api-service, agents-service and gotenberg serve their new revisions at 100% LATEST, also after a rollback had pinned them
   - TC-DEPLOY-03 · When the production smoke fails, the rollback returns the three services and the web app to what was recorded, leaves the marketing site, and names them in the run summary (verify when it happens)
+  - TC-DRAFT-01 · A supply or purchase request is drafted as a vendor agreement from the newest vendor-agreement template, named in words, with its purpose first and the unstated terms left blank
+  - TC-DRAFT-02 · After NO_TEMPLATE_MATCH, a listed template whose name fits the purpose is used straight away; when none fits, the reply says so in plain words
+  - TC-FAMILY-01 · contract_get and contract_summarize show a contract's family: the amendments' text inline and redacted, a note when terms change, only the caller's own relatives, and benchmark terms on search cards (API)
+  - TC-FAMILY-02 · In chat, a question about an amended term gets the amended answer, naming the amendment
+  - TC-INVL-01 · invoice_list gives a contract's or a vendor's invoices oldest first with totals, inside the org and the caller's scope, redacted, and says when there are none (API)
+  - TC-RENEW-01 · The renewal notice deadline follows the latest amendment's notice period and names it, and neither an amendment nor an exhibit is a renewal of its own (GET /renewals, the Renewals page, renewal_advice)
+  - TC-RENEW-02 · The daily renewal scan alerts on the amended notice deadline, and never on an amendment or an exhibit
+  - TC-PREP-01 · "Prepare me for the <counterparty> renewal" writes the whole brief: the agreement by title, seven sections, terms as amended, each invoice against the price in force, the overcharge, and no ids
 - **Issues found while writing these test cases**
 - **Traceability: tracker ids → test cases**
 - **Appendix A — Generating the fixtures** · **Appendix B — Logging proxy for §0.5**
@@ -4331,6 +4339,11 @@ curl -s -w "\n%{http_code}\n" "$API/contracts/$C_NEG/versions/<v1 id>/diff/<v2 i
 
 **Covers:** C12 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a, viewer-a, admin-a
 
+> **Partly superseded by TC-DRAFT-01 and TC-DRAFT-02 (GG1).** Drafting now works out the agreement's type from its
+> purpose, and after NO_TEMPLATE_MATCH it drafts straight away from a listed template whose name fits. Where N3 below
+> expects no card for a request whose seeded template is typed differently (`Employment`, `DPA`, `License`), a card
+> from that template is now the expected result.
+
 **Preconditions**
 - Needs: agents service + LLM key.
 - Org A has a published NDA template (Templates page), e.g. "Mutual Non-Disclosure Agreement". Note one contract type with **no** published template (e.g. Employment or Data Processing) for N3.
@@ -6081,19 +6094,21 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 - **X3, detection of a tampered audit row (`hash_mismatch`):** needs altering a stored audit row, which this plan does not do. Covered by `apps/api/src/routes/admin-audit.integration.test.ts`.
 - **X3, Error Reporting grouping and alerts in Google Cloud:** needs the deployed project; TC-OPS-04 checks locally that the events are written in the right format and masked.
 
-## 8. Follow-ups merged after the branch (EE1, FF1–FF3, 26–30 Sep 2026)
+## 8. Follow-ups after the branch (EE1, FF1–FF3, GG1–GG5, 26–30 Sep 2026)
 
-This section covers four changes merged to `main` after the branch, each recorded in `FIX_TRACKER.md` under its id. **REVQ** checks the clause review drawer on the contract page (EE1): every action in it is a decision, a decided clause leaves the queue, Reject is kept as its own state (`rejected`), a decided clause can be reopened, and the review-state API takes the new state. **RISK** checks the Negotiate tab's redline analysis (FF1): one change per changed section, each change's risk before and after computed from the model's ratings, and a counter-proposal for every change we don't accept, with the risk it would leave. **SITE** checks the marketing site (FF2): what it claims, where its links go, the product page's anchors and the sitemap. **DEPLOY** checks the production deploy workflow (FF3): it records what is serving before it deploys, sends each Cloud Run service's traffic to its new revision, and after a failed smoke test rolls back to what it recorded. The RISK cases and TC-REVQ-02 need the agents service and an LLM key; LLM output varies from run to run, so they check the structure, the fixed wording around the numbers and the arithmetic, not the model's ratings. The DEPLOY cases need read access to the production project and its GitHub Actions runs, and change nothing there; the manual rollback in TC-DEPLOY-03 is run only when a rollback is needed.
+This section covers changes made after the branch, each recorded in `FIX_TRACKER.md` under its id: four merged to `main` on 30 September 2026 (EE1, FF1–FF3), and five shipping on branch `fix/draft-purpose-ship` (GG1–GG5). **REVQ** checks the clause review drawer on the contract page (EE1): every action in it is a decision, a decided clause leaves the queue, Reject is kept as its own state (`rejected`), a decided clause can be reopened, and the review-state API takes the new state. **RISK** checks the Negotiate tab's redline analysis (FF1): one change per changed section, each change's risk before and after computed from the model's ratings, and a counter-proposal for every change we don't accept, with the risk it would leave. **SITE** checks the marketing site (FF2): what it claims, where its links go, the product page's anchors and the sitemap. **DEPLOY** checks the production deploy workflow (FF3): it records what is serving before it deploys, sends each Cloud Run service's traffic to its new revision, and after a failed smoke test rolls back to what it recorded. **DRAFT** checks drafting from chat (GG1): the type comes from what the agreement is for, the card names it in words, and after NO_TEMPLATE_MATCH a listed template that fits is used. **FAMILY** checks that the assistant reads a contract's amendments (GG2): `contract_get` and `contract_summarize` return the contract's family, with the latest amendments' text inline and redacted, in the caller's scope. **INVL** checks the new `invoice_list` tool (GG3). **RENEW** checks that renewal notice deadlines follow amendments, and that an amendment isn't a renewal of its own (GG4). **PREP** checks the renewal brief the assistant writes (GG5). The RISK, DRAFT and PREP cases, TC-REVQ-02 and TC-FAMILY-02 need the agents service and an LLM key. LLM output varies from run to run, so they check structure, fixed wording and arithmetic, not the model's exact words or ratings. The DEPLOY cases need read access to the production project and its GitHub Actions runs, and change nothing there; the manual rollback in TC-DEPLOY-03 is run only when a rollback is needed.
 
 The automated tests for this section. §0.6's totals are those of `b80ad15`; `main` has more tests since. CI runs the API and Python tests, but not the web tests.
 
 ```bash
 pnpm --filter web exec vitest run src/lib/review-queue.test.ts        # EE1: 11 passed
 pnpm --filter api exec vitest run src/lib/marketing-claims.test.ts    # H1, X71, X72, FF2: 29 passed
-# EE1, with the test database, Redis and MinIO from §0.6:
+pnpm --filter api exec vitest run src/lib/renewal-notice.test.ts      # C6, GG4: 9 passed (4 from GG4)
+# EE1 and GG2–GG4, with the test database, Redis and MinIO from §0.6:
 DATABASE_URL=postgresql://<user>:<password>@localhost:5433/clm_test REDIS_URL=redis://localhost:6380 \
   S3_ENDPOINT=http://localhost:9100 pnpm --filter api exec vitest run --config vitest.integration.config.ts \
-  src/routes/review-decision.integration.test.ts                     # 3 passed
+  src/routes/review-decision.integration.test.ts src/routes/contract-family-tools.integration.test.ts \
+  src/lib/renewal-scan.integration.test.ts                          # 3 + 14 + 3 passed
 # FF1, in the agents service's virtualenv (pytest comes from requirements-dev.txt: ./.venv/bin/pip install -r requirements-dev.txt)
 cd apps/agents && ./.venv/bin/python -m pytest tests/test_redline_risk.py -q   # 13 passed
 ```
@@ -6545,6 +6560,398 @@ curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goo
 
 **Automated coverage:** none (see TC-DEPLOY-01). The rollback's release call was checked once, on a temporary preview channel of the marketing site (deleted afterwards).
 
+### TC-DRAFT-01 · A supply or purchase request is drafted as a vendor agreement from the newest vendor-agreement template, named in words, with its purpose first and the unstated terms left blank
+
+**Covers:** GG1 · **Priority:** P2 · **Surface:** UI (Assistant), API · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- Command L, as admin-a and legal-a: the template `$T_SUPPLY`, "QA Supply Agreement", published and typed `VENDOR_AGREEMENT`, with blanks for our company, the counterparty, the effective date, the goods, the payment terms, the term and the governing law; and an executed NDA with QA Meridian Foods, so that counterparty's history points to the wrong type.
+- The planner drafts from the newest published template of the chosen type (the most recently updated one), so after command L it uses "QA Supply Agreement" even if Org A has other vendor-agreement templates. Command M checks it: `templateName` is "QA Supply Agreement".
+- No Org A contract names QA Kestrel Packaging: `curl -s "$API/contracts?search=Kestrel" -H "Authorization: Bearer $LEGAL_A" | jq .total` prints `0`.
+- Signed in as legal-a on `/agent` (sidebar → **Assistant**). The card, its buttons and Undo are as in TC-AI-05.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | **New conversation**, then send: "We supply raw materials to QA Meridian Foods for their bakery lines. Draft the agreement, New York law." | The chips include `contract_search`, `counterparty_memory` and `contract_create_from_template`, then an "About to run `contract_create_from_template`" card with the badge "Undoable". Its summary reads `Create a draft vendor agreement for QA Meridian Foods from the template "QA Supply Agreement" — N term(s) left blank to fill in: …`: the type in words, never `VENDOR_AGREEMENT`. |
+| P2 | Read the reply around the card. | It opens with one line on what the agreement is for, e.g. "We're supplying raw materials to QA Meridian Foods, so this is a supply agreement." Then it names the template and the term it applied (New York law), and lists the terms left blank. It doesn't say the contract is saved. |
+| P3 | Click **Edit** on the card and read the Arguments. | `contractType` is `VENDOR_AGREEMENT` and `templateId` is `$T_SUPPLY`: codes live in the arguments, not in the chat. `title` says what the agreement is, e.g. "QA Meridian Foods — Raw Material Supply Agreement". (With no title from the model, the planner falls back to "QA Meridian Foods — VENDOR_AGREEMENT", a type code on the contract itself: record it if you see it.) `variables` has `our_company` (Org A's name), `counterparty_name` "QA Meridian Foods" and `governing_law` "New York", and no `effective_date`, `payment_terms` or `term`. |
+| P4 | Click **Review**, then **Apply**. Then click **Undo** on the receipt. | "Applied · Create a draft vendor agreement for QA Meridian Foods…" with **Undo**. The Doc pane shows the draft with New York filled in and blanks where the unstated terms go. After Undo the receipt reads "Undone" and the draft is gone, as in TC-AI-05 P7. |
+| P5 | **New conversation**, then send: "We're buying 40 tonnes a month of recycled cardboard packaging from QA Kestrel Packaging. Draft the agreement." | A card reading `Create a draft vendor agreement for QA Kestrel Packaging from the template "QA Supply Agreement" — …`. The reply's first line says we are buying packaging from them, so this is a supply or vendor agreement. Click **Cancel**. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | In P1, open the `contract_search` and `counterparty_memory` chips. | They found the NDA with QA Meridian Foods, and the draft is still a vendor agreement, not another NDA: the purpose decides the type, and past deals are only context. |
+| N2 | Search the text of P1, P2 and P5 (answers and card summaries) for `VENDOR_AGREEMENT`, `OTHER`, `ORDER_FORM` and `$T_SUPPLY`'s id. | No matches. |
+| N3 | Look at P3's Arguments and P4's Doc pane. | Nothing unstated is filled in: no effective date (not today's), no payment terms and no term length. |
+| N4 | The planner can't tell the type on its own: command M's call without `contractType`, with P1's message as `userMessage`. | `{"error":"CONTRACT_TYPE_AMBIGUOUS","detail":"Could not tell which contract to draft. Pass contract_type (NDA \| MSA \| SOW \| VENDOR_AGREEMENT \| LICENSE \| EMPLOYMENT \| DATA_PROCESSING) or a template_id from template_list."}`. No keyword in "we supply raw materials" names a type: the vendor agreement in P1 is the model's reading of the purpose (step 0). |
+
+Command L (fixtures: the template as admin-a, the past NDA as legal-a):
+```bash
+export T_SUPPLY=$(curl -s -X POST "$API/templates" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"name":"QA Supply Agreement","contractType":"VENDOR_AGREEMENT","isPublished":true,"sections":[{"title":"Supply Agreement","content":"<p>This Supply Agreement is made between {{our_company}} and {{counterparty_name}}, effective {{effective_date}}.</p><p>1. Goods. {{goods}}.</p><p>2. Payment. {{payment_terms}}.</p><p>3. Term. {{term}}.</p><p>4. Governing law. The laws of {{governing_law}}.</p>"}]}' | jq -r .id)
+cat > qa-gg1.csv <<CSV
+title,type,status,counterpartyname
+QA Meridian Foods — Mutual NDA,NDA,executed,QA Meridian Foods
+CSV
+curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg1.csv;type=text/csv" | jq -c .results
+echo $T_SUPPLY
+```
+
+Command M (`tj`: an internal tool call that prints only the JSON body, unlike TC-ACC-12's `tool`; then the planner's choice for a vendor agreement):
+```bash
+tj() { curl -s -X POST "http://localhost:3001/api/internal/ai/tools/$1" -H "x-internal-secret: $INTERNAL_SECRET" -H "x-internal-service: agents" -H "Content-Type: application/json" -d "$2"; }
+tj contract_draft '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","userMessage":"supply agreement","contractType":"VENDOR_AGREEMENT","counterpartyName":"QA Meridian Foods"}' \
+  | jq '{templateName, contractType, unfilledVariables, error, templates: [.templates[]?.name]}'
+```
+
+**Automated coverage:** none for GG1. The type chosen from the purpose, the first line and the retry after NO_TEMPLATE_MATCH are the model's, from the orchestrator's DRAFT REQUESTS rule, and the card's wording comes from `_TYPE_LABELS` in `apps/agents/app/tools/contract_create_from_template.py`; neither has a test. The planner itself is covered by `apps/api/src/routes/draft-plan.integration.test.ts` (C12, TC-AI-05).
+
+### TC-DRAFT-02 · After NO_TEMPLATE_MATCH, a listed template whose name fits the purpose is used straight away; when none fits, the reply says so in plain words
+
+**Covers:** GG1 · **Priority:** P2 · **Surface:** UI (Assistant), API · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- `$T_SUPPLY` and commands L–M from TC-DRAFT-01. No other published Org A template is typed `VENDOR_AGREEMENT`, and no untyped one has "vendor" or "supplier" in its name or description (the seeded templates all have a type).
+- Retype the fixture, so the planner can't find it by type: `curl -s -X PATCH "$API/templates/$T_SUPPLY" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"contractType":"Supply Agreement"}' | jq .contractType`. Afterwards, restore it with `-d '{"contractType":"VENDOR_AGREEMENT","isPublished":true}'`.
+- TC-AI-05 N3 predates GG1. The seeded "Employment Offer Letter (At-Will)" and "Data Processing Addendum (GDPR/CCPA)" are typed `Employment` and `DPA`, not `EMPLOYMENT` and `DATA_PROCESSING`, so asking for either type now reaches NO_TEMPLATE_MATCH with a template whose name fits, and the chat is likely to draft from it rather than show no card.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Command M. | `error` "NO_TEMPLATE_MATCH", `templateName` null, and `templates` starting with "QA Supply Agreement" (the newest). |
+| P2 | On `/agent`, **New conversation**, send TC-DRAFT-01 P1's message. Open the first `contract_create_from_template` chip. | Its Result is the NO_TEMPLATE_MATCH error listing "QA Supply Agreement". Without asking you anything, the answer calls `contract_create_from_template` again and shows a card: `Create a draft vendor agreement for QA Meridian Foods from the template "QA Supply Agreement" — …`. When the second call passes only the template, the card reads "a draft Supply Agreement", the template's own type label. |
+| P3 | Read the reply, then click **Cancel**. | One line on the purpose, then the template by name. No question such as "Your org doesn't have a vendor agreement template yet — I can use …" comes before the card. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Unpublish the fixture: `curl -s -X PATCH "$API/templates/$T_SUPPLY" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"isPublished":false}' \| jq .isPublished`. **New conversation**, send the same message. | No card. The reply says in plain words that Org A has no supply or vendor agreement template, and offers the closest templates by name or suggests creating one in Templates. No template id, and no type code such as `VENDOR_AGREEMENT` or `OTHER`. A card for an unrelated template (an MSA, say) is the failure GG1 guards against. |
+| N2 | Search P2's and N1's text for template ids and type codes. | None. |
+
+**Automated coverage:** none (see TC-DRAFT-01).
+
+### TC-FAMILY-01 · contract_get and contract_summarize show a contract's family: the amendments' text inline and redacted, a note when terms change, only the caller's own relatives, and benchmark terms on search cards (API)
+
+**Covers:** GG2 · **Priority:** P1 · **Surface:** API (internal) · **Roles:** legal-a, rep-a, admin-b (as the identity passed to the tools)
+
+**Preconditions**
+- Dev environment with `$INTERNAL_SECRET`, and `tj` from command M. These calls imitate the agents service calling the API's tool routes; TC-FAMILY-02 is the chat.
+- Org A's PII mode is redact (§0.1). `qverify` from TC-WF-04 command A.
+- Command N builds the fixture: `$F_BASE` "QA Harbor Analytics — Platform License", executed, imported by rep-a (so rep-a owns it), auto-renewing with 30 days' notice; under it `$F_AMD` "QA Harbor Analytics — Platform License — Amendment No. 1", made by legal-a, whose text changes the notice period to 60 days and carries the test SSN 219-09-9999; and `$F_EXH` "QA Harbor Analytics — Platform License — Exhibit A", made by rep-a.
+- `fam <contract id> <user id>` (command O) prints the fields these steps read. `$ORG_A`, `$ORG_B`, `$LEGAL_A_ID`, `$REP_A_ID`, `$ADMIN_B_ID` as in §0.3.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `fam $F_BASE $LEGAL_A_ID` | `relationshipType` null and `parent` null. `children`: the amendment (`relationshipType` "amendment"), then the exhibit ("exhibit_only"), in the order they were made. `siblings` is empty. `familyNote` starts "A later contract changes this one's terms (family.children with relationshipType amendment or renewal).", says "What each says is in its `text`: read it before stating any term.", and ends "Where they differ, the latest amendment wins (its prices, notice periods, caps and dates replace this contract's): state the terms as amended, naming the amendment." |
+| P2 | In P1's output, the children's `text`. | The amendment's `text` is its document: `Section 3.2 is amended by replacing "thirty (30) days" with "sixty (60) days". Notices to the signatory, SSN [REDACTED:SSN].`, with `textTruncated` false. The exhibit's `text` is null: it changes no terms, so it is listed, not quoted. |
+| P3 | `fam $F_AMD $LEGAL_A_ID` | `relationshipType` "amendment", `parent` "QA Harbor Analytics — Platform License", `siblings` the exhibit, and `familyNote` `This contract amends "QA Harbor Analytics — Platform License" (family.parent): terms it does not change are in that contract.` |
+| P4 | `tj contract_summarize '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$F_BASE'"}' \| jq '{children: [.family.children[].title], familyNote}'` | The same two children and the same `familyNote` as P1: contract_summarize, which the assistant prefers for key terms, shows the family too. |
+| P5 | `tj counterparty_memory '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"QA Harbor Analytics"}' \| jq '[.deals[] \| {title, parentContractId, relationshipType}]'` | The amendment's deal has `parentContractId` `$F_BASE` and `relationshipType` "amendment"; the base's has both null. |
+| P6 | `tj contract_search '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","query":"QA Harbor Analytics"}' \| jq '[.results[] \| {title, parentContractId, relationshipType, terms, keyTerms}]'` | The exhibit's card has `parentContractId` `$F_BASE` and `relationshipType` "exhibit_only". The base's `terms` is `{"autoRenew":true,"noticeDays":30}`. No card has `keyTerms` (null in this output): search cards carry only the structural terms a benchmark compares. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `fam $F_EXH $LEGAL_A_ID` | `relationshipType` "exhibit_only", `parent` the base, `siblings` the amendment, and `familyNote` null: an exhibit changes no terms, so it gets no note. |
+| N2 | Own scope: `fam $F_BASE $REP_A_ID` (rep-a owns the base and the exhibit, not the amendment). | `children` has only the exhibit, and `familyNote` is null: rep-a sees neither legal-a's amendment nor its text, and isn't told it exists. |
+| N3 | `fam $F_EXH $REP_A_ID`, then `fam $F_AMD $REP_A_ID`. | From the exhibit, `parent` is the base and `siblings` is empty. The amendment itself: `detail` "Contract not found in this org". |
+| N4 | Another org: `tj contract_get '{"orgId":"'$ORG_B'","userId":"'$ADMIN_B_ID'","contractId":"'$F_BASE'"}' \| jq .detail` | "Contract not found in this org". |
+| N5 | `tj contract_get '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$F_BASE'"}' \| grep -c '219-09-9999'` | `0`: the amendment's SSN never leaves unredacted. |
+| N6 | Optional, more than three amendments: make three more under `$F_BASE` with command N's amendment call (titles "… Amendment No. 2" to "… Amendment No. 4", any text), then repeat P1. Delete them afterwards with `curl -s -X DELETE "$API/contracts/<id>" -H "Authorization: Bearer $ADMIN_A"`. | Only the latest three amendments have `text`; Amendment No. 1 is listed without it, and `familyNote` adds "Read the others with contract_get." |
+
+Command N (the family fixture; `day +75` is the date 75 days from today):
+```bash
+day() { date -v"$1"d +%F 2>/dev/null || date -d "$1 days" +%F; }
+cat > qa-gg2.csv <<CSV
+title,type,status,counterpartyname,expirydate
+QA Harbor Analytics — Platform License,LICENSE,executed,QA Harbor Analytics,$(day +75)
+CSV
+export F_BASE=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $REP_A" -F "file=@qa-gg2.csv;type=text/csv" | jq -r '.results[0].id')
+qverify $F_BASE '{"field":"autoRenew","value":"yes"}'; qverify $F_BASE '{"field":"noticePeriodDays","value":30}'
+export F_AMD=$(curl -s -X POST "$API/contracts/$F_BASE/amendments" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' \
+  -d '{"relationshipType":"amendment","title":"QA Harbor Analytics — Platform License — Amendment No. 1","description":"Section 3.2 is amended by replacing \"thirty (30) days\" with \"sixty (60) days\". Notices to the signatory, SSN 219-09-9999."}' | jq -r .id)
+export F_EXH=$(curl -s -X POST "$API/contracts/$F_BASE/amendments" -H "Authorization: Bearer $REP_A" -H 'content-type: application/json' \
+  -d '{"relationshipType":"exhibit_only","title":"QA Harbor Analytics — Platform License — Exhibit A"}' | jq -r .id)
+echo $F_BASE $F_AMD $F_EXH
+```
+
+Command O (the family fields of `contract_get`; the first argument is the contract, the second the caller):
+```bash
+fam() { tj contract_get '{"orgId":"'$ORG_A'","userId":"'$2'","contractId":"'$1'"}' | jq '{title, relationshipType, parent: .family.parent.title, children: [.family.children[]? | {title, relationshipType, text, textTruncated}], siblings: [.family.siblings[]?.title], familyNote, detail}'; }
+```
+
+**Automated coverage:** `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 7 family tests: contract_get on the base lists its children with their relationship; the amendment's text is inline and redacted, the exhibit's isn't; contract_get on an amendment names what it amends; an exhibit gets no note; contract_summarize shows the family; counterparty_memory and contract_search rows carry the link; an own-scope caller sees only its own relatives; and its test that search cards carry `terms`, not the raw key terms). The fail-closed path, where the amendments' text is left out if redaction fails, has no test.
+
+### TC-FAMILY-02 · In chat, a question about an amended term gets the amended answer, naming the amendment
+
+**Covers:** GG2 · **Priority:** P2 · **Surface:** UI (Assistant) · **Roles:** legal-a, rep-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- TC-FAMILY-01's fixture (command N): the base's key terms say 30 days' notice; Amendment No. 1's text says 60. Without N6's extra amendments.
+- Signed in as legal-a on `/agent`.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | **New conversation**, then ask: "How much notice do we have to give QA Harbor Analytics to stop the platform license renewing?" | 60 days, naming the amendment, e.g. "60 days, extended from 30 by Amendment No. 1". Not 30 days as the current period. The chips include `contract_get` or `contract_summarize`; open it, and its Result has `family` and `familyNote`. |
+| P2 | Follow up: "What did the original license say?" | 30 days, in the base license, since replaced by the amendment. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Search P1's answer and its chips' Results for 219-09-9999. | Not found; the chip shows `[REDACTED:SSN]`. |
+| N2 | Sign in as rep-a. **New conversation**, ask P1's question. | The answer never mentions Amendment No. 1, its text or 60 days: the amendment is legal-a's, outside rep-a's scope, so rep-a's answer can only rest on the base license. |
+
+**Automated coverage:** none for the answer: rule A18 (amendments) in the orchestrator's prompt. What it rests on is covered in TC-FAMILY-01.
+
+### TC-INVL-01 · invoice_list gives a contract's or a vendor's invoices oldest first with totals, inside the org and the caller's scope, redacted, and says when there are none (API)
+
+**Covers:** GG3 · **Priority:** P1 · **Surface:** API (internal) · **Roles:** legal-a, rep-a, admin-b (as the identity passed to the tool)
+
+**Preconditions**
+- `tj` from command M. Org A's PII mode is redact.
+- Command P builds the fixture: two executed contracts with counterparty "QA Ledger Supplies", `$I_REP` imported by rep-a (rep-a owns it) and `$I_LEGAL` imported by legal-a; then invoices entered by legal-a (QL-B1 by admin-b, in Org B):
+
+| Invoice | Contract | Vendor billed | Date | Amount (USD) | Other |
+|---|---|---|---|---|---|
+| QL-1 | `$I_REP` | QA Ledger Supplies Inc. | 2026-03-15 | 1,000.00 | description "100 units @ $10" |
+| QL-2 | `$I_REP` | QA Ledger Supplies Inc. | 2026-06-15 | 1,500.50 | description with an email; then disputed, with an email in the reason |
+| QL-3 | `$I_LEGAL` | QA Ledger Supplies Inc. | 2026-07-01 | 200.00 | |
+| QL-U1 | none | QA Ledger Supplies Billing | 2026-08-02 | 60.00 | |
+| QL-B1 | none (Org B) | QA Ledger Supplies Inc. | 2026-05-01 | 999.00 | |
+
+- QL-2 is entered before QL-1, so date order isn't entry order. Each line command P prints shows the invoice's `contractId`; QL-U1's must be null. If the auto-match linked it to a contract with an open payment obligation, enter it again with another vendor name.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$I_REP'"}' \| jq '{numbers: [.items[].invoiceNumber], total, billedTotal, byStatus, note}'` | `numbers` ["QL-1","QL-2"], oldest first. `total` 2, `billedTotal` {"USD":2500.5}, `byStatus` {"PENDING":1,"DISPUTED":1}, `note` null. |
+| P2 | The same call, `\| jq '.items[1] \| {invoiceDate, amount, status, description, disputeReason, contractTitle, counterpartyName}'` | QL-2: `invoiceDate` "2026-06-15", `amount` 1500.5, `status` "DISPUTED", `contractTitle` "QA Ledger Supplies — Rep Contract", `counterpartyName` "QA Ledger Supplies". `description` "100 units @ $15.005; billing contact [REDACTED:EMAIL]" and `disputeReason` "Billed at the old rate. Contact [REDACTED:EMAIL]". |
+| P3 | By vendor, in any case: `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"qa ledger supplies"}' \| jq '{numbers: [.items[].invoiceNumber], billedTotal}'` | ["QL-1","QL-2","QL-3","QL-U1"] and {"USD":2760.5}. Invoices match by the vendor billed (QL-U1's "QA Ledger Supplies Billing") or by the contract's counterparty. |
+| P4 | P3 with `"status":"DISPUTED"` added to the body. | ["QL-2"]. |
+| P5 | Optional, with TC-ACC-16's `OWN_EDITOR` role on rep-a (token `$REP_A_OE`): `inv '{"vendorName":"QA Ledger Supplies Billing","invoiceNumber":"QL-U2","amount":50,"currency":"USD","invoiceDate":"2026-08-01"}' "$REP_A_OE"`, then N1. | ["QL-1","QL-2","QL-U2"]: rep-a also sees the unmatched invoice it entered. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Own scope: P3 with `"userId":"'$REP_A_ID'"`. | ["QL-1","QL-2"], the invoices of rep-a's contract. Not QL-3 (legal-a's contract) and not QL-U1 (unmatched, entered by legal-a), as on the Invoices page. |
+| N2 | Org B: `tj invoice_list '{"orgId":"'$ORG_B'","userId":"'$ADMIN_B_ID'","counterpartyName":"QA Ledger Supplies"}' \| jq '[.items[].invoiceNumber]'` | ["QL-B1"]. P3 never showed it, and Org A's invoices never show here. |
+| N3 | A user of another org naming Org A: P3 with `"userId":"'$ADMIN_B_ID'"`. | `{"detail":"The user in this conversation does not have view:contract permission"}` (403). |
+| N4 | P2's call piped to `grep -c -e 'ap@qa-ledger.example' -e 'jordan.rivera@example.com'` | `0`. |
+| N5 | Nothing on file: `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"Qwxzy Vorptrak"}' \| jq '{items, total, note}'`, then the same with `"contractId":"'$F_EXH'"` (TC-FAMILY-01's exhibit) in place of the name. | Both `items` [], `total` 0 and `note` "No invoices on file for this. Say so; do not estimate what was billed." |
+
+Command P (the fixture; `inv` enters one invoice and prints its number, id and contract):
+```bash
+cat > qa-gg3-rep.csv <<CSV
+title,type,status,counterpartyname
+QA Ledger Supplies — Rep Contract,VENDOR,executed,QA Ledger Supplies
+CSV
+cat > qa-gg3-legal.csv <<CSV
+title,type,status,counterpartyname
+QA Ledger Supplies — Legal Contract,VENDOR,executed,QA Ledger Supplies
+CSV
+export I_REP=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $REP_A" -F "file=@qa-gg3-rep.csv;type=text/csv" | jq -r '.results[0].id')
+export I_LEGAL=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg3-legal.csv;type=text/csv" | jq -r '.results[0].id')
+inv() { curl -s -X POST "$API/invoices" -H "Authorization: Bearer ${2:-$LEGAL_A}" -H 'content-type: application/json' -d "$1" | jq -c '{number: .invoice.invoiceNumber, id: .invoice.id, contractId: .invoice.contractId}'; }
+inv '{"contractId":"'$I_REP'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-2","amount":1500.5,"currency":"USD","invoiceDate":"2026-06-15","description":"100 units @ $15.005; billing contact ap@qa-ledger.example"}'
+inv '{"contractId":"'$I_REP'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-1","amount":1000,"currency":"USD","invoiceDate":"2026-03-15","description":"100 units @ $10"}'
+inv '{"contractId":"'$I_LEGAL'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-3","amount":200,"currency":"USD","invoiceDate":"2026-07-01"}'
+inv '{"vendorName":"QA Ledger Supplies Billing","invoiceNumber":"QL-U1","amount":60,"currency":"USD","invoiceDate":"2026-08-02"}'
+inv '{"vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-B1","amount":999,"currency":"USD","invoiceDate":"2026-05-01"}' "$ADMIN_B"
+# then dispute QL-2, with its id from the first line above; prints {"ok":true}
+curl -s -X POST "$API/invoices/<QL-2 id>/dispute" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' -d '{"reason":"Billed at the old rate. Contact jordan.rivera@example.com"}'
+```
+
+**Automated coverage:** `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 4 invoice_list tests: a contract's invoices oldest first, with totals per currency and by status; a vendor's by the vendor billed or the contract's counterparty, in this org only, and by status; an own-scope caller sees its own contracts' invoices and the unmatched ones it entered; the note when nothing is on file), `apps/api/src/lib/agent-tool-identity.test.ts` (its generated case "invoice_list.py sends the caller as userId"). The redaction of descriptions and dispute reasons has no test of its own; P2 and N4 are its check.
+
+### TC-RENEW-01 · The renewal notice deadline follows the latest amendment's notice period and names it, and neither an amendment nor an exhibit is a renewal of its own (GET /renewals, the Renewals page, renewal_advice)
+
+**Covers:** GG4 · **Priority:** P2 · **Surface:** API, UI · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- `approve` (TC-WF-01 command A), `qverify` and `patchc` (TC-WF-04 command A), `tj` (command M) and `day` (command N).
+- Command Q builds the fixture. Everything is executed, owned by legal-a, has counterparty "QA Northwind Data" and expires 75 days from today (T+75):
+
+| Variable | Title | Its own terms | Linked under it |
+|---|---|---|---|
+| `R_2` | QA GG4 Licence A | auto-renews, 30 days' notice | `R_AMD` "QA GG4 Licence A — Amendment No. 1", 60 days' notice; `R_EXH` "QA GG4 Licence A — Exhibit A", 180 days' notice (an exhibit changes no terms) |
+| `R_3` | QA GG4 Licence B | auto-renews, 30 days' notice | `R_OFF` "QA GG4 Licence B — Amendment No. 1", auto-renew "no" |
+| `R_4` | QA GG4 Licence C | auto-renews, 30 days' notice | `R_SIL` "QA GG4 Licence C — Amendment No. 1", a new `unitPrice` and nothing on notice |
+
+- Licence A's deadline from its own 30 days would be T+45; from the amendment's 60 it is T+15. Run on 30 Sep 2026, this is the Databricks example: expiry 14 Dec, deadline moved from 14 Nov to 15 Oct.
+- Known limits (FIX_TRACKER GG4): the Renewals page doesn't show `setBy` yet, and an amendment that changes the expiry date isn't applied (N4).
+- Day counts on the Renewals page may be one less, depending on the time zone.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s "$API/renewals" -H "Authorization: Bearer $LEGAL_A" \| jq --arg a "$R_2" --arg b "$R_3" --arg c "$R_4" '[.data[] \| select(.id == $a or .id == $b or .id == $c) \| {title, notice}]'` | A: `{"autoRenew":true,"days":60,"deadline":"<T+15>T00:00:00.000Z","setBy":"QA GG4 Licence A — Amendment No. 1"}`; the exhibit's 180 days don't count. C: `{"autoRenew":true,"days":30,"deadline":"<T+45>T00:00:00.000Z","setBy":null}`: an amendment silent on notice keeps the base period. B: `{"autoRenew":false,"days":30,"deadline":null,"setBy":null}`: the amendment turned auto-renewal off, so there is no deadline. |
+| P2 | Sidebar → **Renewals** (bucket **Next year**). Find the three rows and hover A's notice line. | A: red "Notice by <T+15, e.g. Oct 15, 2026> · 15d left" with a warning icon, and the tooltip "Auto-renews. 60 days' notice to terminate, so notice must be served by <date>." C: grey "Notice by <T+45>". B: no notice line. **Notice at risk** includes A, not B or C. |
+| P3 | `tj renewal_advice '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$R_2'"}' \| jq '.items[0] \| {contractTitle, autoRenews, noticeDays, noticePeriodSetBy, noticeDeadline, noticeDeadlinePassed}'` | `{"contractTitle":"QA GG4 Licence A","autoRenews":true,"noticeDays":60,"noticePeriodSetBy":"QA GG4 Licence A — Amendment No. 1","noticeDeadline":"<T+15>","noticeDeadlinePassed":false}`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | P1's call with `'[.data[] \| select(.id == $x or .id == $y or .id == $z or .id == $w)] \| length'` and `--arg x "$R_AMD" --arg y "$R_EXH" --arg z "$R_OFF" --arg w "$R_SIL"`. | `0`. Each is executed and expires in 75 days, but none is a renewal of its own. Before GG4 each was listed beside its contract, with a row and a deadline of its own. |
+| N2 | The Renewals page. | No row titled "… — Amendment No. 1" or "… — Exhibit A". |
+| N3 | `tj renewal_advice '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","leadDays":180,"limit":50}' \| jq --arg x "$R_AMD" --arg y "$R_EXH" '{listed: [.items[] \| select(.contractId == $x or .contractId == $y)] \| length, coverage}'` | `listed` 0. (If `coverage.complete` is false, Org A has more than 50 renewals in 180 days and the page may stop before these; P1 and N1 still hold.) |
+| N4 | Known limit: the amendment moves the expiry a year on, `qverify $R_AMD '{"field":"expiryDate","value":"'$(day +440)'"}'`, then P1. | A's `notice.deadline` is still T+15: the deadline counts back from the contract's own expiry, and an amendment's expiry date isn't applied (FIX_TRACKER GG4, "Not done"). Put it back with `$(day +75)`. |
+| N5 | An unsigned amendment changes nothing: `export R_DFT=$(amend $R_2 amendment "QA GG4 Licence A — Amendment No. 2 (draft)")`, then `qverify $R_DFT '{"field":"noticePeriodDays","value":90}'`, leave it a draft, and repeat P1. | A's `notice.days` is still 60, its deadline still T+15, and `notice.setBy` still "QA GG4 Licence A — Amendment No. 1": only a signed (EXECUTED) amendment changes the terms. `contract_get` on Licence A lists Amendment No. 2 with its status, and its `familyNote` says it is not signed yet. Delete the draft afterwards, so the later cases don't see it. |
+
+Command Q (the fixture):
+```bash
+cat > qa-gg4.csv <<CSV
+title,type,status,counterpartyname,expirydate
+QA GG4 Licence A,LICENSE,executed,QA Northwind Data,$(day +75)
+QA GG4 Licence B,LICENSE,executed,QA Northwind Data,$(day +75)
+QA GG4 Licence C,LICENSE,executed,QA Northwind Data,$(day +75)
+CSV
+eval "$(curl -s -X POST $API/contracts/bulk-import -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg4.csv;type=text/csv" | jq -r '.results[] | "export R_\(.row)=\(.id)"')"
+for c in $R_2 $R_3 $R_4; do qverify $c '{"field":"autoRenew","value":"yes"}'; qverify $c '{"field":"noticePeriodDays","value":30}'; done
+# amend <parent> <relationshipType> <title>: a linked contract expiring with its parent; prints its id
+amend() { curl -s -X POST "$API/contracts/$1/amendments" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' \
+  -d "{\"relationshipType\":\"$2\",\"title\":\"$3\",\"expiryDate\":\"$(day +75)\"}" | jq -r .id; }
+export R_AMD=$(amend $R_2 amendment "QA GG4 Licence A — Amendment No. 1")
+export R_EXH=$(amend $R_2 exhibit_only "QA GG4 Licence A — Exhibit A")
+export R_OFF=$(amend $R_3 amendment "QA GG4 Licence B — Amendment No. 1")
+export R_SIL=$(amend $R_4 amendment "QA GG4 Licence C — Amendment No. 1")
+qverify $R_AMD '{"field":"noticePeriodDays","value":60}'
+qverify $R_EXH '{"field":"noticePeriodDays","value":180}'
+qverify $R_OFF '{"field":"autoRenew","value":"no"}'
+qverify $R_SIL '{"field":"unitPrice","value":"US$0.27"}'
+# executed, as signed amendments are: approved through W-QA, then marked executed
+for c in $R_AMD $R_EXH $R_OFF $R_SIL; do approve $c; patchc $c '{"status":"EXECUTED"}'; done
+```
+
+**Automated coverage:** `apps/api/src/lib/renewal-notice.test.ts` (10; GG4 added the 4 in "amendedRenewalNotice", and its review a fifth, an unsigned amendment changes nothing: an amendment's notice period is used and named, 14 Dec less 60 days is 15 Oct; the latest amendment wins whatever order they come in; an amendment silent on notice keeps the base terms, and an exhibit is ignored; an amendment that turns auto-renewal off leaves no deadline), `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 3 renewal_advice tests: the deadline from the period an amendment set, named in `noticePeriodSetBy`; search cards' `terms`; the amendment isn't listed as a renewal of its own), and TC-RENEW-02's scan test.
+
+### TC-RENEW-02 · The daily renewal scan alerts on the amended notice deadline, and never on an amendment or an exhibit
+
+**Covers:** GG4 · **Priority:** P2 · **Surface:** API, UI (notifications) · **Roles:** admin-a, legal-a
+
+**Preconditions**
+- TC-RENEW-01's fixture (command Q), not scanned yet: a contract is alerted at most once a week.
+- The scan runs by hand as in TC-WF-10: `POST $API/cron/renewals`, admin only. Day counts may be one less if the API runs west of UTC (it counts from local midnight).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s -X POST $API/cron/renewals -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{}' \| jq .` | `{"ok":true,"result":{…},"ranAt":…}`, with `errors` empty. |
+| P2 | As legal-a, the header's **Notifications** bell (or `GET $API/approvals/notifications`): Licence A's alert. | Title "Notice deadline in 15d · QA GG4 Licence A". Body "QA Northwind Data — auto-renews unless 60 days' notice is served by <T+15, YYYY-MM-DD>." From its own 30 days, the deadline (T+45) would be too far off to lead, and the alert would read "Expires in 75d · QA GG4 Licence A". |
+| P3 | Licence B's and C's alerts. | "Expires in 75d · QA GG4 Licence B" and "Expires in 75d · QA GG4 Licence C", each with the body "QA Northwind Data — review renewal options now.": B no longer auto-renews, and C's deadline (T+45) isn't within 30 days. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Look for an alert about an amendment or the exhibit. | None titled "… — Amendment No. 1" or "… — Exhibit A", though each is executed and expires in 75 days: an amendment renews with its contract. |
+| N2 | Run P1 again. | No second alert for the QA GG4 licences; they are counted in `skippedCooldown`. |
+
+**Automated coverage:** `apps/api/src/lib/renewal-scan.integration.test.ts` (3; GG4 added "works the deadline out from the notice period an amendment set, and never renews an amendment on its own": an amendment that made the notice period 120 days gets its contract alerted on that deadline, neither amendment is alerted, and `GET /renewals` names the amendment in `setBy`).
+
+### TC-PREP-01 · "Prepare me for the <counterparty> renewal" writes the whole brief: the agreement by title, seven sections, terms as amended, each invoice against the price in force, the overcharge, and no ids
+
+**Covers:** GG5 (with GG2–GG4 in use) · **Priority:** P2 · **Surface:** UI (Assistant), API (chat stream) · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key. A brief takes three rounds of tool calls, about eight in all.
+- Command R builds the fixture. "QA Lakehouse — Platform License Agreement" (`$P_BASE`) is an uploaded text: US$0.25 per compute unit, payment in 30 days, 30 days' notice of non-renewal, renewal increases capped at 5%, the initial term ending 75 days from today. Its "Amendment No. 1" (`$P_AMD`), effective 60 days ago, makes the fee US$0.20 per unit and the notice 60 days. Both are executed. Three invoices are billed on the base:
+
+| Invoice | Date | Billed | Price in force on that date | Overcharge |
+|---|---|---|---|---|
+| QLH-101 | 90 days ago, before the amendment | 25,000 units @ US$0.25 = 6,250.00 | US$0.25 | none |
+| QLH-102 | 30 days ago | 25,000 units @ US$0.25 = 6,250.00 | US$0.20 | US$0.05 × 25,000 = US$1,250.00 |
+| QLH-103 | 5 days ago | 25,000 units @ US$0.20 = 5,000.00 | US$0.20 | none |
+
+- The benchmark compares with the org's other executed licence agreements, such as TC-FAMILY-01's and TC-RENEW-01's. For N3, TC-RENEW-01's QA Northwind Data licences, which have no invoices.
+- Command S runs one chat turn over the API and prints each tool call as `[tool <name>]` ahead of the answer (TC-ACC-15's command R with a new session each time). In `/agent` the same calls show as chips.
+- LLM output varies from run to run. Run P1 three times; each run should pass every check. Record any that doesn't, and which check (the tracker's check: five of five runs passed with gemini-2.5-flash).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `brief "Prepare me for the QA Lakehouse Co renewal." \| tee qa-gg5-brief.txt` (or send the message on `/agent`). | First the tool calls, in three rounds: `counterparty_memory` and `renewal_advice`; then `contract_get`, `obligations_list`, `invoice_list`, `playbook_check` and `renewal_advice`; then `contract_search` (and `contract_get` again if it needs to). No answer text appears between the `[tool …]` lines, such as "I'll now retrieve…". |
+| P2 | The brief's first line. | It names the agreement by its title and says why, e.g. "Renewal brief for the QA Lakehouse — Platform License Agreement: its notice deadline is the next one ahead." It may name other agreements on file, by title. |
+| P3 | The headings. | In this order: Timeline, Commercial terms, Obligations, Invoices vs pricing, Risks, Benchmark, What to renegotiate. |
+| P4 | Timeline and Commercial terms. | Expiry T+75, auto-renewing, and the notice deadline T+15, set by Amendment No. 1's 60 days, with about 15 days left to give notice. The fee is US$0.20 per compute unit (amended from US$0.25), renewal increases are capped at 5%, and payment is due in 30 days. Not 30 days' notice, a T+45 deadline or US$0.25 as the current fee. |
+| P5 | Invoices vs pricing. | Each invoice is checked against the price in force on its date. QLH-101 at US$0.25 is right, as it predates the amendment. QLH-102 is an overcharge, listed with its number, the rate billed (US$0.25), the agreed rate (US$0.20) and the difference: US$0.05 × 25,000 = US$1,250.00. QLH-103 is right. Total overbilled: US$1,250.00. |
+| P6 | What to renegotiate. | In this order, skipping what doesn't apply, each with its reason: a credit for the US$1,250.00 overcharge; the renewal price (the 5% cap, or a price hold for volume); terms the benchmark shows are worse than usual; the notice deadline, T+15, as the date to decide by. Chips for next steps follow. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `grep -oE '\bc[a-z0-9]{20,}\b' qa-gg5-brief.txt` | No output: no contract id anywhere in the brief (ids are a "c" and some 24 more letters and digits, such as `cm…`). Agreements are named by title. |
+| N2 | Look for "no data on file" (or "none on file") in any section. | Only where that section's tool ran and returned nothing: obligations after `obligations_list`, risks after `playbook_check`, the benchmark after `contract_search`. Invoices vs pricing never says there are no invoices for QA Lakehouse Co. |
+| N3 | A counterparty with no invoices: `brief "Prepare me for the QA Northwind Data renewal."`. | The brief chooses "QA GG4 Licence A", whose deadline (T+15) is the next one ahead, and names Licence B and C as also on file. Its Timeline gives the deadline T+15, set by "QA GG4 Licence A — Amendment No. 1". Invoices vs pricing says in one line that no invoices are on file, and the trace has `[tool invoice_list]` before the brief. Before GG5, a run wrote "I don't have invoice data on file" without calling it, and so hid an overcharge. |
+| N4 | Commercial terms and Invoices vs pricing, again. | No new totals added up, such as an annual spend. The only sums are the overcharge (rate difference × quantity) and the total overbilled. |
+
+Command R (the fixture; `day`, `qverify`, `patchc`, `approve` and `inv` as above):
+```bash
+cat > qa-gg5-licence.txt <<TXT
+PLATFORM LICENSE AGREEMENT
+
+This Platform License Agreement is made on $(day -300) between Northwind Analytics LLC ("Customer") and QA Lakehouse Co ("Provider").
+
+1. Licence. Provider grants Customer a non-exclusive subscription to the Provider data platform.
+2. Fees. Customer will pay US\$0.25 per compute unit consumed, invoiced monthly in arrears and payable within thirty (30) days of invoice.
+3. Term and renewal. The initial term ends on $(day +75). This Agreement then renews automatically for successive twelve (12) month terms unless either party gives written notice of non-renewal at least thirty (30) days before the end of the then-current term.
+4. Renewal pricing. On each renewal, fees may increase by no more than five percent (5%).
+5. Limitation of liability. Each party's total liability is capped at the fees paid in the twelve (12) months before the claim.
+6. Governing law. This Agreement is governed by the laws of the State of New York.
+TXT
+cat > qa-gg5-amendment.txt <<TXT
+AMENDMENT NO. 1 TO THE PLATFORM LICENSE AGREEMENT
+
+This Amendment No. 1 is effective $(day -60). It amends the Platform License Agreement between Northwind Analytics LLC and QA Lakehouse Co.
+
+1. Section 2 (Fees) is amended: from the effective date of this Amendment, the fee is US\$0.20 per compute unit consumed.
+2. Section 3 (Term and renewal) is amended: notice of non-renewal must be given at least sixty (60) days before the end of the then-current term.
+3. All other terms of the Agreement are unchanged.
+TXT
+export P_BASE=$(curl -s -X POST "$API/contracts/upload" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg5-licence.txt;type=text/plain" \
+  -F "title=QA Lakehouse — Platform License Agreement" -F "counterpartyName=QA Lakehouse Co" | jq -r .id)
+export P_AMD=$(curl -s -X POST "$API/contracts/upload" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg5-amendment.txt;type=text/plain" \
+  -F "title=QA Lakehouse — Platform License Agreement — Amendment No. 1" -F "counterpartyName=QA Lakehouse Co" \
+  -F "parentContractId=$P_BASE" -F "relationshipType=amendment" | jq -r .id)
+# Wait until both analyses are DONE (the analysis writes key terms, and would replace these), then:
+qverify $P_BASE '{"field":"expiryDate","value":"'$(day +75)'"}'
+qverify $P_BASE '{"field":"autoRenew","value":"yes"}'; qverify $P_BASE '{"field":"noticePeriodDays","value":30}'
+qverify $P_AMD '{"field":"effectiveDate","value":"'$(day -60)'"}'; qverify $P_AMD '{"field":"noticePeriodDays","value":60}'
+for c in $P_BASE $P_AMD; do approve $c; patchc $c '{"status":"EXECUTED"}'; done
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-101","amount":6250,"currency":"USD","invoiceDate":"'$(day -90)'","description":"25,000 compute units @ US$0.25"}'
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-102","amount":6250,"currency":"USD","invoiceDate":"'$(day -30)'","description":"25,000 compute units @ US$0.25"}'
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-103","amount":5000,"currency":"USD","invoiceDate":"'$(day -5)'","description":"25,000 compute units @ US$0.20"}'
+```
+
+Command S (one chat turn as legal-a, in a new session; prints each tool call as `[tool <name>]`, then the answer):
+```bash
+brief() { curl -s -N -X POST "$API/agent/chat" -H "Authorization: Bearer $LEGAL_A" -H "Content-Type: application/json" -H "Accept: text/event-stream" \
+  -d "{\"message\":\"$1\",\"sessionId\":\"qa-gg5-$RANDOM\",\"agentMode\":true}" | sed -n 's/^data: \({.*\)$/\1/p' \
+  | jq -rj 'if .type=="token" then .delta elif .type=="tool_call_start" then "\n[tool " + .name + "]\n" elif .type=="error" then "\n[error] " + .error + "\n" else empty end'; echo; }
+```
+
+**Automated coverage:** none. Rule A19 (renewal prep) is prompt text in the orchestrator; FIX_TRACKER GG5 records the in-process runs against the local stack, including how often the model still falls short. The data the brief rests on is covered in TC-FAMILY-01, TC-INVL-01 and TC-RENEW-01.
+
 ### Not covered here
 
 - **FF1, a change the model returns without ratings:** it keeps the model's own reasoning, with no Risk line and no revised risk. The model can't be made to do that by hand. Covered by `apps/agents/tests/test_redline_risk.py` ("a change without ratings keeps its text").
@@ -6552,6 +6959,9 @@ curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goo
 - **FF2, screenshots and competitor facts:** the product screenshots predate the 8 Aug design change, and the competitor details weren't checked again (the pages say "Last checked: May 2026").
 - **FF3, the rollback path end to end:** it runs only when a production smoke test fails (TC-DEPLOY-03). Repeating the preview-channel check of the release call writes to the production Firebase project.
 - **FF3, worker-service:** `./scripts/deploy.sh all` also deploys it (a failure there doesn't fail the deploy) and sends its traffic to its latest revision, but the deploy job doesn't record it and the rollback doesn't move it. After an auto-rollback it keeps the new revision. The marketing site is left as deployed on purpose.
+- **GG2, an amendment's text when redaction fails:** it is left out of `family` (fail closed). Producing a redaction failure needs fault injection, and no test covers it.
+- **GG3, an own-scope caller's own unmatched invoices:** entering an invoice needs `edit:contract`, which no built-in own-scope role has, so TC-INVL-01 P5 needs TC-ACC-16's custom role. Covered by `contract-family-tools.integration.test.ts`.
+- **GG4, several amendments that each set a notice period:** the latest by effective date (else by creation) wins. Covered by `renewal-notice.test.ts` ("lets the latest amendment win, whatever order they come in"); TC-RENEW-01 uses one per licence.
 
 ## Issues found while writing these test cases
 
@@ -6692,6 +7102,11 @@ Every id in `FIX_TRACKER.md` that changed code, and the test cases that verify i
 | FF1 | TC-RISK-01, TC-RISK-02 |
 | FF2 | TC-SITE-01, TC-SITE-02, TC-SITE-03 |
 | FF3 | TC-DEPLOY-01, TC-DEPLOY-02, TC-DEPLOY-03 |
+| GG1 | TC-DRAFT-01, TC-DRAFT-02 |
+| GG2 | TC-FAMILY-01, TC-FAMILY-02, TC-PREP-01 |
+| GG3 | TC-INVL-01, TC-PREP-01 |
+| GG4 | TC-RENEW-01, TC-RENEW-02, TC-PREP-01 |
+| GG5 | TC-PREP-01 |
 
 ## Appendix A — Generating the fixtures
 
