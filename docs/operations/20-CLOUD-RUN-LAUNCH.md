@@ -655,7 +655,15 @@ gcloud run services update-traffic api-service \
   --region us-central1
 ```
 
-The first command lists revisions (newest first). Pick the second-newest from the output for the second command.
+The first command lists revisions, newest first. For the second command, pick the revision that was **serving before** the bad deploy. Don't just take the second-newest: after a failed deploy, that can be a build that never served. When CI's auto-rollback runs, its summary names the revisions it went back to.
+
+Rolling back pins traffic to that revision. The next `./scripts/deploy.sh` sends traffic to its new revision again. To unpin without deploying:
+
+```bash
+gcloud run services update-traffic api-service --to-latest --region us-central1
+```
+
+To roll back the web app, go to Firebase console → Hosting → the site's release history → **Rollback** on the release you want.
 
 ---
 

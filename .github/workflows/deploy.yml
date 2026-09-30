@@ -50,6 +50,11 @@ jobs:
     timeout-minutes: 30
     outputs:
       web-url: ${{ steps.urls.outputs.web-url }}
+      # What was serving before this deploy — where the rollback returns to.
+      api-before:         ${{ steps.before.outputs.api-before }}
+      agents-before:      ${{ steps.before.outputs.agents-before }}
+      gotenberg-before:   ${{ steps.before.outputs.gotenberg-before }}
+      web-version-before: ${{ steps.before.outputs.web-version-before }}
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +83,35 @@ jobs:
 
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
+
+      # The rollback returns to exactly what was serving before this deploy.
+      # It used to take each service's second-newest revision, which on
+      # 2026-09-26 was a failed build that had never served, and it had no way
+      # to find the web app's previous release. Never fatal: a first deploy
+      # has nothing to record, and the rollback then skips that piece.
+      - id: before
+        name: Record what is serving now
+        env:
+          SITE: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          for svc in api-service agents-service gotenberg; do
+            rev=$(gcloud run services describe "$svc" --region "$GCP_REGION" --format=json 2>/dev/null \
+              | jq -r '[.status.traffic[]? | select(.percent > 0)] | max_by(.percent) | .revisionName // empty' || true)
+            echo "$svc: ${rev:-nothing serving}"
+            echo "${svc%-service}-before=${rev}" >> "$GITHUB_OUTPUT"
+          done
+          # The web app's live Hosting release. Only the version id is kept:
+          # the full name contains the project id, which is a secret, and
+          # GitHub drops a job output that contains one.
+          version=$(curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+              "https://firebasehosting.googleapis.com/v1beta1/sites/${SITE}/channels/live" \
+            | jq -r '.release.version.name // empty' | sed 's#.*/versions/##' || true)
+          if [ -n "$version" ]; then
+            echo "web app: Hosting version ${version}"
+          else
+            echo "::warning::Could not read the web app's live Hosting release, so a rollback of this deploy won't restore the web app."
+          fi
+          echo "web-version-before=${version}" >> "$GITHUB_OUTPUT"
 
       - id: urls
         name: Compute target URLs
@@ -165,45 +199,72 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Install Firebase CLI
-        run: npm install -g firebase-tools
-
-      - name: Roll Cloud Run services back to previous revision
+      # Back to exactly what was serving before this deploy, as the deploy job
+      # recorded it. This pins traffic to that revision; the next deploy moves
+      # it to its own new revision again (serve_latest in scripts/deploy.sh),
+      # so a rollback can no longer strand every later deploy.
+      - name: Roll Cloud Run services back to what was serving
+        env:
+          API_BEFORE:       ${{ needs.deploy.outputs.api-before }}
+          AGENTS_BEFORE:    ${{ needs.deploy.outputs.agents-before }}
+          GOTENBERG_BEFORE: ${{ needs.deploy.outputs.gotenberg-before }}
         run: |
-          for svc in api-service agents-service gotenberg; do
-            PREV=$(gcloud run revisions list \
-              --service "$svc" \
-              --region "${{ env.GCP_REGION }}" \
-              --format='value(metadata.name)' \
-              --sort-by='~metadata.creationTimestamp' \
-              --limit 5 \
-              | sed -n '2p')
-            if [ -n "$PREV" ]; then
-              echo "Rolling $svc back to $PREV"
-              gcloud run services update-traffic "$svc" \
-                --to-revisions="$PREV=100" \
-                --region "${{ env.GCP_REGION }}" \
-                --quiet
-            else
-              echo "Skipping $svc — no previous revision found"
+          rollback() {
+            if [ -z "$2" ]; then
+              echo "Skipping $1 — nothing was recorded as serving before this deploy"
+              return
             fi
-          done
+            echo "Rolling $1 back to $2"
+            gcloud run services update-traffic "$1" \
+              --to-revisions="$2=100" \
+              --region "${{ env.GCP_REGION }}" \
+              --quiet
+          }
+          rollback agents-service "$AGENTS_BEFORE"
+          rollback api-service "$API_BEFORE"
+          rollback gotenberg "$GOTENBERG_BEFORE"
 
-      - name: Roll Firebase Hosting back one version
+      # The web app calls the API it was built with, so it goes back too: a new
+      # release of the version that was live before this deploy. (The step used
+      # to run `firebase hosting:rollback`, which isn't a Firebase command; the
+      # error was swallowed and the web app never rolled back.) The marketing
+      # site doesn't depend on the API and stays as deployed.
+      - name: Roll the web app back to its previous release
+        env:
+          SITE: ${{ secrets.GCP_PROJECT_ID }}
+          VERSION: ${{ needs.deploy.outputs.web-version-before }}
         run: |
-          firebase hosting:rollback \
-            --project "${{ secrets.GCP_PROJECT_ID }}" \
-            --non-interactive \
-            || echo "Firebase rollback failed (probably first deploy ever, or no prior version)"
+          if [ -z "$VERSION" ]; then
+            echo "Skipping the web app — no live release was recorded before this deploy"
+            exit 0
+          fi
+          curl -sSf -X POST \
+              -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+              -H "Content-Type: application/json" \
+              -d "{\"message\": \"Auto-rollback: the smoke gate failed in run ${GITHUB_RUN_ID}\"}" \
+              "https://firebasehosting.googleapis.com/v1beta1/sites/${SITE}/channels/live/releases?versionName=sites/${SITE}/versions/${VERSION}" \
+            | jq -r '"Web app release created: version " + (.version.name | sub(".*/versions/"; ""))'
 
       - name: Annotate run summary
+        env:
+          API_BEFORE:       ${{ needs.deploy.outputs.api-before }}
+          AGENTS_BEFORE:    ${{ needs.deploy.outputs.agents-before }}
+          GOTENBERG_BEFORE: ${{ needs.deploy.outputs.gotenberg-before }}
+          WEB_BEFORE:       ${{ needs.deploy.outputs.web-version-before }}
         run: |
           {
             echo "## ⛔ Auto-rollback executed"
             echo ""
-            echo "The smoke gate failed against the new deploy, so traffic"
-            echo "was reverted to the previous Cloud Run revisions and the"
-            echo "previous Firebase Hosting release."
+            echo "The smoke gate failed against the new deploy, so traffic went back"
+            echo "to what was serving before it:"
+            echo ""
+            echo "- api-service: \`${API_BEFORE:-unchanged}\`"
+            echo "- agents-service: \`${AGENTS_BEFORE:-unchanged}\`"
+            echo "- gotenberg: \`${GOTENBERG_BEFORE:-unchanged}\`"
+            echo "- web app: Hosting version \`${WEB_BEFORE:-unchanged}\`"
+            echo ""
+            echo "The marketing site stays as deployed. The next deploy serves its own"
+            echo "new revisions again."
             echo ""
             echo "**Next steps:**"
             echo "1. Read the failed smoke job's logs for the specific failure."

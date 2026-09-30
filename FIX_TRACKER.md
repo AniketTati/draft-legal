@@ -3237,6 +3237,30 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
   - Not done:
     - The product screenshots are from May, before the 8 Aug design change. Re-shooting needs a signed-in capture.
     - Competitor facts on the comparison pages weren't re-researched.
+- **FF3 — A failed deploy rolls back to what was serving, and doesn't strand later deploys. — DONE.**
+  - Found:
+    - `api-service` served the 2026-08-29 build until 2026-09-30, while three deploys reported success.
+    - The auto-rollback had three faults:
+      - It picked each service's second-newest revision by creation time. On 26 Sep that was 29 Aug's build, which had never served.
+      - It pinned traffic (`--to-revisions`), and `gcloud run deploy` leaves pinned traffic alone. Every later revision was created, reported as "serving 100 percent", and got none.
+      - Its Hosting step ran `firebase hosting:rollback`, which isn't a Firebase command, and swallowed the error. The web app never rolled back, and a new web app called an old API.
+  - Fix:
+    - Before deploying, the deploy job records each service's serving revision and the web app's live Hosting version (the id only, since the full name contains the project id, a secret).
+    - The rollback returns to exactly those. The web app gets a new release of its recorded version through the Hosting API.
+    - The marketing site doesn't depend on the API and isn't rolled back.
+    - `scripts/deploy.sh` sends each Cloud Run service's traffic to its latest revision after deploying (`serve_latest`), so a rollback's pin lasts only until the next deploy.
+    - The launch doc's manual rollback no longer says "pick the second-newest".
+  - Production (2026-09-30, with the user's yes):
+    - All 43 migrations were applied.
+    - The RLS role and policy were checked, and an unknown org sees 0 contracts.
+    - Each latest revision was probed on a `candidate` tag.
+    - `api-service`, `agents-service` and `gotenberg` moved to 100% LATEST.
+  - Checks:
+    - The workflow parses, and all 12 of its scripts pass `bash -n`.
+    - The recording step, run against production, returned the three serving revisions. Its Hosting read returned the live version when given a quota project, which personal credentials need and the deployer's service account doesn't.
+    - The rollback's release call made a release on a temporary preview channel of the marketing site, which then served the page; the channel was deleted.
+    - The live channels weren't touched.
+  - Not done: the full rollback path runs only when a production smoke test fails.
 
 ---
 
