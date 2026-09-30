@@ -6667,8 +6667,8 @@ tj contract_draft '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","userMessage":"s
 | N3 | `fam $F_EXH $REP_A_ID`, then `fam $F_AMD $REP_A_ID`. | From the exhibit, `parent` is the base and `siblings` is empty. The amendment itself: `detail` "Contract not found in this org". |
 | N4 | Another org: `tj contract_get '{"orgId":"'$ORG_B'","userId":"'$ADMIN_B_ID'","contractId":"'$F_BASE'"}' \| jq .detail` | "Contract not found in this org". |
 | N5 | `tj contract_get '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$F_BASE'"}' \| grep -c '219-09-9999'` | `0`: the amendment's SSN never leaves unredacted. |
-| N7 | An unsigned amendment is only pending: make "… Amendment No. 2" with command N's amendment call, leave it a draft, and repeat P1. | It is listed among `children` with its `status`, and `familyNote` adds "One amendment in family.children is not signed yet (see status): it changes no term until it is…". Its `text` isn't inline: only signed amendments' text is. Delete it afterwards. |
 | N6 | Optional, more than three amendments: make three more under `$F_BASE` with command N's amendment call (titles "… Amendment No. 2" to "… Amendment No. 4", any text), then repeat P1. Delete them afterwards with `curl -s -X DELETE "$API/contracts/<id>" -H "Authorization: Bearer $ADMIN_A"`. | Only the latest three amendments have `text`; Amendment No. 1 is listed without it, and `familyNote` adds "Read the others with contract_get." |
+| N7 | An unsigned amendment is only pending: make "… Amendment No. 2" with command N's amendment call, leave it a draft, and repeat P1. | It is listed among `children` with its `status`, and `familyNote` adds "One amendment in family.children is not signed yet (see status): it changes no term until it is…". Its `text` isn't inline: only signed amendments' text is. Delete it afterwards. |
 
 Command N (the family fixture; `day +75` is the date 75 days from today):
 ```bash
