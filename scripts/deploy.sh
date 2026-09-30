@@ -86,6 +86,18 @@ migrate_db() {
   ( cd "${ROOT}/apps/api" && DATABASE_URL="${db_url}" pnpm exec prisma migrate deploy )
 }
 
+# A rollback pins traffic to one revision (update-traffic --to-revisions), and
+# `gcloud run deploy` leaves pinned traffic where it is: the new revision is
+# created, reported as "serving 100 percent of traffic", and gets none. From
+# 29 Aug to 30 Sep 2026 every deploy went nowhere this way. So after each
+# deploy, send the service's traffic to its latest revision explicitly.
+serve_latest() {
+  gcloud run services update-traffic "$1" --to-latest \
+    --project "${GCP_PROJECT}" \
+    --region "${GCP_REGION}" \
+    --quiet
+}
+
 deploy_api() {
   echo "--- deploy api-service ---"
   [[ -f "${ROOT}/env.api.yaml" ]] || { echo "missing env.api.yaml (copy from env.api.example.yaml)" >&2; exit 1; }
@@ -110,6 +122,7 @@ deploy_api() {
     --env-vars-file "${ROOT}/env.api.yaml" \
     --set-secrets "${API_SECRETS}" \
     --allow-unauthenticated
+  serve_latest api-service
 }
 
 # Wave 4 — dedicated always-on worker service. Same image/source as the API but
@@ -135,6 +148,7 @@ deploy_workers() {
     --env-vars-file "${ROOT}/env.api.yaml" \
     --set-secrets "${API_SECRETS}" \
     --no-allow-unauthenticated
+  serve_latest worker-service
 }
 
 deploy_agents() {
@@ -176,6 +190,7 @@ deploy_agents() {
     --env-vars-file "${ROOT}/env.agents.yaml" \
     --set-secrets "${agents_secrets}" \
     --allow-unauthenticated
+  serve_latest agents-service
   # NOTE: --allow-unauthenticated is paired with an app-level
   # `x-internal-secret` middleware in apps/agents/main.py. The API does not
   # fetch OIDC identity tokens before calling agents, so Cloud Run IAM auth
@@ -193,6 +208,7 @@ deploy_gotenberg() {
     --port 3000 \
     --args "gotenberg,--api-port=3000,--chromium-disable-javascript=true,--chromium-allow-list=^file:///tmp/.*" \
     --allow-unauthenticated
+  serve_latest gotenberg
   # Wave 4 hardening READY BUT DEFERRED for the first rollout: Gotenberg has no
   # built-in auth, so it should be made private with only the API's SA able to
   # invoke it via OIDC (the client code already supports this — set
