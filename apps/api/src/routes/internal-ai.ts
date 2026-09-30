@@ -710,7 +710,10 @@ async function contractFamily(
       : [],
   ])
   const changesTerms = (rel: string | null) => rel === 'amendment' || rel === 'renewal'
-  const changers = children.filter(c => changesTerms(c.relationshipType))
+  // Only a signed amendment or renewal changes the terms (as in
+  // amendedRenewalNotice); an unsigned one is shown, and said to change nothing yet.
+  const changers = children.filter(c => changesTerms(c.relationshipType) && c.status === 'EXECUTED')
+  const unsigned = children.filter(c => changesTerms(c.relationshipType) && c.status !== 'EXECUTED')
 
   // What the latest amendments say, inline: told to read them with
   // contract_get, the assistant didn't, and stated the base contract's
@@ -744,10 +747,13 @@ async function contractFamily(
 
   const note = [
     changers.length
-      ? `${changers.length === 1 ? 'A later contract changes' : `${changers.length} later contracts change`} this one's terms (family.children with relationshipType amendment or renewal). `
+      ? `${changers.length === 1 ? 'A later contract changes' : `${changers.length} later contracts change`} this one's terms (signed family.children with relationshipType amendment or renewal). `
         + (said.size ? 'What each says is in its `text`: read it before stating any term. ' : '')
         + (changers.length > said.size ? 'Read the others with contract_get. ' : '')
         + 'Where they differ, the latest amendment wins (its prices, notice periods, caps and dates replace this contract\'s): state the terms as amended, naming the amendment.'
+      : null,
+    unsigned.length
+      ? `${unsigned.length === 1 ? 'One amendment in family.children is' : `${unsigned.length} amendments in family.children are`} not signed yet (see status): it changes no term until it is, so state the terms without it and say it is pending.`
       : null,
     parent && changesTerms(contract.relationshipType)
       ? `This contract ${contract.relationshipType === 'renewal' ? 'renews' : 'amends'} "${parent.title}" (family.parent): terms it does not change are in that contract.`
@@ -3900,7 +3906,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // Its amendments and renewals: they can change the notice period.
       amendments: {
         where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...contractScopeWhere(scope) },
-        select: { title: true, relationshipType: true, keyTerms: true, effectiveDate: true, createdAt: true },
+        select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },
       },
     } as const
     // V2 — upcoming renewals first (soonest first), then ones that lapsed in

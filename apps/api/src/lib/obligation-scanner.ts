@@ -284,7 +284,7 @@ export async function scanRenewals(
       type: true, value: true, currency: true, keyTerms: true,
       amendments: {
         where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS } },
-        select: { title: true, relationshipType: true, keyTerms: true, effectiveDate: true, createdAt: true },
+        select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },
       },
     },
     orderBy: { expiryDate: 'asc' },

@@ -79,6 +79,16 @@ const TYPE_WORDS: Record<string, string[]> = {
 
 const norm = (k: string) => k.toLowerCase().replace(/[^a-z0-9]/g, '')
 
+// A draft's default title names its type in words: "Initech — Vendor
+// Agreement", not "Initech — VENDOR_AGREEMENT". NDA, MSA, SOW and a
+// template's own label ('BAA', 'Order Form') read fine as they are.
+const TYPE_IN_WORDS: Record<string, string> = {
+  VENDOR_AGREEMENT: 'Vendor Agreement', LICENSE: 'License Agreement', EMPLOYMENT: 'Employment Agreement',
+  DATA_PROCESSING: 'Data Processing Agreement', ORDER_FORM: 'Order Form', PARTNERSHIP: 'Partnership Agreement',
+  OTHER: 'Agreement',
+}
+const typeInWords = (contractType: string) => TYPE_IN_WORDS[contractType] ?? contractType
+
 // A stated term fills every template key in its alias group.
 const ALIASES = {
   counterparty:  ['counterparty', 'counterpartyname', 'counterpartycompany', 'otherparty'],
@@ -256,7 +266,7 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
   const generated = generateDocument({ template, variables, clauseMap })
   const counterpartyName = input.counterpartyName?.trim() || null
   const title = input.title?.trim()
-    || (counterpartyName ? `${counterpartyName} — ${contractType}` : `Draft — ${template.name}`)
+    || (counterpartyName ? `${counterpartyName} — ${typeInWords(contractType)}` : `Draft — ${template.name}`)
 
   return {
     ok: true,

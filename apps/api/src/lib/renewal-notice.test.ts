@@ -50,8 +50,16 @@ describe('renewalNotice', () => {
 describe('amendedRenewalNotice', () => {
   const expiry = new Date('2026-12-14T00:00:00.000Z')
   const base = { expiryDate: expiry, keyTerms: { autoRenew: true, noticeDays: 30 } }
-  const amendment = (title: string, effective: string, keyTerms: Record<string, unknown>, relationshipType = 'amendment') =>
-    ({ title, relationshipType, keyTerms, effectiveDate: new Date(effective), createdAt: new Date(effective) })
+  const amendment = (title: string, effective: string, keyTerms: Record<string, unknown>, relationshipType = 'amendment', status = 'EXECUTED') =>
+    ({ title, relationshipType, status, keyTerms, effectiveDate: new Date(effective), createdAt: new Date(effective) })
+
+  it('ignores an amendment nobody has signed yet', () => {
+    for (const status of ['DRAFT', 'UNDER_NEGOTIATION', 'PENDING_SIGNATURE']) {
+      const n = amendedRenewalNotice(base, [amendment('Amendment No. 2 (draft)', '2026-09-01', { noticePeriodDays: 90, autoRenew: false }, 'amendment', status)])
+      expect(n).toMatchObject({ noticeDays: 30, autoRenew: true, noticeSetBy: null })
+      expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-11-14')
+    }
+  })
 
   it('takes the notice period an amendment set, and names it', () => {
     const n = amendedRenewalNotice(base, [amendment('Amendment No. 1', '2026-06-01', { noticePeriodDays: 60 })])

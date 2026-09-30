@@ -71,6 +71,9 @@ export const TERM_CHANGERS = ['amendment', 'renewal']
 export interface TermChanger {
   title: string
   relationshipType: string | null
+  // Only a signed amendment changes the terms: a draft or one still in
+  // negotiation moved the deadline before anyone had agreed to it.
+  status: string
   keyTerms: unknown
   effectiveDate: Date | null
   createdAt: Date
@@ -90,7 +93,7 @@ export function amendedRenewalNotice(
   let { autoRenew, noticeDays } = renewalNotice(c)
   let noticeSetBy: string | null = null
   const inOrder = changers
-    .filter(a => a.relationshipType != null && TERM_CHANGERS.includes(a.relationshipType))
+    .filter(a => a.relationshipType != null && TERM_CHANGERS.includes(a.relationshipType) && a.status === 'EXECUTED')
     .sort((a, b) => (a.effectiveDate ?? a.createdAt).getTime() - (b.effectiveDate ?? b.createdAt).getTime())
   for (const a of inOrder) {
     const kt = termsOf(a.keyTerms)

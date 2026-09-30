@@ -85,7 +85,7 @@ export async function renewalRoutes(app: FastifyInstance) {
         owner: { select: { name: true } },
         amendments: {
           where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...ownContractWhere(req) },
-          select: { title: true, relationshipType: true, keyTerms: true, effectiveDate: true, createdAt: true },
+          select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },
         },
       },
       orderBy: { expiryDate: 'asc' },
