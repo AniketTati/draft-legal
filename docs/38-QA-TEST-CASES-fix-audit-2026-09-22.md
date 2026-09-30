@@ -5,7 +5,9 @@ Manual test cases for every change made on branch `fix/audit-2026-09-22`, 23–2
 the **Covers** line of every test case names those ids, and the matrix at the end maps each id to its test cases.
 The commits of 24 September fix the issues found while writing this document (X55–X76), a log leak the review of
 those fixes found (X77), a gap their browser check found (X78), and follow-ups to X65, X67, X71 and X75. They are
-listed in "Issues found while writing these test cases", each with the test case that verifies it.
+listed in "Issues found while writing these test cases", each with the test case that verifies it. Section 8 adds
+cases for four later follow-ups, merged to `main` on 30 September 2026: EE1, FF1, FF2 and FF3 (commits `773166f` to
+`1f92ae5`).
 
 Every test case has:
 
@@ -39,7 +41,7 @@ decision. Selectable text in the Original PDF view is not implemented (it needs 
 | API + background workers | 3001 (collab 3030) | `pnpm --filter api dev` | Apply migrations first: `pnpm --filter api db:migrate:prod` |
 | Agents service (Python) | 8002 by default | `cd apps/agents && uvicorn main:app --port 8002` | Needed only for cases marked *Needs: agents service + LLM key*; if it runs on another port, start the API with `AGENTS_URL=http://localhost:<port>` |
 | Web app | 5173 | `pnpm --filter web dev` | `$WEB` |
-| Marketing site | 5174 | `pnpm --filter marketing dev` | `$MKT`; only for the TC-WEB cases. Its `/api` proxy goes to the local API (X70) |
+| Marketing site | 5174 | `pnpm --filter marketing dev` | `$MKT`; only for the TC-WEB and TC-SITE cases. Its `/api` proxy goes to the local API (X70) |
 
 > **Run exactly one API process per Redis.** The API runs its background workers in-process, so every API
 > process connected to the same Redis competes for queued jobs (analysis, redline, binder split, backfills). A
@@ -286,6 +288,19 @@ The counts are those of `b80ad15`. A failing automated test points to the same a
   - TC-SMK-06 · Smoke: ask the Assistant a question about a contract
   - TC-SMK-07 · Smoke: search finds contracts in the caller's scope only
   - TC-SMK-08 · Smoke: the app's directions name menu items that exist (no-workflow review, clause playbook note, Google and Microsoft sign-in)
+- **8. Follow-ups merged after the branch (EE1, FF1–FF3, 26–30 Sep 2026)**
+  - TC-REVQ-01 · Each decision in the review drawer takes its clause out of the queue: the count goes down, the next pending clause opens, and a decided clause doesn't come round again
+  - TC-REVQ-02 · Applying a suggested rewrite records the clause as accepted and moves on; Edit manually records no decision
+  - TC-REVQ-03 · A decided clause opened again says what was decided, and Reopen puts it back in the queue
+  - TC-REVQ-04 · The review-state API keeps a rejection as `rejected`, reopens with `unreviewed`, and refuses unknown states, viewers and other organizations
+  - TC-RISK-01 · Analyze Redlines returns one change per changed section with both texts whole, and each change's risk before and after, with its reasons
+  - TC-RISK-02 · Every change we counter or reject gets a counter-proposal whose risk lies between our standard and their proposal, and the summary gives the three averages
+  - TC-SITE-01 · The homepage, Security page, agent grid and Open Source quickstart say only what the product does
+  - TC-SITE-02 · The site's links go where they say: a demo email, Privacy and Terms on the app, no X or LinkedIn, product stages by anchor, dated comparisons
+  - TC-SITE-03 · A marketing build writes the sitemap before bundling: 42 URLs, dated the day of the build, `/industries` included
+  - TC-DEPLOY-01 · Before it deploys, the deploy job records what each Cloud Run service and the web app serve, and warns when it can't read the web app's release
+  - TC-DEPLOY-02 · After a deploy, api-service, agents-service and gotenberg serve their new revisions at 100% LATEST, also after a rollback had pinned them
+  - TC-DEPLOY-03 · When the production smoke fails, the rollback returns the three services and the web app to what was recorded, leaves the marketing site, and names them in the run summary (verify when it happens)
 - **Issues found while writing these test cases**
 - **Traceability: tracker ids → test cases**
 - **Appendix A — Generating the fixtures** · **Appendix B — Logging proxy for §0.5**
@@ -5001,6 +5016,10 @@ For N3: `-F "attachment1=@img1.png;type=application/pdf;filename=redline.pdf"`.
 
 **Covers:** H1, X71, X72 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor, admin-a (N6)
 
+> **Partly superseded by TC-SITE-01 (FF2, 29 Sep 2026).** FF2 rewrote the Security page's authentication,
+> access-control, audit and compliance cards, and the Intake stage. Where the text quoted below differs from the
+> site, TC-SITE-01 has the current wording.
+
 **Preconditions**
 - Run the marketing site locally: `pnpm --filter marketing dev`, then open `$MKT` = `http://localhost:5174`. (A deployed marketing site works too.)
 - Browsing is enough for this case; the Contact form is tested in TC-WEB-02.
@@ -6062,6 +6081,478 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 - **X3, detection of a tampered audit row (`hash_mismatch`):** needs altering a stored audit row, which this plan does not do. Covered by `apps/api/src/routes/admin-audit.integration.test.ts`.
 - **X3, Error Reporting grouping and alerts in Google Cloud:** needs the deployed project; TC-OPS-04 checks locally that the events are written in the right format and masked.
 
+## 8. Follow-ups merged after the branch (EE1, FF1–FF3, 26–30 Sep 2026)
+
+This section covers four changes merged to `main` after the branch, each recorded in `FIX_TRACKER.md` under its id. **REVQ** checks the clause review drawer on the contract page (EE1): every action in it is a decision, a decided clause leaves the queue, Reject is kept as its own state (`rejected`), a decided clause can be reopened, and the review-state API takes the new state. **RISK** checks the Negotiate tab's redline analysis (FF1): one change per changed section, each change's risk before and after computed from the model's ratings, and a counter-proposal for every change we don't accept, with the risk it would leave. **SITE** checks the marketing site (FF2): what it claims, where its links go, the product page's anchors and the sitemap. **DEPLOY** checks the production deploy workflow (FF3): it records what is serving before it deploys, sends each Cloud Run service's traffic to its new revision, and after a failed smoke test rolls back to what it recorded. The RISK cases and TC-REVQ-02 need the agents service and an LLM key; LLM output varies from run to run, so they check the structure, the fixed wording around the numbers and the arithmetic, not the model's ratings. The DEPLOY cases need read access to the production project and its GitHub Actions runs, and change nothing there; the manual rollback in TC-DEPLOY-03 is run only when a rollback is needed.
+
+The automated tests for this section. §0.6's totals are those of `b80ad15`; `main` has more tests since. CI runs the API and Python tests, but not the web tests.
+
+```bash
+pnpm --filter web exec vitest run src/lib/review-queue.test.ts        # EE1: 11 passed
+pnpm --filter api exec vitest run src/lib/marketing-claims.test.ts    # H1, X71, X72, FF2: 29 passed
+# EE1, with the test database, Redis and MinIO from §0.6:
+DATABASE_URL=postgresql://<user>:<password>@localhost:5433/clm_test REDIS_URL=redis://localhost:6380 \
+  S3_ENDPOINT=http://localhost:9100 pnpm --filter api exec vitest run --config vitest.integration.config.ts \
+  src/routes/review-decision.integration.test.ts                     # 3 passed
+# FF1, in the agents service's virtualenv (pytest comes from requirements-dev.txt: ./.venv/bin/pip install -r requirements-dev.txt)
+cd apps/agents && ./.venv/bin/python -m pytest tests/test_redline_risk.py -q   # 13 passed
+```
+
+### TC-REVQ-01 · Each decision in the review drawer takes its clause out of the queue: the count goes down, the next pending clause opens, and a decided clause doesn't come round again
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- `$C_REV`: an Org A contract legal-a can edit, whose analysis has finished, with at least four flagged clauses. Flagged means `riskRating` `unfavorable`, `high` or `aggressive` (a risk: red underline, "HIGH RISK" in the drawer) or `unusual`, `medium` or `non_standard` (a deviation: blue underline, "DEVIATION"). Command A lists a contract's clauses; an uploaded `F-PII`, once analysed, is a candidate (analysing needs the agents service and an LLM key). `n` = the number of flagged clauses.
+- Every flagged clause pending: run command B, then reload the contract page.
+- Signed in as legal-a. Window at least 1280 px wide, so the rail and the drawer sit beside the document. DevTools Network open, filtered on `review-state`.
+- Where things are: **Review progress** at the top of the right rail shows `<decided> / <flagged>`; click it to expand a checklist with one row per flagged clause, in document order. The review drawer replaces the rail while it is open. Its header has ‹ (Previous issue, key k), a counter `<position> / <clauses still waiting>` (tooltip "Clauses still waiting on a decision"), › (Next issue, key j) and × (Esc).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$C_REV` and click **Review progress** in the rail. | It reads `0 / n`. The checklist lists the n flagged clauses, each with its type and `§<section>`, and none has a label. |
+| P2 | Click the first row's clause name. | The drawer opens on that clause: counter `1 / n`, the state pill **Pending**, and the buttons **Accept clause as-is**, **Edit manually**, **Reject** and **Mark reviewed**. |
+| P3 | Click **Accept clause as-is**. | The drawer opens the second clause, and the counter reads `1 / n−1`: one fewer than before. ‹ is disabled: the accepted clause is no longer in the queue. Network: `PATCH /api/v1/contracts/clauses/<first clause's id>/review-state` with `{"state":"resolved"}`, answered 200. Before EE1 the counter read `2 / n` and ‹ went back to the accepted clause. |
+| P4 | Click **Reject**. | The third clause opens, counter `1 / n−2`. The PATCH sends `{"state":"rejected"}` and answers 200 with `"reviewState":"rejected"`. Reject used to send `reviewed`. |
+| P5 | Click **Mark reviewed**. | The fourth clause opens, counter `1 / n−3`. The PATCH sends `{"state":"reviewed"}`. Mark reviewed used to leave the drawer where it was. |
+| P6 | Close the drawer (× or Esc) and expand **Review progress**. | It reads `3 / n`. The first three rows are labelled **accepted**, **rejected** (in red) and **reviewed**; the other rows have no label and show **Mark reviewed** on hover. The rows used to read "done" whatever the decision. |
+| P7 | Run command A. Then reload the page and expand **Review progress** again. | Command A: the first three flagged clauses read `resolved`, `rejected` and `reviewed`, the rest `unreviewed`. After the reload the rows still read accepted, rejected and reviewed: a rejection is stored as one. |
+| P8 | Open the first pending row and decide every remaining clause, one after another, with any of the three buttons. | Each decision opens the next pending clause and lowers the counter's total by one. After the last one the drawer closes by itself, the rail comes back, and **Review progress** reads `n / n ✓`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | After P3, and again after P4 and P5: step through the drawer with › to the end, then back with ‹ to the first one. | Only pending clauses appear, in document order. › is disabled on the last one and ‹ on the first. A decided clause never comes round again. |
+| N2 | Command B and reload. Open the **last** row (counter `n / n`) and click **Mark reviewed**. | The drawer doesn't close. With nothing pending after it, it goes back to the first clause, which you skipped: counter `1 / n−1`. It closes only when nothing is pending anywhere. |
+| N3 | Command B and reload. In the drawer accept the first clause and reject the second. Close the drawer and click **✓ Mark all n−2 as reviewed** under the checklist. | Only the pending rows turn **reviewed**. The first two keep **accepted** and **rejected**; command A shows `resolved`, `rejected`, then `reviewed` for the rest. |
+
+Command A (the contract's clauses, with their rating and review state):
+```bash
+curl -s "$API/contracts/$C_REV/clauses" -H "Authorization: Bearer $LEGAL_A" \
+  | jq -r '.data[] | [.id, (.sectionRef // "-"), .clauseType, (.riskRating // "-"), .reviewState] | @tsv'
+```
+
+Command B (every flagged clause back to pending):
+```bash
+for id in $(curl -s "$API/contracts/$C_REV/clauses" -H "Authorization: Bearer $LEGAL_A" \
+    | jq -r '.data[] | select(.riskRating | IN("unfavorable","high","aggressive","unusual","medium","non_standard","non-standard")) | .id'); do
+  curl -s -o /dev/null -w "$id %{http_code}\n" -X PATCH "$API/contracts/clauses/$id/review-state" \
+    -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' -d '{"state":"unreviewed"}'
+done
+```
+
+Command C (set one clause's state; replace `<CLAUSE>`, `<TOKEN>` and `<STATE>`):
+```bash
+curl -s -w '\n%{http_code}\n' -X PATCH "$API/contracts/clauses/<CLAUSE>/review-state" \
+  -H "Authorization: Bearer <TOKEN>" -H 'content-type: application/json' -d '{"state":"<STATE>"}'
+```
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` (11: the queue holds only the clauses waiting on a decision and shrinks by one with each decision, whatever it is; it keeps a decided clause while it is open; after a decision the drawer goes to the next pending clause, else to one the reviewer skipped, else nowhere; the four states; and three checks on the contract page's source: it gives the drawer the queue, records each action as its own state, and keeps a rejection when it reloads its clauses. Those three failed before EE1). CI doesn't run the web tests: run them with `pnpm --filter web test`.
+
+### TC-REVQ-02 · Applying a suggested rewrite records the clause as accepted and moves on; Edit manually records no decision
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key (**Suggest alternative language** asks the model).
+- `$C_REV` and commands A–C from TC-REVQ-01, with at least three pending flagged clauses (command B, then reload). `$C_REV` is in DRAFT or UNDER_NEGOTIATION: an applied rewrite makes a new version, and on an APPROVED contract that sends it back for approval (X42).
+- Signed in as legal-a, window and DevTools as in TC-REVQ-01, with the Network filter cleared. `k` = the number of pending flagged clauses.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open the first pending row from **Review progress** (counter `1 / k`). In the drawer's **Alternative language** section, click **Suggest alternative language**. | The button reads "Drafting alternatives…", then the variants appear (usually least, moderate and aggressive), each with its text and **Apply to document**. If none comes back, the section says why; use another pending clause. Nothing is decided yet: the pill still reads **Pending**, the counter is unchanged, and no `review-state` request is sent. |
+| P2 | Click **Apply to document** on one variant. | The button reads "Applying…". Then the drawer opens the next pending clause, counter `1 / k−1`. Network: `POST /api/v1/contracts/$C_REV/clauses/<id>/apply` answered 200 with `newVersionNumber`, then `PATCH …/review-state` with `{"state":"resolved"}`, answered 200. An applied rewrite used to be saved as `reviewed`. |
+| P3 | Run command A, and `curl -s "$API/contracts/$C_REV/versions" -H "Authorization: Bearer $LEGAL_A" \| jq '.data \| length'`. | One more version than before. The rewritten clause (same section and type, now in the new version) reads `resolved`, and its rating is empty: its new words aren't rated until the contract is analysed again, so it drops out of **Review progress**. The other clauses keep their states. (A rewrite that shares few words with the old clause isn't carried into the new version, and then has no line.) |
+| P4 | Close the drawer, open another pending row and click **Edit manually**. | The drawer closes and the document turns editable: the header shows **Done**, with undo, redo and the save status. No `review-state` request is sent. |
+| P5 | Click **Done** without typing. Expand **Review progress** and run command A. | The clause is still pending: its row has no label, the count is unchanged, and command A shows `unreviewed`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Open a pending row, click **Suggest alternative language** and wait for the variants. Then click › (or close the drawer) without applying. | No `apply` and no `review-state` request. The clause stays pending: a suggestion decides nothing. |
+| N2 | Open a pending row and click **Edit manually**. Type ` QA.` at the end of the document's last paragraph (not in the clause you opened), wait for "Saved ✓", and click **Done**. | One `POST …/html-version` (201) and still no `review-state` request. The clause you opened is still pending: an edit may or may not deal with the issue, so it records no decision. |
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` ("records each action as its own final state": the page records an applied rewrite as `resolved`). Edit manually recording nothing has no automated test (the web app has no component tests); P4–P5 and N2 are its check.
+
+### TC-REVQ-03 · A decided clause opened again says what was decided, and Reopen puts it back in the queue
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a, viewer-a
+
+**Preconditions**
+- `$C_REV` and commands A–C from TC-REVQ-01. Its flagged clauses include one accepted (`resolved`), one rejected, one reviewed and at least two pending. TC-REVQ-01 leaves them so after P5; otherwise run command B, then command C as `$LEGAL_A` on the first three flagged clauses with `resolved`, `rejected` and `reviewed`. Reload the contract page.
+- Signed in as legal-a, window and DevTools as in TC-REVQ-01. `p` = the number of pending rows.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Expand **Review progress** and click the **accepted** row's clause name. | The drawer opens on it: pill **Accepted**, and above the buttons "Accepted — no longer in the queue." with **Reopen**. **Accept clause as-is** is disabled; **Reject** and **Mark reviewed** are not. The counter's total is `p + 1`: the open clause is shown with the pending ones, the other decided clauses are not. |
+| P2 | Close the drawer. Open the **rejected** row, then the **reviewed** row. | "Rejected — no longer in the queue." with **Reject** disabled. "Reviewed — no longer in the queue." with the last button reading **Reviewed**, disabled. Each has **Reopen**. |
+| P3 | On the rejected clause, click **Reopen**. | The pill turns **Pending**, the decision line goes, all four buttons are enabled, and the drawer stays on the clause. Network: `PATCH …/review-state` with `{"state":"unreviewed"}`, answered 200 with `"reviewState":"unreviewed","reviewedAt":null,"reviewedById":null`. |
+| P4 | Close the drawer, expand **Review progress** and run command A. | The count is one lower than before P3. The reopened row has no label and shows **Mark reviewed** on hover, like the other pending rows. Command A shows it `unreviewed`. |
+| P5 | Open the first pending row and step through the drawer with ›. | The reopened clause is among the clauses it steps through: it is back in the queue. The accepted and reviewed clauses are not. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Open the accepted row again. Click ›, then ‹. | › opens the next pending clause. ‹ doesn't go back to the accepted clause: once you moved off it, it left the queue again. |
+| N2 | Open the accepted row again and click **Reject**. | The decision is replaced: the PATCH sends `{"state":"rejected"}`, the drawer opens the next pending clause, and the row now reads **rejected**. Opening a decided clause doesn't lock it. |
+| N3 | Sign in as viewer-a, open `$C_REV`, expand **Review progress** and click a decided row's clause name. | The drawer shows the pill (e.g. **Rejected**) but no decision line, no **Reopen** and no action buttons. In their place: "Read-only: accepting, rejecting or changing this clause needs edit access to the contract." The API refuses a viewer too (TC-REVQ-04 N3). |
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` ("keeps a decided clause while it is open, so it can be read and reopened"), `apps/api/src/routes/review-decision.integration.test.ts` ("can be reopened, which puts the clause back in the queue": `unreviewed` clears `reviewedAt` and `reviewedById`). The drawer's decision line and **Reopen** have no automated test (the web app has no component tests).
+
+### TC-REVQ-04 · The review-state API keeps a rejection as `rejected`, reopens with `unreviewed`, and refuses unknown states, viewers and other organizations
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** API · **Roles:** legal-a, viewer-a, rep-a, admin-b
+
+**Preconditions**
+- `$C_REV` and commands A and C from TC-REVQ-01. `$CL` = the id of one of `$C_REV`'s flagged clauses (command A, first column); use it as `<CLAUSE>` in command C.
+- Tokens `$LEGAL_A`, `$VIEWER_A`, `$REP_A` and `$ADMIN_B`, and `$LEGAL_A_ID` (§0.3).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Command C with `$LEGAL_A` and `rejected`. | `200` `{"id":"<$CL>","reviewState":"rejected","reviewedAt":"<now>","reviewedById":"<legal-a's id>"}`. `reviewedById` equals `$LEGAL_A_ID`. |
+| P2 | Command A. Then reload `$C_REV` in the browser and expand **Review progress**. | `$CL` reads `rejected`, and its row is labelled **rejected**. |
+| P3 | Command C with `unreviewed`. | `200` with `"reviewState":"unreviewed","reviewedAt":null,"reviewedById":null`: the clause is reopened, back in the queue. |
+| P4 | Command C with `reviewed`, then with `resolved`. | `200` each time, with that `reviewState`, a new `reviewedAt` and `reviewedById` = `$LEGAL_A_ID`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Command C with `$LEGAL_A` and `done`. | `400` `{"detail":"state must be unreviewed \| reviewed \| resolved \| rejected"}`. Command A shows `$CL` unchanged. |
+| N2 | Command C with `REJECTED`, then `accepted` (the word the page shows, not a state), then an empty string. Then send the body `{}`. | `400` with the same `detail` each time; `$CL` unchanged. |
+| N3 | Command C with `$VIEWER_A` and `rejected`; then with `$REP_A`. | `403`, `detail` "Missing permission: edit:contract", both times: neither role may edit contracts. `$CL` unchanged. |
+| N4 | Command C with `$ADMIN_B` (Org B) and `rejected`. | `404` `{"detail":"Clause not found"}`; `$CL` unchanged. |
+| N5 | Command C with `$LEGAL_A` and a made-up clause id. | `404` `{"detail":"Clause not found"}`. |
+| N6 | Optional, with TC-ACC-16's `OWN_EDITOR` role on rep-a (its command A; token `$REP_A_OE`): command C with `$REP_A_OE` and `rejected`. | `404` `{"detail":"Clause not found"}`: an own-scope editor marks only the clauses of contracts it owns, and `$C_REV` is legal-a's (X7). |
+
+**Automated coverage:** `apps/api/src/routes/review-decision.integration.test.ts` (3: a rejection is stored as `rejected`, with its reviewer; `unreviewed` reopens the clause and clears `reviewedAt` and `reviewedById`; `done` is refused with a 400 that names the states. The rejection test failed before EE1, with a 400), `apps/api/src/routes/own-scope-rest.integration.test.ts` ("a custom own-scope editor cannot write to another rep's records by id": 404 on another rep's clause, N6). The viewer and other-org refusals have no test on this route.
+
+### TC-RISK-01 · Analyze Redlines returns one change per changed section with both texts whole, and each change's risk before and after, with its reasons
+
+**Covers:** FF1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key. One run takes a minute or two; TC-RISK-02 reads the same run.
+- `$C_RISK`: our standard and their markup, as two versions of one contract. Upload `F-PII` as legal-a (version 1, our standard), then add `F-PII-v2` as version 2 with TC-AI-02's curl (their markup). Version 2 changes three numbered sections: 3 (the fee and the payment days), 4 (a sentence added after the SSN) and 8 (the liability cap, from 12 months' fees to 3). `$C_NEG` from TC-AI-02 works too; a new run replaces its analysis. Wait until version 2 is extracted: the Negotiate tab's "Version diff" no longer says "This version is still being extracted…".
+- Playbook positions for the changed clauses: `curl -s "$API/playbook/positions?contractType=<type>" -H "Authorization: Bearer $LEGAL_A" | jq '[.data[].clauseCategory.name] | unique'`, with `<type>` from `GET $API/contracts/$C_RISK`, lists "Fees & Payment" and "Limitation of Liability". The seeded universal playbook has both, for every contract type: its Fees & Payment fallback is Net 15, and its Limitation of Liability walkaway is a cap under 6 months' fees. If one is missing, add it on Library → Playbook (**Add Position**).
+- Signed in as legal-a.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$C_RISK` → rail **History** → **Negotiate**. Keep **Baseline (our version)** = v1 and **Counterparty redlines** = v2, click **Analyze Redlines**, and wait (the panel refreshes itself). | "Analysis summary" appears, with its badge, confidence and counts. Below it: "3 changes detected" (shown in capitals). |
+| P2 | Read the change cards. | One card per changed section, each showing its section (e.g. `Section 3`): 3, 4 and 8. Section 3's two edits (the fee and the payment days) are one card, not two. |
+| P3 | Expand each card with its chevron. | **Original** holds the whole section as version 1 has it, and **Counterparty proposes** the whole section as version 2 has it. Section 3's Original has both "USD 12,500" and "thirty (30) days"; its Counterparty proposes has "USD 14,000" and "fifteen (15) days". Every card has both texts. |
+| P4 | Read each card's reasoning line (the grey line under the chips; no need to expand). | Each starts `Risk <a> → <b> (<b − a, with its sign>): `, e.g. `Risk 9 → 93 (+84): `. Then the four ratings of their wording in words, `<deviation>; <exposure>, <likelihood>; <market>.`, then one sentence on why the risk moved. The words come from fixed lists. Deviation: "matches our standard", "within our acceptable position", "needs our fallback position", "beyond our walkaway position". Exposure: "no exposure" to "severe exposure". Likelihood: "unlikely", "possible", "likely". Market: "market standard", "slightly off-market", "clearly off-market", "one-sided or of doubtful enforceability". Section 8's card, a cap of 3 months' fees under the walkaway, normally rises most and reads "beyond our walkaway position". |
+| P5 | Command D (one line per change: section, recommendation, before, after, change, revised, has a counter). | `riskBefore` and `riskAfter` are whole numbers from 0 to 100, `riskDelta` = `riskAfter − riskBefore`, and they are the numbers in P4's lines. |
+| P6 | Command E (the numbers computed again from the stored ratings, with 100 × (0.45 × deviation/3 + 0.35 × exposure × likelihood/12 + 0.20 × market/3)). | Every line ends `same`: each number is the formula applied to its ratings, not a number the model chose. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Compare the cards with the three changed sections. | No card holds a lone fragment, such as just "USD 14,000" or "fifteen (15)", and no section has two cards. Before FF1 the analysis returned one change per inserted or deleted fragment: 29 "changes" on a markup of five clauses in the live check, several with their text lost. |
+| N2 | Command F. | `true`, then `true`. Every stored rating is inside its range (deviation 0–3, exposure 0–4, market 0–3, likelihood 1–3; the model's values are clamped). Within each change, our wording, theirs and our counter share one likelihood: the event is rated once per change. |
+
+Command D (the stored analysis, one line per change):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" \
+  | jq -r '.metadata._redlineAnalysis.changes[] | [.sectionRef, .recommendation, .riskBefore, .riskAfter, .riskDelta, .riskRevised, (.counterText != null)] | @tsv'
+```
+
+Command E (each number computed again from its ratings; Python rounds as the agents service does):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | python3 -c '
+import json, sys
+a = json.load(sys.stdin)["metadata"]["_redlineAnalysis"]
+score = lambda f: None if not f else round(100 * (0.45 * f["deviation"] / 3 + 0.35 * f["exposure"] * f["likelihood"] / 12 + 0.20 * f["market"] / 3))
+for c in a["changes"]:
+    stored = (c.get("riskBefore"), c.get("riskAfter"), c.get("riskRevised"))
+    factors = tuple(score(c.get(k)) for k in ("ourAssessment", "theirAssessment", "counterAssessment"))
+    print(c.get("sectionRef"), c.get("recommendation"), stored, factors, "same" if stored == factors else "DIFFERENT")'
+```
+
+Command F (ratings in range, one likelihood per change):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | jq '.metadata._redlineAnalysis.changes
+  | ([.[] | .ourAssessment, .theirAssessment, .counterAssessment | select(. != null)
+      | .deviation >= 0 and .deviation <= 3 and .exposure >= 0 and .exposure <= 4 and .market >= 0 and .market <= 3 and .likelihood >= 1 and .likelihood <= 3] | all),
+    ([.[] | [.ourAssessment, .theirAssessment, .counterAssessment | select(. != null) | .likelihood] | unique | length <= 1] | all)'
+```
+
+**Automated coverage:** `apps/agents/tests/test_redline_risk.py` (13: the formula from 0 to 100 and its weights; missing or non-numeric ratings give no score; ratings are clamped to their ranges; likelihood is rated once per change; the reasoning and counter-note text; a counter never scores worse than their text or better than our standard; a change without ratings keeps its text; the summary's averages; step 2's scores merge onto step 1's changes by `changeId`, or by position when the counts agree). CI runs it in "Test Agents (Python)". One change per section is an instruction to the model and has no automated test; P2, P3 and N1 are its check.
+
+### TC-RISK-02 · Every change we counter or reject gets a counter-proposal whose risk lies between our standard and their proposal, and the summary gives the three averages
+
+**Covers:** FF1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key (for the run). This case reads TC-RISK-01's analysis of `$C_RISK`, with commands D and G.
+- At least one **Counter** card and one **Reject** card. On `F-PII-v2`, section 8's cap, beyond the walkaway, is the likeliest Reject. If the run has no Reject card, click **Analyze Redlines** again; if there is still none, note that the reject path wasn't exercised on this run.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Expand each **Counter** and **Reject** card. | Each has "Our counter-proposal" (shown in capitals) with the proposed wording, **Copy counter text**, and an italic note: `Revised risk if they accept: <r> (from <b>, <r − b, with its sign>): <the counter's four ratings in words>. <why>`, e.g. `Revised risk if they accept: 39 (from 93, -54): …`. `<b>` is the card's own "after" number from its Risk line. |
+| P2 | On each of those cards, compare `<a>` (the Risk line's "before"), `<r>` and `<b>`. | Where their wording raised the risk (`a` ≤ `b`): `a` ≤ `r` ≤ `b`. The counter's risk lies between our standard and their proposal, so the note's change is 0 or negative. |
+| P3 | Look at the **Reject** cards. | They have a counter-proposal too. Before FF1 only Counter cards got one, so the changes that mattered most had no alternative wording. |
+| P4 | Read the line under "Analysis summary". | `Analyzed N changes: <a> acceptable, <c> need countering, <r> should be rejected. Average risk across the <K> changed clauses: <X> in our standard, <Y> as proposed, <Z> with our counter-proposals.` N and the three counts match the cards and the "N accept / N counter / N reject" row. K is the number of cards with a Risk line. X is the average of their "before" numbers and Y of their "after" numbers. Z averages each card's revised risk where it has one, else its "after". Each is rounded to a whole number. |
+| P5 | Command D. | `riskRevised` is filled on exactly the changes with a counter (`true` in the last column), and it is P1's `<r>`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Expand each **Accept** card. | No "Our counter-proposal" and no "Revised risk" note; `riskRevised` is empty in command D. In the summary's third average, an accepted change counts at its proposed risk. |
+| N2 | Command G. | `true`, then `true`. Every change we don't accept has counter text, and no revised risk falls outside our standard's and their proposal's. The counter is rated in its own model call: rated worse than their text, it takes their text's rating; rated better than our standard, it takes ours. |
+
+Command G (a counter for every change not accepted, and its risk between the two):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | jq '.metadata._redlineAnalysis.changes
+  | ([.[] | select(.recommendation != "accept") | (.counterText // "") != ""] | all),
+    ([.[] | select(.riskRevised != null and .riskBefore <= .riskAfter) | .riskBefore <= .riskRevised and .riskRevised <= .riskAfter] | all)'
+```
+
+**Automated coverage:** `apps/agents/tests/test_redline_risk.py` (the counter-note text; a counter never scores worse than their text or better than our standard; the summary averages with our counters where we made one and leaves out unscored changes). That rejected changes get a counter-proposal is decided by the model step's input and has no automated test; P3 and N2 are its check.
+
+### TC-SITE-01 · The homepage, Security page, agent grid and Open Source quickstart say only what the product does
+
+**Covers:** FF2 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor
+
+**Preconditions**
+- The marketing dev server, `$MKT` = `http://localhost:5174`, as in TC-WEB-01. A deployed site works too, once this change is deployed.
+- FF2 rewrote some of the text TC-WEB-01 quotes: the Security page's authentication, access-control, audit and compliance cards, and the Intake stage. Where the two differ, this case's text is current.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s $MKT/ \| grep -A1 'name="description"'` | `content="Open-source, agent-first contract lifecycle management. 12 AI agents handle intake, review, drafting, negotiation, approvals and obligations, with e-signature built in. Self-host it, or try the hosted demo (evaluation only)."` This is the description link previews show: the page's HTML before any script runs. |
+| P2 | Open `$MKT/` and read the hero, the footer and the last banner. | Hero: "12 AI agents handle intake, review, drafting, negotiation, approvals and obligations, with e-signature built in — across the full contract lifecycle. AGPL-3.0 licensed, self-host the same code we run." Buttons **Self-host on GitHub** and **Try the public demo** (to `https://app.draft-legal.com/register`), with "Demo runs on free-tier infrastructure — evaluation only, not for production data." under them. Footer: "Open-source, agent-first contract lifecycle management. Self-host it, or try the hosted demo (evaluation only)." Banner: "Self-host it in 3 commands, or try the hosted demo (evaluation only)." |
+| P3 | Scroll to "12 specialized agents do the work."; then open `$MKT/product` and find the same grid. | 12 tiles, each badged **Live**: Intake, Classify, Review, Ask, Portfolio, Draft, Redline, Playbook Review, Approval, Obligation, Compliance and Binder Agent. The intro says they run on "Anthropic, OpenAI, Google or OpenRouter models, chosen per tier for your organisation". |
+| P4 | Open `$MKT/security`, card "Self-host & data residency". | "Run Draft Legal in your VPC, your region, your network: the database and files stay on your infrastructure. With AI features on, contract text goes to the model provider you configure (Anthropic, OpenAI, Google or OpenRouter) under your own keys. There is no on-prem or local model option, so AI features can't run air-gapped; without an AI key the app still runs. The hosted demo runs in one region (us-central1) and is for evaluation only." |
+| P5 | Same page, cards "AI safety" and "Encryption". | AI safety: "Before every model call, personal data is masked under your org's privacy mode (redact by default): ID, card and bank numbers, emails, phone numbers, dates of birth, IP addresses and API keys — not names, addresses or health details — and a miss is recorded in the audit log." Encryption: provider keys are "encrypted with AES-256-GCM under one deployment master key; only a key prefix is ever shown." |
+| P6 | Same page, box "Need our security pack?". | "We can share our architecture documentation and sub-processor list with prospects under NDA." and **Request security pack →**. Nothing else is offered. |
+| P7 | On `$MKT/`, open the question "Where does my data go?" in "Frequently asked questions". | The same data flow as P4–P5, including what isn't masked: "Names, addresses and health details are not masked, and there is no on-prem model option; without an AI key the app still runs." |
+| P8 | Open `$MKT/open-source`, section "Self-host in 3 commands.", and the README's "Quickstart" section. | The page: "The quickstart below is straight from our README. You need Docker, Node 22+, pnpm 9+ and Python 3.11+.", then `git clone https://github.com/AniketTati/draft-legal.git && cd draft-legal`, `pnpm dev:setup`, `pnpm dev`, and "Open http://localhost:5173 and sign in with a demo login printed by setup." The README's Quickstart has the same commands and prerequisites. |
+| P9 | On the same page, in the console: `[...document.links].find(a => a.textContent.includes('Self-host quickstart')).href`. Then click **Self-host quickstart →**. | `https://github.com/AniketTati/draft-legal#quickstart`. GitHub opens the README at its "Quickstart" heading. |
+| P10 | `pnpm --filter api exec vitest run src/lib/marketing-claims.test.ts` | 29 passed. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | On `$MKT/` and `$MKT/security`, search the page (Cmd/Ctrl-F) for: `use our managed cloud`, `Cloud Enterprise`, `never leave`, `air-gapped deployments`, `on-prem inference`, `PDF/A`, `pen-test`, `SIG-Lite`, `org-specific`, `hallucinat`, `Signature Agent`, `Invoice Agent`, `Soon`. | No matches. (The Security page's one "air-gapped" is "AI features can't run air-gapped".) |
+| N2 | From the repo root: `grep -rniE "never leave your network\|air-gapped deployments are supported\|on-prem inference\|use our managed cloud\|sign up for cloud\|Cloud Enterprise\|cloud waitlist\|org-specific master key\|PDF/A\|pen-test summary\|SIG-Lite\|never hallucinat\|150\+ contracts\|(plant\|hub)-scoped\|Discord\|community call\|GitLab, Mattermost\|Signature Agent\|Invoice Agent" apps/marketing/src apps/marketing/index.html` | No output. |
+| N3 | On `$MKT/open-source`, look for the old quickstart. In the console: `document.querySelectorAll('a[href$="#setup"]').length`. | No `cp .env.example .env`, no `docker compose up -d` and no `pnpm install && pnpm dev`; the console prints `0`. Under "Community", no Discord and no community call. |
+| N4 | On `$MKT/`, the dark "Why open source" block. | Headed "The whole CLM, in the open.". No "GitLab playbook" and no "GitLab, Mattermost, and Sentry". |
+
+**Automated coverage:** `apps/api/src/lib/marketing-claims.test.ts` (29; FF2 added 17 tests over 20 phrases, each of which matched the live site's source before the fix, and made the test read `apps/marketing/index.html` too, for the meta description). The agent grid's names and badges and the quickstart's commands have no automated test beyond the marketing typecheck.
+
+### TC-SITE-02 · The site's links go where they say: a demo email, Privacy and Terms on the app, no X or LinkedIn, product stages by anchor, dated comparisons
+
+**Covers:** FF2 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor
+
+**Preconditions**
+- `$MKT` as in TC-SITE-01. For P3, the deployed app, or `$WEB` running locally.
+- A mail client is optional (P1).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$MKT/contact`. Under "Book a 30-min demo", check the link "Email us to pick a time": in the console, `[...document.links].find(a => a.textContent.includes('Email us to pick a time')).href`. Then click it. | `mailto:aniket.tatipamula@gmail.com?subject=Demo%20request`. The mail client opens a new message with the subject "Demo request"; don't send it. It was a Cal.com link that answered 404. |
+| P2 | In the footer of any page, in the console: `[...document.links].filter(a => ['Privacy', 'Terms'].includes(a.textContent.trim())).map(a => a.href)` | `["https://app.draft-legal.com/privacy", "https://app.draft-legal.com/terms"]`. |
+| P3 | Open those two pages (locally: `$WEB/privacy` and `$WEB/terms`). | The app's "Privacy Policy" and "Terms of Service" pages, without signing in. |
+| P4 | Look at the footer's icons. | Only GitHub. |
+| P5 | In a new tab, load `$MKT/product#negotiate` directly. Wait until the page stops scrolling and the screenshots have loaded, then in the console: `Math.round(document.getElementById('negotiate').getBoundingClientRect().top)`. | The page opens at stage 3: "Stage 3", heading "Negotiate" and the chip "Redline + Playbook Review Agents", just under the nav. It stays there as the images load. The console prints `0` (±1). |
+| P6 | Open `$MKT/`. Under "One platform, six stages, every contract.", click the **Negotiate** card. Go back, and click **See it →** under "Contract review with AI extraction". | Each time the address becomes `/product#negotiate` and the page opens at the Negotiate stage, as in P5. The stages had no ids before FF2, so these links opened the top of the page. |
+| P7 | Open `$MKT/compare/ironclad`, `/compare/harvey`, `/compare/spellbook`, `/compare/docusign-clm` and `/compare/icertis`. | Under each page's one-line description of the competitor: "Last checked: May 2026. Details about <competitor> may have changed since." |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | On `$MKT/`, `/contact`, `/product` and `/security`, in the console: `[...document.links].map(a => a.hostname).filter(h => /^(www\.)?(x\|twitter\|linkedin\|cal)\.com$/.test(h)).length` | `0` on each page: no X link (x.com/draftlegal was an unrelated person's account), no LinkedIn and no Cal.com. |
+| N2 | Open `$MKT/privacy`. | The site's own 404 page, "That page got redlined out.": the marketing site has no such page, which is why its footer now links to the app's. |
+| N3 | Open `$MKT/product#no-such-stage`. | The page opens at its top, with no error in the console. |
+| N4 | From the repo root: `grep -rnE "cal\.com/draft-legal\|x\.com/draftlegal\|linkedin\.com\|href=\"/(privacy\|terms)\"\|#setup" apps/marketing/src` | No output. |
+
+**Automated coverage:** `apps/api/src/lib/marketing-claims.test.ts` ("links nowhere dead or wrong (FF2)": no Cal.com, x.com/draftlegal, `/privacy` or `/terms` link, and no "free … template" link). The mailto subject, the product anchors and the comparison date have no automated test.
+
+### TC-SITE-03 · A marketing build writes the sitemap before bundling: 42 URLs, dated the day of the build, `/industries` included
+
+**Covers:** FF2 · **Priority:** P3 · **Surface:** Repo (build) · **Roles:** developer
+
+**Preconditions**
+- A checkout of `main` with its dependencies installed.
+- The build rewrites `apps/marketing/public/sitemap.xml`, a tracked file, with today's date. Discard that afterwards with `git checkout apps/marketing/public/sitemap.xml`, unless you mean to commit it.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `pnpm --filter marketing build` | The output has `✓ sitemap.xml written with 42 URLs (https://draft-legal.com)` before Vite's build lines, and the build succeeds. |
+| P2 | `grep -c '<loc>' apps/marketing/dist/sitemap.xml` and `grep -c "<lastmod>$(date -u +%F)</lastmod>" apps/marketing/dist/sitemap.xml` | `42` and `42`: every URL is dated today (UTC). |
+| P3 | `grep '<loc>https://draft-legal.com/industries' apps/marketing/dist/sitemap.xml` | Six lines: `/industries` and its five pages (saas, healthcare, manufacturing, biotech, logistics). |
+| P4 | `diff apps/marketing/public/sitemap.xml apps/marketing/dist/sitemap.xml` | No output: the built site ships the file this build generated. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `grep '<lastmod>' apps/marketing/dist/sitemap.xml \| sort -u` | One line, today's date. Before FF2 the build copied the committed sitemap into `dist` and only then regenerated it, so the site shipped the old one: 41 URLs, every `lastmod` 25 May, no `/industries`. |
+| N2 | `grep '<loc>' apps/marketing/dist/sitemap.xml \| sort \| uniq -d` | No output: no URL is listed twice. |
+
+**Automated coverage:** none (FIX_TRACKER FF2 records a build with 42 sitemap URLs, checked by hand).
+
+### TC-DEPLOY-01 · Before it deploys, the deploy job records what each Cloud Run service and the web app serve, and warns when it can't read the web app's release
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** CI (GitHub Actions), GCP (read-only CLI) · **Roles:** operator with read access to the repo's Actions runs and Viewer access to the production project
+
+**Preconditions**
+- Read-only: nothing in this case changes production. You need the repo's Actions runs (the web UI, or `gh` signed in) and a gcloud account with at least Cloud Run Viewer and Firebase Hosting Viewer on the production project. `jq` and `curl`.
+- `$PROJECT` = the production project id: `default` in `.firebaserc` (the `GCP_PROJECT_ID` secret). The web app's Hosting site has the same id (`.firebaserc`, target `app`).
+- A **Deploy to production** run made after FF3 was merged: Actions → **Deploy to production**, or `gh run list --workflow deploy.yml --limit 5`.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open the run → job **Deploy gotenberg + agents + api + web** → step **Record what is serving now** (or `gh run view <run id> --log \| grep 'Record what is serving now'`). | After the script, four lines: `api-service: <revision>`, `agents-service: <revision>` and `gotenberg: <revision>` (revision names like `api-service-00123-abc`), and `web app: Hosting version <id>`. The version is a bare id, never `sites/…/versions/…`: the full name holds the project id, a secret. No warning. |
+| P2 | Run command H (the step's own script, pointed at production; it only reads). | The three service lines, with the revisions serving now. The web app line depends on your credentials: see N1. |
+| P3 | For each service: `gcloud run services describe <service> --project "$PROJECT" --region us-central1 --format='value(status.traffic)'` | The revision with 100% of the traffic (or the largest share) is the one command H printed for that service. |
+| P4 | Command J (the web app's live release, read with a quota project, which personal credentials need), and command K (its last three releases). | J prints the live version id. It is the newest release in K, and the one P1 printed if no deploy has run since. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | With personal gcloud credentials, run command H as it is: its Hosting read sends no quota project. | The Hosting call is refused. After curl's error line the script prints `::warning::Could not read the web app's live Hosting release, so a rollback of this deploy won't restore the web app.` and ends normally, with the three service lines above it. In a run, the same line shows as a warning on the run's page and the deploy goes on; a rollback then skips the web app (TC-DEPLOY-03 N3). The deployer's service account needs no quota project, which is why P1 shows a version. |
+| N2 | Command H with `for svc in api-service no-such-service`. | `no-such-service: nothing serving`, and the script goes on. A service with nothing serving (a first deploy) is recorded as nothing, and a rollback skips it. |
+| N3 | `<command J> \| grep -c -E "sites/\|$PROJECT"` | `0`: the recorded version holds neither the site path nor the project id. |
+
+Command H (the recording step's script as the workflow runs it, with its outputs thrown away):
+```bash
+CLOUDSDK_CORE_PROJECT="$PROJECT" GCP_REGION=us-central1 SITE="$PROJECT" GITHUB_OUTPUT=/dev/null \
+  bash --noprofile --norc -eo pipefail <<'EOF'
+for svc in api-service agents-service gotenberg; do
+  rev=$(gcloud run services describe "$svc" --region "$GCP_REGION" --format=json 2>/dev/null \
+    | jq -r '[.status.traffic[]? | select(.percent > 0)] | max_by(.percent) | .revisionName // empty' || true)
+  echo "$svc: ${rev:-nothing serving}"
+  echo "${svc%-service}-before=${rev}" >> "$GITHUB_OUTPUT"
+done
+version=$(curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/${SITE}/channels/live" \
+  | jq -r '.release.version.name // empty' | sed 's#.*/versions/##' || true)
+if [ -n "$version" ]; then
+  echo "web app: Hosting version ${version}"
+else
+  echo "::warning::Could not read the web app's live Hosting release, so a rollback of this deploy won't restore the web app."
+fi
+echo "web-version-before=${version}" >> "$GITHUB_OUTPUT"
+EOF
+```
+
+Command J (the live release's version id, with a quota project; your account must be allowed to use `$PROJECT` for quota):
+```bash
+curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: $PROJECT" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/$PROJECT/channels/live" \
+  | jq -r '.release.version.name // empty' | sed 's#.*/versions/##'
+```
+
+Command K (the last three releases of a Hosting site; `<site>` is `$PROJECT` for the web app, or the `marketing` target's site in `.firebaserc`):
+```bash
+curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: $PROJECT" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/<site>/channels/live/releases?pageSize=3" \
+  | jq '.releases[] | {version: (.version.name | sub(".*/versions/"; "")), releaseTime, message}'
+```
+
+**Automated coverage:** none. The workflow runs only on pushes to `main`. FF3 was checked by hand: the workflow parses, its 12 `run:` scripts pass `bash -n`, and the recording step, run against production, returned the three serving revisions.
+
+### TC-DEPLOY-02 · After a deploy, api-service, agents-service and gotenberg serve their new revisions at 100% LATEST, also after a rollback had pinned them
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** GCP (read-only CLI), CI logs, repo · **Roles:** operator (as in TC-DEPLOY-01)
+
+**Preconditions**
+- Access and `$PROJECT` as in TC-DEPLOY-01. Read-only.
+- The latest **Deploy to production** run: its deploy job succeeded, and no rollback ran after it.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | For `api-service`, `agents-service` and `gotenberg`: `gcloud run services describe <service> --project "$PROJECT" --region us-central1 --format='value(status.traffic)'` | The entry holding 100 percent has `latestRevision` true, e.g. `{'latestRevision': True, 'percent': 100, 'revisionName': 'api-service-00123-abc'}`. An entry with a tag and no percent (such as the `candidate` tag FF3 probed with) may be listed too; it carries no traffic. |
+| P2 | The same with `--format='value(status.latestReadyRevisionName)'`. | The revision named in P1: the newest ready revision is the one serving. |
+| P3 | In the run, step **Deploy all services**: find each service's deploy. | Each "Service [<service>] revision [<revision>] has been deployed and is serving 100 percent of traffic." is followed by a traffic update of the same service to its latest revision (`serve_latest`), with no error. The revisions are P1's. |
+| P4 | From the repo root: `bash -n scripts/deploy.sh`, then `grep -n -E '^ *(gcloud run deploy\|serve_latest) [a-z-]+' scripts/deploy.sh` | `bash -n` prints nothing. Each `gcloud run deploy` (api-service, worker-service, agents-service, gotenberg) is followed by `serve_latest` for the same service. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | When a rollback has happened (TC-DEPLOY-03): run P1 before and after the next deploy. | Before: 100 percent on the revision the rollback went to, with no `latestRevision` (pinned). After: 100 percent, `latestRevision` true, on the new revision. Before FF3 a pinned service stayed pinned: every later deploy made a revision that gcloud reported as "serving 100 percent of traffic" and that got none. api-service served the 29 Aug build until 30 Sep. |
+| N2 | `gcloud run revisions list --service api-service --project "$PROJECT" --region us-central1 --limit 5` (and the same for the other two). | The newest revision is P1's, and it is the one marked active. Older revisions, including any a past rollback went to, get no traffic (P1 lists none of them with a percent). |
+
+**Automated coverage:** none (see TC-DEPLOY-01).
+
+### TC-DEPLOY-03 · When the production smoke fails, the rollback returns the three services and the web app to what was recorded, leaves the marketing site, and names them in the run summary (verify when it happens)
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** CI (GitHub Actions), GCP, Firebase console · **Roles:** operator (read access; P9–P11 need deploy rights)
+
+**Preconditions**
+- **Verify when it happens.** The rollback runs only when a production smoke test fails after a successful deploy. Staging that in production would break the live app until the rollback lands, so this case is not run on purpose. When a run's job **Auto-rollback (smoke failed)** runs, check P1–P8 on that run.
+- **Manual procedure** (P9–P11): the launch doc's "Rolling back if a deploy breaks something" (`docs/operations/20-CLOUD-RUN-LAUNCH.md`). It is for a deploy that broke production without an auto-rollback: a manual run with **skip-smoke** or **skip-rollback** ticked, or a fault the smoke tests don't catch. Run it only when a rollback is needed, with the owner's OK. It needs deploy rights on the project (Cloud Run Admin, Firebase Hosting Admin).
+- Access, `$PROJECT` and commands J–K as in TC-DEPLOY-01.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | In the failed run, the deploy job's step **Record what is serving now**. | Note the three revisions and the web app's version (TC-DEPLOY-01 P1). |
+| P2 | Job **Auto-rollback (smoke failed)** → step **Roll Cloud Run services back to what was serving**. | `Rolling agents-service back to <revision>`, `Rolling api-service back to <revision>` and `Rolling gotenberg back to <revision>`, each with P1's revision and each followed by gcloud's traffic update, with no error. |
+| P3 | Step **Roll the web app back to its previous release**. | `Web app release created: version <id>`, with P1's version id. |
+| P4 | The run's summary page. | "⛔ Auto-rollback executed", then "The smoke gate failed against the new deploy, so traffic went back to what was serving before it:" and the list `api-service: <revision>`, `agents-service: <revision>`, `gotenberg: <revision>`, `web app: Hosting version <id>`, with P1's values. Then "The marketing site stays as deployed. The next deploy serves its own new revisions again." and three next steps. |
+| P5 | For each service, TC-DEPLOY-02 P1's command. | 100 percent on P1's revision, without `latestRevision` (the rollback pins it), although a newer revision exists. |
+| P6 | Command K for the web app (or Firebase console → Hosting → the web app's site → release history). | The newest release is P1's version, with the message "Auto-rollback: the smoke gate failed in run <run id>". |
+| P7 | Command K for the marketing site. | No release from the rollback: its newest release is the failed run's own deploy. |
+| P8 | After a fix is pushed, the next deploy. | Its **Record what is serving now** shows the pinned revisions of P5, and after it TC-DEPLOY-02 P1 shows 100% LATEST on the new revisions: the pin lasted only until this deploy. |
+| P9 | Manual: `gcloud run revisions list --service api-service --project "$PROJECT" --region us-central1` | The revisions, newest first. Pick the one that was serving before the bad deploy: the last run's **Record what is serving now** line for the service, or an auto-rollback's summary. Not simply the second-newest: after a failed deploy, that can be a build that never served. |
+| P10 | Manual: `gcloud run services update-traffic api-service --project "$PROJECT" --to-revisions=<that revision>=100 --region us-central1`. Repeat for agents-service and gotenberg if the bad deploy changed them. | TC-DEPLOY-02 P1 shows 100 percent on that revision. The next deploy sends the traffic to its own new revision again. To unpin without deploying: `gcloud run services update-traffic api-service --project "$PROJECT" --to-latest --region us-central1`. |
+| P11 | Manual, web app: Firebase console → Hosting → the web app's site → release history → **Rollback** on the release that was live before. | The site serves that release again; command J prints its version. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | A run whose deploy job failed, if there is one. | **Auto-rollback (smoke failed)** is skipped: a deploy that broke by itself isn't rolled back. |
+| N2 | A manual run (**Run workflow**) with **skip-rollback** ticked whose smoke failed, or one with **skip-smoke**, if there is one. | The rollback job is skipped. |
+| N3 | A rollback after a deploy job that recorded nothing for a piece (a service's first deploy, or TC-DEPLOY-01 N1's warning for the web app). | The rollback logs `Skipping <service> — nothing was recorded as serving before this deploy` or `Skipping the web app — no live release was recorded before this deploy`, and goes on with the rest. The summary shows `unchanged` for that piece. |
+| N4 | After a rollback, TC-DEPLOY-02 N2's `revisions list`. | The revision serving is the recorded one, whatever lies between. Revisions made after it, such as the failed deploy's, get no traffic. The old rollback took each service's second-newest revision: on 26 Sep, a build that had never served. |
+
+**Automated coverage:** none (see TC-DEPLOY-01). The rollback's release call was checked once, on a temporary preview channel of the marketing site (deleted afterwards).
+
+### Not covered here
+
+- **FF1, a change the model returns without ratings:** it keeps the model's own reasoning, with no Risk line and no revised risk. The model can't be made to do that by hand. Covered by `apps/agents/tests/test_redline_risk.py` ("a change without ratings keeps its text").
+- **FF1, calibration and display:** the weights (0.45, 0.35, 0.20) are a first judgement, not calibrated against lawyers' ratings, and the risk has no field of its own in the panel, only the reasoning and counter-note text. Nothing more to check until that changes.
+- **FF2, screenshots and competitor facts:** the product screenshots predate the 8 Aug design change, and the competitor details weren't checked again (the pages say "Last checked: May 2026").
+- **FF3, the rollback path end to end:** it runs only when a production smoke test fails (TC-DEPLOY-03). Repeating the preview-channel check of the release call writes to the production Firebase project.
+- **FF3, worker-service:** `./scripts/deploy.sh all` also deploys it (a failure there doesn't fail the deploy) and sends its traffic to its latest revision, but the deploy job doesn't record it and the rollback doesn't move it. After an auto-rollback it keeps the new revision. The marketing site is left as deployed on purpose.
+
 ## Issues found while writing these test cases
 
 Found by reading the code while writing the steps. Each has since been fixed on this branch (X55–X76, 24 September 2026; X77, found by the review of those fixes; X78, found by their browser check); the test cases named with it verify the fix.
@@ -6197,6 +6688,10 @@ Every id in `FIX_TRACKER.md` that changed code, and the test cases that verify i
 | X76 | TC-SMK-08 |
 | X77 | TC-OPS-04 |
 | X78 | TC-AI-13 |
+| EE1 | TC-REVQ-01, TC-REVQ-02, TC-REVQ-03, TC-REVQ-04 |
+| FF1 | TC-RISK-01, TC-RISK-02 |
+| FF2 | TC-SITE-01, TC-SITE-02, TC-SITE-03 |
+| FF3 | TC-DEPLOY-01, TC-DEPLOY-02, TC-DEPLOY-03 |
 
 ## Appendix A — Generating the fixtures
 
