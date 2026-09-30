@@ -50,6 +50,7 @@ from .custom_field_list  import build_custom_field_list
 from .org_memory         import build_org_memory
 from .obligations_list   import build_obligations_list
 from .renewal_advice     import build_renewal_advice
+from .invoice_list       import build_invoice_list
 from .matter_list        import build_matter_list
 from .contract_create_from_template import build_contract_create_from_template
 from .comment_add        import build_comment_add
@@ -102,6 +103,7 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         build_org_memory(org_id, user_id),
         build_obligations_list(org_id, user_id),
         build_renewal_advice(org_id, user_id),
+        build_invoice_list(org_id, user_id),
         build_matter_list(org_id, user_id),
         build_compliance_get(org_id, user_id),
         # L9 — the three verbs the loops needed and did not have.

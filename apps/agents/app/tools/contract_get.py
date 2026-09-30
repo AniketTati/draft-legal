@@ -105,7 +105,12 @@ def build_contract_get(org_id: str, user_id: str | None = None) -> StructuredToo
             "(truncated) plaintext by id. Use this whenever you need to "
             "answer questions about a specific contract's contents — do "
             "NOT rely on your prior knowledge of the document. Pass the "
-            "`contract_id` from the user's page context or a search result."
+            "`contract_id` from the user's page context or a search result.\n\n"
+            "It also returns `family`: `parent` (the contract this one amends, "
+            "renews or belongs to), `children` (amendments, renewals, SOWs, "
+            "order forms and exhibits linked under it, each with "
+            "`relationshipType`) and `siblings`. When `familyNote` says later "
+            "contracts change the terms, read them before stating the terms."
         ),
         args_schema=ContractGetArgs,
     )

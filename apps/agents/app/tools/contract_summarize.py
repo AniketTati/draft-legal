@@ -59,7 +59,9 @@ def build_contract_summarize(org_id: str, user_id: str | None = None) -> Structu
             "parties, dates, value, risk, key terms, cached AI summary, "
             "opening 1500 chars). Use this when the user wants a high-level "
             "overview; use contract_get when the user asks about a specific "
-            "clause or needs the full body."
+            "clause or needs the full body. Like contract_get, it returns "
+            "`family` (parent, children with their `relationshipType`, "
+            "siblings) and a `familyNote` when amendments change the terms."
         ),
         args_schema=ContractSummarizeArgs,
     )

@@ -41,7 +41,7 @@ import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope,
 import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
-import { renewalNotice } from '../lib/renewal-notice.js'
+import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { standingVersion } from '../lib/standing-version.js'
@@ -234,6 +234,15 @@ const ContractCiteSchema = z.object({
 // Contract.metadata.obligations) for a specific contract OR across
 // the org. Populated by /contracts/:id/extract-obligations (manual
 // trigger) or automatically after post-signature status changes.
+const InvoiceListSchema = z.object({
+  orgId:            z.string().min(1),
+  userId:           z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
+  contractId:       z.string().optional(),
+  counterpartyName: z.string().optional(),   // the vendor billed, or the matched contract's counterparty
+  status:           z.enum(['PENDING', 'MATCHED', 'RECONCILED', 'DISPUTED']).optional(),
+  limit:            z.number().int().min(1).max(100).default(50),
+})
+
 const ObligationsListSchema = z.object({
   orgId:       z.string().min(1),
   userId:     z.string().nullable().optional(),   // S2 — caller identity (absent = service call)
@@ -671,6 +680,120 @@ async function redlineSource(contractId: string, clauseIds: string[]): Promise<s
 /** The tool an internal call is to, from its URL; none for /resolve. */
 const toolOf = (req: FastifyRequest) => /^\/api\/internal\/ai\/tools\/([^/?]+)/.exec(req.url)?.[1]
 
+/**
+ * A contract's family, as its page shows it (GET /contracts/:id/family): the
+ * contract it amends or belongs to, the amendments, renewals, SOWs, order
+ * forms and exhibits linked under it, and its siblings, within the caller's
+ * scope. The assistant saw none of these, so an amended term read as the
+ * original; `note` says when later contracts change the terms.
+ */
+async function contractFamily(
+  orgId: string,
+  scope: CallerScope,
+  contract: { id: string; parentContractId: string | null; relationshipType: string | null },
+) {
+  const where = { orgId, deletedAt: null, ...contractScopeWhere(scope) }
+  const select = {
+    id: true, title: true, type: true, status: true, relationshipType: true,
+    effectiveDate: true, expiryDate: true, createdAt: true,
+  } as const
+  const [parent, children, siblings] = await Promise.all([
+    contract.parentContractId
+      ? prisma.contract.findFirst({ where: { ...where, id: contract.parentContractId }, select })
+      : null,
+    prisma.contract.findMany({ where: { ...where, parentContractId: contract.id }, select, orderBy: { createdAt: 'asc' } }),
+    contract.parentContractId
+      ? prisma.contract.findMany({
+          where: { ...where, parentContractId: contract.parentContractId, id: { not: contract.id } },
+          select, orderBy: { createdAt: 'asc' },
+        })
+      : [],
+  ])
+  const changesTerms = (rel: string | null) => rel === 'amendment' || rel === 'renewal'
+  // Only a signed amendment or renewal changes the terms (as in
+  // amendedRenewalNotice); an unsigned one is shown, and said to change nothing yet.
+  const changers = children.filter(c => changesTerms(c.relationshipType) && c.status === 'EXECUTED')
+  const unsigned = children.filter(c => changesTerms(c.relationshipType) && c.status !== 'EXECUTED')
+
+  // What the latest amendments say, inline: told to read them with
+  // contract_get, the assistant didn't, and stated the base contract's
+  // notice period and price cap as if nothing had changed them.
+  const shown = changers.slice(-FAMILY_TEXTS)
+  const said = new Map<string, { summary: string | null; text: string; textTruncated: boolean }>()
+  if (shown.length) {
+    const rows = await prisma.contract.findMany({ where: { id: { in: shown.map(c => c.id) } }, select: { id: true, summary: true, currentVersionId: true } })
+    const versions = await prisma.contractVersion.findMany({
+      where: { id: { in: rows.map(r => r.currentVersionId).filter((v): v is string => !!v) } },
+      select: { id: true, plainText: true },
+    })
+    const textOf = new Map(versions.map(v => [v.id, v.plainText]))
+    const docs = rows.map(r => ({ ...r, text: textOf.get(r.currentVersionId ?? '') ?? '' })).filter(r => r.text)
+    try {
+      // X36/X40 — as contract_get: values found in the whole text, never split by the cut.
+      const { pieces } = await redactCuts(orgId, docs.flatMap((d): CutText[] => [
+        { text: d.text, cuts: [[0, FAMILY_TEXT_CHARS]] },
+        { text: d.summary ?? '', cuts: [[0, (d.summary ?? '').length]], valuesFrom: d.text },
+      ]), { surface: 'contract_family.amendments', contractId: contract.id })
+      docs.forEach((d, k) => said.set(d.id, {
+        text:          pieces[2 * k]?.[0] ?? REDACTION_UNAVAILABLE,
+        summary:       d.summary ? (pieces[2 * k + 1]?.[0] ?? REDACTION_UNAVAILABLE) : null,
+        textTruncated: d.text.length > FAMILY_TEXT_CHARS,
+      }))
+    } catch (err) {
+      // X23 — fail closed: without redaction, the amendments' text stays out.
+      console.error('[contract_family] PII redaction failed:', err)
+    }
+  }
+
+  const note = [
+    changers.length
+      ? `${changers.length === 1 ? 'A later contract changes' : `${changers.length} later contracts change`} this one's terms (signed family.children with relationshipType amendment or renewal). `
+        + (said.size ? 'What each says is in its `text`: read it before stating any term. ' : '')
+        + (changers.length > said.size ? 'Read the others with contract_get. ' : '')
+        + 'Where they differ, the latest amendment wins (its prices, notice periods, caps and dates replace this contract\'s): state the terms as amended, naming the amendment.'
+      : null,
+    unsigned.length
+      ? `${unsigned.length === 1 ? 'One amendment in family.children is' : `${unsigned.length} amendments in family.children are`} not signed yet (see status): it changes no term until it is, so state the terms without it and say it is pending.`
+      : null,
+    parent && changesTerms(contract.relationshipType)
+      ? `This contract ${contract.relationshipType === 'renewal' ? 'renews' : 'amends'} "${parent.title}" (family.parent): terms it does not change are in that contract.`
+      : null,
+  ].filter(Boolean).join(' ')
+  return {
+    family: { parent, children: children.map(c => ({ ...c, ...said.get(c.id) })), siblings },
+    note: note || undefined,
+  }
+}
+
+/**
+ * The handful of key terms a renewal prep benchmarks a contract on, from
+ * whichever spelling extraction used. contract_search cards carried none, so
+ * "compare with our other deals" had only values and dates to compare.
+ * Structural terms only: never the parties or quotes keyTerms also holds.
+ */
+function benchmarkTerms(keyTerms: unknown): Record<string, string | number | boolean> | null {
+  const kt = keyTerms && typeof keyTerms === 'object' && !Array.isArray(keyTerms) ? keyTerms as Record<string, unknown> : null
+  if (!kt) return null
+  const text = (...vals: unknown[]) => {
+    const v = vals.find(x => (typeof x === 'string' && x.trim()) || typeof x === 'number')
+    return v == null ? undefined : String(v).slice(0, 60)
+  }
+  const days = kt.paymentTermsDays
+  const terms = {
+    term:         text(kt.term, kt.term_length, kt.duration, kt.initialTerm),
+    autoRenew:    kt.autoRenew == null || kt.autoRenew === '' ? undefined : isAutoRenew(kt),
+    noticeDays:   noticeDaysOf(kt) ?? undefined,
+    liabilityCap: text(kt.liabilityCap, kt.liabilityCapAmount),
+    paymentTerms: text(kt.paymentTerms, typeof days === 'number' ? `${days} days` : days),
+  }
+  const set = Object.fromEntries(Object.entries(terms).filter(([, v]) => v !== undefined)) as Record<string, string | number | boolean>
+  return Object.keys(set).length ? set : null
+}
+
+/** How many of a contract's amendments contract_get shows the text of, and how much of each. */
+const FAMILY_TEXTS = 3
+const FAMILY_TEXT_CHARS = 4_000
+
 /** The org an internal call acts for: the one its body names, or x-org-id. */
 function internalCallOrg(req: FastifyRequest): string | undefined {
   const bodyOrg = (req.body as { orgId?: unknown } | undefined)?.orgId
@@ -790,11 +913,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
         effectiveDate: true, expiryDate: true,
         summary: true, keyTerms: true, riskScore: true, riskFactors: true,
         currentVersionId: true, updatedAt: true,
+        parentContractId: true, relationshipType: true,
       },
     })
     if (!contract) {
       return reply.status(404).send({ detail: 'Contract not found in this org' })
     }
+
+    const { family, note: familyNote } = await contractFamily(body.orgId, scope, contract)
 
     // Grab the current (or latest) version's plaintext. Truncate aggressively.
     const version = contract.currentVersionId
@@ -851,6 +977,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       keyTerms:         await redactJsonAgainst(body.orgId, contract.keyTerms, fullText, { surface: 'contract_get.keyTerms', contractId: contract.id }),
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
+      // How this contract hangs off family.parent: amendment | renewal | sow |
+      // order_form | exhibit_only (null when it stands alone).
+      relationshipType: contract.relationshipType,
+      family,
+      ...(familyNote && { familyNote }),
       version: {
         number:    version?.versionNumber ?? null,
         createdAt: version?.createdAt ?? null,
@@ -951,6 +1082,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           counterpartyName: true, riskScore: true,
           effectiveDate: true, expiryDate: true,
           value: true, currency: true, updatedAt: true,
+          parentContractId: true, relationshipType: true, keyTerms: true,
         },
         orderBy: orderBy as never,
         take: body.limit,
@@ -1005,6 +1137,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
               counterpartyName: true, riskScore: true,
               effectiveDate: true, expiryDate: true,
               value: true, currency: true, updatedAt: true,
+              parentContractId: true, relationshipType: true, keyTerms: true,
             },
           })
           // Preserve semantic-rank order
@@ -1051,9 +1184,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // report a lower bound and announce that the search was broadened.
       totalMatching: usedFallback ? null : totalMatching,
       coverage:      coverageOf(finalResults.length, usedFallback ? null : totalMatching),
-      results: finalResults.map(c => ({
+      results: finalResults.map(({ keyTerms, ...c }) => ({
         ...c,
         value: c.value != null ? Number(c.value) : null,
+        terms: benchmarkTerms(keyTerms),
       })),
       // Surface the fallback to the agent so it can mention "I broadened the
       // search" in its prose synthesis if it wants to be transparent.
@@ -1436,6 +1570,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         summary: true,
         currentVersionId: true,
         createdAt: true, updatedAt: true,
+        parentContractId: true, relationshipType: true,
       },
       orderBy: { updatedAt: 'desc' },
       take: body.limit,
@@ -1525,6 +1660,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         sectionRef,
         riskRating,
         createdAt:        c.createdAt,
+        // Set when this deal amends, renews or belongs to another contract
+        // (an amendment, SOW, order form or exhibit), usually one in this list.
+        parentContractId: c.parentContractId,
+        relationshipType: c.relationshipType,
       }
     })
 
@@ -1876,11 +2015,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
         effectiveDate: true, expiryDate: true, value: true, currency: true,
         summary: true, keyTerms: true, riskScore: true, riskFactors: true,
         currentVersionId: true,
+        parentContractId: true, relationshipType: true,
       },
     })
     if (!contract) {
       return reply.status(404).send({ detail: 'Contract not found in this org' })
     }
+    // As contract_get: the assistant is steered here for key terms (A3), so
+    // amendments must show here too.
+    const { family, note: familyNote } = await contractFamily(body.orgId, scope, contract)
 
     // A short opening snippet gives the model something to anchor on even
     // when contract.summary is null (e.g., analysis hasn't run yet).
@@ -1942,6 +2085,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
       riskFactors:      contract.riskFactors,
       plainTextSnippet: snippetOut,
       sections:         await redactJsonAgainst(body.orgId, sections, plainText, { surface: 'contract_summarize.sections', contractId: contract.id }),
+      relationshipType: contract.relationshipType,
+      family,
+      ...(familyNote && { familyNote }),
     })
   })
 
@@ -3640,6 +3786,103 @@ export async function internalAiRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── POST /internal/ai/tools/invoice_list ───────────────────────────────────
+  // What a vendor billed, for a renewal prep's "compare the invoices against
+  // the negotiated pricing": a contract's (or a counterparty's) invoices with
+  // their reconciliation state, and the totals. No price is stored on a
+  // contract, so the comparison is the model's, against the prices the
+  // contract and its amendments state (contract_get).
+  app.post('/tools/invoice_list', async (req, reply) => {
+    let body
+    try { body = InvoiceListSchema.parse(req.body) }
+    catch (err) {
+      return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
+    }
+    const scope = await scopeOr403(reply, body.orgId, body.userId)
+    if (!scope) return
+
+    // As on the Invoices page: an own-scope caller sees the invoices of the
+    // contracts they own, and the unmatched ones they entered.
+    const and: Array<Record<string, unknown>> = []
+    if (scope.kind === 'own') {
+      and.push({ OR: [{ contract: { is: { ownerId: scope.userId } } }, { contractId: null, createdById: scope.userId }] })
+    }
+    if (body.counterpartyName) {
+      and.push({ OR: [
+        { vendorName: { contains: body.counterpartyName, mode: 'insensitive' } },
+        { contract: { is: { counterpartyName: { contains: body.counterpartyName, mode: 'insensitive' } } } },
+      ] })
+    }
+    const where = {
+      orgId: body.orgId,
+      AND: and,
+      ...(body.contractId && { contractId: body.contractId }),
+      ...(body.status && { status: body.status }),
+    }
+    const [invoices, total] = await Promise.all([
+      prisma.invoice.findMany({
+        where: where as never,
+        orderBy: [{ invoiceDate: 'asc' }, { createdAt: 'asc' }],
+        take: body.limit,
+        include: {
+          contract:          { select: { id: true, title: true, counterpartyName: true, currentVersionId: true, deletedAt: true } },
+          matchedObligation: { select: { id: true, type: true, dueDate: true } },
+        },
+      }),
+      prisma.invoice.count({ where: where as never }),
+    ])
+
+    // X27 — descriptions and dispute reasons can quote the contract; X40 —
+    // values found against the matched contract's text too.
+    const documentOf = new Map((await prisma.contractVersion.findMany({
+      where: { id: { in: [...new Set(invoices.map(i => i.contract?.currentVersionId).filter((v): v is string => !!v))] } },
+      select: { id: true, plainText: true },
+    })).map(v => [v.id, v.plainText]))
+    const whole = (text: string | null, versionId: string | null | undefined): CutText | null =>
+      text ? { text, cuts: [[0, text.length]], valuesFrom: documentOf.get(versionId ?? '') } : null
+    const texts = await redactCutExcerpts(body.orgId, invoices.flatMap(i => [
+      whole(i.description, i.contract?.currentVersionId), whole(i.disputeReason, i.contract?.currentVersionId),
+    ]), { surface: 'invoice_list', contractId: body.contractId ?? undefined })
+
+    const billed: Record<string, number> = {}
+    const byStatus: Record<string, number> = {}
+    const items = invoices.map((inv, k) => {
+      const amount = Number(inv.amount.toString())
+      billed[inv.currency] = (billed[inv.currency] ?? 0) + amount
+      byStatus[inv.status] = (byStatus[inv.status] ?? 0) + 1
+      const live = inv.contract && !inv.contract.deletedAt ? inv.contract : null
+      return {
+        id:               inv.id,
+        invoiceNumber:    inv.invoiceNumber,
+        vendorName:       inv.vendorName,
+        amount,
+        currency:         inv.currency,
+        invoiceDate:      inv.invoiceDate.toISOString().slice(0, 10),
+        dueDate:          inv.dueDate ? inv.dueDate.toISOString().slice(0, 10) : null,
+        description:      texts[2 * k]?.[0] ?? (inv.description ? REDACTION_UNAVAILABLE : null),
+        status:           inv.status,
+        disputeReason:    texts[2 * k + 1]?.[0] ?? (inv.disputeReason ? REDACTION_UNAVAILABLE : null),
+        matchScore:       inv.matchScore,
+        contractId:       live?.id ?? null,
+        contractTitle:    live?.title ?? null,
+        counterpartyName: live?.counterpartyName ?? null,
+        matchedObligation: inv.matchedObligation
+          ? { id: inv.matchedObligation.id, type: inv.matchedObligation.type, dueDate: inv.matchedObligation.dueDate?.toISOString().slice(0, 10) ?? null }
+          : null,
+      }
+    })
+
+    return reply.send({
+      items,
+      total,
+      coverage: coverageOf(items.length, total),
+      // Over these items only (see coverage), per currency.
+      billedTotal: Object.fromEntries(Object.entries(billed).map(([c, v]) => [c, Math.round(v * 100) / 100])),
+      byStatus,
+      ...(total === 0 && { note: 'No invoices on file for this. Say so; do not estimate what was billed.' }),
+    })
+  })
+
   // ── POST /internal/ai/tools/renewal_advice (P5.3) ──────────────────────────
   // Read-only surface over Contract.metadata.renewalAdvice + expiryDate.
   // Called by the renewal_advice agent tool so the chat can answer
@@ -3660,6 +3903,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       id: true, title: true, type: true, status: true,
       counterpartyName: true, metadata: true, effectiveDate: true,
       expiryDate: true, value: true, currency: true, keyTerms: true,
+      // Its amendments and renewals: they can change the notice period.
+      amendments: {
+        where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...contractScopeWhere(scope) },
+        select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },
+      },
     } as const
     // V2 — upcoming renewals first (soonest first), then ones that lapsed in
     // the last 30 days (most recent first). A single expiryDate-asc query
@@ -3671,8 +3919,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       contracts = await prisma.contract.findMany({ where: { ...where, id: body.contractId } as never, select, take: 1 })
     } else {
       const now = Date.now()
-      const upcomingWhere = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now), lte: new Date(now + body.leadDays * 24 * 3600 * 1000) } }
-      const lapsedWhere   = { ...where, status: 'EXECUTED', expiryDate: { gte: new Date(now - 30 * 24 * 3600 * 1000), lt: new Date(now) } }
+      const upcomingWhere = { ...where, AND: [renewsOnItsOwn], status: 'EXECUTED', expiryDate: { gte: new Date(now), lte: new Date(now + body.leadDays * 24 * 3600 * 1000) } }
+      const lapsedWhere   = { ...where, AND: [renewsOnItsOwn], status: 'EXECUTED', expiryDate: { gte: new Date(now - 30 * 24 * 3600 * 1000), lt: new Date(now) } }
       const [upcoming, lapsed, u, l] = await Promise.all([
         prisma.contract.findMany({ where: upcomingWhere as never, select, orderBy: { expiryDate: 'asc' }, take: body.limit }),
         prisma.contract.findMany({ where: lapsedWhere as never, select, orderBy: { expiryDate: 'desc' }, take: body.limit }),
@@ -3702,7 +3950,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // CC12 — whether it renews by itself, and by when notice must go: the
       // question a renewal view is for. The rows carried neither, so "put
       // the ones whose notice deadline has passed first" had nothing to sort.
-      const notice = renewalNotice(c)
+      const notice = amendedRenewalNotice(c, c.amendments)
       return {
         contractId:       c.id,
         contractTitle:    c.title,
@@ -3718,6 +3966,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
         renewalNotifiedAt: md.renewalNotifiedAt ?? null,
         autoRenews:       notice.autoRenew,
         noticeDays:       notice.noticeDays,
+        // The amendment that set the notice period, when one did.
+        ...(notice.noticeSetBy && { noticePeriodSetBy: notice.noticeSetBy }),
         noticeDeadline:   notice.deadline ? notice.deadline.toISOString().slice(0, 10) : null,
         noticeDeadlinePassed: notice.deadline ? notice.deadline.getTime() < Date.now() : null,
       }

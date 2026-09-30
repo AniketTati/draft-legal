@@ -5,7 +5,9 @@ Manual test cases for every change made on branch `fix/audit-2026-09-22`, 23–2
 the **Covers** line of every test case names those ids, and the matrix at the end maps each id to its test cases.
 The commits of 24 September fix the issues found while writing this document (X55–X76), a log leak the review of
 those fixes found (X77), a gap their browser check found (X78), and follow-ups to X65, X67, X71 and X75. They are
-listed in "Issues found while writing these test cases", each with the test case that verifies it.
+listed in "Issues found while writing these test cases", each with the test case that verifies it. Section 8 adds
+cases for later follow-ups: EE1, FF1, FF2 and FF3, merged to `main` on 30 September 2026 (commits `773166f` to
+`1f92ae5`), and GG1–GG5, shipping on branch `fix/draft-purpose-ship` (commits `38edaa1` and `bebd581`).
 
 Every test case has:
 
@@ -39,7 +41,7 @@ decision. Selectable text in the Original PDF view is not implemented (it needs 
 | API + background workers | 3001 (collab 3030) | `pnpm --filter api dev` | Apply migrations first: `pnpm --filter api db:migrate:prod` |
 | Agents service (Python) | 8002 by default | `cd apps/agents && uvicorn main:app --port 8002` | Needed only for cases marked *Needs: agents service + LLM key*; if it runs on another port, start the API with `AGENTS_URL=http://localhost:<port>` |
 | Web app | 5173 | `pnpm --filter web dev` | `$WEB` |
-| Marketing site | 5174 | `pnpm --filter marketing dev` | `$MKT`; only for the TC-WEB cases. Its `/api` proxy goes to the local API (X70) |
+| Marketing site | 5174 | `pnpm --filter marketing dev` | `$MKT`; only for the TC-WEB and TC-SITE cases. Its `/api` proxy goes to the local API (X70) |
 
 > **Run exactly one API process per Redis.** The API runs its background workers in-process, so every API
 > process connected to the same Redis competes for queued jobs (analysis, redline, binder split, backfills). A
@@ -286,6 +288,27 @@ The counts are those of `b80ad15`. A failing automated test points to the same a
   - TC-SMK-06 · Smoke: ask the Assistant a question about a contract
   - TC-SMK-07 · Smoke: search finds contracts in the caller's scope only
   - TC-SMK-08 · Smoke: the app's directions name menu items that exist (no-workflow review, clause playbook note, Google and Microsoft sign-in)
+- **8. Follow-ups after the branch (EE1, FF1–FF3, GG1–GG5, 26–30 Sep 2026)**
+  - TC-REVQ-01 · Each decision in the review drawer takes its clause out of the queue: the count goes down, the next pending clause opens, and a decided clause doesn't come round again
+  - TC-REVQ-02 · Applying a suggested rewrite records the clause as accepted and moves on; Edit manually records no decision
+  - TC-REVQ-03 · A decided clause opened again says what was decided, and Reopen puts it back in the queue
+  - TC-REVQ-04 · The review-state API keeps a rejection as `rejected`, reopens with `unreviewed`, and refuses unknown states, viewers and other organizations
+  - TC-RISK-01 · Analyze Redlines returns one change per changed section with both texts whole, and each change's risk before and after, with its reasons
+  - TC-RISK-02 · Every change we counter or reject gets a counter-proposal whose risk lies between our standard and their proposal, and the summary gives the three averages
+  - TC-SITE-01 · The homepage, Security page, agent grid and Open Source quickstart say only what the product does
+  - TC-SITE-02 · The site's links go where they say: a demo email, Privacy and Terms on the app, no X or LinkedIn, product stages by anchor, dated comparisons
+  - TC-SITE-03 · A marketing build writes the sitemap before bundling: 42 URLs, dated the day of the build, `/industries` included
+  - TC-DEPLOY-01 · Before it deploys, the deploy job records what each Cloud Run service and the web app serve, and warns when it can't read the web app's release
+  - TC-DEPLOY-02 · After a deploy, api-service, agents-service and gotenberg serve their new revisions at 100% LATEST, also after a rollback had pinned them
+  - TC-DEPLOY-03 · When the production smoke fails, the rollback returns the three services and the web app to what was recorded, leaves the marketing site, and names them in the run summary (verify when it happens)
+  - TC-DRAFT-01 · A supply or purchase request is drafted as a vendor agreement from the newest vendor-agreement template, named in words, with its purpose first and the unstated terms left blank
+  - TC-DRAFT-02 · After NO_TEMPLATE_MATCH, a listed template whose name fits the purpose is used straight away; when none fits, the reply says so in plain words
+  - TC-FAMILY-01 · contract_get and contract_summarize show a contract's family: the amendments' text inline and redacted, a note when terms change, only the caller's own relatives, and benchmark terms on search cards (API)
+  - TC-FAMILY-02 · In chat, a question about an amended term gets the amended answer, naming the amendment
+  - TC-INVL-01 · invoice_list gives a contract's or a vendor's invoices oldest first with totals, inside the org and the caller's scope, redacted, and says when there are none (API)
+  - TC-RENEW-01 · The renewal notice deadline follows the latest amendment's notice period and names it, and neither an amendment nor an exhibit is a renewal of its own (GET /renewals, the Renewals page, renewal_advice)
+  - TC-RENEW-02 · The daily renewal scan alerts on the amended notice deadline, and never on an amendment or an exhibit
+  - TC-PREP-01 · "Prepare me for the <counterparty> renewal" writes the whole brief: the agreement by title, seven sections, terms as amended, each invoice against the price in force, the overcharge, and no ids
 - **Issues found while writing these test cases**
 - **Traceability: tracker ids → test cases**
 - **Appendix A — Generating the fixtures** · **Appendix B — Logging proxy for §0.5**
@@ -4316,6 +4339,11 @@ curl -s -w "\n%{http_code}\n" "$API/contracts/$C_NEG/versions/<v1 id>/diff/<v2 i
 
 **Covers:** C12 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a, viewer-a, admin-a
 
+> **Partly superseded by TC-DRAFT-01 and TC-DRAFT-02 (GG1).** Drafting now works out the agreement's type from its
+> purpose, and after NO_TEMPLATE_MATCH it drafts straight away from a listed template whose name fits. Where N3 below
+> expects no card for a request whose seeded template is typed differently (`Employment`, `DPA`, `License`), a card
+> from that template is now the expected result.
+
 **Preconditions**
 - Needs: agents service + LLM key.
 - Org A has a published NDA template (Templates page), e.g. "Mutual Non-Disclosure Agreement". Note one contract type with **no** published template (e.g. Employment or Data Processing) for N3.
@@ -5000,6 +5028,10 @@ For N3: `-F "attachment1=@img1.png;type=application/pdf;filename=redline.pdf"`.
 ### TC-WEB-01 · The marketing site claims only what the product does, and marks the rest as planned
 
 **Covers:** H1, X71, X72 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor, admin-a (N6)
+
+> **Partly superseded by TC-SITE-01 (FF2, 29 Sep 2026).** FF2 rewrote the Security page's authentication,
+> access-control, audit and compliance cards, and the Intake stage. Where the text quoted below differs from the
+> site, TC-SITE-01 has the current wording.
 
 **Preconditions**
 - Run the marketing site locally: `pnpm --filter marketing dev`, then open `$MKT` = `http://localhost:5174`. (A deployed marketing site works too.)
@@ -6062,6 +6094,878 @@ WHERE "approvalInstanceId" = '<same instance>' AND "stepOrder" = (SELECT "curren
 - **X3, detection of a tampered audit row (`hash_mismatch`):** needs altering a stored audit row, which this plan does not do. Covered by `apps/api/src/routes/admin-audit.integration.test.ts`.
 - **X3, Error Reporting grouping and alerts in Google Cloud:** needs the deployed project; TC-OPS-04 checks locally that the events are written in the right format and masked.
 
+## 8. Follow-ups after the branch (EE1, FF1–FF3, GG1–GG5, 26–30 Sep 2026)
+
+This section covers changes made after the branch, each recorded in `FIX_TRACKER.md` under its id: four merged to `main` on 30 September 2026 (EE1, FF1–FF3), and five shipping on branch `fix/draft-purpose-ship` (GG1–GG5). **REVQ** checks the clause review drawer on the contract page (EE1): every action in it is a decision, a decided clause leaves the queue, Reject is kept as its own state (`rejected`), a decided clause can be reopened, and the review-state API takes the new state. **RISK** checks the Negotiate tab's redline analysis (FF1): one change per changed section, each change's risk before and after computed from the model's ratings, and a counter-proposal for every change we don't accept, with the risk it would leave. **SITE** checks the marketing site (FF2): what it claims, where its links go, the product page's anchors and the sitemap. **DEPLOY** checks the production deploy workflow (FF3): it records what is serving before it deploys, sends each Cloud Run service's traffic to its new revision, and after a failed smoke test rolls back to what it recorded. **DRAFT** checks drafting from chat (GG1): the type comes from what the agreement is for, the card names it in words, and after NO_TEMPLATE_MATCH a listed template that fits is used. **FAMILY** checks that the assistant reads a contract's amendments (GG2): `contract_get` and `contract_summarize` return the contract's family, with the latest amendments' text inline and redacted, in the caller's scope. **INVL** checks the new `invoice_list` tool (GG3). **RENEW** checks that renewal notice deadlines follow amendments, and that an amendment isn't a renewal of its own (GG4). **PREP** checks the renewal brief the assistant writes (GG5). The RISK, DRAFT and PREP cases, TC-REVQ-02 and TC-FAMILY-02 need the agents service and an LLM key. LLM output varies from run to run, so they check structure, fixed wording and arithmetic, not the model's exact words or ratings. The DEPLOY cases need read access to the production project and its GitHub Actions runs, and change nothing there; the manual rollback in TC-DEPLOY-03 is run only when a rollback is needed.
+
+The automated tests for this section. §0.6's totals are those of `b80ad15`; `main` has more tests since. CI runs the API and Python tests, but not the web tests.
+
+```bash
+pnpm --filter web exec vitest run src/lib/review-queue.test.ts        # EE1: 11 passed
+pnpm --filter api exec vitest run src/lib/marketing-claims.test.ts    # H1, X71, X72, FF2: 29 passed
+pnpm --filter api exec vitest run src/lib/renewal-notice.test.ts      # C6, GG4: 9 passed (4 from GG4)
+# EE1 and GG2–GG4, with the test database, Redis and MinIO from §0.6:
+DATABASE_URL=postgresql://<user>:<password>@localhost:5433/clm_test REDIS_URL=redis://localhost:6380 \
+  S3_ENDPOINT=http://localhost:9100 pnpm --filter api exec vitest run --config vitest.integration.config.ts \
+  src/routes/review-decision.integration.test.ts src/routes/contract-family-tools.integration.test.ts \
+  src/lib/renewal-scan.integration.test.ts                          # 3 + 14 + 3 passed
+# FF1, in the agents service's virtualenv (pytest comes from requirements-dev.txt: ./.venv/bin/pip install -r requirements-dev.txt)
+cd apps/agents && ./.venv/bin/python -m pytest tests/test_redline_risk.py -q   # 13 passed
+```
+
+### TC-REVQ-01 · Each decision in the review drawer takes its clause out of the queue: the count goes down, the next pending clause opens, and a decided clause doesn't come round again
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- `$C_REV`: an Org A contract legal-a can edit, whose analysis has finished, with at least four flagged clauses. Flagged means `riskRating` `unfavorable`, `high` or `aggressive` (a risk: red underline, "HIGH RISK" in the drawer) or `unusual`, `medium` or `non_standard` (a deviation: blue underline, "DEVIATION"). Command A lists a contract's clauses; an uploaded `F-PII`, once analysed, is a candidate (analysing needs the agents service and an LLM key). `n` = the number of flagged clauses.
+- Every flagged clause pending: run command B, then reload the contract page.
+- Signed in as legal-a. Window at least 1280 px wide, so the rail and the drawer sit beside the document. DevTools Network open, filtered on `review-state`.
+- Where things are: **Review progress** at the top of the right rail shows `<decided> / <flagged>`; click it to expand a checklist with one row per flagged clause, in document order. The review drawer replaces the rail while it is open. Its header has ‹ (Previous issue, key k), a counter `<position> / <clauses still waiting>` (tooltip "Clauses still waiting on a decision"), › (Next issue, key j) and × (Esc).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$C_REV` and click **Review progress** in the rail. | It reads `0 / n`. The checklist lists the n flagged clauses, each with its type and `§<section>`, and none has a label. |
+| P2 | Click the first row's clause name. | The drawer opens on that clause: counter `1 / n`, the state pill **Pending**, and the buttons **Accept clause as-is**, **Edit manually**, **Reject** and **Mark reviewed**. |
+| P3 | Click **Accept clause as-is**. | The drawer opens the second clause, and the counter reads `1 / n−1`: one fewer than before. ‹ is disabled: the accepted clause is no longer in the queue. Network: `PATCH /api/v1/contracts/clauses/<first clause's id>/review-state` with `{"state":"resolved"}`, answered 200. Before EE1 the counter read `2 / n` and ‹ went back to the accepted clause. |
+| P4 | Click **Reject**. | The third clause opens, counter `1 / n−2`. The PATCH sends `{"state":"rejected"}` and answers 200 with `"reviewState":"rejected"`. Reject used to send `reviewed`. |
+| P5 | Click **Mark reviewed**. | The fourth clause opens, counter `1 / n−3`. The PATCH sends `{"state":"reviewed"}`. Mark reviewed used to leave the drawer where it was. |
+| P6 | Close the drawer (× or Esc) and expand **Review progress**. | It reads `3 / n`. The first three rows are labelled **accepted**, **rejected** (in red) and **reviewed**; the other rows have no label and show **Mark reviewed** on hover. The rows used to read "done" whatever the decision. |
+| P7 | Run command A. Then reload the page and expand **Review progress** again. | Command A: the first three flagged clauses read `resolved`, `rejected` and `reviewed`, the rest `unreviewed`. After the reload the rows still read accepted, rejected and reviewed: a rejection is stored as one. |
+| P8 | Open the first pending row and decide every remaining clause, one after another, with any of the three buttons. | Each decision opens the next pending clause and lowers the counter's total by one. After the last one the drawer closes by itself, the rail comes back, and **Review progress** reads `n / n ✓`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | After P3, and again after P4 and P5: step through the drawer with › to the end, then back with ‹ to the first one. | Only pending clauses appear, in document order. › is disabled on the last one and ‹ on the first. A decided clause never comes round again. |
+| N2 | Command B and reload. Open the **last** row (counter `n / n`) and click **Mark reviewed**. | The drawer doesn't close. With nothing pending after it, it goes back to the first clause, which you skipped: counter `1 / n−1`. It closes only when nothing is pending anywhere. |
+| N3 | Command B and reload. In the drawer accept the first clause and reject the second. Close the drawer and click **✓ Mark all n−2 as reviewed** under the checklist. | Only the pending rows turn **reviewed**. The first two keep **accepted** and **rejected**; command A shows `resolved`, `rejected`, then `reviewed` for the rest. |
+
+Command A (the contract's clauses, with their rating and review state):
+```bash
+curl -s "$API/contracts/$C_REV/clauses" -H "Authorization: Bearer $LEGAL_A" \
+  | jq -r '.data[] | [.id, (.sectionRef // "-"), .clauseType, (.riskRating // "-"), .reviewState] | @tsv'
+```
+
+Command B (every flagged clause back to pending):
+```bash
+for id in $(curl -s "$API/contracts/$C_REV/clauses" -H "Authorization: Bearer $LEGAL_A" \
+    | jq -r '.data[] | select(.riskRating | IN("unfavorable","high","aggressive","unusual","medium","non_standard","non-standard")) | .id'); do
+  curl -s -o /dev/null -w "$id %{http_code}\n" -X PATCH "$API/contracts/clauses/$id/review-state" \
+    -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' -d '{"state":"unreviewed"}'
+done
+```
+
+Command C (set one clause's state; replace `<CLAUSE>`, `<TOKEN>` and `<STATE>`):
+```bash
+curl -s -w '\n%{http_code}\n' -X PATCH "$API/contracts/clauses/<CLAUSE>/review-state" \
+  -H "Authorization: Bearer <TOKEN>" -H 'content-type: application/json' -d '{"state":"<STATE>"}'
+```
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` (11: the queue holds only the clauses waiting on a decision and shrinks by one with each decision, whatever it is; it keeps a decided clause while it is open; after a decision the drawer goes to the next pending clause, else to one the reviewer skipped, else nowhere; the four states; and three checks on the contract page's source: it gives the drawer the queue, records each action as its own state, and keeps a rejection when it reloads its clauses. Those three failed before EE1). CI doesn't run the web tests: run them with `pnpm --filter web test`.
+
+### TC-REVQ-02 · Applying a suggested rewrite records the clause as accepted and moves on; Edit manually records no decision
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key (**Suggest alternative language** asks the model).
+- `$C_REV` and commands A–C from TC-REVQ-01, with at least three pending flagged clauses (command B, then reload). `$C_REV` is in DRAFT or UNDER_NEGOTIATION: an applied rewrite makes a new version, and on an APPROVED contract that sends it back for approval (X42).
+- Signed in as legal-a, window and DevTools as in TC-REVQ-01, with the Network filter cleared. `k` = the number of pending flagged clauses.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open the first pending row from **Review progress** (counter `1 / k`). In the drawer's **Alternative language** section, click **Suggest alternative language**. | The button reads "Drafting alternatives…", then the variants appear (usually least, moderate and aggressive), each with its text and **Apply to document**. If none comes back, the section says why; use another pending clause. Nothing is decided yet: the pill still reads **Pending**, the counter is unchanged, and no `review-state` request is sent. |
+| P2 | Click **Apply to document** on one variant. | The button reads "Applying…". Then the drawer opens the next pending clause, counter `1 / k−1`. Network: `POST /api/v1/contracts/$C_REV/clauses/<id>/apply` answered 200 with `newVersionNumber`, then `PATCH …/review-state` with `{"state":"resolved"}`, answered 200. An applied rewrite used to be saved as `reviewed`. |
+| P3 | Run command A, and `curl -s "$API/contracts/$C_REV/versions" -H "Authorization: Bearer $LEGAL_A" \| jq '.data \| length'`. | One more version than before. The rewritten clause (same section and type, now in the new version) reads `resolved`, and its rating is empty: its new words aren't rated until the contract is analysed again, so it drops out of **Review progress**. The other clauses keep their states. (A rewrite that shares few words with the old clause isn't carried into the new version, and then has no line.) |
+| P4 | Close the drawer, open another pending row and click **Edit manually**. | The drawer closes and the document turns editable: the header shows **Done**, with undo, redo and the save status. No `review-state` request is sent. |
+| P5 | Click **Done** without typing. Expand **Review progress** and run command A. | The clause is still pending: its row has no label, the count is unchanged, and command A shows `unreviewed`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Open a pending row, click **Suggest alternative language** and wait for the variants. Then click › (or close the drawer) without applying. | No `apply` and no `review-state` request. The clause stays pending: a suggestion decides nothing. |
+| N2 | Open a pending row and click **Edit manually**. Type ` QA.` at the end of the document's last paragraph (not in the clause you opened), wait for "Saved ✓", and click **Done**. | One `POST …/html-version` (201) and still no `review-state` request. The clause you opened is still pending: an edit may or may not deal with the issue, so it records no decision. |
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` ("records each action as its own final state": the page records an applied rewrite as `resolved`). Edit manually recording nothing has no automated test (the web app has no component tests); P4–P5 and N2 are its check.
+
+### TC-REVQ-03 · A decided clause opened again says what was decided, and Reopen puts it back in the queue
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a, viewer-a
+
+**Preconditions**
+- `$C_REV` and commands A–C from TC-REVQ-01. Its flagged clauses include one accepted (`resolved`), one rejected, one reviewed and at least two pending. TC-REVQ-01 leaves them so after P5; otherwise run command B, then command C as `$LEGAL_A` on the first three flagged clauses with `resolved`, `rejected` and `reviewed`. Reload the contract page.
+- Signed in as legal-a, window and DevTools as in TC-REVQ-01. `p` = the number of pending rows.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Expand **Review progress** and click the **accepted** row's clause name. | The drawer opens on it: pill **Accepted**, and above the buttons "Accepted — no longer in the queue." with **Reopen**. **Accept clause as-is** is disabled; **Reject** and **Mark reviewed** are not. The counter's total is `p + 1`: the open clause is shown with the pending ones, the other decided clauses are not. |
+| P2 | Close the drawer. Open the **rejected** row, then the **reviewed** row. | "Rejected — no longer in the queue." with **Reject** disabled. "Reviewed — no longer in the queue." with the last button reading **Reviewed**, disabled. Each has **Reopen**. |
+| P3 | On the rejected clause, click **Reopen**. | The pill turns **Pending**, the decision line goes, all four buttons are enabled, and the drawer stays on the clause. Network: `PATCH …/review-state` with `{"state":"unreviewed"}`, answered 200 with `"reviewState":"unreviewed","reviewedAt":null,"reviewedById":null`. |
+| P4 | Close the drawer, expand **Review progress** and run command A. | The count is one lower than before P3. The reopened row has no label and shows **Mark reviewed** on hover, like the other pending rows. Command A shows it `unreviewed`. |
+| P5 | Open the first pending row and step through the drawer with ›. | The reopened clause is among the clauses it steps through: it is back in the queue. The accepted and reviewed clauses are not. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Open the accepted row again. Click ›, then ‹. | › opens the next pending clause. ‹ doesn't go back to the accepted clause: once you moved off it, it left the queue again. |
+| N2 | Open the accepted row again and click **Reject**. | The decision is replaced: the PATCH sends `{"state":"rejected"}`, the drawer opens the next pending clause, and the row now reads **rejected**. Opening a decided clause doesn't lock it. |
+| N3 | Sign in as viewer-a, open `$C_REV`, expand **Review progress** and click a decided row's clause name. | The drawer shows the pill (e.g. **Rejected**) but no decision line, no **Reopen** and no action buttons. In their place: "Read-only: accepting, rejecting or changing this clause needs edit access to the contract." The API refuses a viewer too (TC-REVQ-04 N3). |
+
+**Automated coverage:** `apps/web/src/lib/review-queue.test.ts` ("keeps a decided clause while it is open, so it can be read and reopened"), `apps/api/src/routes/review-decision.integration.test.ts` ("can be reopened, which puts the clause back in the queue": `unreviewed` clears `reviewedAt` and `reviewedById`). The drawer's decision line and **Reopen** have no automated test (the web app has no component tests).
+
+### TC-REVQ-04 · The review-state API keeps a rejection as `rejected`, reopens with `unreviewed`, and refuses unknown states, viewers and other organizations
+
+**Covers:** EE1 · **Priority:** P2 · **Surface:** API · **Roles:** legal-a, viewer-a, rep-a, admin-b
+
+**Preconditions**
+- `$C_REV` and commands A and C from TC-REVQ-01. `$CL` = the id of one of `$C_REV`'s flagged clauses (command A, first column); use it as `<CLAUSE>` in command C.
+- Tokens `$LEGAL_A`, `$VIEWER_A`, `$REP_A` and `$ADMIN_B`, and `$LEGAL_A_ID` (§0.3).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Command C with `$LEGAL_A` and `rejected`. | `200` `{"id":"<$CL>","reviewState":"rejected","reviewedAt":"<now>","reviewedById":"<legal-a's id>"}`. `reviewedById` equals `$LEGAL_A_ID`. |
+| P2 | Command A. Then reload `$C_REV` in the browser and expand **Review progress**. | `$CL` reads `rejected`, and its row is labelled **rejected**. |
+| P3 | Command C with `unreviewed`. | `200` with `"reviewState":"unreviewed","reviewedAt":null,"reviewedById":null`: the clause is reopened, back in the queue. |
+| P4 | Command C with `reviewed`, then with `resolved`. | `200` each time, with that `reviewState`, a new `reviewedAt` and `reviewedById` = `$LEGAL_A_ID`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Command C with `$LEGAL_A` and `done`. | `400` `{"detail":"state must be unreviewed \| reviewed \| resolved \| rejected"}`. Command A shows `$CL` unchanged. |
+| N2 | Command C with `REJECTED`, then `accepted` (the word the page shows, not a state), then an empty string. Then send the body `{}`. | `400` with the same `detail` each time; `$CL` unchanged. |
+| N3 | Command C with `$VIEWER_A` and `rejected`; then with `$REP_A`. | `403`, `detail` "Missing permission: edit:contract", both times: neither role may edit contracts. `$CL` unchanged. |
+| N4 | Command C with `$ADMIN_B` (Org B) and `rejected`. | `404` `{"detail":"Clause not found"}`; `$CL` unchanged. |
+| N5 | Command C with `$LEGAL_A` and a made-up clause id. | `404` `{"detail":"Clause not found"}`. |
+| N6 | Optional, with TC-ACC-16's `OWN_EDITOR` role on rep-a (its command A; token `$REP_A_OE`): command C with `$REP_A_OE` and `rejected`. | `404` `{"detail":"Clause not found"}`: an own-scope editor marks only the clauses of contracts it owns, and `$C_REV` is legal-a's (X7). |
+
+**Automated coverage:** `apps/api/src/routes/review-decision.integration.test.ts` (3: a rejection is stored as `rejected`, with its reviewer; `unreviewed` reopens the clause and clears `reviewedAt` and `reviewedById`; `done` is refused with a 400 that names the states. The rejection test failed before EE1, with a 400), `apps/api/src/routes/own-scope-rest.integration.test.ts` ("a custom own-scope editor cannot write to another rep's records by id": 404 on another rep's clause, N6). The viewer and other-org refusals have no test on this route.
+
+### TC-RISK-01 · Analyze Redlines returns one change per changed section with both texts whole, and each change's risk before and after, with its reasons
+
+**Covers:** FF1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key. One run takes a minute or two; TC-RISK-02 reads the same run.
+- `$C_RISK`: our standard and their markup, as two versions of one contract. Upload `F-PII` as legal-a (version 1, our standard), then add `F-PII-v2` as version 2 with TC-AI-02's curl (their markup). Version 2 changes three numbered sections: 3 (the fee and the payment days), 4 (a sentence added after the SSN) and 8 (the liability cap, from 12 months' fees to 3). `$C_NEG` from TC-AI-02 works too; a new run replaces its analysis. Wait until version 2 is extracted: the Negotiate tab's "Version diff" no longer says "This version is still being extracted…".
+- Playbook positions for the changed clauses: `curl -s "$API/playbook/positions?contractType=<type>" -H "Authorization: Bearer $LEGAL_A" | jq '[.data[].clauseCategory.name] | unique'`, with `<type>` from `GET $API/contracts/$C_RISK`, lists "Fees & Payment" and "Limitation of Liability". The seeded universal playbook has both, for every contract type: its Fees & Payment fallback is Net 15, and its Limitation of Liability walkaway is a cap under 6 months' fees. If one is missing, add it on Library → Playbook (**Add Position**).
+- Signed in as legal-a.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$C_RISK` → rail **History** → **Negotiate**. Keep **Baseline (our version)** = v1 and **Counterparty redlines** = v2, click **Analyze Redlines**, and wait (the panel refreshes itself). | "Analysis summary" appears, with its badge, confidence and counts. Below it: "3 changes detected" (shown in capitals). |
+| P2 | Read the change cards. | One card per changed section, each showing its section (e.g. `Section 3`): 3, 4 and 8. Section 3's two edits (the fee and the payment days) are one card, not two. |
+| P3 | Expand each card with its chevron. | **Original** holds the whole section as version 1 has it, and **Counterparty proposes** the whole section as version 2 has it. Section 3's Original has both "USD 12,500" and "thirty (30) days"; its Counterparty proposes has "USD 14,000" and "fifteen (15) days". Every card has both texts. |
+| P4 | Read each card's reasoning line (the grey line under the chips; no need to expand). | Each starts `Risk <a> → <b> (<b − a, with its sign>): `, e.g. `Risk 9 → 93 (+84): `. Then the four ratings of their wording in words, `<deviation>; <exposure>, <likelihood>; <market>.`, then one sentence on why the risk moved. The words come from fixed lists. Deviation: "matches our standard", "within our acceptable position", "needs our fallback position", "beyond our walkaway position". Exposure: "no exposure" to "severe exposure". Likelihood: "unlikely", "possible", "likely". Market: "market standard", "slightly off-market", "clearly off-market", "one-sided or of doubtful enforceability". Section 8's card, a cap of 3 months' fees under the walkaway, normally rises most and reads "beyond our walkaway position". |
+| P5 | Command D (one line per change: section, recommendation, before, after, change, revised, has a counter). | `riskBefore` and `riskAfter` are whole numbers from 0 to 100, `riskDelta` = `riskAfter − riskBefore`, and they are the numbers in P4's lines. |
+| P6 | Command E (the numbers computed again from the stored ratings, with 100 × (0.45 × deviation/3 + 0.35 × exposure × likelihood/12 + 0.20 × market/3)). | Every line ends `same`: each number is the formula applied to its ratings, not a number the model chose. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Compare the cards with the three changed sections. | No card holds a lone fragment, such as just "USD 14,000" or "fifteen (15)", and no section has two cards. Before FF1 the analysis returned one change per inserted or deleted fragment: 29 "changes" on a markup of five clauses in the live check, several with their text lost. |
+| N2 | Command F. | `true`, then `true`. Every stored rating is inside its range (deviation 0–3, exposure 0–4, market 0–3, likelihood 1–3; the model's values are clamped). Within each change, our wording, theirs and our counter share one likelihood: the event is rated once per change. |
+
+Command D (the stored analysis, one line per change):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" \
+  | jq -r '.metadata._redlineAnalysis.changes[] | [.sectionRef, .recommendation, .riskBefore, .riskAfter, .riskDelta, .riskRevised, (.counterText != null)] | @tsv'
+```
+
+Command E (each number computed again from its ratings; Python rounds as the agents service does):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | python3 -c '
+import json, sys
+a = json.load(sys.stdin)["metadata"]["_redlineAnalysis"]
+score = lambda f: None if not f else round(100 * (0.45 * f["deviation"] / 3 + 0.35 * f["exposure"] * f["likelihood"] / 12 + 0.20 * f["market"] / 3))
+for c in a["changes"]:
+    stored = (c.get("riskBefore"), c.get("riskAfter"), c.get("riskRevised"))
+    factors = tuple(score(c.get(k)) for k in ("ourAssessment", "theirAssessment", "counterAssessment"))
+    print(c.get("sectionRef"), c.get("recommendation"), stored, factors, "same" if stored == factors else "DIFFERENT")'
+```
+
+Command F (ratings in range, one likelihood per change):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | jq '.metadata._redlineAnalysis.changes
+  | ([.[] | .ourAssessment, .theirAssessment, .counterAssessment | select(. != null)
+      | .deviation >= 0 and .deviation <= 3 and .exposure >= 0 and .exposure <= 4 and .market >= 0 and .market <= 3 and .likelihood >= 1 and .likelihood <= 3] | all),
+    ([.[] | [.ourAssessment, .theirAssessment, .counterAssessment | select(. != null) | .likelihood] | unique | length <= 1] | all)'
+```
+
+**Automated coverage:** `apps/agents/tests/test_redline_risk.py` (13: the formula from 0 to 100 and its weights; missing or non-numeric ratings give no score; ratings are clamped to their ranges; likelihood is rated once per change; the reasoning and counter-note text; a counter never scores worse than their text or better than our standard; a change without ratings keeps its text; the summary's averages; step 2's scores merge onto step 1's changes by `changeId`, or by position when the counts agree). CI runs it in "Test Agents (Python)". One change per section is an instruction to the model and has no automated test; P2, P3 and N1 are its check.
+
+### TC-RISK-02 · Every change we counter or reject gets a counter-proposal whose risk lies between our standard and their proposal, and the summary gives the three averages
+
+**Covers:** FF1 · **Priority:** P2 · **Surface:** UI, API · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key (for the run). This case reads TC-RISK-01's analysis of `$C_RISK`, with commands D and G.
+- At least one **Counter** card and one **Reject** card. On `F-PII-v2`, section 8's cap, beyond the walkaway, is the likeliest Reject. If the run has no Reject card, click **Analyze Redlines** again; if there is still none, note that the reject path wasn't exercised on this run.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Expand each **Counter** and **Reject** card. | Each has "Our counter-proposal" (shown in capitals) with the proposed wording, **Copy counter text**, and an italic note: `Revised risk if they accept: <r> (from <b>, <r − b, with its sign>): <the counter's four ratings in words>. <why>`, e.g. `Revised risk if they accept: 39 (from 93, -54): …`. `<b>` is the card's own "after" number from its Risk line. |
+| P2 | On each of those cards, compare `<a>` (the Risk line's "before"), `<r>` and `<b>`. | Where their wording raised the risk (`a` ≤ `b`): `a` ≤ `r` ≤ `b`. The counter's risk lies between our standard and their proposal, so the note's change is 0 or negative. |
+| P3 | Look at the **Reject** cards. | They have a counter-proposal too. Before FF1 only Counter cards got one, so the changes that mattered most had no alternative wording. |
+| P4 | Read the line under "Analysis summary". | `Analyzed N changes: <a> acceptable, <c> need countering, <r> should be rejected. Average risk across the <K> changed clauses: <X> in our standard, <Y> as proposed, <Z> with our counter-proposals.` N and the three counts match the cards and the "N accept / N counter / N reject" row. K is the number of cards with a Risk line. X is the average of their "before" numbers and Y of their "after" numbers. Z averages each card's revised risk where it has one, else its "after". Each is rounded to a whole number. |
+| P5 | Command D. | `riskRevised` is filled on exactly the changes with a counter (`true` in the last column), and it is P1's `<r>`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Expand each **Accept** card. | No "Our counter-proposal" and no "Revised risk" note; `riskRevised` is empty in command D. In the summary's third average, an accepted change counts at its proposed risk. |
+| N2 | Command G. | `true`, then `true`. Every change we don't accept has counter text, and no revised risk falls outside our standard's and their proposal's. The counter is rated in its own model call: rated worse than their text, it takes their text's rating; rated better than our standard, it takes ours. |
+
+Command G (a counter for every change not accepted, and its risk between the two):
+```bash
+curl -s "$API/contracts/$C_RISK" -H "Authorization: Bearer $LEGAL_A" | jq '.metadata._redlineAnalysis.changes
+  | ([.[] | select(.recommendation != "accept") | (.counterText // "") != ""] | all),
+    ([.[] | select(.riskRevised != null and .riskBefore <= .riskAfter) | .riskBefore <= .riskRevised and .riskRevised <= .riskAfter] | all)'
+```
+
+**Automated coverage:** `apps/agents/tests/test_redline_risk.py` (the counter-note text; a counter never scores worse than their text or better than our standard; the summary averages with our counters where we made one and leaves out unscored changes). That rejected changes get a counter-proposal is decided by the model step's input and has no automated test; P3 and N2 are its check.
+
+### TC-SITE-01 · The homepage, Security page, agent grid and Open Source quickstart say only what the product does
+
+**Covers:** FF2 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor
+
+**Preconditions**
+- The marketing dev server, `$MKT` = `http://localhost:5174`, as in TC-WEB-01. A deployed site works too, once this change is deployed.
+- FF2 rewrote some of the text TC-WEB-01 quotes: the Security page's authentication, access-control, audit and compliance cards, and the Intake stage. Where the two differ, this case's text is current.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s $MKT/ \| grep -A1 'name="description"'` | `content="Open-source, agent-first contract lifecycle management. 12 AI agents handle intake, review, drafting, negotiation, approvals and obligations, with e-signature built in. Self-host it, or try the hosted demo (evaluation only)."` This is the description link previews show: the page's HTML before any script runs. |
+| P2 | Open `$MKT/` and read the hero, the footer and the last banner. | Hero: "12 AI agents handle intake, review, drafting, negotiation, approvals and obligations, with e-signature built in — across the full contract lifecycle. AGPL-3.0 licensed, self-host the same code we run." Buttons **Self-host on GitHub** and **Try the public demo** (to `https://app.draft-legal.com/register`), with "Demo runs on free-tier infrastructure — evaluation only, not for production data." under them. Footer: "Open-source, agent-first contract lifecycle management. Self-host it, or try the hosted demo (evaluation only)." Banner: "Self-host it in 3 commands, or try the hosted demo (evaluation only)." |
+| P3 | Scroll to "12 specialized agents do the work."; then open `$MKT/product` and find the same grid. | 12 tiles, each badged **Live**: Intake, Classify, Review, Ask, Portfolio, Draft, Redline, Playbook Review, Approval, Obligation, Compliance and Binder Agent. The intro says they run on "Anthropic, OpenAI, Google or OpenRouter models, chosen per tier for your organisation". |
+| P4 | Open `$MKT/security`, card "Self-host & data residency". | "Run Draft Legal in your VPC, your region, your network: the database and files stay on your infrastructure. With AI features on, contract text goes to the model provider you configure (Anthropic, OpenAI, Google or OpenRouter) under your own keys. There is no on-prem or local model option, so AI features can't run air-gapped; without an AI key the app still runs. The hosted demo runs in one region (us-central1) and is for evaluation only." |
+| P5 | Same page, cards "AI safety" and "Encryption". | AI safety: "Before every model call, personal data is masked under your org's privacy mode (redact by default): ID, card and bank numbers, emails, phone numbers, dates of birth, IP addresses and API keys — not names, addresses or health details — and a miss is recorded in the audit log." Encryption: provider keys are "encrypted with AES-256-GCM under one deployment master key; only a key prefix is ever shown." |
+| P6 | Same page, box "Need our security pack?". | "We can share our architecture documentation and sub-processor list with prospects under NDA." and **Request security pack →**. Nothing else is offered. |
+| P7 | On `$MKT/`, open the question "Where does my data go?" in "Frequently asked questions". | The same data flow as P4–P5, including what isn't masked: "Names, addresses and health details are not masked, and there is no on-prem model option; without an AI key the app still runs." |
+| P8 | Open `$MKT/open-source`, section "Self-host in 3 commands.", and the README's "Quickstart" section. | The page: "The quickstart below is straight from our README. You need Docker, Node 22+, pnpm 9+ and Python 3.11+.", then `git clone https://github.com/AniketTati/draft-legal.git && cd draft-legal`, `pnpm dev:setup`, `pnpm dev`, and "Open http://localhost:5173 and sign in with a demo login printed by setup." The README's Quickstart has the same commands and prerequisites. |
+| P9 | On the same page, in the console: `[...document.links].find(a => a.textContent.includes('Self-host quickstart')).href`. Then click **Self-host quickstart →**. | `https://github.com/AniketTati/draft-legal#quickstart`. GitHub opens the README at its "Quickstart" heading. |
+| P10 | `pnpm --filter api exec vitest run src/lib/marketing-claims.test.ts` | 29 passed. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | On `$MKT/` and `$MKT/security`, search the page (Cmd/Ctrl-F) for: `use our managed cloud`, `Cloud Enterprise`, `never leave`, `air-gapped deployments`, `on-prem inference`, `PDF/A`, `pen-test`, `SIG-Lite`, `org-specific`, `hallucinat`, `Signature Agent`, `Invoice Agent`, `Soon`. | No matches. (The Security page's one "air-gapped" is "AI features can't run air-gapped".) |
+| N2 | From the repo root: `grep -rniE "never leave your network\|air-gapped deployments are supported\|on-prem inference\|use our managed cloud\|sign up for cloud\|Cloud Enterprise\|cloud waitlist\|org-specific master key\|PDF/A\|pen-test summary\|SIG-Lite\|never hallucinat\|150\+ contracts\|(plant\|hub)-scoped\|Discord\|community call\|GitLab, Mattermost\|Signature Agent\|Invoice Agent" apps/marketing/src apps/marketing/index.html` | No output. |
+| N3 | On `$MKT/open-source`, look for the old quickstart. In the console: `document.querySelectorAll('a[href$="#setup"]').length`. | No `cp .env.example .env`, no `docker compose up -d` and no `pnpm install && pnpm dev`; the console prints `0`. Under "Community", no Discord and no community call. |
+| N4 | On `$MKT/`, the dark "Why open source" block. | Headed "The whole CLM, in the open.". No "GitLab playbook" and no "GitLab, Mattermost, and Sentry". |
+
+**Automated coverage:** `apps/api/src/lib/marketing-claims.test.ts` (29; FF2 added 17 tests over 20 phrases, each of which matched the live site's source before the fix, and made the test read `apps/marketing/index.html` too, for the meta description). The agent grid's names and badges and the quickstart's commands have no automated test beyond the marketing typecheck.
+
+### TC-SITE-02 · The site's links go where they say: a demo email, Privacy and Terms on the app, no X or LinkedIn, product stages by anchor, dated comparisons
+
+**Covers:** FF2 · **Priority:** P2 · **Surface:** Marketing site (UI), repo · **Roles:** anonymous visitor
+
+**Preconditions**
+- `$MKT` as in TC-SITE-01. For P3, the deployed app, or `$WEB` running locally.
+- A mail client is optional (P1).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open `$MKT/contact`. Under "Book a 30-min demo", check the link "Email us to pick a time": in the console, `[...document.links].find(a => a.textContent.includes('Email us to pick a time')).href`. Then click it. | `mailto:aniket.tatipamula@gmail.com?subject=Demo%20request`. The mail client opens a new message with the subject "Demo request"; don't send it. It was a Cal.com link that answered 404. |
+| P2 | In the footer of any page, in the console: `[...document.links].filter(a => ['Privacy', 'Terms'].includes(a.textContent.trim())).map(a => a.href)` | `["https://app.draft-legal.com/privacy", "https://app.draft-legal.com/terms"]`. |
+| P3 | Open those two pages (locally: `$WEB/privacy` and `$WEB/terms`). | The app's "Privacy Policy" and "Terms of Service" pages, without signing in. |
+| P4 | Look at the footer's icons. | Only GitHub. |
+| P5 | In a new tab, load `$MKT/product#negotiate` directly. Wait until the page stops scrolling and the screenshots have loaded, then in the console: `Math.round(document.getElementById('negotiate').getBoundingClientRect().top)`. | The page opens at stage 3: "Stage 3", heading "Negotiate" and the chip "Redline + Playbook Review Agents", just under the nav. It stays there as the images load. The console prints `0` (±1). |
+| P6 | Open `$MKT/`. Under "One platform, six stages, every contract.", click the **Negotiate** card. Go back, and click **See it →** under "Contract review with AI extraction". | Each time the address becomes `/product#negotiate` and the page opens at the Negotiate stage, as in P5. The stages had no ids before FF2, so these links opened the top of the page. |
+| P7 | Open `$MKT/compare/ironclad`, `/compare/harvey`, `/compare/spellbook`, `/compare/docusign-clm` and `/compare/icertis`. | Under each page's one-line description of the competitor: "Last checked: May 2026. Details about <competitor> may have changed since." |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | On `$MKT/`, `/contact`, `/product` and `/security`, in the console: `[...document.links].map(a => a.hostname).filter(h => /^(www\.)?(x\|twitter\|linkedin\|cal)\.com$/.test(h)).length` | `0` on each page: no X link (x.com/draftlegal was an unrelated person's account), no LinkedIn and no Cal.com. |
+| N2 | Open `$MKT/privacy`. | The site's own 404 page, "That page got redlined out.": the marketing site has no such page, which is why its footer now links to the app's. |
+| N3 | Open `$MKT/product#no-such-stage`. | The page opens at its top, with no error in the console. |
+| N4 | From the repo root: `grep -rnE "cal\.com/draft-legal\|x\.com/draftlegal\|linkedin\.com\|href=\"/(privacy\|terms)\"\|#setup" apps/marketing/src` | No output. |
+
+**Automated coverage:** `apps/api/src/lib/marketing-claims.test.ts` ("links nowhere dead or wrong (FF2)": no Cal.com, x.com/draftlegal, `/privacy` or `/terms` link, and no "free … template" link). The mailto subject, the product anchors and the comparison date have no automated test.
+
+### TC-SITE-03 · A marketing build writes the sitemap before bundling: 42 URLs, dated the day of the build, `/industries` included
+
+**Covers:** FF2 · **Priority:** P3 · **Surface:** Repo (build) · **Roles:** developer
+
+**Preconditions**
+- A checkout of `main` with its dependencies installed.
+- The build rewrites `apps/marketing/public/sitemap.xml`, a tracked file, with today's date. Discard that afterwards with `git checkout apps/marketing/public/sitemap.xml`, unless you mean to commit it.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `pnpm --filter marketing build` | The output has `✓ sitemap.xml written with 42 URLs (https://draft-legal.com)` before Vite's build lines, and the build succeeds. |
+| P2 | `grep -c '<loc>' apps/marketing/dist/sitemap.xml` and `grep -c "<lastmod>$(date -u +%F)</lastmod>" apps/marketing/dist/sitemap.xml` | `42` and `42`: every URL is dated today (UTC). |
+| P3 | `grep '<loc>https://draft-legal.com/industries' apps/marketing/dist/sitemap.xml` | Six lines: `/industries` and its five pages (saas, healthcare, manufacturing, biotech, logistics). |
+| P4 | `diff apps/marketing/public/sitemap.xml apps/marketing/dist/sitemap.xml` | No output: the built site ships the file this build generated. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `grep '<lastmod>' apps/marketing/dist/sitemap.xml \| sort -u` | One line, today's date. Before FF2 the build copied the committed sitemap into `dist` and only then regenerated it, so the site shipped the old one: 41 URLs, every `lastmod` 25 May, no `/industries`. |
+| N2 | `grep '<loc>' apps/marketing/dist/sitemap.xml \| sort \| uniq -d` | No output: no URL is listed twice. |
+
+**Automated coverage:** none (FIX_TRACKER FF2 records a build with 42 sitemap URLs, checked by hand).
+
+### TC-DEPLOY-01 · Before it deploys, the deploy job records what each Cloud Run service and the web app serve, and warns when it can't read the web app's release
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** CI (GitHub Actions), GCP (read-only CLI) · **Roles:** operator with read access to the repo's Actions runs and Viewer access to the production project
+
+**Preconditions**
+- Read-only: nothing in this case changes production. You need the repo's Actions runs (the web UI, or `gh` signed in) and a gcloud account with at least Cloud Run Viewer and Firebase Hosting Viewer on the production project. `jq` and `curl`.
+- `$PROJECT` = the production project id: `default` in `.firebaserc` (the `GCP_PROJECT_ID` secret). The web app's Hosting site has the same id (`.firebaserc`, target `app`).
+- A **Deploy to production** run made after FF3 was merged: Actions → **Deploy to production**, or `gh run list --workflow deploy.yml --limit 5`.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Open the run → job **Deploy gotenberg + agents + api + web** → step **Record what is serving now** (or `gh run view <run id> --log \| grep 'Record what is serving now'`). | After the script, four lines: `api-service: <revision>`, `agents-service: <revision>` and `gotenberg: <revision>` (revision names like `api-service-00123-abc`), and `web app: Hosting version <id>`. The version is a bare id, never `sites/…/versions/…`: the full name holds the project id, a secret. No warning. |
+| P2 | Run command H (the step's own script, pointed at production; it only reads). | The three service lines, with the revisions serving now. The web app line depends on your credentials: see N1. |
+| P3 | For each service: `gcloud run services describe <service> --project "$PROJECT" --region us-central1 --format='value(status.traffic)'` | The revision with 100% of the traffic (or the largest share) is the one command H printed for that service. |
+| P4 | Command J (the web app's live release, read with a quota project, which personal credentials need), and command K (its last three releases). | J prints the live version id. It is the newest release in K, and the one P1 printed if no deploy has run since. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | With personal gcloud credentials, run command H as it is: its Hosting read sends no quota project. | The Hosting call is refused. After curl's error line the script prints `::warning::Could not read the web app's live Hosting release, so a rollback of this deploy won't restore the web app.` and ends normally, with the three service lines above it. In a run, the same line shows as a warning on the run's page and the deploy goes on; a rollback then skips the web app (TC-DEPLOY-03 N3). The deployer's service account needs no quota project, which is why P1 shows a version. |
+| N2 | Command H with `for svc in api-service no-such-service`. | `no-such-service: nothing serving`, and the script goes on. A service with nothing serving (a first deploy) is recorded as nothing, and a rollback skips it. |
+| N3 | `<command J> \| grep -c -E "sites/\|$PROJECT"` | `0`: the recorded version holds neither the site path nor the project id. |
+
+Command H (the recording step's script as the workflow runs it, with its outputs thrown away):
+```bash
+CLOUDSDK_CORE_PROJECT="$PROJECT" GCP_REGION=us-central1 SITE="$PROJECT" GITHUB_OUTPUT=/dev/null \
+  bash --noprofile --norc -eo pipefail <<'EOF'
+for svc in api-service agents-service gotenberg; do
+  rev=$(gcloud run services describe "$svc" --region "$GCP_REGION" --format=json 2>/dev/null \
+    | jq -r '[.status.traffic[]? | select(.percent > 0)] | max_by(.percent) | .revisionName // empty' || true)
+  echo "$svc: ${rev:-nothing serving}"
+  echo "${svc%-service}-before=${rev}" >> "$GITHUB_OUTPUT"
+done
+version=$(curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/${SITE}/channels/live" \
+  | jq -r '.release.version.name // empty' | sed 's#.*/versions/##' || true)
+if [ -n "$version" ]; then
+  echo "web app: Hosting version ${version}"
+else
+  echo "::warning::Could not read the web app's live Hosting release, so a rollback of this deploy won't restore the web app."
+fi
+echo "web-version-before=${version}" >> "$GITHUB_OUTPUT"
+EOF
+```
+
+Command J (the live release's version id, with a quota project; your account must be allowed to use `$PROJECT` for quota):
+```bash
+curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: $PROJECT" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/$PROJECT/channels/live" \
+  | jq -r '.release.version.name // empty' | sed 's#.*/versions/##'
+```
+
+Command K (the last three releases of a Hosting site; `<site>` is `$PROJECT` for the web app, or the `marketing` target's site in `.firebaserc`):
+```bash
+curl -sSf -H "Authorization: Bearer $(gcloud auth print-access-token)" -H "x-goog-user-project: $PROJECT" \
+    "https://firebasehosting.googleapis.com/v1beta1/sites/<site>/channels/live/releases?pageSize=3" \
+  | jq '.releases[] | {version: (.version.name | sub(".*/versions/"; "")), releaseTime, message}'
+```
+
+**Automated coverage:** none. The workflow runs only on pushes to `main`. FF3 was checked by hand: the workflow parses, its 12 `run:` scripts pass `bash -n`, and the recording step, run against production, returned the three serving revisions.
+
+### TC-DEPLOY-02 · After a deploy, api-service, agents-service and gotenberg serve their new revisions at 100% LATEST, also after a rollback had pinned them
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** GCP (read-only CLI), CI logs, repo · **Roles:** operator (as in TC-DEPLOY-01)
+
+**Preconditions**
+- Access and `$PROJECT` as in TC-DEPLOY-01. Read-only.
+- The latest **Deploy to production** run: its deploy job succeeded, and no rollback ran after it.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | For `api-service`, `agents-service` and `gotenberg`: `gcloud run services describe <service> --project "$PROJECT" --region us-central1 --format='value(status.traffic)'` | The entry holding 100 percent has `latestRevision` true, e.g. `{'latestRevision': True, 'percent': 100, 'revisionName': 'api-service-00123-abc'}`. An entry with a tag and no percent (such as the `candidate` tag FF3 probed with) may be listed too; it carries no traffic. |
+| P2 | The same with `--format='value(status.latestReadyRevisionName)'`. | The revision named in P1: the newest ready revision is the one serving. |
+| P3 | In the run, step **Deploy all services**: find each service's deploy. | Each "Service [<service>] revision [<revision>] has been deployed and is serving 100 percent of traffic." is followed by a traffic update of the same service to its latest revision (`serve_latest`), with no error. The revisions are P1's. |
+| P4 | From the repo root: `bash -n scripts/deploy.sh`, then `grep -n -E '^ *(gcloud run deploy\|serve_latest) [a-z-]+' scripts/deploy.sh` | `bash -n` prints nothing. Each `gcloud run deploy` (api-service, worker-service, agents-service, gotenberg) is followed by `serve_latest` for the same service. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | When a rollback has happened (TC-DEPLOY-03): run P1 before and after the next deploy. | Before: 100 percent on the revision the rollback went to, with no `latestRevision` (pinned). After: 100 percent, `latestRevision` true, on the new revision. Before FF3 a pinned service stayed pinned: every later deploy made a revision that gcloud reported as "serving 100 percent of traffic" and that got none. api-service served the 29 Aug build until 30 Sep. |
+| N2 | `gcloud run revisions list --service api-service --project "$PROJECT" --region us-central1 --limit 5` (and the same for the other two). | The newest revision is P1's, and it is the one marked active. Older revisions, including any a past rollback went to, get no traffic (P1 lists none of them with a percent). |
+
+**Automated coverage:** none (see TC-DEPLOY-01).
+
+### TC-DEPLOY-03 · When the production smoke fails, the rollback returns the three services and the web app to what was recorded, leaves the marketing site, and names them in the run summary (verify when it happens)
+
+**Covers:** FF3 · **Priority:** P1 · **Surface:** CI (GitHub Actions), GCP, Firebase console · **Roles:** operator (read access; P9–P11 need deploy rights)
+
+**Preconditions**
+- **Verify when it happens.** The rollback runs only when a production smoke test fails after a successful deploy. Staging that in production would break the live app until the rollback lands, so this case is not run on purpose. When a run's job **Auto-rollback (smoke failed)** runs, check P1–P8 on that run.
+- **Manual procedure** (P9–P11): the launch doc's "Rolling back if a deploy breaks something" (`docs/operations/20-CLOUD-RUN-LAUNCH.md`). It is for a deploy that broke production without an auto-rollback: a manual run with **skip-smoke** or **skip-rollback** ticked, or a fault the smoke tests don't catch. Run it only when a rollback is needed, with the owner's OK. It needs deploy rights on the project (Cloud Run Admin, Firebase Hosting Admin).
+- Access, `$PROJECT` and commands J–K as in TC-DEPLOY-01.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | In the failed run, the deploy job's step **Record what is serving now**. | Note the three revisions and the web app's version (TC-DEPLOY-01 P1). |
+| P2 | Job **Auto-rollback (smoke failed)** → step **Roll Cloud Run services back to what was serving**. | `Rolling agents-service back to <revision>`, `Rolling api-service back to <revision>` and `Rolling gotenberg back to <revision>`, each with P1's revision and each followed by gcloud's traffic update, with no error. |
+| P3 | Step **Roll the web app back to its previous release**. | `Web app release created: version <id>`, with P1's version id. |
+| P4 | The run's summary page. | "⛔ Auto-rollback executed", then "The smoke gate failed against the new deploy, so traffic went back to what was serving before it:" and the list `api-service: <revision>`, `agents-service: <revision>`, `gotenberg: <revision>`, `web app: Hosting version <id>`, with P1's values. Then "The marketing site stays as deployed. The next deploy serves its own new revisions again." and three next steps. |
+| P5 | For each service, TC-DEPLOY-02 P1's command. | 100 percent on P1's revision, without `latestRevision` (the rollback pins it), although a newer revision exists. |
+| P6 | Command K for the web app (or Firebase console → Hosting → the web app's site → release history). | The newest release is P1's version, with the message "Auto-rollback: the smoke gate failed in run <run id>". |
+| P7 | Command K for the marketing site. | No release from the rollback: its newest release is the failed run's own deploy. |
+| P8 | After a fix is pushed, the next deploy. | Its **Record what is serving now** shows the pinned revisions of P5, and after it TC-DEPLOY-02 P1 shows 100% LATEST on the new revisions: the pin lasted only until this deploy. |
+| P9 | Manual: `gcloud run revisions list --service api-service --project "$PROJECT" --region us-central1` | The revisions, newest first. Pick the one that was serving before the bad deploy: the last run's **Record what is serving now** line for the service, or an auto-rollback's summary. Not simply the second-newest: after a failed deploy, that can be a build that never served. |
+| P10 | Manual: `gcloud run services update-traffic api-service --project "$PROJECT" --to-revisions=<that revision>=100 --region us-central1`. Repeat for agents-service and gotenberg if the bad deploy changed them. | TC-DEPLOY-02 P1 shows 100 percent on that revision. The next deploy sends the traffic to its own new revision again. To unpin without deploying: `gcloud run services update-traffic api-service --project "$PROJECT" --to-latest --region us-central1`. |
+| P11 | Manual, web app: Firebase console → Hosting → the web app's site → release history → **Rollback** on the release that was live before. | The site serves that release again; command J prints its version. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | A run whose deploy job failed, if there is one. | **Auto-rollback (smoke failed)** is skipped: a deploy that broke by itself isn't rolled back. |
+| N2 | A manual run (**Run workflow**) with **skip-rollback** ticked whose smoke failed, or one with **skip-smoke**, if there is one. | The rollback job is skipped. |
+| N3 | A rollback after a deploy job that recorded nothing for a piece (a service's first deploy, or TC-DEPLOY-01 N1's warning for the web app). | The rollback logs `Skipping <service> — nothing was recorded as serving before this deploy` or `Skipping the web app — no live release was recorded before this deploy`, and goes on with the rest. The summary shows `unchanged` for that piece. |
+| N4 | After a rollback, TC-DEPLOY-02 N2's `revisions list`. | The revision serving is the recorded one, whatever lies between. Revisions made after it, such as the failed deploy's, get no traffic. The old rollback took each service's second-newest revision: on 26 Sep, a build that had never served. |
+
+**Automated coverage:** none (see TC-DEPLOY-01). The rollback's release call was checked once, on a temporary preview channel of the marketing site (deleted afterwards).
+
+### TC-DRAFT-01 · A supply or purchase request is drafted as a vendor agreement from the newest vendor-agreement template, named in words, with its purpose first and the unstated terms left blank
+
+**Covers:** GG1 · **Priority:** P2 · **Surface:** UI (Assistant), API · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- Command L, as admin-a and legal-a: the template `$T_SUPPLY`, "QA Supply Agreement", published and typed `VENDOR_AGREEMENT`, with blanks for our company, the counterparty, the effective date, the goods, the payment terms, the term and the governing law; and an executed NDA with QA Meridian Foods, so that counterparty's history points to the wrong type.
+- The planner drafts from the newest published template of the chosen type (the most recently updated one), so after command L it uses "QA Supply Agreement" even if Org A has other vendor-agreement templates. Command M checks it: `templateName` is "QA Supply Agreement".
+- No Org A contract names QA Kestrel Packaging: `curl -s "$API/contracts?search=Kestrel" -H "Authorization: Bearer $LEGAL_A" | jq .total` prints `0`.
+- Signed in as legal-a on `/agent` (sidebar → **Assistant**). The card, its buttons and Undo are as in TC-AI-05.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | **New conversation**, then send: "We supply raw materials to QA Meridian Foods for their bakery lines. Draft the agreement, New York law." | The chips include `contract_search`, `counterparty_memory` and `contract_create_from_template`, then an "About to run `contract_create_from_template`" card with the badge "Undoable". Its summary reads `Create a draft vendor agreement for QA Meridian Foods from the template "QA Supply Agreement" — N term(s) left blank to fill in: …`: the type in words, never `VENDOR_AGREEMENT`. |
+| P2 | Read the reply around the card. | It opens with one line on what the agreement is for, e.g. "We're supplying raw materials to QA Meridian Foods, so this is a supply agreement." Then it names the template and the term it applied (New York law), and lists the terms left blank. It doesn't say the contract is saved. |
+| P3 | Click **Edit** on the card and read the Arguments. | `contractType` is `VENDOR_AGREEMENT` and `templateId` is `$T_SUPPLY`: codes live in the arguments, not in the chat. `title` says what the agreement is, e.g. "QA Meridian Foods — Raw Material Supply Agreement". (With no title from the model, the planner falls back to "QA Meridian Foods — VENDOR_AGREEMENT", a type code on the contract itself: record it if you see it.) `variables` has `our_company` (Org A's name), `counterparty_name` "QA Meridian Foods" and `governing_law` "New York", and no `effective_date`, `payment_terms` or `term`. |
+| P4 | Click **Review**, then **Apply**. Then click **Undo** on the receipt. | "Applied · Create a draft vendor agreement for QA Meridian Foods…" with **Undo**. The Doc pane shows the draft with New York filled in and blanks where the unstated terms go. After Undo the receipt reads "Undone" and the draft is gone, as in TC-AI-05 P7. |
+| P5 | **New conversation**, then send: "We're buying 40 tonnes a month of recycled cardboard packaging from QA Kestrel Packaging. Draft the agreement." | A card reading `Create a draft vendor agreement for QA Kestrel Packaging from the template "QA Supply Agreement" — …`. The reply's first line says we are buying packaging from them, so this is a supply or vendor agreement. Click **Cancel**. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | In P1, open the `contract_search` and `counterparty_memory` chips. | They found the NDA with QA Meridian Foods, and the draft is still a vendor agreement, not another NDA: the purpose decides the type, and past deals are only context. |
+| N2 | Search the text of P1, P2 and P5 (answers and card summaries) for `VENDOR_AGREEMENT`, `OTHER`, `ORDER_FORM` and `$T_SUPPLY`'s id. | No matches. |
+| N3 | Look at P3's Arguments and P4's Doc pane. | Nothing unstated is filled in: no effective date (not today's), no payment terms and no term length. |
+| N4 | The planner can't tell the type on its own: command M's call without `contractType`, with P1's message as `userMessage`. | `{"error":"CONTRACT_TYPE_AMBIGUOUS","detail":"Could not tell which contract to draft. Pass contract_type (NDA \| MSA \| SOW \| VENDOR_AGREEMENT \| LICENSE \| EMPLOYMENT \| DATA_PROCESSING) or a template_id from template_list."}`. No keyword in "we supply raw materials" names a type: the vendor agreement in P1 is the model's reading of the purpose (step 0). |
+
+Command L (fixtures: the template as admin-a, the past NDA as legal-a):
+```bash
+export T_SUPPLY=$(curl -s -X POST "$API/templates" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"name":"QA Supply Agreement","contractType":"VENDOR_AGREEMENT","isPublished":true,"sections":[{"title":"Supply Agreement","content":"<p>This Supply Agreement is made between {{our_company}} and {{counterparty_name}}, effective {{effective_date}}.</p><p>1. Goods. {{goods}}.</p><p>2. Payment. {{payment_terms}}.</p><p>3. Term. {{term}}.</p><p>4. Governing law. The laws of {{governing_law}}.</p>"}]}' | jq -r .id)
+cat > qa-gg1.csv <<CSV
+title,type,status,counterpartyname
+QA Meridian Foods — Mutual NDA,NDA,executed,QA Meridian Foods
+CSV
+curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg1.csv;type=text/csv" | jq -c .results
+echo $T_SUPPLY
+```
+
+Command M (`tj`: an internal tool call that prints only the JSON body, unlike TC-ACC-12's `tool`; then the planner's choice for a vendor agreement):
+```bash
+tj() { curl -s -X POST "http://localhost:3001/api/internal/ai/tools/$1" -H "x-internal-secret: $INTERNAL_SECRET" -H "x-internal-service: agents" -H "Content-Type: application/json" -d "$2"; }
+tj contract_draft '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","userMessage":"supply agreement","contractType":"VENDOR_AGREEMENT","counterpartyName":"QA Meridian Foods"}' \
+  | jq '{templateName, contractType, unfilledVariables, error, templates: [.templates[]?.name]}'
+```
+
+**Automated coverage:** none for GG1. The type chosen from the purpose, the first line and the retry after NO_TEMPLATE_MATCH are the model's, from the orchestrator's DRAFT REQUESTS rule, and the card's wording comes from `_TYPE_LABELS` in `apps/agents/app/tools/contract_create_from_template.py`; neither has a test. The planner itself is covered by `apps/api/src/routes/draft-plan.integration.test.ts` (C12, TC-AI-05).
+
+### TC-DRAFT-02 · After NO_TEMPLATE_MATCH, a listed template whose name fits the purpose is used straight away; when none fits, the reply says so in plain words
+
+**Covers:** GG1 · **Priority:** P2 · **Surface:** UI (Assistant), API · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- `$T_SUPPLY` and commands L–M from TC-DRAFT-01. No other published Org A template is typed `VENDOR_AGREEMENT`, and no untyped one has "vendor" or "supplier" in its name or description (the seeded templates all have a type).
+- Retype the fixture, so the planner can't find it by type: `curl -s -X PATCH "$API/templates/$T_SUPPLY" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"contractType":"Supply Agreement"}' | jq .contractType`. Afterwards, restore it with `-d '{"contractType":"VENDOR_AGREEMENT","isPublished":true}'`.
+- TC-AI-05 N3 predates GG1. The seeded "Employment Offer Letter (At-Will)" and "Data Processing Addendum (GDPR/CCPA)" are typed `Employment` and `DPA`, not `EMPLOYMENT` and `DATA_PROCESSING`, so asking for either type now reaches NO_TEMPLATE_MATCH with a template whose name fits, and the chat is likely to draft from it rather than show no card.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | Command M. | `error` "NO_TEMPLATE_MATCH", `templateName` null, and `templates` starting with "QA Supply Agreement" (the newest). |
+| P2 | On `/agent`, **New conversation**, send TC-DRAFT-01 P1's message. Open the first `contract_create_from_template` chip. | Its Result is the NO_TEMPLATE_MATCH error listing "QA Supply Agreement". Without asking you anything, the answer calls `contract_create_from_template` again and shows a card: `Create a draft vendor agreement for QA Meridian Foods from the template "QA Supply Agreement" — …`. When the second call passes only the template, the card reads "a draft Supply Agreement", the template's own type label. |
+| P3 | Read the reply, then click **Cancel**. | One line on the purpose, then the template by name. No question such as "Your org doesn't have a vendor agreement template yet — I can use …" comes before the card. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Unpublish the fixture: `curl -s -X PATCH "$API/templates/$T_SUPPLY" -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{"isPublished":false}' \| jq .isPublished`. **New conversation**, send the same message. | No card. The reply says in plain words that Org A has no supply or vendor agreement template, and offers the closest templates by name or suggests creating one in Templates. No template id, and no type code such as `VENDOR_AGREEMENT` or `OTHER`. A card for an unrelated template (an MSA, say) is the failure GG1 guards against. |
+| N2 | Search P2's and N1's text for template ids and type codes. | None. |
+
+**Automated coverage:** none (see TC-DRAFT-01).
+
+### TC-FAMILY-01 · contract_get and contract_summarize show a contract's family: the amendments' text inline and redacted, a note when terms change, only the caller's own relatives, and benchmark terms on search cards (API)
+
+**Covers:** GG2 · **Priority:** P1 · **Surface:** API (internal) · **Roles:** legal-a, rep-a, admin-b (as the identity passed to the tools)
+
+**Preconditions**
+- Dev environment with `$INTERNAL_SECRET`, and `tj` from command M. These calls imitate the agents service calling the API's tool routes; TC-FAMILY-02 is the chat.
+- Org A's PII mode is redact (§0.1). `qverify` from TC-WF-04 command A.
+- Command N builds the fixture: `$F_BASE` "QA Harbor Analytics — Platform License", executed, imported by rep-a (so rep-a owns it), auto-renewing with 30 days' notice; under it `$F_AMD` "QA Harbor Analytics — Platform License — Amendment No. 1", made by legal-a, whose text changes the notice period to 60 days and carries the test SSN 219-09-9999; and `$F_EXH` "QA Harbor Analytics — Platform License — Exhibit A", made by rep-a.
+- `fam <contract id> <user id>` (command O) prints the fields these steps read. `$ORG_A`, `$ORG_B`, `$LEGAL_A_ID`, `$REP_A_ID`, `$ADMIN_B_ID` as in §0.3.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `fam $F_BASE $LEGAL_A_ID` | `relationshipType` null and `parent` null. `children`: the amendment (`relationshipType` "amendment"), then the exhibit ("exhibit_only"), in the order they were made. `siblings` is empty. `familyNote` starts "A later contract changes this one's terms (family.children with relationshipType amendment or renewal).", says "What each says is in its `text`: read it before stating any term.", and ends "Where they differ, the latest amendment wins (its prices, notice periods, caps and dates replace this contract's): state the terms as amended, naming the amendment." |
+| P2 | In P1's output, the children's `text`. | The amendment's `text` is its document: `Section 3.2 is amended by replacing "thirty (30) days" with "sixty (60) days". Notices to the signatory, SSN [REDACTED:SSN].`, with `textTruncated` false. The exhibit's `text` is null: it changes no terms, so it is listed, not quoted. |
+| P3 | `fam $F_AMD $LEGAL_A_ID` | `relationshipType` "amendment", `parent` "QA Harbor Analytics — Platform License", `siblings` the exhibit, and `familyNote` `This contract amends "QA Harbor Analytics — Platform License" (family.parent): terms it does not change are in that contract.` |
+| P4 | `tj contract_summarize '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$F_BASE'"}' \| jq '{children: [.family.children[].title], familyNote}'` | The same two children and the same `familyNote` as P1: contract_summarize, which the assistant prefers for key terms, shows the family too. |
+| P5 | `tj counterparty_memory '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"QA Harbor Analytics"}' \| jq '[.deals[] \| {title, parentContractId, relationshipType}]'` | The amendment's deal has `parentContractId` `$F_BASE` and `relationshipType` "amendment"; the base's has both null. |
+| P6 | `tj contract_search '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","query":"QA Harbor Analytics"}' \| jq '[.results[] \| {title, parentContractId, relationshipType, terms, keyTerms}]'` | The exhibit's card has `parentContractId` `$F_BASE` and `relationshipType` "exhibit_only". The base's `terms` is `{"autoRenew":true,"noticeDays":30}`. No card has `keyTerms` (null in this output): search cards carry only the structural terms a benchmark compares. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `fam $F_EXH $LEGAL_A_ID` | `relationshipType` "exhibit_only", `parent` the base, `siblings` the amendment, and `familyNote` null: an exhibit changes no terms, so it gets no note. |
+| N2 | Own scope: `fam $F_BASE $REP_A_ID` (rep-a owns the base and the exhibit, not the amendment). | `children` has only the exhibit, and `familyNote` is null: rep-a sees neither legal-a's amendment nor its text, and isn't told it exists. |
+| N3 | `fam $F_EXH $REP_A_ID`, then `fam $F_AMD $REP_A_ID`. | From the exhibit, `parent` is the base and `siblings` is empty. The amendment itself: `detail` "Contract not found in this org". |
+| N4 | Another org: `tj contract_get '{"orgId":"'$ORG_B'","userId":"'$ADMIN_B_ID'","contractId":"'$F_BASE'"}' \| jq .detail` | "Contract not found in this org". |
+| N5 | `tj contract_get '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$F_BASE'"}' \| grep -c '219-09-9999'` | `0`: the amendment's SSN never leaves unredacted. |
+| N6 | Optional, more than three amendments: make three more under `$F_BASE` with command N's amendment call (titles "… Amendment No. 2" to "… Amendment No. 4", any text), then repeat P1. Delete them afterwards with `curl -s -X DELETE "$API/contracts/<id>" -H "Authorization: Bearer $ADMIN_A"`. | Only the latest three amendments have `text`; Amendment No. 1 is listed without it, and `familyNote` adds "Read the others with contract_get." |
+| N7 | An unsigned amendment is only pending: make "… Amendment No. 2" with command N's amendment call, leave it a draft, and repeat P1. | It is listed among `children` with its `status`, and `familyNote` adds "One amendment in family.children is not signed yet (see status): it changes no term until it is…". Its `text` isn't inline: only signed amendments' text is. Delete it afterwards. |
+
+Command N (the family fixture; `day +75` is the date 75 days from today):
+```bash
+day() { date -v"$1"d +%F 2>/dev/null || date -d "$1 days" +%F; }
+cat > qa-gg2.csv <<CSV
+title,type,status,counterpartyname,expirydate
+QA Harbor Analytics — Platform License,LICENSE,executed,QA Harbor Analytics,$(day +75)
+CSV
+export F_BASE=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $REP_A" -F "file=@qa-gg2.csv;type=text/csv" | jq -r '.results[0].id')
+qverify $F_BASE '{"field":"autoRenew","value":"yes"}'; qverify $F_BASE '{"field":"noticePeriodDays","value":30}'
+export F_AMD=$(curl -s -X POST "$API/contracts/$F_BASE/amendments" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' \
+  -d '{"relationshipType":"amendment","title":"QA Harbor Analytics — Platform License — Amendment No. 1","description":"Section 3.2 is amended by replacing \"thirty (30) days\" with \"sixty (60) days\". Notices to the signatory, SSN 219-09-9999."}' | jq -r .id)
+export F_EXH=$(curl -s -X POST "$API/contracts/$F_BASE/amendments" -H "Authorization: Bearer $REP_A" -H 'content-type: application/json' \
+  -d '{"relationshipType":"exhibit_only","title":"QA Harbor Analytics — Platform License — Exhibit A"}' | jq -r .id)
+# signed: only an executed amendment changes the terms (55dc440); approved through W-QA, then marked executed
+approve $F_AMD; patchc $F_AMD '{"status":"EXECUTED"}'
+echo $F_BASE $F_AMD $F_EXH
+```
+
+Command O (the family fields of `contract_get`; the first argument is the contract, the second the caller):
+```bash
+fam() { tj contract_get '{"orgId":"'$ORG_A'","userId":"'$2'","contractId":"'$1'"}' | jq '{title, relationshipType, parent: .family.parent.title, children: [.family.children[]? | {title, relationshipType, text, textTruncated}], siblings: [.family.siblings[]?.title], familyNote, detail}'; }
+```
+
+**Automated coverage:** `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 7 family tests: contract_get on the base lists its children with their relationship; the amendment's text is inline and redacted, the exhibit's isn't; contract_get on an amendment names what it amends; an exhibit gets no note; contract_summarize shows the family; counterparty_memory and contract_search rows carry the link; an own-scope caller sees only its own relatives; and its test that search cards carry `terms`, not the raw key terms). The fail-closed path, where the amendments' text is left out if redaction fails, has no test.
+
+### TC-FAMILY-02 · In chat, a question about an amended term gets the amended answer, naming the amendment
+
+**Covers:** GG2 · **Priority:** P2 · **Surface:** UI (Assistant) · **Roles:** legal-a, rep-a
+
+**Preconditions**
+- Needs: agents service + LLM key.
+- TC-FAMILY-01's fixture (command N): the base's key terms say 30 days' notice; Amendment No. 1's text says 60. Without N6's extra amendments.
+- Signed in as legal-a on `/agent`.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | **New conversation**, then ask: "How much notice do we have to give QA Harbor Analytics to stop the platform license renewing?" | 60 days, naming the amendment, e.g. "60 days, extended from 30 by Amendment No. 1". Not 30 days as the current period. The chips include `contract_get` or `contract_summarize`; open it, and its Result has `family` and `familyNote`. |
+| P2 | Follow up: "What did the original license say?" | 30 days, in the base license, since replaced by the amendment. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Search P1's answer and its chips' Results for 219-09-9999. | Not found; the chip shows `[REDACTED:SSN]`. |
+| N2 | Sign in as rep-a. **New conversation**, ask P1's question. | The answer never mentions Amendment No. 1, its text or 60 days: the amendment is legal-a's, outside rep-a's scope, so rep-a's answer can only rest on the base license. |
+
+**Automated coverage:** none for the answer: rule A18 (amendments) in the orchestrator's prompt. What it rests on is covered in TC-FAMILY-01.
+
+### TC-INVL-01 · invoice_list gives a contract's or a vendor's invoices oldest first with totals, inside the org and the caller's scope, redacted, and says when there are none (API)
+
+**Covers:** GG3 · **Priority:** P1 · **Surface:** API (internal) · **Roles:** legal-a, rep-a, admin-b (as the identity passed to the tool)
+
+**Preconditions**
+- `tj` from command M. Org A's PII mode is redact.
+- Command P builds the fixture: two executed contracts with counterparty "QA Ledger Supplies", `$I_REP` imported by rep-a (rep-a owns it) and `$I_LEGAL` imported by legal-a; then invoices entered by legal-a (QL-B1 by admin-b, in Org B):
+
+| Invoice | Contract | Vendor billed | Date | Amount (USD) | Other |
+|---|---|---|---|---|---|
+| QL-1 | `$I_REP` | QA Ledger Supplies Inc. | 2026-03-15 | 1,000.00 | description "100 units @ $10" |
+| QL-2 | `$I_REP` | QA Ledger Supplies Inc. | 2026-06-15 | 1,500.50 | description with an email; then disputed, with an email in the reason |
+| QL-3 | `$I_LEGAL` | QA Ledger Supplies Inc. | 2026-07-01 | 200.00 | |
+| QL-U1 | none | QA Ledger Supplies Billing | 2026-08-02 | 60.00 | |
+| QL-B1 | none (Org B) | QA Ledger Supplies Inc. | 2026-05-01 | 999.00 | |
+
+- QL-2 is entered before QL-1, so date order isn't entry order. Each line command P prints shows the invoice's `contractId`; QL-U1's must be null. If the auto-match linked it to a contract with an open payment obligation, enter it again with another vendor name.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$I_REP'"}' \| jq '{numbers: [.items[].invoiceNumber], total, billedTotal, byStatus, note}'` | `numbers` ["QL-1","QL-2"], oldest first. `total` 2, `billedTotal` {"USD":2500.5}, `byStatus` {"PENDING":1,"DISPUTED":1}, `note` null. |
+| P2 | The same call, `\| jq '.items[1] \| {invoiceDate, amount, status, description, disputeReason, contractTitle, counterpartyName}'` | QL-2: `invoiceDate` "2026-06-15", `amount` 1500.5, `status` "DISPUTED", `contractTitle` "QA Ledger Supplies — Rep Contract", `counterpartyName` "QA Ledger Supplies". `description` "100 units @ $15.005; billing contact [REDACTED:EMAIL]" and `disputeReason` "Billed at the old rate. Contact [REDACTED:EMAIL]". |
+| P3 | By vendor, in any case: `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"qa ledger supplies"}' \| jq '{numbers: [.items[].invoiceNumber], billedTotal}'` | ["QL-1","QL-2","QL-3","QL-U1"] and {"USD":2760.5}. Invoices match by the vendor billed (QL-U1's "QA Ledger Supplies Billing") or by the contract's counterparty. |
+| P4 | P3 with `"status":"DISPUTED"` added to the body. | ["QL-2"]. |
+| P5 | Optional, with TC-ACC-16's `OWN_EDITOR` role on rep-a (token `$REP_A_OE`): `inv '{"vendorName":"QA Ledger Supplies Billing","invoiceNumber":"QL-U2","amount":50,"currency":"USD","invoiceDate":"2026-08-01"}' "$REP_A_OE"`, then N1. | ["QL-1","QL-2","QL-U2"]: rep-a also sees the unmatched invoice it entered. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Own scope: P3 with `"userId":"'$REP_A_ID'"`. | ["QL-1","QL-2"], the invoices of rep-a's contract. Not QL-3 (legal-a's contract) and not QL-U1 (unmatched, entered by legal-a), as on the Invoices page. |
+| N2 | Org B: `tj invoice_list '{"orgId":"'$ORG_B'","userId":"'$ADMIN_B_ID'","counterpartyName":"QA Ledger Supplies"}' \| jq '[.items[].invoiceNumber]'` | ["QL-B1"]. P3 never showed it, and Org A's invoices never show here. |
+| N3 | A user of another org naming Org A: P3 with `"userId":"'$ADMIN_B_ID'"`. | `{"detail":"The user in this conversation does not have view:contract permission"}` (403). |
+| N4 | P2's call piped to `grep -c -e 'ap@qa-ledger.example' -e 'jordan.rivera@example.com'` | `0`. |
+| N5 | Nothing on file: `tj invoice_list '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","counterpartyName":"Qwxzy Vorptrak"}' \| jq '{items, total, note}'`, then the same with `"contractId":"'$F_EXH'"` (TC-FAMILY-01's exhibit) in place of the name. | Both `items` [], `total` 0 and `note` "No invoices on file for this. Say so; do not estimate what was billed." |
+
+Command P (the fixture; `inv` enters one invoice and prints its number, id and contract):
+```bash
+cat > qa-gg3-rep.csv <<CSV
+title,type,status,counterpartyname
+QA Ledger Supplies — Rep Contract,VENDOR,executed,QA Ledger Supplies
+CSV
+cat > qa-gg3-legal.csv <<CSV
+title,type,status,counterpartyname
+QA Ledger Supplies — Legal Contract,VENDOR,executed,QA Ledger Supplies
+CSV
+export I_REP=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $REP_A" -F "file=@qa-gg3-rep.csv;type=text/csv" | jq -r '.results[0].id')
+export I_LEGAL=$(curl -s -X POST "$API/contracts/bulk-import" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg3-legal.csv;type=text/csv" | jq -r '.results[0].id')
+inv() { curl -s -X POST "$API/invoices" -H "Authorization: Bearer ${2:-$LEGAL_A}" -H 'content-type: application/json' -d "$1" | jq -c '{number: .invoice.invoiceNumber, id: .invoice.id, contractId: .invoice.contractId}'; }
+inv '{"contractId":"'$I_REP'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-2","amount":1500.5,"currency":"USD","invoiceDate":"2026-06-15","description":"100 units @ $15.005; billing contact ap@qa-ledger.example"}'
+inv '{"contractId":"'$I_REP'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-1","amount":1000,"currency":"USD","invoiceDate":"2026-03-15","description":"100 units @ $10"}'
+inv '{"contractId":"'$I_LEGAL'","vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-3","amount":200,"currency":"USD","invoiceDate":"2026-07-01"}'
+inv '{"vendorName":"QA Ledger Supplies Billing","invoiceNumber":"QL-U1","amount":60,"currency":"USD","invoiceDate":"2026-08-02"}'
+inv '{"vendorName":"QA Ledger Supplies Inc.","invoiceNumber":"QL-B1","amount":999,"currency":"USD","invoiceDate":"2026-05-01"}' "$ADMIN_B"
+# then dispute QL-2, with its id from the first line above; prints {"ok":true}
+curl -s -X POST "$API/invoices/<QL-2 id>/dispute" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' -d '{"reason":"Billed at the old rate. Contact jordan.rivera@example.com"}'
+```
+
+**Automated coverage:** `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 4 invoice_list tests: a contract's invoices oldest first, with totals per currency and by status; a vendor's by the vendor billed or the contract's counterparty, in this org only, and by status; an own-scope caller sees its own contracts' invoices and the unmatched ones it entered; the note when nothing is on file), `apps/api/src/lib/agent-tool-identity.test.ts` (its generated case "invoice_list.py sends the caller as userId"). The redaction of descriptions and dispute reasons has no test of its own; P2 and N4 are its check.
+
+### TC-RENEW-01 · The renewal notice deadline follows the latest amendment's notice period and names it, and neither an amendment nor an exhibit is a renewal of its own (GET /renewals, the Renewals page, renewal_advice)
+
+**Covers:** GG4 · **Priority:** P2 · **Surface:** API, UI · **Roles:** legal-a, admin-a
+
+**Preconditions**
+- `approve` (TC-WF-01 command A), `qverify` and `patchc` (TC-WF-04 command A), `tj` (command M) and `day` (command N).
+- Command Q builds the fixture. Everything is executed, owned by legal-a, has counterparty "QA Northwind Data" and expires 75 days from today (T+75):
+
+| Variable | Title | Its own terms | Linked under it |
+|---|---|---|---|
+| `R_2` | QA GG4 Licence A | auto-renews, 30 days' notice | `R_AMD` "QA GG4 Licence A — Amendment No. 1", 60 days' notice; `R_EXH` "QA GG4 Licence A — Exhibit A", 180 days' notice (an exhibit changes no terms) |
+| `R_3` | QA GG4 Licence B | auto-renews, 30 days' notice | `R_OFF` "QA GG4 Licence B — Amendment No. 1", auto-renew "no" |
+| `R_4` | QA GG4 Licence C | auto-renews, 30 days' notice | `R_SIL` "QA GG4 Licence C — Amendment No. 1", a new `unitPrice` and nothing on notice |
+
+- Licence A's deadline from its own 30 days would be T+45; from the amendment's 60 it is T+15. Run on 30 Sep 2026, this is the Databricks example: expiry 14 Dec, deadline moved from 14 Nov to 15 Oct.
+- Known limits (FIX_TRACKER GG4): the Renewals page doesn't show `setBy` yet, and an amendment that changes the expiry date isn't applied (N4).
+- Day counts on the Renewals page may be one less, depending on the time zone.
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s "$API/renewals" -H "Authorization: Bearer $LEGAL_A" \| jq --arg a "$R_2" --arg b "$R_3" --arg c "$R_4" '[.data[] \| select(.id == $a or .id == $b or .id == $c) \| {title, notice}]'` | A: `{"autoRenew":true,"days":60,"deadline":"<T+15>T00:00:00.000Z","setBy":"QA GG4 Licence A — Amendment No. 1"}`; the exhibit's 180 days don't count. C: `{"autoRenew":true,"days":30,"deadline":"<T+45>T00:00:00.000Z","setBy":null}`: an amendment silent on notice keeps the base period. B: `{"autoRenew":false,"days":30,"deadline":null,"setBy":null}`: the amendment turned auto-renewal off, so there is no deadline. |
+| P2 | Sidebar → **Renewals** (bucket **Next year**). Find the three rows and hover A's notice line. | A: red "Notice by <T+15, e.g. Oct 15, 2026> · 15d left" with a warning icon, and the tooltip "Auto-renews. 60 days' notice to terminate, so notice must be served by <date>." C: grey "Notice by <T+45>". B: no notice line. **Notice at risk** includes A, not B or C. |
+| P3 | `tj renewal_advice '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","contractId":"'$R_2'"}' \| jq '.items[0] \| {contractTitle, autoRenews, noticeDays, noticePeriodSetBy, noticeDeadline, noticeDeadlinePassed}'` | `{"contractTitle":"QA GG4 Licence A","autoRenews":true,"noticeDays":60,"noticePeriodSetBy":"QA GG4 Licence A — Amendment No. 1","noticeDeadline":"<T+15>","noticeDeadlinePassed":false}`. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | P1's call with `'[.data[] \| select(.id == $x or .id == $y or .id == $z or .id == $w)] \| length'` and `--arg x "$R_AMD" --arg y "$R_EXH" --arg z "$R_OFF" --arg w "$R_SIL"`. | `0`. Each is executed and expires in 75 days, but none is a renewal of its own. Before GG4 each was listed beside its contract, with a row and a deadline of its own. |
+| N2 | The Renewals page. | No row titled "… — Amendment No. 1" or "… — Exhibit A". |
+| N3 | `tj renewal_advice '{"orgId":"'$ORG_A'","userId":"'$LEGAL_A_ID'","leadDays":180,"limit":50}' \| jq --arg x "$R_AMD" --arg y "$R_EXH" '{listed: [.items[] \| select(.contractId == $x or .contractId == $y)] \| length, coverage}'` | `listed` 0. (If `coverage.complete` is false, Org A has more than 50 renewals in 180 days and the page may stop before these; P1 and N1 still hold.) |
+| N4 | Known limit: the amendment moves the expiry a year on, `qverify $R_AMD '{"field":"expiryDate","value":"'$(day +440)'"}'`, then P1. | A's `notice.deadline` is still T+15: the deadline counts back from the contract's own expiry, and an amendment's expiry date isn't applied (FIX_TRACKER GG4, "Not done"). Put it back with `$(day +75)`. |
+| N5 | An unsigned amendment changes nothing: `export R_DFT=$(amend $R_2 amendment "QA GG4 Licence A — Amendment No. 2 (draft)")`, then `qverify $R_DFT '{"field":"noticePeriodDays","value":90}'`, leave it a draft, and repeat P1. | A's `notice.days` is still 60, its deadline still T+15, and `notice.setBy` still "QA GG4 Licence A — Amendment No. 1": only a signed (EXECUTED) amendment changes the terms. `contract_get` on Licence A lists Amendment No. 2 with its status, and its `familyNote` says it is not signed yet. Delete the draft afterwards, so the later cases don't see it. |
+
+Command Q (the fixture):
+```bash
+cat > qa-gg4.csv <<CSV
+title,type,status,counterpartyname,expirydate
+QA GG4 Licence A,LICENSE,executed,QA Northwind Data,$(day +75)
+QA GG4 Licence B,LICENSE,executed,QA Northwind Data,$(day +75)
+QA GG4 Licence C,LICENSE,executed,QA Northwind Data,$(day +75)
+CSV
+eval "$(curl -s -X POST $API/contracts/bulk-import -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg4.csv;type=text/csv" | jq -r '.results[] | "export R_\(.row)=\(.id)"')"
+for c in $R_2 $R_3 $R_4; do qverify $c '{"field":"autoRenew","value":"yes"}'; qverify $c '{"field":"noticePeriodDays","value":30}'; done
+# amend <parent> <relationshipType> <title>: a linked contract expiring with its parent; prints its id
+amend() { curl -s -X POST "$API/contracts/$1/amendments" -H "Authorization: Bearer $LEGAL_A" -H 'content-type: application/json' \
+  -d "{\"relationshipType\":\"$2\",\"title\":\"$3\",\"expiryDate\":\"$(day +75)\"}" | jq -r .id; }
+export R_AMD=$(amend $R_2 amendment "QA GG4 Licence A — Amendment No. 1")
+export R_EXH=$(amend $R_2 exhibit_only "QA GG4 Licence A — Exhibit A")
+export R_OFF=$(amend $R_3 amendment "QA GG4 Licence B — Amendment No. 1")
+export R_SIL=$(amend $R_4 amendment "QA GG4 Licence C — Amendment No. 1")
+qverify $R_AMD '{"field":"noticePeriodDays","value":60}'
+qverify $R_EXH '{"field":"noticePeriodDays","value":180}'
+qverify $R_OFF '{"field":"autoRenew","value":"no"}'
+qverify $R_SIL '{"field":"unitPrice","value":"US$0.27"}'
+# executed, as signed amendments are: approved through W-QA, then marked executed
+for c in $R_AMD $R_EXH $R_OFF $R_SIL; do approve $c; patchc $c '{"status":"EXECUTED"}'; done
+```
+
+**Automated coverage:** `apps/api/src/lib/renewal-notice.test.ts` (10; GG4 added the 4 in "amendedRenewalNotice", and its review a fifth, an unsigned amendment changes nothing: an amendment's notice period is used and named, 14 Dec less 60 days is 15 Oct; the latest amendment wins whatever order they come in; an amendment silent on notice keeps the base terms, and an exhibit is ignored; an amendment that turns auto-renewal off leaves no deadline), `apps/api/src/routes/contract-family-tools.integration.test.ts` (its 3 renewal_advice tests: the deadline from the period an amendment set, named in `noticePeriodSetBy`; search cards' `terms`; the amendment isn't listed as a renewal of its own), and TC-RENEW-02's scan test.
+
+### TC-RENEW-02 · The daily renewal scan alerts on the amended notice deadline, and never on an amendment or an exhibit
+
+**Covers:** GG4 · **Priority:** P2 · **Surface:** API, UI (notifications) · **Roles:** admin-a, legal-a
+
+**Preconditions**
+- TC-RENEW-01's fixture (command Q), not scanned yet: a contract is alerted at most once a week.
+- The scan runs by hand as in TC-WF-10: `POST $API/cron/renewals`, admin only. Day counts may be one less if the API runs west of UTC (it counts from local midnight).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `curl -s -X POST $API/cron/renewals -H "Authorization: Bearer $ADMIN_A" -H 'content-type: application/json' -d '{}' \| jq .` | `{"ok":true,"result":{…},"ranAt":…}`, with `errors` empty. |
+| P2 | As legal-a, the header's **Notifications** bell (or `GET $API/approvals/notifications`): Licence A's alert. | Title "Notice deadline in 15d · QA GG4 Licence A". Body "QA Northwind Data — auto-renews unless 60 days' notice is served by <T+15, YYYY-MM-DD>." From its own 30 days, the deadline (T+45) would be too far off to lead, and the alert would read "Expires in 75d · QA GG4 Licence A". |
+| P3 | Licence B's and C's alerts. | "Expires in 75d · QA GG4 Licence B" and "Expires in 75d · QA GG4 Licence C", each with the body "QA Northwind Data — review renewal options now.": B no longer auto-renews, and C's deadline (T+45) isn't within 30 days. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | Look for an alert about an amendment or the exhibit. | None titled "… — Amendment No. 1" or "… — Exhibit A", though each is executed and expires in 75 days: an amendment renews with its contract. |
+| N2 | Run P1 again. | No second alert for the QA GG4 licences; they are counted in `skippedCooldown`. |
+
+**Automated coverage:** `apps/api/src/lib/renewal-scan.integration.test.ts` (3; GG4 added "works the deadline out from the notice period an amendment set, and never renews an amendment on its own": an amendment that made the notice period 120 days gets its contract alerted on that deadline, neither amendment is alerted, and `GET /renewals` names the amendment in `setBy`).
+
+### TC-PREP-01 · "Prepare me for the <counterparty> renewal" writes the whole brief: the agreement by title, seven sections, terms as amended, each invoice against the price in force, the overcharge, and no ids
+
+**Covers:** GG5 (with GG2–GG4 in use) · **Priority:** P2 · **Surface:** UI (Assistant), API (chat stream) · **Roles:** legal-a
+
+**Preconditions**
+- Needs: agents service + LLM key. A brief takes three rounds of tool calls, about eight in all.
+- Command R builds the fixture. "QA Lakehouse — Platform License Agreement" (`$P_BASE`) is an uploaded text: US$0.25 per compute unit, payment in 30 days, 30 days' notice of non-renewal, renewal increases capped at 5%, the initial term ending 75 days from today. Its "Amendment No. 1" (`$P_AMD`), effective 60 days ago, makes the fee US$0.20 per unit and the notice 60 days. Both are executed. Three invoices are billed on the base:
+
+| Invoice | Date | Billed | Price in force on that date | Overcharge |
+|---|---|---|---|---|
+| QLH-101 | 90 days ago, before the amendment | 25,000 units @ US$0.25 = 6,250.00 | US$0.25 | none |
+| QLH-102 | 30 days ago | 25,000 units @ US$0.25 = 6,250.00 | US$0.20 | US$0.05 × 25,000 = US$1,250.00 |
+| QLH-103 | 5 days ago | 25,000 units @ US$0.20 = 5,000.00 | US$0.20 | none |
+
+- The benchmark compares with the org's other executed licence agreements, such as TC-FAMILY-01's and TC-RENEW-01's. For N3, TC-RENEW-01's QA Northwind Data licences, which have no invoices.
+- Command S runs one chat turn over the API and prints each tool call as `[tool <name>]` ahead of the answer (TC-ACC-15's command R with a new session each time). In `/agent` the same calls show as chips.
+- LLM output varies from run to run. Run P1 three times; each run should pass every check. Record any that doesn't, and which check (the tracker's check: five of five runs passed with gemini-2.5-flash).
+
+**Positive validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| P1 | `brief "Prepare me for the QA Lakehouse Co renewal." \| tee qa-gg5-brief.txt` (or send the message on `/agent`). | First the tool calls, in three rounds: `counterparty_memory` and `renewal_advice`; then `contract_get`, `obligations_list`, `invoice_list`, `playbook_check` and `renewal_advice`; then `contract_search` (and `contract_get` again if it needs to). No answer text appears between the `[tool …]` lines, such as "I'll now retrieve…". |
+| P2 | The brief's first line. | It names the agreement by its title and says why, e.g. "Renewal brief for the QA Lakehouse — Platform License Agreement: its notice deadline is the next one ahead." It may name other agreements on file, by title. |
+| P3 | The headings. | In this order: Timeline, Commercial terms, Obligations, Invoices vs pricing, Risks, Benchmark, What to renegotiate. |
+| P4 | Timeline and Commercial terms. | Expiry T+75, auto-renewing, and the notice deadline T+15, set by Amendment No. 1's 60 days, with about 15 days left to give notice. The fee is US$0.20 per compute unit (amended from US$0.25), renewal increases are capped at 5%, and payment is due in 30 days. Not 30 days' notice, a T+45 deadline or US$0.25 as the current fee. |
+| P5 | Invoices vs pricing. | Each invoice is checked against the price in force on its date. QLH-101 at US$0.25 is right, as it predates the amendment. QLH-102 is an overcharge, listed with its number, the rate billed (US$0.25), the agreed rate (US$0.20) and the difference: US$0.05 × 25,000 = US$1,250.00. QLH-103 is right. Total overbilled: US$1,250.00. |
+| P6 | What to renegotiate. | In this order, skipping what doesn't apply, each with its reason: a credit for the US$1,250.00 overcharge; the renewal price (the 5% cap, or a price hold for volume); terms the benchmark shows are worse than usual; the notice deadline, T+15, as the date to decide by. Chips for next steps follow. |
+
+**Negative validation**
+
+| # | Step | Expected result |
+|---|------|-----------------|
+| N1 | `grep -oE '\bc[a-z0-9]{20,}\b' qa-gg5-brief.txt` | No output: no contract id anywhere in the brief (ids are a "c" and some 24 more letters and digits, such as `cm…`). Agreements are named by title. |
+| N2 | Look for "no data on file" (or "none on file") in any section. | Only where that section's tool ran and returned nothing: obligations after `obligations_list`, risks after `playbook_check`, the benchmark after `contract_search`. Invoices vs pricing never says there are no invoices for QA Lakehouse Co. |
+| N3 | A counterparty with no invoices: `brief "Prepare me for the QA Northwind Data renewal."`. | The brief chooses "QA GG4 Licence A", whose deadline (T+15) is the next one ahead, and names Licence B and C as also on file. Its Timeline gives the deadline T+15, set by "QA GG4 Licence A — Amendment No. 1". Invoices vs pricing says in one line that no invoices are on file, and the trace has `[tool invoice_list]` before the brief. Before GG5, a run wrote "I don't have invoice data on file" without calling it, and so hid an overcharge. |
+| N4 | Commercial terms and Invoices vs pricing, again. | No new totals added up, such as an annual spend. The only sums are the overcharge (rate difference × quantity) and the total overbilled. |
+
+Command R (the fixture; `day`, `qverify`, `patchc`, `approve` and `inv` as above):
+```bash
+cat > qa-gg5-licence.txt <<TXT
+PLATFORM LICENSE AGREEMENT
+
+This Platform License Agreement is made on $(day -300) between Northwind Analytics LLC ("Customer") and QA Lakehouse Co ("Provider").
+
+1. Licence. Provider grants Customer a non-exclusive subscription to the Provider data platform.
+2. Fees. Customer will pay US\$0.25 per compute unit consumed, invoiced monthly in arrears and payable within thirty (30) days of invoice.
+3. Term and renewal. The initial term ends on $(day +75). This Agreement then renews automatically for successive twelve (12) month terms unless either party gives written notice of non-renewal at least thirty (30) days before the end of the then-current term.
+4. Renewal pricing. On each renewal, fees may increase by no more than five percent (5%).
+5. Limitation of liability. Each party's total liability is capped at the fees paid in the twelve (12) months before the claim.
+6. Governing law. This Agreement is governed by the laws of the State of New York.
+TXT
+cat > qa-gg5-amendment.txt <<TXT
+AMENDMENT NO. 1 TO THE PLATFORM LICENSE AGREEMENT
+
+This Amendment No. 1 is effective $(day -60). It amends the Platform License Agreement between Northwind Analytics LLC and QA Lakehouse Co.
+
+1. Section 2 (Fees) is amended: from the effective date of this Amendment, the fee is US\$0.20 per compute unit consumed.
+2. Section 3 (Term and renewal) is amended: notice of non-renewal must be given at least sixty (60) days before the end of the then-current term.
+3. All other terms of the Agreement are unchanged.
+TXT
+export P_BASE=$(curl -s -X POST "$API/contracts/upload" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg5-licence.txt;type=text/plain" \
+  -F "title=QA Lakehouse — Platform License Agreement" -F "counterpartyName=QA Lakehouse Co" | jq -r .id)
+export P_AMD=$(curl -s -X POST "$API/contracts/upload" -H "Authorization: Bearer $LEGAL_A" -F "file=@qa-gg5-amendment.txt;type=text/plain" \
+  -F "title=QA Lakehouse — Platform License Agreement — Amendment No. 1" -F "counterpartyName=QA Lakehouse Co" \
+  -F "parentContractId=$P_BASE" -F "relationshipType=amendment" | jq -r .id)
+# Wait until both analyses are DONE (the analysis writes key terms, and would replace these), then:
+qverify $P_BASE '{"field":"expiryDate","value":"'$(day +75)'"}'
+qverify $P_BASE '{"field":"autoRenew","value":"yes"}'; qverify $P_BASE '{"field":"noticePeriodDays","value":30}'
+qverify $P_AMD '{"field":"effectiveDate","value":"'$(day -60)'"}'; qverify $P_AMD '{"field":"noticePeriodDays","value":60}'
+for c in $P_BASE $P_AMD; do approve $c; patchc $c '{"status":"EXECUTED"}'; done
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-101","amount":6250,"currency":"USD","invoiceDate":"'$(day -90)'","description":"25,000 compute units @ US$0.25"}'
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-102","amount":6250,"currency":"USD","invoiceDate":"'$(day -30)'","description":"25,000 compute units @ US$0.25"}'
+inv '{"contractId":"'$P_BASE'","vendorName":"QA Lakehouse Co","invoiceNumber":"QLH-103","amount":5000,"currency":"USD","invoiceDate":"'$(day -5)'","description":"25,000 compute units @ US$0.20"}'
+```
+
+Command S (one chat turn as legal-a, in a new session; prints each tool call as `[tool <name>]`, then the answer):
+```bash
+brief() { curl -s -N -X POST "$API/agent/chat" -H "Authorization: Bearer $LEGAL_A" -H "Content-Type: application/json" -H "Accept: text/event-stream" \
+  -d "{\"message\":\"$1\",\"sessionId\":\"qa-gg5-$RANDOM\",\"agentMode\":true}" | sed -n 's/^data: \({.*\)$/\1/p' \
+  | jq -rj 'if .type=="token" then .delta elif .type=="tool_call_start" then "\n[tool " + .name + "]\n" elif .type=="error" then "\n[error] " + .error + "\n" else empty end'; echo; }
+```
+
+**Automated coverage:** none. Rule A19 (renewal prep) is prompt text in the orchestrator; FIX_TRACKER GG5 records the in-process runs against the local stack, including how often the model still falls short. The data the brief rests on is covered in TC-FAMILY-01, TC-INVL-01 and TC-RENEW-01.
+
+### Not covered here
+
+- **FF1, a change the model returns without ratings:** it keeps the model's own reasoning, with no Risk line and no revised risk. The model can't be made to do that by hand. Covered by `apps/agents/tests/test_redline_risk.py` ("a change without ratings keeps its text").
+- **FF1, calibration and display:** the weights (0.45, 0.35, 0.20) are a first judgement, not calibrated against lawyers' ratings, and the risk has no field of its own in the panel, only the reasoning and counter-note text. Nothing more to check until that changes.
+- **FF2, screenshots and competitor facts:** the product screenshots predate the 8 Aug design change, and the competitor details weren't checked again (the pages say "Last checked: May 2026").
+- **FF3, the rollback path end to end:** it runs only when a production smoke test fails (TC-DEPLOY-03). Repeating the preview-channel check of the release call writes to the production Firebase project.
+- **FF3, worker-service:** `./scripts/deploy.sh all` also deploys it (a failure there doesn't fail the deploy) and sends its traffic to its latest revision, but the deploy job doesn't record it and the rollback doesn't move it. After an auto-rollback it keeps the new revision. The marketing site is left as deployed on purpose.
+- **GG2, an amendment's text when redaction fails:** it is left out of `family` (fail closed). Producing a redaction failure needs fault injection, and no test covers it.
+- **GG3, an own-scope caller's own unmatched invoices:** entering an invoice needs `edit:contract`, which no built-in own-scope role has, so TC-INVL-01 P5 needs TC-ACC-16's custom role. Covered by `contract-family-tools.integration.test.ts`.
+- **GG4, several amendments that each set a notice period:** the latest by effective date (else by creation) wins. Covered by `renewal-notice.test.ts` ("lets the latest amendment win, whatever order they come in"); TC-RENEW-01 uses one per licence.
+
 ## Issues found while writing these test cases
 
 Found by reading the code while writing the steps. Each has since been fixed on this branch (X55–X76, 24 September 2026; X77, found by the review of those fixes; X78, found by their browser check); the test cases named with it verify the fix.
@@ -6197,6 +7101,15 @@ Every id in `FIX_TRACKER.md` that changed code, and the test cases that verify i
 | X76 | TC-SMK-08 |
 | X77 | TC-OPS-04 |
 | X78 | TC-AI-13 |
+| EE1 | TC-REVQ-01, TC-REVQ-02, TC-REVQ-03, TC-REVQ-04 |
+| FF1 | TC-RISK-01, TC-RISK-02 |
+| FF2 | TC-SITE-01, TC-SITE-02, TC-SITE-03 |
+| FF3 | TC-DEPLOY-01, TC-DEPLOY-02, TC-DEPLOY-03 |
+| GG1 | TC-DRAFT-01, TC-DRAFT-02 |
+| GG2 | TC-FAMILY-01, TC-FAMILY-02, TC-PREP-01 |
+| GG3 | TC-INVL-01, TC-PREP-01 |
+| GG4 | TC-RENEW-01, TC-RENEW-02, TC-PREP-01 |
+| GG5 | TC-PREP-01 |
 
 ## Appendix A — Generating the fixtures
 
