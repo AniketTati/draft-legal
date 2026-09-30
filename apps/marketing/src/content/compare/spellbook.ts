@@ -11,7 +11,7 @@ export const spellbook: CompareData = {
     'You want a full CLM, not just an AI plugin inside Word',
     'You want approvals, signatures, and obligation tracking in the same product',
     'You need to self-host the code and audit it',
-    'You want procurement-aware workflows on the roadmap (POs, vendor onboarding)',
+    'You negotiate on the other side\'s Word file and want your redline to go back as tracked changes',
   ],
   pickCompetitorIf: [
     'Your team strongly prefers staying inside Microsoft Word for all drafting',
@@ -19,13 +19,13 @@ export const spellbook: CompareData = {
     'You already have a separate contract repository and just need AI clause review',
   ],
   migration:
-    'Spellbook is a drafting assistant, not a contract repository. Migration to draftLegal usually means bringing executed contracts in from a DMS or drive. You can keep Spellbook for Word-side drafting if your team prefers.',
+    'Spellbook is a drafting assistant, not a contract repository. Migration to draftLegal usually means uploading executed contracts from a DMS or drive. You can keep Spellbook for Word-side drafting if your team prefers.',
   groups: [
     {
       title: 'Product category',
       rows: [
         { label: 'Full CLM (intake → obligations)', draftLegal: 'yes', competitor: 'no' },
-        { label: 'Word add-in', draftLegal: 'no', competitor: 'yes' },
+        { label: 'Word add-in', draftLegal: 'no', competitor: 'yes', note: 'draftLegal isn\'t an add-in, but it works on their Word file and returns tracked changes' },
         { label: 'Standalone web app', draftLegal: 'yes', competitor: 'partial' },
       ],
     },
@@ -41,7 +41,7 @@ export const spellbook: CompareData = {
       title: 'AI & extensibility',
       rows: [
         { label: 'Bring your own AI provider keys', draftLegal: 'yes', competitor: 'unknown' },
-        { label: 'Switchable LLM provider per agent', draftLegal: 'yes', competitor: 'unknown' },
+        { label: 'Switchable LLM provider per tier', draftLegal: 'yes', competitor: 'unknown' },
       ],
     },
   ],

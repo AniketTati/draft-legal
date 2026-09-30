@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
-import { Github, Linkedin, Twitter } from 'lucide-react'
+import { Github } from 'lucide-react'
 import { Logo } from './Logo'
-import { GITHUB_URL } from '@/lib/utils'
+import { APP_URL, GITHUB_URL } from '@/lib/utils'
 
 const cols = [
   {
@@ -52,18 +52,12 @@ export function Footer() {
           <div className="col-span-2">
             <Logo />
             <p className="mt-4 max-w-xs text-sm leading-6 text-slate-600">
-              Open-source, agent-first contract lifecycle management. Run it yourself, or let us
-              run it for you.
+              Open-source, agent-first contract lifecycle management. Self-host it, or try the
+              hosted demo (evaluation only).
             </p>
             <div className="mt-5 flex items-center gap-3 text-slate-500">
               <a href={GITHUB_URL} target="_blank" rel="noreferrer" aria-label="GitHub" className="hover:text-slate-900">
                 <Github className="h-5 w-5" />
-              </a>
-              <a href="https://x.com/draftlegal" target="_blank" rel="noreferrer" aria-label="X / Twitter" className="hover:text-slate-900">
-                <Twitter className="h-5 w-5" />
-              </a>
-              <a href="https://linkedin.com/company/draft-legal" target="_blank" rel="noreferrer" aria-label="LinkedIn" className="hover:text-slate-900">
-                <Linkedin className="h-5 w-5" />
               </a>
             </div>
           </div>
@@ -87,8 +81,8 @@ export function Footer() {
         <div className="mt-12 flex flex-col items-start justify-between gap-4 border-t border-slate-200 pt-8 text-xs text-slate-500 md:flex-row md:items-center">
           <div>© {new Date().getFullYear()} Draft Legal. AGPL-3.0 licensed open source.</div>
           <div className="flex gap-5">
-            <a href="/privacy">Privacy</a>
-            <a href="/terms">Terms</a>
+            <a href={`${APP_URL}/privacy`}>Privacy</a>
+            <a href={`${APP_URL}/terms`}>Terms</a>
             <a href={GITHUB_URL} target="_blank" rel="noreferrer">
               GitHub
             </a>

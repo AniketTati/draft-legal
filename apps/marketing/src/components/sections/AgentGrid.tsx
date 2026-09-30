@@ -13,9 +13,9 @@ export function AgentGrid({ compact = false }: { compact?: boolean }) {
             12 specialized agents do the work.
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-base leading-7 text-slate-600">
-            Each agent is built for a specific job in the contract lifecycle. Same model providers
-            (Anthropic, OpenAI, Google) — switchable per agent. You see the plan before they
-            execute.
+            Each agent is built for a specific job in the contract lifecycle. They run on Anthropic,
+            OpenAI, Google or OpenRouter models, chosen per tier for your organisation. Every change
+            the assistant proposes waits for your confirmation.
           </p>
         </div>
 

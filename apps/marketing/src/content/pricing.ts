@@ -23,7 +23,7 @@ export const tiers: PricingTier[] = [
       'All 12 agents — same code as our hosted demo',
       'Unlimited users, unlimited contracts',
       'Run on your infra, in your VPC',
-      'Bring your own AI keys (Anthropic, OpenAI, Google)',
+      'Bring your own AI keys (Anthropic, OpenAI, Google or OpenRouter)',
       'Postgres + pgvector, Redis, S3-compat storage, ES/OpenSearch — all standard',
       'AGPL-3.0 license — fork it, modify it, ship it',
     ],
@@ -56,7 +56,7 @@ export const pricingFaqs = [
   },
   {
     q: 'Can I bring my own AI provider keys?',
-    a: 'Yes. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY and draftLegal routes through your account. Switchable per agent / per tier.',
+    a: 'Yes. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY (or add your organisation\'s own keys in Admin → AI Config) and draftLegal routes through your account. The provider and model are chosen per tier — reasoning, default, fast and so on.',
   },
   {
     q: 'What does the public demo at app.draft-legal.com cost?',
@@ -64,6 +64,6 @@ export const pricingFaqs = [
   },
   {
     q: 'How do I deploy it myself?',
-    a: 'docker-compose for local dev, Dockerfiles + a deploy script for Cloud Run / Fly / Render / any container host. See README.md and docs/operations in the repo.',
+    a: 'pnpm dev:setup and pnpm dev for a local install; docker-compose.selfhost.yml for a production install on your own servers (see docs/operations/SELF-HOSTING.md); a deploy script for Cloud Run. The same Dockerfiles run on any container host. See README.md and docs/operations in the repo.',
   },
 ]

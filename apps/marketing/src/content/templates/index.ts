@@ -21,7 +21,7 @@ const placeholder = (slug: string, label: string): Template => ({
   title: `${label} Template Guide`,
   shortLabel: label,
   audience: 'Legal, ops, and procurement teams',
-  tldr: `A plain-English guide to the ${label} is being written, with a downloadable template to follow. Meanwhile, Draft Legal can draft one for you.`,
+  tldr: `A plain-English guide to the ${label} is being written, with a downloadable template to follow. Meanwhile, Draft Legal can draft one from a matching template in your workspace.`,
   whatItIs: `${label} is a contract type used by many B2B teams. We're publishing the full plain-English explainer soon.`,
   keyClauses: [],
   pitfalls: [],
@@ -34,7 +34,7 @@ export const templates: Record<string, Template> = {
     title: 'Mutual NDA Template Guide',
     shortLabel: 'NDA',
     audience: 'Sales, partnerships, M&A, hiring',
-    tldr: 'The mutual Non-Disclosure Agreement (NDA) — the kind you sign before any meaningful B2B conversation. Mutual covers both parties; flip the language to one-way if only one side will share. Edit the term, jurisdiction, and definition of confidential information for your situation. We strongly recommend a real lawyer reviews any contract before you sign.',
+    tldr: 'The mutual Non-Disclosure Agreement (NDA) — the kind you sign before any meaningful B2B conversation. Mutual covers both parties; flip the language to one-way if only one side will share. The guide covers the term, jurisdiction, and definition of confidential information you\'ll set for your situation. We strongly recommend a real lawyer reviews any contract before you sign.',
     whatItIs:
       'A mutual NDA defines what information is confidential, who can see it, how long the obligation lasts, and what happens if it\'s breached. Most B2B sales conversations open with one — exchanged before anyone shares pricing, roadmaps, or customer details.',
     keyClauses: [
@@ -71,7 +71,7 @@ export const templates: Record<string, Template> = {
     title: 'Master Service Agreement (MSA) Template Guide',
     shortLabel: 'MSA',
     audience: 'B2B SaaS, professional services, agencies',
-    tldr: 'The Master Service Agreement (MSA), for B2B SaaS, professional services, and agency engagements. MSAs are negotiated once and govern many SOWs — get this right and project paperwork is fast forever. Customize liability cap, IP terms, and payment terms for your business. Have a real lawyer review before you ship.',
+    tldr: 'The Master Service Agreement (MSA), for B2B SaaS, professional services, and agency engagements. MSAs are negotiated once and govern many SOWs — get this right and project paperwork is fast forever. The guide walks through the liability cap, IP terms, and payment terms you\'ll set for your business. Have a real lawyer review before you ship.',
     whatItIs:
       'An MSA is the umbrella agreement between a service provider and a customer. It covers commercial terms, liability, IP, payment, and termination. Specific projects then attach as Statements of Work (SOWs) under the MSA.',
     keyClauses: [
@@ -113,7 +113,7 @@ export const templates: Record<string, Template> = {
     title: 'Data Processing Agreement (DPA) Template Guide',
     shortLabel: 'DPA',
     audience: 'Any company that processes EU/UK personal data',
-    tldr: 'The Data Processing Agreement (DPA) under GDPR Article 28. Required when you process personal data on behalf of a customer (controller). Covers the standard SCCs reference for cross-border transfers and a sub-processor list pattern. Adapt for your specific data flows. Real legal review is non-optional for DPAs.',
+    tldr: 'The Data Processing Agreement (DPA) under GDPR Article 28. Required when you process personal data on behalf of a customer (controller). The guide covers the SCCs reference for cross-border transfers and the sub-processor list, which you\'ll adapt to your own data flows. Real legal review is non-optional for DPAs.',
     whatItIs:
       'A DPA defines the relationship between a data controller (typically your customer) and a data processor (typically you, the SaaS vendor). Required by GDPR for any processing of EU/UK personal data, and increasingly required by US state privacy laws.',
     keyClauses: [

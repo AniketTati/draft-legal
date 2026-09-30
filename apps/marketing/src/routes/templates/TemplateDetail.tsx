@@ -148,8 +148,9 @@ export default function TemplateDetail() {
                     </h3>
                   </div>
                   <p className="mt-3 text-sm leading-6 text-emerald-50">
-                    Tell Draft Legal who you're contracting with and what terms you need — get a
-                    polished draft in 30 seconds, ready to send.
+                    Tell Draft Legal who you're contracting with and what terms you need. It fills
+                    your template and flags the terms it couldn't fill, for you to check before
+                    you send.
                   </p>
                   <a
                     href="https://app.draft-legal.com/register"

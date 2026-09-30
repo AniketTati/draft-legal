@@ -1140,13 +1140,15 @@ export async function contractRoutes(app: FastifyInstance) {
   // ── B.5.7 — per-clause review state ────────────────────────────────────
   // Drives the Focused Review drawer's Accept / Reject / Mark-Reviewed
   // actions and the "N of M reviewed" progress counter in the rail.
+  // EE1 — Reject is a decision of its own ('rejected'); it was stored as a
+  // plain 'reviewed'. 'unreviewed' reopens a decided clause.
   app.patch('/clauses/:clauseId/review-state', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { clauseId } = req.params as { clauseId: string }
     const { sub: userId, orgId } = req.user
     const body = req.body as { state?: string }
     const state = body.state
-    if (state !== 'unreviewed' && state !== 'reviewed' && state !== 'resolved') {
-      return reply.status(400).send({ detail: 'state must be unreviewed | reviewed | resolved' })
+    if (state !== 'unreviewed' && state !== 'reviewed' && state !== 'resolved' && state !== 'rejected') {
+      return reply.status(400).send({ detail: 'state must be unreviewed | reviewed | resolved | rejected' })
     }
 
     // Scope check: ensure the clause belongs to a contract in this org.

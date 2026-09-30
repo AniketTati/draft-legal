@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5174",
-    "build": "tsc && vite build && node scripts/generate-sitemap.mjs",
+    "build": "tsc && node scripts/generate-sitemap.mjs && vite build",
     "preview": "vite preview --port 4174",
     "typecheck": "tsc --noEmit",
     "sitemap": "node scripts/generate-sitemap.mjs"

@@ -8,6 +8,10 @@ import { SEO } from '@/lib/seo'
 import { Button } from '@/components/ui/button'
 import { APP_URL, SITE_URL } from '@/lib/utils'
 
+// When the competitor details on these pages were last checked against their
+// public materials. Used as the article's publish date.
+const LAST_CHECKED = { iso: '2026-05-01', label: 'May 2026' }
+
 export default function ComparePage() {
   const { slug } = useParams<{ slug: string }>()
   if (!slug || !compareData[slug]) {
@@ -22,7 +26,7 @@ export default function ComparePage() {
     description: data.tldr,
     url: `${SITE_URL}/compare/${data.slug}`,
     author: { '@type': 'Organization', name: 'Draft Legal' },
-    datePublished: '2026-05-01',
+    datePublished: LAST_CHECKED.iso,
   }
 
   return (
@@ -54,6 +58,10 @@ export default function ComparePage() {
             <p className="mt-6 text-base leading-7 text-slate-600">
               <strong className="text-slate-900">{data.competitorName}:</strong>{' '}
               {data.competitorOneLiner}
+            </p>
+            <p className="mt-2 text-sm text-slate-500">
+              Last checked: {LAST_CHECKED.label}. Details about {data.competitorName} may have
+              changed since.
             </p>
           </div>
         </div>
@@ -123,7 +131,7 @@ export default function ComparePage() {
           <div className="mx-auto max-w-5xl">
             <h2 className="heading-section text-slate-900">Feature-by-feature comparison</h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-              Compiled from public documentation and customer interviews. Where data isn't public,
+              Compiled from each vendor's public documentation. Where data isn't public,
               we mark "unknown" rather than guess. Spot something wrong?{' '}
               <a
                 href="/contact?source=compare_correction"
@@ -155,7 +163,7 @@ export default function ComparePage() {
               </Button>
               <Button asChild variant="outline">
                 <a href={`/contact?source=migrate_${data.slug}`}>
-                  Talk to migration team
+                  Talk to us
                 </a>
               </Button>
             </div>
@@ -165,8 +173,8 @@ export default function ComparePage() {
 
       <CtaStrip
         eyebrow="Honest comparisons"
-        title="See how Draft Legal stacks up everywhere."
-        subtitle="We compare ourselves to every major CLM — including the ones we don't always win against."
+        title="See how Draft Legal stacks up."
+        subtitle="Five head-to-head comparisons, each saying when the other product is the better choice."
       />
     </>
   )

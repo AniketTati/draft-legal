@@ -11,7 +11,6 @@ export const docusignClm: CompareData = {
     'You want eSignature as a built-in feature of your CLM, not an add-on',
     'You want to self-host the platform under AGPL-3.0 and audit the code',
     'You want to avoid platform lock-in to a single eSignature vendor',
-    'You want procurement-aware workflows on the roadmap',
   ],
   pickCompetitorIf: [
     'You are already deeply standardised on DocuSign eSignature and want one vendor for the lifecycle',
@@ -19,7 +18,7 @@ export const docusignClm: CompareData = {
     'You need pre-built integrations into the broader DocuSign Agreement Cloud',
   ],
   migration:
-    'DocuSign CLM exports contract metadata and PDFs in standard formats. draftLegal\'s bulk import maps your records into our schemas. If you continue to use DocuSign eSignature for some flows, our signature module can co-exist.',
+    'DocuSign CLM exports contract metadata and PDFs in standard formats. In draftLegal, upload the PDFs and each one is analysed into our fields; basic metadata can come across by CSV import. If you continue to use DocuSign eSignature for some flows, our signature module can co-exist.',
   groups: [
     {
       title: 'Openness & deployment',
@@ -34,14 +33,14 @@ export const docusignClm: CompareData = {
       title: 'AI & extensibility',
       rows: [
         { label: 'Bring your own AI provider keys', draftLegal: 'yes', competitor: 'unknown' },
-        { label: 'Switchable LLM provider per agent', draftLegal: 'yes', competitor: 'unknown' },
+        { label: 'Switchable LLM provider per tier', draftLegal: 'yes', competitor: 'unknown' },
       ],
     },
     {
       title: 'Lifecycle coverage',
       rows: [
         { label: 'Intake / request', draftLegal: 'yes', competitor: 'yes' },
-        { label: 'Drafting from playbook + templates', draftLegal: 'yes', competitor: 'yes' },
+        { label: 'Drafting + templates + playbook', draftLegal: 'yes', competitor: 'yes' },
         { label: 'Counterparty redline analysis', draftLegal: 'yes', competitor: 'yes' },
         { label: 'Approval workflows', draftLegal: 'yes', competitor: 'yes' },
         { label: 'eSignature built into core product', draftLegal: 'yes', competitor: 'yes', note: 'DocuSign\'s native eSignature is its strength' },

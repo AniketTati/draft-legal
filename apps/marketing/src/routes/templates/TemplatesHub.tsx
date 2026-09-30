@@ -9,7 +9,7 @@ export default function TemplatesHub() {
     <>
       <SEO
         title="Contract Template Guides"
-        description="Plain-English guides to NDA, MSA, DPA, BAA, SOW and other contracts, with the key clauses explained. Or generate one in 30 seconds with Draft Legal."
+        description="Plain-English guides to the key clauses in NDAs, MSAs and DPAs, with more contract types on the way. Or draft one from your own template in Draft Legal."
         path="/templates"
       />
 
@@ -23,8 +23,8 @@ export default function TemplatesHub() {
               Contract templates, explained.
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-              Plain-English clause guides, with downloadable templates to follow. Or generate a
-              tailored draft in 30 seconds with Draft Legal.
+              Plain-English clause guides, with downloadable templates to follow. Or draft one from
+              your own template in Draft Legal.
             </p>
             <p className="mx-auto mt-3 max-w-xl text-xs leading-6 text-slate-500">
               These templates are general-purpose starting points, not legal advice. Always have a
@@ -65,8 +65,8 @@ export default function TemplatesHub() {
 
       <CtaStrip
         eyebrow="Skip the template"
-        title="Generate a tailored contract in 30 seconds."
-        subtitle="Draft Legal's Draft Agent assembles from your templates and playbook — not from generic AI."
+        title="Draft from your own templates."
+        subtitle="Draft Legal's Draft Agent fills your template from the request and your counterparty records, and flags the terms it couldn't fill."
       />
     </>
   )

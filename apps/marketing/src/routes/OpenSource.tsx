@@ -50,7 +50,7 @@ export default function OpenSource() {
                 </a>
               </Button>
               <Button asChild size="lg" className="bg-emerald-700 hover:bg-emerald-600">
-                <a href={`${GITHUB_URL}#setup`} target="_blank" rel="noreferrer">
+                <a href={`${GITHUB_URL}#quickstart`} target="_blank" rel="noreferrer">
                   Self-host quickstart →
                 </a>
               </Button>
@@ -64,8 +64,8 @@ export default function OpenSource() {
           <div className="mx-auto max-w-3xl">
             <h2 className="heading-section text-slate-900">Self-host in 3 commands.</h2>
             <p className="mt-4 text-base leading-7 text-slate-600">
-              The setup story below is straight from our README. If you have Docker and Node 22,
-              you have everything you need.
+              The quickstart below is straight from our README. You need Docker, Node 22+, pnpm 9+
+              and Python 3.11+.
             </p>
           </div>
 
@@ -80,24 +80,43 @@ export default function OpenSource() {
               <code>
                 <span className="text-slate-500"># 1. Clone the repo</span>
                 {'\n'}
-                <span className="text-emerald-400">$</span> git clone {GITHUB_URL}.git draft-legal
-                {'\n'}
-                <span className="text-emerald-400">$</span> cd draft-legal
+                <span className="text-emerald-400">$</span> git clone {GITHUB_URL}.git && cd draft-legal
                 {'\n\n'}
-                <span className="text-slate-500"># 2. Set up env (only JWT_SECRET is required to start)</span>
+                <span className="text-slate-500"># 2. One-time setup — Docker infra, dependencies, Python venv, database, demo data</span>
                 {'\n'}
-                <span className="text-emerald-400">$</span> cp .env.example .env
+                <span className="text-emerald-400">$</span> pnpm dev:setup
                 {'\n\n'}
-                <span className="text-slate-500"># 3. Bring up the full stack — API, web, agents, postgres, redis, minio</span>
+                <span className="text-slate-500"># 3. Start the web app, API and agents</span>
                 {'\n'}
-                <span className="text-emerald-400">$</span> docker compose up -d
-                {'\n'}
-                <span className="text-emerald-400">$</span> pnpm install && pnpm dev
+                <span className="text-emerald-400">$</span> pnpm dev
                 {'\n\n'}
-                <span className="text-slate-500"># Open http://localhost:5173 — sign in with admin@demo.com / password123</span>
+                <span className="text-slate-500"># Open http://localhost:5173 and sign in with a demo login printed by setup.</span>
+                {'\n'}
+                <span className="text-slate-500"># For AI features, add GOOGLE_API_KEY, ANTHROPIC_API_KEY or OPENAI_API_KEY to .env.</span>
               </code>
             </pre>
           </div>
+          <p className="mx-auto mt-4 max-w-3xl text-sm leading-6 text-slate-600">
+            Running it for your team?{' '}
+            <a
+              href={`${GITHUB_URL}/blob/main/docker-compose.selfhost.yml`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-emerald-700 underline underline-offset-2"
+            >
+              docker-compose.selfhost.yml
+            </a>{' '}
+            runs the full stack on your own servers, and{' '}
+            <a
+              href={`${GITHUB_URL}/blob/main/docs/operations/SELF-HOSTING.md`}
+              target="_blank"
+              rel="noreferrer"
+              className="font-medium text-emerald-700 underline underline-offset-2"
+            >
+              SELF-HOSTING.md
+            </a>{' '}
+            covers configuration, TLS, backups and upgrades.
+          </p>
 
           <div className="mt-16 grid gap-6 md:grid-cols-2 lg:grid-cols-4">
             {[
@@ -114,12 +133,12 @@ export default function OpenSource() {
               {
                 icon: Map,
                 title: 'Public roadmap',
-                body: 'BUILD_TRACKER.md tracks every phase. RFCs live in the repo. Vote on issues, send PRs.',
+                body: 'BUILD_TRACKER.md tracks every phase. Propose bigger changes in GitHub Discussions. Vote on issues, send PRs.',
               },
               {
                 icon: MessageSquare,
                 title: 'Community',
-                body: 'GitHub Discussions for product Q&A, a Discord for live conversation, and a monthly community call.',
+                body: 'GitHub Discussions for product Q&A and proposals, and issues labelled "good first issue" when you want to contribute.',
               },
             ].map((c) => (
               <div
@@ -143,9 +162,9 @@ export default function OpenSource() {
                 Contributing
               </h3>
               <p className="mt-3 text-sm leading-6 text-slate-600">
-                Issues with a "good first issue" label are vetted entry points. Larger features
-                start with an RFC in /docs/rfcs. We respond to every PR within 48 hours during the
-                week.
+                Issues with a "good first issue" label are vetted entry points. Propose larger
+                features in GitHub Discussions before you build them. On your first pull request, a
+                bot asks you to sign the CLA once.
               </p>
               <a
                 href={`${GITHUB_URL}/blob/main/CONTRIBUTING.md`}
@@ -158,19 +177,18 @@ export default function OpenSource() {
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8">
               <h3 className="text-xl font-bold tracking-tight text-slate-900">
-                Forking & sponsorship
+                Forking & commercial licensing
               </h3>
               <p className="mt-3 text-sm leading-6 text-slate-600">
                 AGPL-3.0 means you can fork and self-host freely. If you want to ship a closed
-                commercial product on top of draftLegal, a commercial license lifts the
-                network-copyleft terms — and we run a sponsorship program for orgs that want to
-                fund specific features.
+                commercial product on top of draftLegal, a separate commercial license lifts the
+                network-copyleft terms.
               </p>
               <a
-                href="/contact?source=sponsor"
+                href="/contact?source=commercial_license"
                 className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-emerald-700 hover:text-emerald-800"
               >
-                Talk to us about sponsorship →
+                Talk to us about a commercial license →
               </a>
             </div>
           </div>

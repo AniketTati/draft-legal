@@ -22,7 +22,7 @@ export function Hero() {
           <span className="grid h-1.5 w-1.5 place-items-center">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-600" />
           </span>
-          Now open source on GitHub →
+          Open source · read the code →
         </Link>
 
         <h1 className="mx-auto mt-8 max-w-4xl text-center text-5xl font-bold tracking-tight text-slate-900 sm:text-6xl lg:text-7xl">
@@ -33,8 +33,8 @@ export function Hero() {
           CLM.
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-center text-lg leading-8 text-slate-600 sm:text-xl">
-          12 AI agents handle intake, drafting, negotiation, approval, signature, and obligations —
-          across the full contract lifecycle.{' '}
+          12 AI agents handle intake, review, drafting, negotiation, approvals and obligations,
+          with e-signature built in — across the full contract lifecycle.{' '}
           <span className="text-slate-900">
             AGPL-3.0 licensed, self-host the same code we run.
           </span>

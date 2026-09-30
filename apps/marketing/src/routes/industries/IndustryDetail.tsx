@@ -52,7 +52,7 @@ export default function IndustryDetail() {
               </Button>
             </div>
             <p className="mt-6 text-xs text-slate-500">
-              Tested against {i.persona.org} — {i.persona.size}.
+              Tested on a synthetic example workspace: {i.persona.org}, {i.persona.size}.
             </p>
           </div>
         </div>
@@ -66,8 +66,9 @@ export default function IndustryDetail() {
                 The contracts {i.label} runs on
               </h2>
               <p className="mt-3 text-sm leading-6 text-slate-600">
-                Contract mix observed in our reference {i.label} portfolios — Draft Legal's
-                Classify and Review Agents handle each type with type-specific fields and prompts.
+                An illustrative {i.label} contract mix. Draft Legal extracts its own fields for 10
+                contract types (NDA, MSA, SOW, DPA and more); anything else, like a BAA or an MTA,
+                is filed as Other with the core fields plus any custom fields you add.
               </p>
               <ul className="mt-8 space-y-3">
                 {i.contracts.map((c) => (
@@ -88,11 +89,12 @@ export default function IndustryDetail() {
             </div>
             <div>
               <h2 className="heading-section text-slate-900">
-                What you'll actually ask the agent
+                What you might ask the agent
               </h2>
               <p className="mt-3 text-sm leading-6 text-slate-600">
-                Real natural-language prompts our reference {i.label} teams use every day. The Ask
-                Agent answers each with citations back to specific contracts and clauses.
+                Example questions a {i.label} team might ask. The Ask Agent answers from your
+                contracts, citing the contracts and clauses it used, and says when an answer rests
+                on a sample.
               </p>
               <ul className="mt-8 space-y-3">
                 {i.jtbds.map((j) => (
@@ -150,7 +152,7 @@ export default function IndustryDetail() {
       <CtaStrip
         eyebrow={`Built for ${i.label}`}
         title="See it run on your contracts."
-        subtitle={`Sign up free or talk to a ${i.label}-experienced solutions engineer.`}
+        subtitle="Self-host it, or try the hosted demo (evaluation only)."
       />
     </>
   )

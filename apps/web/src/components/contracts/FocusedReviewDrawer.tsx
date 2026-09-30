@@ -14,18 +14,23 @@
  *   - Prev / Next navigation across risky clauses in severity order
  *
  * B.5.6 — UI only, local state. B.5.7 persists reviewState to the DB.
+ * EE1 — `clauses` is the queue of clauses still waiting on a decision; each
+ * decision takes its clause out of it (lib/review-queue.ts).
  */
 import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle, X, ChevronLeft, ChevronRight, FileEdit, XCircle,
-  BookOpen, Circle, Sparkles,
+  BookOpen, Circle, Sparkles, RotateCcw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
+import { DECISION_LABEL, isDecided, type ReviewState } from '@/lib/review-queue'
 import { Button } from '@/components/ui/button'
 import { classifyRisk, type RiskClause, type RiskKind } from './RiskDecorations'
 import { CommentsPanel } from './CommentsPanel'
+
+export type { ReviewState }
 
 /** A playbook position as returned by GET /playbook/positions. */
 interface PlaybookPosition {
@@ -58,9 +63,6 @@ export interface FocusedClause extends RiskClause {
   interpretation?: string | null
   sectionRef?: string | null
 }
-
-/** Review state kept per clause. Local in B.5.6, persisted in B.5.7. */
-export type ReviewState = 'unreviewed' | 'reviewed' | 'resolved'
 
 /**
  * Z7 — the reference a clause's comments are anchored to: its section, as
@@ -102,10 +104,13 @@ export function FocusedReviewDrawer({
   onReject,
   onEditManually,
   onMarkReviewed,
+  onApplied,
+  onReopen,
   onClose,
   canEdit = true,
 }: {
   contractId: string
+  /** The clauses still waiting on a decision, and the one open here. */
   clauses: FocusedClause[]
   currentIndex: number
   reviewStates: Record<string, ReviewState>
@@ -116,6 +121,10 @@ export function FocusedReviewDrawer({
   /** Omitted for a user who can't edit the contract (X75). */
   onEditManually?: (clauseId: string) => void
   onMarkReviewed: (clauseId: string) => void
+  /** A suggested rewrite was written into the document: the issue is dealt with. */
+  onApplied: (clauseId: string) => void
+  /** Undo a decision: the clause goes back in the queue. */
+  onReopen: (clauseId: string) => void
   onClose: () => void
   /**
    * X75 review — without edit:contract the review is read-only: suggesting and
@@ -182,7 +191,8 @@ export function FocusedReviewDrawer({
       qc.invalidateQueries({ queryKey: ['contract', contractId] })
       qc.invalidateQueries({ queryKey: ['contract-versions', contractId] })
       qc.invalidateQueries({ queryKey: ['contract-clauses', contractId] })
-      onMarkReviewed(clause!.id)
+      // EE1 — the rewrite deals with the issue: accepted, not just read.
+      onApplied(clause!.id)
     },
   })
 
@@ -227,9 +237,10 @@ export function FocusedReviewDrawer({
     // A clause opened from the list rather than flagged: say what it was rated.
     : (clause.riskRating ?? 'not rated').toUpperCase()
 
-  // Unreviewed is the only one of the three that is waiting on this user.
+  // Unreviewed is the only one of the four that is waiting on this user.
   const stateColor =
     state === 'resolved' ? 'bg-brand-50 text-brand-700 border-brand-200'
+    : state === 'rejected' ? 'bg-risk-50 text-risk-700 border-risk-200'
     : state === 'reviewed' ? 'bg-paper-100 text-ink-700 border-paper-200'
     : 'bg-attention-50 text-attention-700 border-attention-200'
 
@@ -248,7 +259,11 @@ export function FocusedReviewDrawer({
           >
             <ChevronLeft className="size-4" />
           </button>
-          <span className="text-dense text-ink-700 tabular-nums min-w-[3.5rem] text-center">
+          <span
+            className="text-dense text-ink-700 tabular-nums min-w-[3.5rem] text-center"
+            title="Clauses still waiting on a decision"
+            data-testid="review-queue-count"
+          >
             {currentIndex + 1} / {clauses.length}
           </span>
           <button
@@ -280,10 +295,10 @@ export function FocusedReviewDrawer({
             {severityLabel}
           </span>
           <span className={cn(
-            'inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-medium capitalize',
+            'inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-medium',
             stateColor,
-          )}>
-            {state}
+          )} data-testid="review-state-pill">
+            {DECISION_LABEL[state]}
           </span>
         </div>
         <h3 className="text-body font-semibold text-ink-950 leading-snug">
@@ -450,14 +465,32 @@ export function FocusedReviewDrawer({
       {/* ── ACTIONS ─────────────────────────────────────────────────────── */}
       {canEdit ? (
         <div className="px-5 py-4 border-b border-paper-200 space-y-2">
+          {/* EE1 — every verdict below takes the clause out of the queue. A
+              decided clause is only here because it was opened again, so say
+              what was decided and offer the way back. */}
+          {isDecided(state) && (
+            <div className="flex items-center justify-between gap-2 text-dense text-ink-700" data-testid="review-decision">
+              <span>{DECISION_LABEL[state]} — no longer in the queue.</span>
+              <button
+                type="button"
+                onClick={() => onReopen(clause.id)}
+                data-testid="review-reopen"
+                className="inline-flex items-center gap-1 font-medium text-ink-950 hover:underline"
+              >
+                <RotateCcw className="size-3.5" /> Reopen
+              </button>
+            </div>
+          )}
           {/* A clause verdict is an approval act, so brand and danger are earned
               here; Edit and Mark reviewed are ordinary moves and stay outlined. */}
           <Button
             variant="brand"
             size="md"
             onClick={() => onAccept(clause.id)}
-            title="Accept the clause as written and mark it resolved"
+            disabled={state === 'resolved'}
+            title="Accept the clause as written. It leaves the queue as accepted."
             className="w-full"
+            data-testid="review-accept"
           >
             {/* Named for what it does: this resolves the clause, it does not
                 write any text into the document. */}
@@ -478,7 +511,10 @@ export function FocusedReviewDrawer({
               variant="danger"
               size="md"
               onClick={() => onReject(clause.id)}
+              disabled={state === 'rejected'}
+              title="Reject the clause as written. It leaves the queue as rejected."
               className="flex-1"
+              data-testid="review-reject"
             >
               <XCircle className="size-4" /> Reject
             </Button>
@@ -486,15 +522,13 @@ export function FocusedReviewDrawer({
               variant="outline"
               size="md"
               onClick={() => onMarkReviewed(clause.id)}
-              disabled={state === 'reviewed' || state === 'resolved'}
-              className={cn(
-                'flex-1',
-                (state === 'reviewed' || state === 'resolved') && 'opacity-60 cursor-not-allowed',
-              )}
-              title="Mark this clause as reviewed without changing it."
+              disabled={state === 'reviewed'}
+              className={cn('flex-1', state === 'reviewed' && 'opacity-60 cursor-not-allowed')}
+              title="Mark this clause as reviewed without changing it. It leaves the queue."
+              data-testid="review-mark-reviewed"
             >
               <Circle className="size-4" />
-              {state === 'unreviewed' ? 'Mark reviewed' : 'Reviewed'}
+              {state === 'reviewed' ? 'Reviewed' : 'Mark reviewed'}
             </Button>
           </div>
         </div>

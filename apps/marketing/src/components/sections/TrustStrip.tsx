@@ -2,11 +2,11 @@ import { Lock, ShieldCheck, FileSearch, KeyRound, ScrollText, Database } from 'l
 import { Link } from 'react-router-dom'
 
 const items = [
-  { icon: Lock, label: 'Encryption at rest & in transit' },
+  { icon: Lock, label: 'Hosted demo encrypted in transit & at rest' },
   { icon: ShieldCheck, label: 'RBAC with action × resource × scope' },
   { icon: FileSearch, label: 'Tamper-evident audit log' },
   { icon: KeyRound, label: 'JWT (HS256) sessions · SSO on the roadmap' },
-  { icon: ScrollText, label: 'AI plans gated by human approval' },
+  { icon: ScrollText, label: 'Assistant changes need your confirmation' },
   { icon: Database, label: 'Postgres row-level security' },
 ]
 

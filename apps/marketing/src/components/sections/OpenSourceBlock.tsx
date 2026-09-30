@@ -10,7 +10,7 @@ const pillars = [
   {
     icon: Unlock,
     title: 'No lock-in',
-    body: 'Export your data anytime. Or take the code with you and run it forever. AGPL-3.0 license, no commercial-only modules holding you hostage.',
+    body: 'Export contracts, obligations and renewals as CSV, and download any document. Or take the code with you and run it forever. AGPL-3.0 license, no commercial-only modules holding you hostage.',
   },
   {
     icon: Server,
@@ -32,11 +32,11 @@ export function OpenSourceBlock() {
             Why open source
           </div>
           <h2 className="mt-3 heading-section text-white">
-            The GitLab playbook, for contracts.
+            The whole CLM, in the open.
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-base leading-7 text-slate-300">
-            Same model as GitLab, Mattermost, and Sentry: AGPL-3.0 licensed core you can read and run.
-            No feature gating, no commercial-only modules. Fork it, audit it, ship it.
+            An AGPL-3.0 licensed platform you can read and run, end to end. No feature gating, no
+            commercial-only modules. Fork it, audit it, ship it.
           </p>
         </div>
         <ul className="mt-14 grid gap-6 md:grid-cols-3">

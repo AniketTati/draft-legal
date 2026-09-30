@@ -3147,6 +3147,99 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
 
 ---
 
+## Redline review actions (2026-09-26, afternoon)
+
+- **EE1 — Every action in the review drawer is a decision, and a decided clause leaves the queue. — DONE.**
+  - Reported: taking an action on a clause didn't finalise it or remove it from the queue, so the stack never shrank.
+  - Found, in `ContractDetailPage.tsx` and `FocusedReviewDrawer.tsx`:
+    - The drawer's list held every flagged clause, whatever its state. Accepting one moved the drawer on, but the count ("3 / 7") never went down, and the clause came round again.
+    - Reject saved the same state as Mark reviewed (`reviewed`), because the API took only unreviewed | reviewed | resolved. A rejected clause couldn't be told from a read one.
+    - Mark reviewed didn't move on. An applied rewrite was saved as `reviewed`, not resolved.
+  - Fix:
+    - `lib/review-queue.ts`: the queue is the flagged clauses still waiting on a decision, plus the one open in the drawer. Accept (`resolved`), Reject (`rejected`, a new state), Mark reviewed (`reviewed`) and Apply a rewrite (`resolved`) each take the clause out and move to the next pending clause; with none left, the drawer closes.
+    - A decided clause opened again says what was decided and can be reopened (`unreviewed`, back in the queue).
+    - The rail's checklist names each decision (accepted, rejected, reviewed) instead of "done".
+    - The API accepts `rejected`. `reviewState` is a plain text column, so no migration.
+    - Edit manually is unchanged. It opens the editor and records no decision, since an edit may or may not deal with the issue.
+  - Tests:
+    - `review-queue.test.ts` (11): the queue logic, and checks that the page gives the drawer the queue and records each action as its own state. The three checks on the page failed before.
+    - `review-decision.integration.test.ts` (3): a rejection is kept as one, a clause can be reopened, and an unknown state is refused. The rejection test failed before with a 400.
+  - Checks: web typecheck and lint clean (existing warnings only); web 99; API unit 486; API integration for review state 30 (with `clause-carry` and `own-scope-rest`).
+
+---
+
+## Negotiation risk and the marketing site (2026-09-29)
+
+- **FF1 — A redline's risk is scored from how far each wording sits from our standard. — DONE.**
+  - Asked for in a demo: for each clause the other side changed, show our standard, their change, the deviation, the risk it adds and why, our fallback, and the risk the fallback leaves.
+  - Found, running the redline analysis on a supplier's markup of our standard works contract:
+    - Step 1 returned 29 "changes", one per inserted or deleted fragment, several with their text lost. It now returns one change per numbered section, with the whole section before and after.
+    - Step 2 asked the model to echo every change with its scores added. The echo dropped fields, and the merge kept the echo. It now asks for scores only and merges them onto step 1's changes by `changeId`, or by position when there is one score per change (`_merge_scores`).
+    - Rejected changes got no counter-proposal, so the changes that mattered most had no alternative wording.
+  - Fix:
+    - The model rates each wording (ours, theirs and our counter) on deviation from our playbook position (0–3, or from our original text where the playbook has no position), exposure (0–4) and market practice (0–3). It rates the clause's event once on likelihood (1–3): wording changes what we could lose, not whether the event happens.
+    - The score is computed, not asked for: 100 × (0.45 × deviation/3 + 0.35 × exposure × likelihood/12 + 0.20 × market/3). The same ratings always give the same number, and each number traces to its factors.
+    - A counter is a compromise, so its score is kept between our wording's and theirs.
+    - The panel shows it where it already shows text: "Risk 9 → 93 (+84): beyond our walkaway position; severe exposure, likely; clearly off-market. …" on the change, "Revised risk if they accept: 39 (from 93, -54): …" on the counter, and in the summary the average in our standard, as proposed and with our counters.
+    - Rejected changes get a counter-proposal too.
+  - Tests: `test_redline_risk.py` (13): the formula, the clamping of the model's ratings, the counter kept between the two, the panel's text, and the merge.
+  - Live, on the five changed clauses of the markup: average risk 7 in our standard, 88 as proposed, 44 with our counters. Also run on SaaS examples outside the construction playbook.
+  - Not done: the risk has no field of its own in the panel (it is in the reasoning and counter-note text), and the weights are a first judgement, not calibrated against lawyers' ratings.
+  - Checks: agents 49 (1 expected failure, as before).
+- **FF2 — The marketing site says only what the product does. — DONE.**
+  - Found, auditing draft-legal.com as deployed on 26 Sep (the site was current with `main`; its claims weren't):
+    - False:
+      - Contracts "never leave your network"; "air-gapped deployments … on-prem inference". Every AI call goes to a hosted provider (Anthropic, OpenAI, Google or OpenRouter).
+      - A managed cloud with single-tenant hosting and a region choice, which appeared in the homepage meta description every link preview shows. There is none; the hosted instance is a demo.
+      - Provider keys encrypted under an "org-specific master key". There is one deployment key.
+      - "PDF/A" signed output.
+      - A pen-test summary and SIG-Lite.
+      - A quickstart whose `docker compose up` started only the infrastructure.
+      - Plant- and hub-scoped permissions.
+      - Industry features with no code: sub-processor and IP-chain tracking, insurance-certificate reminders, a one-click data room, Bayh-Dole ticks.
+      - "Reference teams" and "reference portfolios", which were synthesized personas.
+    - Overstated:
+      - "12 AI agents" counted e-signature and invoice matching.
+      - "Never hallucinated".
+      - Approvals routed by jurisdiction and counterparty risk.
+      - An intake that routes and auto-approves.
+      - CRM data in drafts.
+      - "Every" deadline extracted.
+      - Portfolio answers over "150+ contracts".
+      - A model "per agent".
+      - A Discord, a community call, an RFC folder and a 48-hour PR promise.
+      - AGPL "like GitLab and Sentry".
+    - Links:
+      - The Cal.com demo link answered 404.
+      - x.com/draftlegal is an unrelated person's account.
+      - `/privacy` and `/terms` had no route.
+      - `/product#…` anchors went nowhere, and screenshots loading late pushed stages away from the link target.
+      - The README anchor was `#setup`.
+    - Stale:
+      - Four shipped agents were marked "Soon".
+      - Nothing on Word redlining, the Google Docs round trip, liability caps, sealed Word signing, renewal notice dates, PII masking or the prompt-injection warning.
+      - The build copied the sitemap before regenerating it, so every `lastmod` said 25 May, and `/industries` was missing.
+  - Fix:
+    - Every claim now fits the code.
+    - The 12 agents are the ones that call a model: Signature and Invoice gave way to Playbook Review and Compliance. E-signature and invoice matching are described as features.
+    - The data-flow, masking and key-storage text now says what happens.
+    - Roadmap items stay "not yet".
+    - Privacy and Terms point at the app's pages. The demo link is an email. The X and LinkedIn links are gone.
+    - Product stages have ids, and screenshots reserve their 1680×900 space.
+    - Comparison pages say when they were last checked.
+    - The sitemap is generated before the build and lists `/industries`.
+  - Tests: `marketing-claims.test.ts` (+17) now reads `index.html` too. Each of its 20 new phrases matched the live site's source before the fix.
+  - Checks:
+    - Marketing build: 42 sitemap URLs.
+    - Typecheck and lint for every package: 0 errors.
+    - API unit 503.
+    - On a preview: home, product anchors, security, contact, biotech and a comparison page.
+  - Not done:
+    - The product screenshots are from May, before the 8 Aug design change. Re-shooting needs a signed-in capture.
+    - Competitor facts on the comparison pages weren't re-researched.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.

@@ -2,8 +2,10 @@
 Redline Agent — Phase 5.2
 3-step LangGraph pipeline for AI-powered counterparty redline analysis:
   Step 1 — Extract Changes (fast model): parse ins/del HTML → ChangeItem[]
-  Step 2 — Score vs Playbook (smart model): recommendation + playbook alignment + severity
-  Step 3 — Counter-Proposals (smart model): generate counter text for rejected changes
+  Step 2 — Score vs Playbook (smart model): recommendation + playbook alignment + severity,
+           and risk-factor ratings for our wording and theirs
+  Step 3 — Counter-Proposals (smart model): counter text for changes we counter or reject;
+           risk before → proposed → with our counter is computed from the ratings
 
 Output stored in contract.metadata._redlineAnalysis.
 """
@@ -49,12 +51,15 @@ _EXTRACT_PROMPT = """You are a contract redline analyst. The HTML below contains
 <ins> tags mark text the counterparty ADDED. <del> tags mark text that was REMOVED from the original.
 
 Extract all meaningful changes as a JSON array. Ignore whitespace-only changes.
+Group the edits by clause: return ONE entry per numbered section that changed (e.g. every edit inside
+"3. Payment" is one entry), not one entry per inserted or deleted fragment. For each entry, ourText is the
+whole section as it read BEFORE the edits and theirText is the whole section as it reads AFTER them.
 
 Return ONLY valid JSON — no markdown, no explanation:
 [
   {{
     "changeId": "<short unique slug, e.g. change_001>",
-    "clauseType": "<payment|liability|indemnification|term|termination|confidentiality|ip|governing_law|notice|other>",
+    "clauseType": "<payment|liability|liquidated_damages|security|indemnification|warranty|insurance|term|termination|confidentiality|ip|dispute_resolution|governing_law|notice|other>",
     "ourText": "<the original text that was removed (del content), or empty string if pure addition>",
     "theirText": "<the new text the counterparty proposed (ins content), or empty string if pure deletion>",
     "context": "<1–2 sentences of surrounding contract text for context>",
@@ -78,23 +83,50 @@ For each change, return:
 - severity: "low" | "medium" | "high" | "critical"
 - reasoning: one sentence explaining the decision
 - requiresHumanReview: true if walkaway or outside_playbook or critical severity
+- likelihood: integer 1-3, how often the event this clause deals with actually happens in contracts of this
+  type and industry (for example a contractor finishing late, a supplier defaulting, a dispute reaching
+  arbitration): 1 unlikely, 2 possible, 3 likely. This is a property of the event, not of the wording, so rate
+  it once per change.
+- ourAssessment: our original text (ourText) rated on the three wording factors below
+- theirAssessment: the counterparty's text (theirText) rated on the same three factors
+- riskReason: one sentence on why the risk moved: the deviation from our position, what we could lose, how
+  likely the event is, and how the proposal compares with market practice
 
-Return ONLY valid JSON array matching the input changes, adding the scoring fields:
+Wording factors, each an integer, judged from OUR side:
+- deviation 0-3, distance from our playbook position for this clause: 0 matches our preferred position,
+  1 within our acceptable position, 2 only within our fallback position, 3 beyond our walkaway position or
+  removing a protection the playbook requires. Where no playbook position covers the clause, compare with our
+  original text instead: 0 unchanged or better for us, 1 minor, 2 material, 3 fundamental.
+- exposure 0-4, what we could lose if the event happens under this wording, relative to this contract's value
+  and the wider deal or project: 0 nothing, 1 low, 2 moderate, 3 high, 4 severe (uncapped, more than the
+  contract value, or losing all security).
+- market 0-3, how the wording compares with market practice for this industry and jurisdiction: 0 market
+  standard, 1 slightly off-market, 2 clearly off-market, 3 one-sided or of doubtful enforceability.
+Each assessment is an object: {{"deviation": n, "exposure": n, "market": n}}.
+
+Return ONLY a valid JSON array with one object per input change, in the same order, holding its changeId
+and the scoring fields above. Do not repeat the clause text.
 {changes_json}"""
 
-_COUNTER_PROMPT = """You are a contract drafting specialist. For each change marked for countering, write a counter-proposal that moves the language closer to our playbook's "acceptable" position while still being commercially reasonable.
+_COUNTER_PROMPT = """You are a contract drafting specialist. For each change below, write a counter-proposal: a compromise the counterparty could realistically accept, which moves the language to our playbook's "acceptable" position (or "fallback" if acceptable is unrealistic). Do not simply restore our original text.
 
 Contract type: {contract_type}
 Playbook positions: {playbook_json}
 
-Changes to counter (only those with recommendation="counter"):
+Changes to counter (recommendation "counter" or "reject"). Each carries ourAssessment and theirAssessment: our
+original text and the counterparty's text rated on three wording factors (deviation 0-3 from our playbook
+position, exposure 0-4, market 0-3; higher is worse for us):
 {counter_changes_json}
 
 For each change, add:
 - counterText: the specific replacement language we propose
 - counterNote: one sentence explaining the rationale
+- counterAssessment: our counterText rated on the same three factors, as an object
+  {{"deviation": n, "exposure": n, "market": n}}. Use the same scale as the ourAssessment and theirAssessment
+  you were given: where the counter restores our original wording, give it ourAssessment's ratings; a
+  compromise sits between ourAssessment and theirAssessment.
 
-Return ONLY valid JSON array of the same changes with counterText and counterNote added."""
+Return ONLY valid JSON array of the same changes with counterText, counterNote and counterAssessment added."""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -186,9 +218,7 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
             SystemMessage(content="You are a contract negotiation specialist. Return only valid JSON." + PII_TOKEN_RULE),
             HumanMessage(content=prompt),
         ], config={"callbacks": resolved.callbacks})
-        scored = _parse_json(response.content)
-        if not isinstance(scored, list):
-            scored = state["changes"]
+        scored = _merge_scores(state["changes"], _parse_json(response.content))
 
         requires_gate = any(
             c.get("playbookAlignment") in ("walkaway", "outside_playbook") or
@@ -211,9 +241,129 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
         return {**state, "scored_changes": state["changes"], "requires_human_gate": False, "confidence": 0.5, "error": str(e)}
 
 
+_SCORE_KEYS = ("recommendation", "playbookAlignment", "severity", "reasoning",
+               "requiresHumanReview", "likelihood", "ourAssessment", "theirAssessment", "riskReason")
+
+
+def _merge_scores(changes: list[dict], parsed: Any) -> list[dict]:
+    """Merge step 2's scores onto the extracted changes. The model is asked for
+    scores only, and even when it echoes whole changes it drops fields, so the
+    change text always comes from step 1. Scores match by changeId, or by
+    position when the model returned one score per change."""
+    scores = [s for s in parsed if isinstance(s, dict)] if isinstance(parsed, list) else []
+    by_id = {s["changeId"]: s for s in scores if s.get("changeId")}
+    same_length = len(scores) == len(changes)
+    scored = []
+    for i, change in enumerate(changes):
+        s = by_id.get(change.get("changeId")) or (scores[i] if same_length else {})
+        merged = {**change, **{k: s[k] for k in _SCORE_KEYS if k in s}}
+        rec = str(merged.get("recommendation", "")).lower()
+        if rec not in ("accept", "counter", "reject"):
+            merged["recommendation"] = "accept" if rec.startswith("accept") else "counter"
+        scored.append(merged)
+    return scored
+
+
+# ─── Risk scoring ─────────────────────────────────────────────────────────────
+# The model rates each wording (ours, theirs, our counter) on three factors and
+# the clause's event once; the score is computed here, so the same ratings
+# always give the same number and every number traces back to its factors:
+#   deviation   0-3  distance from our playbook position (or from our original
+#                    text where the playbook has no position for the clause)
+#   exposure    0-4  what we could lose under this wording, relative to the
+#                    contract and the deal
+#   market      0-3  how far the wording sits from market practice
+#   likelihood  1-3  how often the clause's event happens in contracts of this
+#                    type and industry; one rating per change, shared by all
+#                    three wordings, because wording changes what we lose, not
+#                    whether the event happens
+# risk = 100 × (0.45 × deviation/3 + 0.35 × exposure×likelihood/12 + 0.20 × market/3)
+_FACTOR_RANGES = {"deviation": (0, 3), "exposure": (0, 4), "likelihood": (1, 3), "market": (0, 3)}
+_DEVIATION_WORDS  = {0: "matches our standard", 1: "within our acceptable position", 2: "needs our fallback position", 3: "beyond our walkaway position"}
+_EXPOSURE_WORDS   = {0: "no exposure", 1: "low exposure", 2: "moderate exposure", 3: "high exposure", 4: "severe exposure"}
+_LIKELIHOOD_WORDS = {1: "unlikely", 2: "possible", 3: "likely"}
+_MARKET_WORDS     = {0: "market standard", 1: "slightly off-market", 2: "clearly off-market", 3: "one-sided or of doubtful enforceability"}
+
+
+def _factors(assessment: Any, likelihood: Any = None) -> dict[str, int] | None:
+    """A wording's factor ratings plus the change's likelihood, clamped to their
+    ranges, or None if any is missing."""
+    if not isinstance(assessment, dict):
+        return None
+    ratings = {**assessment, **({"likelihood": likelihood} if likelihood is not None else {})}
+    out: dict[str, int] = {}
+    for key, (lo, hi) in _FACTOR_RANGES.items():
+        try:
+            out[key] = max(lo, min(hi, round(float(ratings.get(key)))))
+        except (TypeError, ValueError):
+            return None
+    return out
+
+
+def _risk_score(f: dict[str, int] | None) -> int | None:
+    if f is None:
+        return None
+    return round(100 * (0.45 * f["deviation"] / 3
+                        + 0.35 * f["exposure"] * f["likelihood"] / 12
+                        + 0.20 * f["market"] / 3))
+
+
+def _factor_words(f: dict[str, int]) -> str:
+    """'beyond our walkaway position; severe exposure, likely; clearly off-market'"""
+    return (f"{_DEVIATION_WORDS[f['deviation']]}; {_EXPOSURE_WORDS[f['exposure']]}, "
+            f"{_LIKELIHOOD_WORDS[f['likelihood']]}; {_MARKET_WORDS[f['market']]}")
+
+
+def _with_risk_text(change: dict) -> dict:
+    """Score our text, theirs and our counter from their factor ratings, and put
+    the result where the redline panel already shows text: the reasoning line
+    (always visible) and the counter-proposal note."""
+    likelihood = change.get("likelihood")
+    ours, theirs, counter = (_factors(change.get(k), likelihood) for k in ("ourAssessment", "theirAssessment", "counterAssessment"))
+    before, after, revised = _risk_score(ours), _risk_score(theirs), _risk_score(counter)
+    # A counter is a compromise between our wording (the baseline) and theirs, so
+    # its risk sits between the two. The counter is rated in a separate model
+    # call; this keeps it on the same footing as the other two ratings.
+    if None not in (before, after, revised) and before <= after:
+        if revised < before:
+            revised, counter = before, ours
+        elif revised > after:
+            revised, counter = after, theirs
+    out = {**change, "ourAssessment": ours, "theirAssessment": theirs, "counterAssessment": counter,
+           "riskBefore": before, "riskAfter": after, "riskRevised": revised}
+    if before is not None and after is not None:
+        why = change.get("riskReason") or change.get("reasoning") or ""
+        out["riskDelta"] = after - before
+        out["reasoning"] = f"Risk {before} → {after} ({after - before:+d}): {_factor_words(theirs)}. {why}".strip()
+    if revised is not None and change.get("counterText"):
+        base = f"Revised risk if they accept: {revised}"
+        if after is not None:
+            base += f" (from {after}, {revised - after:+d})"
+        out["counterNote"] = f"{base}: {_factor_words(counter)}. {change.get('counterNote') or ''}".strip()
+    return out
+
+
+def _risk_summary(changes: list[dict]) -> str:
+    """One line on how the counterparty's changes move our risk, averaged over the changed clauses."""
+    def avg(key: str, rows: list[dict]) -> int | None:
+        vals = [c[key] for c in rows if isinstance(c.get(key), int)]
+        return round(sum(vals) / len(vals)) if vals else None
+    scored = [c for c in changes if isinstance(c.get("riskBefore"), int) and isinstance(c.get("riskAfter"), int)]
+    if not scored:
+        return ""
+    before, after = avg("riskBefore", scored), avg("riskAfter", scored)
+    line = f" Average risk across the {len(scored)} changed clauses: {before} in our standard, {after} as proposed"
+    # With our counters where we made one, their text where we accept it.
+    landed = [c["riskRevised"] if isinstance(c.get("riskRevised"), int) else c["riskAfter"] for c in scored]
+    return line + f", {round(sum(landed) / len(landed))} with our counter-proposals."
+
+
 async def step_generate_counters(state: RedlineState) -> RedlineState:
-    """Step 3: Generate counter-proposals for changes marked 'counter'."""
-    counter_changes = [c for c in state["scored_changes"] if c.get("recommendation") == "counter"]
+    """Step 3: Generate counter-proposals for changes marked 'counter' or 'reject'.
+
+    A rejected change still gets a compromise, so every change we don't accept
+    shows alternative wording and the risk it would leave us with."""
+    counter_changes = [c for c in state["scored_changes"] if c.get("recommendation") in ("counter", "reject")]
 
     final_changes = list(state["scored_changes"])  # copy
 
@@ -251,10 +401,12 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
                     if cid in counter_map:
                         final_changes[i] = {**change, **{
                             k: v for k, v in counter_map[cid].items()
-                            if k in ("counterText", "counterNote")
+                            if k in ("counterText", "counterNote", "counterAssessment")
                         }}
         except Exception as e:
             logger.error("[redline] step3 error: %s", e)
+
+    final_changes = [_with_risk_text(c) for c in final_changes]
 
     # Determine overall recommended action
     recommendations = [c.get("recommendation", "counter") for c in final_changes]
@@ -270,7 +422,8 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
     counter_n = recommendations.count("counter")
     reject_n = recommendations.count("reject")
     summary = (f"Analyzed {len(final_changes)} changes: "
-               f"{accept_n} acceptable, {counter_n} need countering, {reject_n} should be rejected.")
+               f"{accept_n} acceptable, {counter_n} need countering, {reject_n} should be rejected."
+               + _risk_summary(final_changes))
 
     logger.info("[redline] step3: final_changes=%d action=%s", len(final_changes), recommended_action)
     return {**state, "final_changes": final_changes, "summary": summary, "recommended_action": recommended_action}

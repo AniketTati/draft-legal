@@ -5,7 +5,7 @@ import { APP_URL, GITHUB_URL } from '@/lib/utils'
 export function CtaStrip({
   eyebrow = 'Ready when you are',
   title = 'Ship your first contract in minutes.',
-  subtitle = 'Self-host in 3 commands or sign up for cloud — same product, your choice.',
+  subtitle = 'Self-host it in 3 commands, or try the hosted demo (evaluation only).',
 }: {
   eyebrow?: string
   title?: string
