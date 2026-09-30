@@ -3303,10 +3303,11 @@ Written for the GSK drafting and Databricks renewal demos on branch `fix/draft-p
     - `renewsOnItsOwn` drops amendments and exhibits from renewal lists.
     - `GET /renewals` (with `notice.setBy`), the daily renewal scan and `renewal_advice` all use both.
     - Found in review: a draft amendment already moved the deadline, since the amendments were loaded whatever their status. Only a signed (EXECUTED) amendment counts now.
+    - Found writing docs/40: `GET /renewals/stats` and `GET /renewals/export` still counted an amendment as a renewal of its own, so the page's cards and the CSV disagreed with its list. Both use `renewsOnItsOwn` now, and the CSV gains Auto-Renews, Notice Days, Notice Deadline and Notice Period Set By, worked out as the page does.
   - Tests:
     - `renewal-notice.test.ts` (+5, one for an unsigned amendment)
     - `renewal-scan.integration.test.ts` (+1)
-    - `renewal_advice` (3) in `contract-family-tools.integration.test.ts`
+    - `renewal_advice` (3) and the renewals stats and CSV (1; it failed on the code before it) in `contract-family-tools.integration.test.ts`
   - Not done:
     - An amendment that changes the expiry date itself isn't applied; the deadline counts back from the contract's own expiry.
     - The Renewals page doesn't show `setBy` yet.

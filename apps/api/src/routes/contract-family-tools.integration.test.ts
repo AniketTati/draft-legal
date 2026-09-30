@@ -10,7 +10,7 @@
  * invoices, scoped as the Invoices page is.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { getApp, closeApp, makeOrg, makeUser, makeContract, grantRole, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { getApp, closeApp, makeOrg, makeUser, makeContract, grantRole, cleanupAll, auth, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
 let org: string, other: string, admin: string, rep: string
@@ -227,5 +227,23 @@ describe('renewal_advice follows the amendments', () => {
     const ids = (await tool('renewal_advice', { leadDays: 180, limit: 50 })).json().items.map((i: { contractId: string }) => i.contractId)
     expect(ids).toContain(renewing)
     expect(ids).not.toContain(itsAmendment)
+  })
+
+  it('counts and exports the contract once, with the amended notice (GET /renewals/stats and /renewals/export)', async () => {
+    const headers = auth(org, ['ADMIN'], admin)
+    const window = { gte: new Date(), lte: new Date(Date.now() + 90 * DAY) }
+    const inWindow = { orgId: org, deletedAt: null, status: 'EXECUTED', diligenceRoomId: null, expiryDate: window }
+    const all = await prisma.contract.count({ where: inWindow })
+    const linked = await prisma.contract.count({ where: { ...inWindow, relationshipType: { in: ['amendment', 'exhibit_only'] } } })
+    expect(linked).toBeGreaterThanOrEqual(1)
+    const stats = (await app.inject({ method: 'GET', url: '/api/v1/renewals/stats', headers })).json()
+    expect(stats.next90).toBe(all - linked)
+
+    const lines = (await app.inject({ method: 'GET', url: '/api/v1/renewals/export', headers })).body.split('\n')
+    expect(lines[0]).toContain('Notice Deadline')
+    const rows = lines.filter(l => /^Renewing License/.test(l))
+    expect(rows).toHaveLength(1)   // the amendment isn't exported as a renewal of its own
+    expect(rows[0]).toContain(new Date(expiry.getTime() - 60 * DAY).toISOString().slice(0, 10))
+    expect(rows[0]).toMatch(/,60,.*,Renewing License — Amendment No\. 1\s*$/)
   })
 })

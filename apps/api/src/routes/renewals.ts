@@ -193,13 +193,18 @@ export async function renewalRoutes(app: FastifyInstance) {
       where: {
         orgId, deletedAt: null, status: 'EXECUTED',
         ...portfolioWhere(req),   // X7, X17 (no diligence-room documents)
+        AND:        [renewsOnItsOwn],   // as the list: an amendment renews with its contract
         expiryDate: { gte: lookback, lte: lookahead },
       },
       select: {
         id: true, title: true, type: true, counterpartyName: true,
         effectiveDate: true, expiryDate: true, value: true, currency: true,
-        metadata: true,
+        metadata: true, keyTerms: true,
         owner: { select: { name: true, email: true } },
+        amendments: {
+          where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...ownContractWhere(req) },
+          select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },
+        },
       },
       orderBy: { expiryDate: 'asc' },
       take: 5_000,
@@ -208,10 +213,12 @@ export async function renewalRoutes(app: FastifyInstance) {
     const headers = [
       'Title', 'Type', 'Counterparty', 'Owner', 'Effective Date', 'Expiry Date',
       'Days Until Expiry', 'Value', 'Currency', 'AI Recommendation', 'AI Confidence', 'Decision',
+      'Auto-Renews', 'Notice Days', 'Notice Deadline', 'Notice Period Set By',
     ]
     const rows = contracts.map(c => {
       const md = (c.metadata ?? {}) as { renewalAdvice?: { recommendation?: string; confidence?: string }; renewalDecision?: string }
       const days = c.expiryDate ? Math.round((c.expiryDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)) : ''
+      const notice = amendedRenewalNotice(c, c.amendments)   // the page's notice, amendments applied
       return [
         c.title, c.type, c.counterpartyName ?? '',
         c.owner?.name ?? '',
@@ -223,6 +230,10 @@ export async function renewalRoutes(app: FastifyInstance) {
         md.renewalAdvice?.recommendation ?? '',
         md.renewalAdvice?.confidence ?? '',
         md.renewalDecision ?? '',
+        notice.autoRenew ? 'yes' : 'no',
+        notice.noticeDays ?? '',
+        notice.deadline?.toISOString().slice(0, 10) ?? '',
+        notice.noticeSetBy ?? '',
       ]
     })
     reply
@@ -241,15 +252,16 @@ export async function renewalRoutes(app: FastifyInstance) {
     const cut90 = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000)
     const back30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-    const own = portfolioWhere(req)   // X7, X17
+    // X7, X17; and, as the list, an amendment isn't a renewal of its own (GG4)
+    const base = { orgId, deletedAt: null, ...portfolioWhere(req), AND: [renewsOnItsOwn], status: 'EXECUTED' }
     const [overdue, thisWeek, next30, next60, next90, totalIn90] = await Promise.all([
-      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: back30, lt: now } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut7 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut30 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut60 } } }),
-      prisma.contract.count({ where: { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } } }),
+      prisma.contract.count({ where: { ...base, expiryDate: { gte: back30, lt: now } } }),
+      prisma.contract.count({ where: { ...base, expiryDate: { gte: now, lte: cut7 } } }),
+      prisma.contract.count({ where: { ...base, expiryDate: { gte: now, lte: cut30 } } }),
+      prisma.contract.count({ where: { ...base, expiryDate: { gte: now, lte: cut60 } } }),
+      prisma.contract.count({ where: { ...base, expiryDate: { gte: now, lte: cut90 } } }),
       prisma.contract.findMany({
-        where:  { orgId, deletedAt: null, ...own, status: 'EXECUTED', expiryDate: { gte: now, lte: cut90 } },
+        where:  { ...base, expiryDate: { gte: now, lte: cut90 } },
         select: { value: true, currency: true, metadata: true },
         take: 500,
       }),
