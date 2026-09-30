@@ -39,6 +39,26 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+  # The web app's unit tests (apps/web/src/**/*.test.ts). No job ran them, so
+  # the review queue's own tests (EE1) only ever ran on a laptop.
+  test-web:
+    name: Test web (unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run web tests (unit)
+        run: pnpm --filter web test
+
   bundle-size:
     # Production audit (2026-04-30): web bundle ballooned to 833KB
     # gzip on first paint. Code-split into editor / pdf / charts /
