@@ -3264,6 +3264,71 @@ Asked next "are you sure you have tested everything thoroughly?". Not everything
 
 ---
 
+## Drafting purpose, amendments and renewal prep (built 2026-09-26, shipped 2026-09-30)
+
+Written for the GSK drafting and Databricks renewal demos on branch `fix/draft-purpose-inference`, and run from there on the local stack, but never committed. It was reviewed and tested on 2026-09-30, and GG5 was found then.
+
+- **GG1 — Drafting works out what the agreement is for before choosing its type. — DONE.**
+  - Found in the GSK demo: asked for a supply agreement, the model passed `OTHER` or `ORDER_FORM` and needed an extra chip click.
+  - Fix, in the orchestrator's DRAFT REQUESTS:
+    - A new step 0 reads what is bought, sold, supplied, licensed or shared, and which side we are on, and chooses the type from that. Past deals are context, not the answer.
+    - `contract_create_from_template` describes each type by its purpose and asks for a title that says what the agreement is.
+    - The card names the type in words ("a draft vendor agreement").
+    - After NO_TEMPLATE_MATCH, a listed template that fits the purpose by name is used straight away.
+    - Template ids and type codes are never shown.
+  - Checked live: the 29 Sep works-contract drafting runs chose the vendor-agreement type and named it in words.
+- **GG2 — The assistant reads a contract's amendments. — DONE.**
+  - Found in the Databricks demo: the assistant stated the base licence's notice period and price cap as if Amendment No. 1 hadn't changed them.
+  - Fix:
+    - `contract_get` and `contract_summarize` return `family` (parent, children with `relationshipType`, siblings) and a `familyNote`.
+    - The text of the latest 3 amendments or renewals is inline, up to 4,000 characters each, redacted, and left out if redaction fails.
+    - `counterparty_memory` and `contract_search` rows carry `parentContractId` and `relationshipType`, and search cards carry the structural `terms` a benchmark compares (never the raw key terms).
+    - Rule A14: state terms as amended, naming the amendment.
+    - Everything stays within the caller's scope.
+  - Tests: `contract-family-tools.integration.test.ts`: the family tests, including inline redacted text and an own-scope caller seeing only its relatives.
+- **GG3 — `invoice_list`: what a vendor billed. — DONE.**
+  - What it does:
+    - A new assistant tool and internal route list a contract's or vendor's invoices, oldest first, with status, dispute reason and totals per currency.
+    - The scope rule is the Invoices page's: an own-scope caller sees its own contracts' invoices and the unmatched ones it entered.
+    - Descriptions and dispute reasons are redacted.
+    - With nothing on file, it says so rather than estimating.
+  - Tests: `contract-family-tools.integration.test.ts` (4).
+- **GG4 — Renewal notice deadlines follow amendments, and an amendment isn't a renewal of its own. — DONE.**
+  - Found: the Databricks deadline showed 14 Nov where Amendment No. 1's 60 days make it 15 Oct, and the amendment was listed as a second renewal.
+  - Fix:
+    - `amendedRenewalNotice`: the latest amendment or renewal that states a notice period or auto-renewal wins, and `noticeSetBy` names it.
+    - `renewsOnItsOwn` drops amendments and exhibits from renewal lists.
+    - `GET /renewals` (with `notice.setBy`), the daily renewal scan and `renewal_advice` all use both.
+  - Tests:
+    - `renewal-notice.test.ts` (+4)
+    - `renewal-scan.integration.test.ts` (+1)
+    - `renewal_advice` (3) in `contract-family-tools.integration.test.ts`
+  - Not done:
+    - An amendment that changes the expiry date itself isn't applied; the deadline counts back from the contract's own expiry.
+    - The Renewals page doesn't show `setBy` yet.
+- **GG5 — Renewal prep does the whole prep, and doesn't claim missing data it never looked for. — DONE.**
+  - Found, reviewing before shipping: with gemini-2.5-flash, three of three "Prepare me for the Databricks renewal." runs stopped after one round.
+    - One wrote every heading with "I don't have invoice data on file", without calling `invoice_list`. That hid a $6,250 overcharge.
+    - All printed contract ids.
+  - Fix, in rule A15:
+    - Three rounds of tool calls, with nothing written to the user between them.
+    - "No data on file" only after that section's tool ran for the chosen contract and returned nothing.
+    - An example first line naming agreements by title, with no ids and no counts. The model had copied a count from an earlier example.
+  - Checks: five in-process runs of this branch's orchestrator against the local stack. Each called all 8 tools and showed:
+    - the 15 Oct deadline as amended
+    - each invoice checked against the price in force on its date
+    - the $6,250 overcharge
+    - all 7 sections
+    - no ids
+- **Checks for GG1–GG5:**
+  - API unit: 508.
+  - Integration: 65 across the 6 files that touch these routes (`contract-family-tools`, `renewal-scan`, `clause-search-passage`, `diligence-portfolio`, `own-scope-rest`, `pii-surfaces`), on `clm_test` with Redis db 9.
+  - Typecheck and lint: 0 errors.
+  - Agents: 49.
+  - `import main`: OK.
+
+---
+
 ## Run log
 
 Append one line per task as it completes: `<task id> — <status> — <one-line summary> — <commit sha>`.
