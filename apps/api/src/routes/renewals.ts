@@ -14,9 +14,9 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { portfolioWhere } from '../lib/own-scope-guard.js'
+import { ownContractWhere, portfolioWhere } from '../lib/own-scope-guard.js'
 import { buildCsv } from '../lib/csv.js'
-import { renewalNotice } from '../lib/renewal-notice.js'
+import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
 
 const ListSchema = z.object({
   bucket: z.enum(['all', 'this_week', 'next_30', 'next_60', 'next_90', 'overdue']).default('all'),
@@ -42,7 +42,8 @@ interface RenewalRow {
   keyTerms:         Record<string, unknown> | null
   // C6 — the auto-renewal notice deadline, derived server-side by the same
   // function the daily scan alerts on, so the page and the alert agree.
-  notice: { autoRenew: boolean; days: number | null; deadline: string | null }
+  // setBy — the amendment that set the notice period, when one did.
+  notice: { autoRenew: boolean; days: number | null; deadline: string | null; setBy: string | null }
   // Renewal-specific from metadata
   renewalDecision:    string | null   // renew | renegotiate | let_expire | pause | unknown
   renewalDecisionAt:  string | null
@@ -72,6 +73,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       where: {
         orgId, deletedAt: null,
         ...portfolioWhere(req),   // X7, X17 (no diligence-room documents)
+        AND:        [renewsOnItsOwn],
         status:     'EXECUTED',
         expiryDate: { gte: lookback, lte: lookahead },
       },
@@ -81,6 +83,10 @@ export async function renewalRoutes(app: FastifyInstance) {
         value: true, currency: true, metadata: true, keyTerms: true,
         ownerId: true,
         owner: { select: { name: true } },
+        amendments: {
+          where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...ownContractWhere(req) },
+          select: { title: true, relationshipType: true, keyTerms: true, effectiveDate: true, createdAt: true },
+        },
       },
       orderBy: { expiryDate: 'asc' },
       take: 1_000,
@@ -107,8 +113,8 @@ export async function renewalRoutes(app: FastifyInstance) {
           ? (c.keyTerms as Record<string, unknown>)
           : null,
         notice:           (() => {
-          const n = renewalNotice({ expiryDate: c.expiryDate, keyTerms: c.keyTerms })
-          return { autoRenew: n.autoRenew, days: n.noticeDays, deadline: n.deadline?.toISOString() ?? null }
+          const n = amendedRenewalNotice(c, c.amendments)
+          return { autoRenew: n.autoRenew, days: n.noticeDays, deadline: n.deadline?.toISOString() ?? null, setBy: n.noticeSetBy }
         })(),
         renewalDecision:    md.renewalDecision ?? null,
         renewalDecisionAt:  md.renewalDecisionAt ?? null,

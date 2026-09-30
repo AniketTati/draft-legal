@@ -22,6 +22,15 @@ from ..config import settings
 
 log = logging.getLogger(__name__)
 
+# How the confirmation card names a contract type ("a draft vendor agreement",
+# not "a draft VENDOR_AGREEMENT").
+_TYPE_LABELS = {
+    "NDA": "NDA", "MSA": "MSA", "SOW": "SOW", "SLA": "SLA",
+    "VENDOR_AGREEMENT": "vendor agreement", "LICENSE": "license agreement",
+    "EMPLOYMENT": "employment agreement", "DATA_PROCESSING": "data processing agreement",
+    "ORDER_FORM": "order form", "PARTNERSHIP": "partnership agreement", "OTHER": "agreement",
+}
+
 
 class ContractCreateFromTemplateArgs(BaseModel):
     user_message: str = Field(
@@ -33,14 +42,21 @@ class ContractCreateFromTemplateArgs(BaseModel):
     )
     contract_type: Optional[str] = Field(
         None,
-        description="NDA | MSA | SOW | VENDOR_AGREEMENT | LICENSE | EMPLOYMENT | DATA_PROCESSING.",
+        description=(
+            "The kind of agreement, worked out from what it is for: NDA (sharing "
+            "confidential information), MSA (a framework for ongoing services), SOW "
+            "(one project under an MSA), VENDOR_AGREEMENT (buying from or supplying "
+            "to a vendor or supplier — goods, products or raw materials; a purchase, "
+            "supply or procurement), LICENSE (licensing software or IP), EMPLOYMENT "
+            "(hiring someone), DATA_PROCESSING (processing personal data, a DPA)."
+        ),
     )
     template_id: Optional[str] = Field(
         None,
         description="A specific template's id from template_list. Use it when the user names a template, or when a previous call returned NO_TEMPLATE_MATCH with a list of templates.",
     )
     counterparty_name: Optional[str] = Field(None, description="The other party's company name, if the user gave it.")
-    title: Optional[str] = Field(None, description="Optional explicit title; defaults to '<counterparty> — <type>'.")
+    title: Optional[str] = Field(None, description="A short title that says what it is, e.g. 'Acme — Supply Agreement'; defaults to '<counterparty> — <type>'.")
     governing_law: Optional[str] = Field(None, description="Governing law / jurisdiction ONLY if the user stated it, e.g. 'New York'. Never guess.")
     term: Optional[str] = Field(None, description="Contract term ONLY if the user stated it, e.g. '3 years'. Never guess.")
     effective_date: Optional[str] = Field(None, description="Effective date ONLY if the user stated it (YYYY-MM-DD). Never guess.")
@@ -93,7 +109,10 @@ def build_contract_create_from_template(org_id: str, user_id: str | None = None)
         plan = r.json()
         unfilled: list[str] = plan.get("unfilledVariables") or []
         who = f" for {plan['counterpartyName']}" if plan.get("counterpartyName") else ""
-        summary = f"Create a draft {plan['contractType']}{who} from the template \"{plan['templateName']}\""
+        ctype = plan["contractType"]
+        # Template labels ('BAA', 'Order Form') read fine as they are; codes don't.
+        kind = _TYPE_LABELS.get(ctype) or (ctype.replace("_", " ").lower() if "_" in ctype else ctype)
+        summary = f"Create a draft {kind}{who} from the template \"{plan['templateName']}\""
         if unfilled:
             shown = ", ".join(unfilled[:6]) + ("…" if len(unfilled) > 6 else "")
             summary += f" — {len(unfilled)} term(s) left blank to fill in: {shown}"

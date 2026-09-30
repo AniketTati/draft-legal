@@ -23,6 +23,13 @@ const notifiedAt = async (id: string) =>
   ((await prisma.contract.findUnique({ where: { id }, select: { metadata: true } }))?.metadata as { renewalNotifiedAt?: string }).renewalNotifiedAt
 
 let lockingSoon: string, plainExpiry: string, notYet: string, expiringSoon: string
+let amended: string, amendment: string, soonBase: string, soonAmendment: string
+
+async function amends(parent: string, title: string, expiresInDays: number, keyTerms: Record<string, unknown>) {
+  const id = await executed(title, expiresInDays, keyTerms)
+  await prisma.contract.update({ where: { id }, data: { parentContractId: parent, relationshipType: 'amendment' } })
+  return id
+}
 
 beforeAll(async () => {
   await getApp()
@@ -36,6 +43,13 @@ beforeAll(async () => {
   notYet       = await executed('Not yet', 200, { autoRenew: 'yes', noticePeriod: '120 days' })
   // Plain expiry inside the 90-day window keeps alerting as before.
   expiringSoon = await executed('Expires soon', 45, {})
+  // 30 days' notice, expires in 140 → the deadline is in 110 days; but an
+  // amendment made it 120 days → the deadline is in 20. Alert on that.
+  amended      = await executed('Amended to 120 days', 140, { autoRenew: true, noticePeriodDays: 30 })
+  amendment    = await amends(amended, 'Amendment No. 1 (120 days)', 140, { noticePeriodDays: 120 })
+  // An amendment renews with its contract: only the contract is a renewal.
+  soonBase      = await executed('Expires soon, amended', 45, {})
+  soonAmendment = await amends(soonBase, 'Amendment to the expiring one', 45, {})
 })
 
 afterAll(async () => {
@@ -63,5 +77,22 @@ describe('scanRenewals', () => {
     expect(row.notice.deadline.slice(0, 10)).toBe(expected)
     const plain = res.json().data.find((r: { id: string }) => r.id === plainExpiry)
     expect(plain.notice).toMatchObject({ autoRenew: false, deadline: null })
+  })
+
+  it('works the deadline out from the notice period an amendment set, and never renews an amendment on its own', async () => {
+    const res = await scanRenewals({ orgId: org, leadDays: 90 })
+    expect(res.errors).toEqual([])
+    expect(await notifiedAt(amended)).toBeTruthy()
+    expect(await notifiedAt(amendment)).toBeUndefined()
+    expect(await notifiedAt(soonBase)).toBeTruthy()
+    expect(await notifiedAt(soonAmendment)).toBeUndefined()
+
+    const app = await getApp()
+    const rows = (await app.inject({ method: 'GET', url: '/api/v1/renewals', headers: auth(org, ['ADMIN'], owner) })).json().data as Array<{ id: string; notice: { days: number; deadline: string; setBy: string | null } }>
+    const row = rows.find(r => r.id === amended)!
+    expect(row.notice).toMatchObject({ days: 120, setBy: 'Amendment No. 1 (120 days)' })
+    expect(row.notice.deadline.slice(0, 10)).toBe(new Date(Date.now() + 20 * DAY).toISOString().slice(0, 10))
+    expect(rows.map(r => r.id)).not.toContain(amendment)
+    expect(rows.map(r => r.id)).not.toContain(soonAmendment)
   })
 })

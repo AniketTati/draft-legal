@@ -22,7 +22,7 @@ import { prisma } from './prisma.js'
 import { queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
-import { renewalNotice } from './renewal-notice.js'
+import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS } from './renewal-notice.js'
 import { fireWebhook } from './webhook-events.js'
 
 export interface ScanOptions {
@@ -270,6 +270,7 @@ export async function scanRenewals(
   const where: Record<string, unknown> = {
     deletedAt:     null,
     diligenceRoomId: null,   // X17 — a target's contracts don't renew with us
+    AND:           [renewsOnItsOwn],   // an amendment renews with its contract
     status:        'EXECUTED',
     expiryDate:    { lte: new Date(Math.max(windowEnd, noticeWindowEnd)), gte: new Date(now - 30 * 24 * 60 * 60 * 1000) },
   }
@@ -281,6 +282,10 @@ export async function scanRenewals(
       id: true, orgId: true, title: true, ownerId: true,
       counterpartyName: true, metadata: true, expiryDate: true,
       type: true, value: true, currency: true, keyTerms: true,
+      amendments: {
+        where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS } },
+        select: { title: true, relationshipType: true, keyTerms: true, effectiveDate: true, createdAt: true },
+      },
     },
     orderBy: { expiryDate: 'asc' },
     take: 5_000,
@@ -289,7 +294,7 @@ export async function scanRenewals(
 
   for (const c of contracts) {
     if (!c.expiryDate) continue
-    const notice = renewalNotice({ expiryDate: c.expiryDate, keyTerms: c.keyTerms })
+    const notice = amendedRenewalNotice(c, c.amendments)
     const expiringSoon = c.expiryDate.getTime() <= windowEnd
     const noticeDue = notice.deadline != null
       && notice.deadline.getTime() <= now + NOTICE_LEAD_DAYS * 24 * 60 * 60 * 1000

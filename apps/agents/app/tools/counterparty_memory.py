@@ -87,7 +87,10 @@ def build_counterparty_memory(org_id: str, user_id: str | None = None) -> Struct
             "when a clauseType is specified. USE THIS any time the "
             "user asks 'what's our history with X?' or 'have we done "
             "deals with this counterparty?' or at the START of any "
-            "new contract review — past-deal context is free context."
+            "new contract review — past-deal context is free context. "
+            "A deal with `parentContractId` amends, renews or belongs to "
+            "another contract (see its `relationshipType`): group it under "
+            "that contract rather than listing it as a separate deal."
         ),
         args_schema=CounterpartyMemoryArgs,
     )

@@ -2,7 +2,7 @@
  * C6 — the auto-renewal notice deadline, derived server-side.
  */
 import { describe, it, expect } from 'vitest'
-import { noticeDaysOf, isAutoRenew, renewalNotice } from './renewal-notice.js'
+import { noticeDaysOf, isAutoRenew, renewalNotice, amendedRenewalNotice } from './renewal-notice.js'
 
 describe('noticeDaysOf', () => {
   it('reads every spelling and both shapes', () => {
@@ -44,5 +44,44 @@ describe('renewalNotice', () => {
     expect(renewalNotice({ expiryDate: expiry, keyTerms: { autoRenew: false, noticePeriodDays: 120 } }).deadline).toBeNull()
     expect(renewalNotice({ expiryDate: expiry, keyTerms: { autoRenew: true } }).deadline).toBeNull()
     expect(renewalNotice({ expiryDate: null, keyTerms: { autoRenew: true, noticePeriodDays: 30 } }).deadline).toBeNull()
+  })
+})
+
+describe('amendedRenewalNotice', () => {
+  const expiry = new Date('2026-12-14T00:00:00.000Z')
+  const base = { expiryDate: expiry, keyTerms: { autoRenew: true, noticeDays: 30 } }
+  const amendment = (title: string, effective: string, keyTerms: Record<string, unknown>, relationshipType = 'amendment') =>
+    ({ title, relationshipType, keyTerms, effectiveDate: new Date(effective), createdAt: new Date(effective) })
+
+  it('takes the notice period an amendment set, and names it', () => {
+    const n = amendedRenewalNotice(base, [amendment('Amendment No. 1', '2026-06-01', { noticePeriodDays: 60 })])
+    expect(n.noticeDays).toBe(60)
+    expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-10-15')
+    expect(n.noticeSetBy).toBe('Amendment No. 1')
+  })
+
+  it('lets the latest amendment win, whatever order they come in', () => {
+    const n = amendedRenewalNotice(base, [
+      amendment('Amendment No. 2', '2026-08-01', { noticePeriod: '90 days' }),
+      amendment('Amendment No. 1', '2026-06-01', { noticePeriodDays: 60 }),
+    ])
+    expect(n.noticeDays).toBe(90)
+    expect(n.noticeSetBy).toBe('Amendment No. 2')
+  })
+
+  it('keeps the base terms when an amendment is silent on them, and ignores exhibits', () => {
+    const n = amendedRenewalNotice(base, [
+      amendment('Price change', '2026-06-01', { unitPrice: 'US$0.27' }),
+      amendment('Exhibit A', '2026-07-01', { noticePeriodDays: 180 }, 'exhibit_only'),
+    ])
+    expect(n.noticeDays).toBe(30)
+    expect(n.noticeSetBy).toBeNull()
+    expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-11-14')
+  })
+
+  it('has no deadline once an amendment turns auto-renewal off', () => {
+    const n = amendedRenewalNotice(base, [amendment('Amendment No. 1', '2026-06-01', { autoRenew: false })])
+    expect(n.autoRenew).toBe(false)
+    expect(n.deadline).toBeNull()
   })
 })
