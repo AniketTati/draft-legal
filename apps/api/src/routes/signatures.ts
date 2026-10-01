@@ -44,6 +44,44 @@ import { guardOwnScopeContractRoutes, ownsContract } from '../lib/own-scope-guar
 import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
 import { recordStatusChange, statusData } from '../lib/status-change.js'
 
+const RevertSchema = z.object({ reason: z.string().trim().min(3).max(2000) })
+
+/** Statuses a contract is worked in before it goes for approval. */
+const WORKING = new Set(['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'])
+
+/**
+ * docs/41 P0.8 — why a contract can't be sent for signature yet, or null.
+ * Approved (or already out for signature, to resend) passes; so does any
+ * status when the org allows signing without approval
+ * (settings.allowSignWithoutApproval, off unless an admin turns it on).
+ */
+export async function signingGate(orgId: string, status: string): Promise<string | null> {
+  if (status === 'APPROVED' || status === 'PENDING_SIGNATURE') return null
+  const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
+  if ((org?.settings as { allowSignWithoutApproval?: unknown } | null)?.allowSignWithoutApproval === true) return null
+  if (status === 'PENDING_APPROVAL') return 'This contract is still waiting for approval. It can be sent for signature once it is approved.'
+  return 'This contract needs approval before it can be sent for signature. Send it for approval first.'
+}
+
+/**
+ * The status the contract was worked in before it went for approval (or for
+ * signature): where a revert takes it. Read from its recorded status
+ * changes; Draft when none says.
+ */
+async function workingStatusBefore(orgId: string, contractId: string): Promise<string> {
+  const events = await prisma.auditEvent.findMany({
+    where: { orgId, resourceType: 'contract', resourceId: contractId, action: AuditAction.CONTRACT_STATUS_CHANGED },
+    orderBy: { createdAt: 'desc' },
+    select: { metadata: true },
+    take: 50,
+  })
+  for (const e of events) {
+    const m = (e.metadata ?? {}) as { from?: unknown; to?: unknown }
+    if ((m.to === 'PENDING_APPROVAL' || m.to === 'PENDING_SIGNATURE' || m.to === 'APPROVED') && typeof m.from === 'string' && WORKING.has(m.from)) return m.from
+  }
+  return 'DRAFT'
+}
+
 const SignersSchema = z.object({
   signers: z.array(z.object({
     name: z.string().min(1),
@@ -143,13 +181,6 @@ export async function signatureRoutes(app: FastifyInstance) {
       if (contract.status === 'EXECUTED') {
         return reply.status(409).send({ detail: 'Contract already executed' })
       }
-      // docs/41 P0.4 — a term left as a choice (governing law nobody named)
-      // is chosen before anyone signs.
-      const open = await openChoices(id)
-      if (open.length) {
-        return reply.status(409).send({ code: 'OPEN_CHOICES', detail: openChoicesMessage(open, 'sending it for signature'), choices: open })
-      }
-
       // X21 — a signer linked to a user must be that user: an active member of
       // this org whose address is the signer's. The list's Sign link trusts the
       // link, so a row naming one person's email and another's id handed the
@@ -163,6 +194,17 @@ export async function signatureRoutes(app: FastifyInstance) {
         const emailOf = new Map(members.map(m => [m.id, m.email.toLowerCase()]))
         const bad = body.signers.find(s => s.userId && emailOf.get(s.userId) !== s.email.toLowerCase())
         if (bad) return reply.status(400).send({ detail: `Signer ${bad.email} is linked to a user who is not an active member with that email` })
+      }
+
+      // docs/41 P0.8 — a contract is signed after it is approved, unless the
+      // org has chosen to allow signing without approval.
+      const gate = await signingGate(orgId, contract.status)
+      if (gate) return reply.status(409).send({ code: 'APPROVAL_REQUIRED', detail: gate })
+      // docs/41 P0.4 — a term left as a choice (governing law nobody named)
+      // is chosen before anyone signs.
+      const open = await openChoices(id)
+      if (open.length) {
+        return reply.status(409).send({ code: 'OPEN_CHOICES', detail: openChoicesMessage(open, 'sending it for signature'), choices: open })
       }
 
       const expiresAt = new Date(Date.now() + body.expiresInDays * 86_400_000)
@@ -792,6 +834,45 @@ export async function signatureRoutes(app: FastifyInstance) {
       await queueSigningReminder({ signatureRequestId: srId, kind: 'manual' }, 0)
         .catch(err => req.log.warn({ err }, 'failed to enqueue manual reminder'))
       return reply.send({ ok: true, signersNotified: nudgeCount })
+    },
+  )
+
+  // ── POST /contracts/:id/revert-signature (docs/41 P0.8) ───────────────
+  // A voided or declined signature request left the contract in
+  // PENDING_SIGNATURE with no way out. This takes it back to the status it
+  // was worked in before approval (Draft, In review or Negotiating), with a
+  // reason, on the record. Its approval no longer stands: the signing gate
+  // asks for a new one before it is sent for signature again.
+  app.post<{ Params: { id: string } }>(
+    '/contracts/:id/revert-signature',
+    { preHandler: requirePermission('sign', 'contract') },
+    async (req, reply) => {
+      const { id } = req.params
+      const { orgId, sub: userId } = req.user
+      const body = RevertSchema.safeParse(req.body ?? {})
+      if (!body.success) return reply.status(400).send({ detail: 'Say why it goes back (a reason of at least 3 characters).' })
+      const contract = await prisma.contract.findFirst({
+        where: { id, orgId, deletedAt: null },
+        select: { id: true, status: true, currentVersionId: true },
+      })
+      if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+      if (contract.status !== 'PENDING_SIGNATURE') {
+        return reply.status(409).send({ detail: `Only a contract out for signature can be taken back (this one is ${contract.status}).` })
+      }
+      const open = await prisma.signatureRequest.findFirst({ where: { contractId: id, orgId, status: 'PENDING' }, select: { id: true } })
+      if (open) return reply.status(409).send({ code: 'SIGNATURE_PENDING', detail: 'Its signature request is still open. Void it first, then take the contract back.' })
+
+      const to = await workingStatusBefore(orgId, id)
+      const last = await prisma.signatureRequest.findFirst({ where: { contractId: id, orgId }, orderBy: { createdAt: 'desc' }, select: { id: true, status: true } })
+      const moved = await prisma.contract.updateMany({ where: { id, orgId, status: 'PENDING_SIGNATURE' }, data: { status: to } })
+      if (!moved.count) return reply.status(409).send({ detail: 'The contract changed meanwhile. Reload the page.' })
+      await recordStatusChange({
+        orgId, contractId: id, from: 'PENDING_SIGNATURE', to, userId, source: 'revert', reason: body.data.reason.trim(),
+        versionId: contract.currentVersionId,
+        extra: { approvalsReset: true, ...(last && { signatureRequestId: last.id, signatureRequestStatus: last.status }) },
+      })
+      fireWebhook(orgId, 'contract.updated', { contractId: id, status: to, changes: ['status'], source: 'user' })
+      return reply.send({ ok: true, status: to })
     },
   )
 

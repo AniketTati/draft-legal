@@ -99,7 +99,7 @@ describe('signature request tokens', () => {
 
   it('the signing email\'s log line does not carry the link\'s token', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
-    const fresh = await makeContract(org, owner, { title: 'Log probe' })
+    const fresh = await makeContract(org, owner, { title: 'Log probe', status: 'APPROVED' })
     const v = await prisma.contractVersion.create({ data: { contractId: fresh, versionNumber: 1, createdById: owner, plainText: 'x' } })
     await prisma.contract.update({ where: { id: fresh }, data: { currentVersionId: v.id } })
     const res = await app.inject({

@@ -19,7 +19,7 @@ import {
   AlertCircle, Sparkles, Loader2,
   CheckCircle2, AlertTriangle, XCircle, Shield, TrendingUp,
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
-  Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
+  Link, Link2, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
   PanelRightClose, PanelRightOpen, FileDown, LocateFixed, FileDiff,
 } from 'lucide-react'
@@ -67,6 +67,7 @@ import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureD
 import { CreateAmendmentDialog } from '@/components/contracts/CreateAmendmentDialog'
 import { CollabStatusBadge } from '@/components/contracts/CollabStatusBadge'
 import { SignatureStatusRailSection } from '@/components/contracts/SignatureStatusRailSection'
+import { SignatureRevertBanner } from '@/components/contracts/SignatureRevertBanner'
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
@@ -90,6 +91,7 @@ import {
 
 import { currentVersionOf } from '@/lib/current-version'
 import { analysisLine } from '@/lib/analysis-state'
+import { familyLine } from '@/lib/family-banner'
 import { approvalKeys, invalidateApproval } from '@/lib/approval-keys'
 import { activityText } from '@/lib/activity'
 
@@ -152,7 +154,7 @@ const STUCK_DETECTABLE = ['PENDING', 'DRAFTING', 'PARSING', 'SPLITTING', 'CLASSI
 const STATUS_BANNER: Record<string, { message: string; sub: string }> = {
   PENDING:     { message: 'Processing starting…',                     sub: '' },
   PARSING:     { message: 'Extracting document text…',                sub: '' },
-  SPLITTING:   { message: 'Splitting binder into separate contracts…', sub: '' },
+  SPLITTING:   { message: 'Splitting the scanned file into separate contracts…', sub: '' },
   CLASSIFYING: { message: 'Identifying contract type…',               sub: '' },
   EXTRACTING:  { message: 'Routing to AI agent…',                     sub: '' },
   ANALYZING:   { message: 'AI extracting clauses, key terms & risk…', sub: '(~30–60 seconds)' },
@@ -1081,6 +1083,17 @@ export function ContractDetailPage() {
   // docs/41 P0.4 — terms the draft left to choose (a governing law nobody
   // named). It can't go out until they are chosen.
   const openChoices = checksData?.openChoices ?? []
+  // docs/41 P0.8 — sent for signature once approved, unless the org allows otherwise.
+  const { data: orgData } = useQuery<{ settings?: { allowSignWithoutApproval?: boolean } }>({
+    queryKey: ['organization'],
+    queryFn: () => api.get('/organization').then(r => r.data),
+    staleTime: 60_000,
+  })
+  const signGateReason = contract && !['APPROVED', 'PENDING_SIGNATURE'].includes(contract.status) && orgData && !orgData.settings?.allowSignWithoutApproval
+    ? (contract.status === 'PENDING_APPROVAL'
+        ? 'Waiting for approval — it can be sent for signature once approved.'
+        : 'Needs approval first — send it for approval, then for signature.')
+    : null
   const openChoicesReason = openChoices.length
     ? `${openChoices.length === 1 ? '1 choice' : `${openChoices.length} choices`} still open in the draft (${openChoices.map(c => c.label).join(', ')}). Choose ${openChoices.length === 1 ? 'it' : 'them'} before sending.`
     : null
@@ -1843,9 +1856,9 @@ export function ContractDetailPage() {
                 }
                 size="sm"
                 onClick={() => setSendForSignatureOpen(true)}
-                // docs/41 P0.4 — a draft with a term still to choose isn't sent.
-                disabled={!!openChoicesReason}
-                title={openChoicesReason ?? undefined}
+                // docs/41 P0.4/P0.8 — not with a term still to choose, nor before approval.
+                disabled={!!openChoicesReason || !!signGateReason}
+                title={signGateReason ?? openChoicesReason ?? undefined}
                 className="gap-1.5"
                 data-testid="send-for-signature-btn"
               >
@@ -2580,6 +2593,8 @@ export function ContractDetailPage() {
           </div>
         )
       })()}
+      {/* docs/41 P0.8 — out for signature with nothing left to sign: a way back. */}
+      {contract?.status === 'PENDING_SIGNATURE' && id && <SignatureRevertBanner contractId={id} canRevert={canSign} />}
       {/* docs/41 P0.6 — returned for changes: by whom, why, and what to do. */}
       {returned && (
         <div className="bg-attention-50 border-b border-attention-200 text-ink-950 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense" data-testid="returned-banner" role="status">
@@ -2589,38 +2604,38 @@ export function ContractDetailPage() {
           <span className="text-ink-500">— fix and send it for approval again.</span>
         </div>
       )}
-      {/* P2.3 — binder child banner. When this contract was carved out
-          of a binder (parentContractId set + relationshipType='exhibit_only'
-          + family API returns a parent), surface a persistent "Split from
-          <binder>" bar so the user can jump back regardless of which tab
-          they're on. Renders on top of all other banners.
-          Where a document sits in a binder is structure, not machine output, so
-          the indigo this band used to wear went back to the agent surfaces. */}
-      {(contract as any)?.parentContractId && (contract as any)?.relationshipType === 'exhibit_only' && familyData?.parent && (
-        <div
-          data-testid="binder-child-banner"
-          className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
-        >
-          <Scissors className="size-3.5 flex-shrink-0 text-ink-400" />
-          <span className="text-dense">Split from binder:</span>
-          <button
-            onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
-            data-testid="binder-child-parent-link"
-            className="text-dense font-medium underline underline-offset-2 decoration-paper-300 text-ink-950 hover:decoration-ink-950 truncate"
-            title={`Open parent contract: ${familyData.parent.title}`}
+      {/* P2.3 — the line a child contract shows about its parent, on every
+          tab. docs/41 P0.9 — "Split from scanned file" only for a contract the
+          binder split carved out of a bundle; an amendment says what it
+          amends, anything else that it is linked (lib/family-banner.ts). */}
+      {(() => {
+        const line = familyLine(familyData)
+        if (!line || !familyData?.parent) return null
+        return (
+          <div
+            data-testid="family-banner"
+            data-kind={line.kind}
+            className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
           >
-            {familyData.parent.title}
-          </button>
-          <span className="ml-auto text-[10.5px] text-ink-500">
-            {(familyData.siblings?.length ?? 0) + 1} total agreements in this binder
-          </span>
-        </div>
-      )}
+            {line.kind === 'split' ? <Scissors className="size-3.5 flex-shrink-0 text-ink-400" /> : <Link2 className="size-3.5 flex-shrink-0 text-ink-400" />}
+            <span className="text-dense">{line.lead}</span>
+            <button
+              onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
+              data-testid="family-parent-link"
+              className="text-dense font-medium underline underline-offset-2 decoration-paper-300 text-ink-950 hover:decoration-ink-950 truncate"
+              title={`Open ${familyData.parent.title}`}
+            >
+              {familyData.parent.title}
+            </button>
+            {line.note && <span className="ml-auto text-[10.5px] text-ink-500">{line.note}</span>}
+          </div>
+        )
+      })()}
       {autoSplitDone && (
         <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <Scissors className="size-4 flex-shrink-0 text-info-600" />
           <span className="font-medium">Auto-split into {splitInto.length} contracts</span>
-          <span>— AI split this binder automatically. Each contract is processing independently.</span>
+          <span>— the AI split this scanned file into its agreements. Each one is read on its own.</span>
           {/* Outlined, not ink: the header already owns the one filled primary. */}
           <Button
             variant="outline"

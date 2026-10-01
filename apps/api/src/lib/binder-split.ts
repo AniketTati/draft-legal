@@ -164,7 +164,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
             mimeType: 'application/pdf',
             fileSize: slice.pdfBytes.byteLength,
             createdById: userId,
-            changeNote:  `Split from binder (pages ${slice.pageStart}-${slice.pageEnd})`,
+            changeNote:  `Split from scanned file (pages ${slice.pageStart}-${slice.pageEnd})`,
           },
         },
       },

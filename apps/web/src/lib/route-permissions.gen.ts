@@ -237,6 +237,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'POST /contracts/:id/renewal-advice': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/renewal-decision': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/retype': { action: 'edit', resource: 'contract' },
+  'POST /contracts/:id/revert-signature': { action: 'sign', resource: 'contract' },
   'POST /contracts/:id/send-for-signature': { action: 'sign', resource: 'contract' },
   'POST /contracts/:id/share': { action: 'configure', resource: 'contract' },
   'POST /contracts/:id/signature-requests/:srId/remind': { action: 'sign', resource: 'contract' },

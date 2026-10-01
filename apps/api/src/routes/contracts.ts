@@ -1903,7 +1903,7 @@ export async function contractRoutes(app: FastifyInstance) {
         parentContractId: true,
         relationshipType: true,
         parentContract: {
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true, metadata: true },
         },
         amendments: {
           where: { deletedAt: null, orgId, ...ownContractWhere(req) },
@@ -1935,10 +1935,19 @@ export async function contractRoutes(app: FastifyInstance) {
         })
       : []
 
+    // docs/41 P0.9 — carved out of a scanned bundle by the binder split (the
+    // parent lists it in _splitInto, lib/binder-split.ts), as opposed to an
+    // amendment, an exhibit or a contract linked by hand.
+    const splitInto = (p?.metadata as { _splitInto?: unknown } | null)?._splitInto
+    const splitFromParent = !!parent && contract.relationshipType === 'exhibit_only'
+      && Array.isArray(splitInto) && splitInto.includes(contract.id)
+
     return reply.send({
       parent,
       children: contract.amendments,
       siblings,
+      relationshipType: contract.relationshipType,
+      splitFromParent,
     })
   })
 

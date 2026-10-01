@@ -38,8 +38,11 @@ const SERVER_MANAGED_SETTINGS = new Set(['slack', 'ourEntities', 'fieldChecks'])
 // (LEGAL_OPS), which could switch PII redaction off org-wide, unaudited. They
 // need the permission the rest of the AI config needs, a valid value, and an
 // audit row for every change.
-const PROTECTED_SETTINGS: Record<string, readonly string[]> = {
+const PROTECTED_SETTINGS: Record<string, readonly unknown[]> = {
   piiRedactionMode: ['redact', 'tokenize', 'off'],
+  // docs/41 P0.8 — contracts may be sent for signature without an approval.
+  // Off unless an admin turns it on; the change is audited like the others.
+  allowSignWithoutApproval: [true, false],
 }
 
 // Settings with a fixed set of values: a value outside it is refused, not stored.
@@ -159,7 +162,7 @@ export async function organizationRoutes(app: FastifyInstance) {
         return reply.status(403).send({ detail: `Changing ${protectedChanges.join(', ')} requires configure:organization` })
       }
       for (const k of protectedChanges) {
-        if (!PROTECTED_SETTINGS[k].includes(incoming[k] as string)) {
+        if (!PROTECTED_SETTINGS[k].includes(incoming[k])) {
           return reply.status(400).send({ detail: `${k} must be one of: ${PROTECTED_SETTINGS[k].join(', ')}` })
         }
       }

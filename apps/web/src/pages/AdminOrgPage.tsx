@@ -19,6 +19,7 @@ import {
 import { AiConfigTab } from '@/components/admin/AiConfigTab'
 import { OrgAuditLog } from '@/components/admin/OrgAuditLog'
 import { DateOrderSection } from '@/components/admin/DateOrderSection'
+import { SigningPolicySection } from '@/components/admin/SigningPolicySection'
 import { OurEntitiesSection } from '@/components/admin/OurEntitiesSection'
 import { Card, EmptyState, Eyebrow } from '@/components/ui/primitives'
 
@@ -250,6 +251,7 @@ export function AdminOrgPage() {
 
             {/* docs/39 A11 — saved on choosing, like the other org-wide reading settings. */}
             <DateOrderSection />
+            <SigningPolicySection />
             {/* docs/39 A8 — the names the org signs as: never the counterparty. */}
             <OurEntitiesSection />
           </div>
