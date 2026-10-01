@@ -18,6 +18,9 @@ import { UNIVERSAL_CATEGORIES }       from './universal/categories.js'
 import { UNIVERSAL_CLAUSES }          from './universal/clauses.js'
 import { UNIVERSAL_TEMPLATES }        from './universal/templates.js'
 import { UNIVERSAL_PLAYBOOK }         from './universal/playbook.js'
+import { UNIVERSAL_FAMILIES }         from './universal/families.js'
+import { updateClauseItem }           from '../clause-library-versions.js'
+import { publishTemplate }            from '../template-publish.js'
 import type { SeedClause }            from './universal/clauses.js'
 import type { SeedTemplate }          from './universal/templates.js'
 import type { SeedPlaybookPosition }  from './universal/playbook.js'
@@ -114,8 +117,55 @@ async function seedClauses(orgId: string, adminId: string, categoryIdBySlug: Map
   return result.count
 }
 
+// ─── 2b. Clause families (docs/41 Part 1) ──────────────────────────────────
+// The seeded library clauses that are alternatives for one clause, grouped
+// into a family (by category and title, families.ts). Idempotent: a family
+// that exists (by name) is reused, a clause already in a family stays put.
+// `bump`: an existing org's clause gains a new version for its new variant
+// name (backfill); a fresh org's clause is simply written that way.
+export async function seedClauseFamilies(orgId: string, adminId: string, categoryIdBySlug: Map<string, string>, opts: { bump?: boolean } = {}): Promise<Map<string, string>> {
+  const idByName = new Map<string, string>()
+  for (const f of UNIVERSAL_FAMILIES) {
+    const items = await prisma.clauseLibraryItem.findMany({
+      where: { orgId, deletedAt: null, title: { in: f.variants.map(v => v.title) } },
+      select: { id: true, title: true, familyId: true },
+    })
+    if (items.length < 2) continue
+    const family = await prisma.clauseFamily.findFirst({ where: { orgId, deletedAt: null, name: f.name }, select: { id: true } })
+      ?? await prisma.clauseFamily.create({
+        data: { orgId, name: f.name, description: f.description, requestKey: f.requestKey ?? null, categoryId: categoryIdBySlug.get(f.categorySlug) ?? null, createdById: adminId },
+        select: { id: true },
+      })
+    idByName.set(f.name, family.id)
+    for (const [order, v] of f.variants.entries()) {
+      const item = items.find(i => i.title === v.title)
+      if (!item || item.familyId) continue
+      const data = { familyId: family.id, variantLabel: v.label, matchValues: v.matchValues ?? [], variantOrder: order }
+      if (opts.bump) await updateClauseItem({ orgId, id: item.id, userId: adminId, data, note: `Added to the ${f.name} family` })
+      else await prisma.clauseLibraryItem.update({ where: { id: item.id }, data })
+    }
+  }
+  return idByName
+}
+
+/** Each clause's words as its first version, where none is recorded yet (createMany writes none). */
+export async function ensureClauseVersions(orgId: string): Promise<void> {
+  const items = await prisma.clauseLibraryItem.findMany({
+    where: { orgId, textVersions: { none: {} } },
+    select: { id: true, orgId: true, version: true, title: true, content: true, variantLabel: true, condition: true, matchValues: true, createdById: true },
+  })
+  if (!items.length) return
+  await prisma.clauseLibraryVersion.createMany({
+    data: items.map(i => ({
+      orgId: i.orgId, itemId: i.id, version: i.version, title: i.title, content: i.content, variantLabel: i.variantLabel,
+      condition: (i.condition ?? undefined) as never, matchValues: i.matchValues, createdById: i.createdById, note: 'Initial version',
+    })),
+    skipDuplicates: true,
+  })
+}
+
 // ─── 3. Templates (+ sections) ─────────────────────────────────────────────
-async function seedTemplates(orgId: string, adminId: string, templates: SeedTemplate[]): Promise<number> {
+async function seedTemplates(orgId: string, adminId: string, templates: SeedTemplate[], familyIdByName: Map<string, string> = new Map()): Promise<number> {
   const existing = await prisma.template.findMany({
     where: { orgId },
     select: { name: true },
@@ -124,6 +174,8 @@ async function seedTemplates(orgId: string, adminId: string, templates: SeedTemp
 
   const toCreate = templates.filter(t => !existingNames.has(t.name))
   if (toCreate.length === 0) return 0
+  // docs/41 Part 1 — a type's seeded default, unless the org already has one.
+  const defaults = new Set((await prisma.template.findMany({ where: { orgId, deletedAt: null, isDefaultForType: true }, select: { contractType: true } })).map(t => t.contractType))
 
   // Templates have nested sections — we can't use createMany because
   // sections need the template ID. Create sequentially in a single tx.
@@ -137,20 +189,33 @@ async function seedTemplates(orgId: string, adminId: string, templates: SeedTemp
           contractType: t.contractType,
           variables: t.variables as never,
           isPublished: t.isPublished,
+          isDefaultForType: !!t.isDefaultForType && t.isPublished && !defaults.has(t.contractType),
           createdById: adminId,
           sections: {
-            create: t.sections.map(s => ({
-              title: s.title,
-              sortOrder: s.sortOrder,
-              content: s.content,
-              clauseRefs: [] as never,
-            })),
+            create: t.sections.map(s => {
+              // A slot over a family the org doesn't have stays the literal governing-law sentence.
+              const slotFamilyId = s.slotFamily ? familyIdByName.get(s.slotFamily) ?? null : null
+              return {
+                title: s.title,
+                sortOrder: s.sortOrder,
+                content: s.slotFamily && !slotFamilyId ? '<p>This Agreement is governed by the laws of {{governingLaw}}.</p>' : s.content,
+                clauseRefs: [] as never,
+                slotFamilyId,
+              }
+            }),
           },
         },
       }),
     ),
   )
   return toCreate.length
+}
+
+/** docs/41 Part 1 — the org's published templates without a snapshot get one (drafts pin it). */
+export async function publishUnsnapshotted(orgId: string, adminId: string): Promise<number> {
+  const templates = await prisma.template.findMany({ where: { orgId, deletedAt: null, isPublished: true, publishedVersionId: null }, select: { id: true } })
+  for (const t of templates) await publishTemplate(orgId, t.id, adminId)
+  return templates.length
 }
 
 // ─── 4. Playbook positions ─────────────────────────────────────────────────
@@ -223,11 +288,13 @@ export async function seedOrgDefaults(
   const categoryIdBySlug = await seedCategories(orgId)
   const afterCats = await prisma.clauseCategory.count({ where: { orgId } })
 
-  // 2. Universal clauses
+  // 2. Universal clauses, and (docs/41 Part 1) the families of alternatives among them
   const clausesCreated = await seedClauses(orgId, adminId, categoryIdBySlug, UNIVERSAL_CLAUSES)
+  const familyIdByName = await seedClauseFamilies(orgId, adminId, categoryIdBySlug)
+  await ensureClauseVersions(orgId)
 
-  // 3. Universal templates
-  const templatesCreated = await seedTemplates(orgId, adminId, UNIVERSAL_TEMPLATES)
+  // 3. Universal templates (governing law as a clause slot over its family)
+  const templatesCreated = await seedTemplates(orgId, adminId, UNIVERSAL_TEMPLATES, familyIdByName)
 
   // 4. Universal playbook positions
   const playbookCreated = await seedPlaybook(orgId, adminId, categoryIdBySlug, UNIVERSAL_PLAYBOOK)
@@ -248,6 +315,10 @@ export async function seedOrgDefaults(
     report.playbookPositionsCreated += packReport.playbookPositionsCreated
   }
 
+  // 6. docs/41 Part 1 — publish what was seeded published: a snapshot each,
+  // linted against the playbook just seeded.
+  await publishUnsnapshotted(orgId, adminId)
+
   return report
 }
 
@@ -262,8 +333,11 @@ export async function applyIndustryPack(
   const idBySlug = categoryIdBySlug ?? (await seedCategories(orgId))
 
   const clausesCreated = await seedClauses(orgId, adminId, idBySlug, pack.clauses)
+  await ensureClauseVersions(orgId)
   const templatesCreated = await seedTemplates(orgId, adminId, pack.templates)
   const playbookPositionsCreated = await seedPlaybook(orgId, adminId, idBySlug, pack.playbook)
+  // A pack applied on its own (the admin's Packs page) publishes its templates itself.
+  if (!categoryIdBySlug) await publishUnsnapshotted(orgId, adminId)
   return { clausesCreated, templatesCreated, playbookPositionsCreated }
 }
 

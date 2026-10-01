@@ -27,6 +27,8 @@ export interface SeedTemplateSection {
   title: string
   sortOrder: number
   content: string
+  /** docs/41 Part 1 — a clause slot over this seeded family (families.ts), by name. */
+  slotFamily?: string
 }
 
 export interface SeedTemplate {
@@ -36,6 +38,8 @@ export interface SeedTemplate {
   variables: SeedTemplateVariable[]
   sections: SeedTemplateSection[]
   isPublished: boolean
+  /** docs/41 Part 1 — the template drafting uses for its type when nobody picks one. */
+  isDefaultForType?: boolean
 }
 
 // ─── Common variables reused across multiple templates ─────────────────────
@@ -63,17 +67,44 @@ const GOVERNING_LAW_VARS: SeedTemplateVariable[] = [
   { key: 'venueLocation',      label: 'Venue Location',         type: 'string', required: true, defaultValue: 'Wilmington, Delaware' },
 ]
 
+/**
+ * docs/41 Part 1 — a template's governing-law sentence becomes a clause slot
+ * over the seeded Governing Law family, so the law is decided by rule (the
+ * request's words, the org's default) and not left in a variable a model
+ * filled. What follows the sentence (venue, jury waiver…) stays literal text
+ * in its own section.
+ */
+export function withGoverningLawSlot(t: SeedTemplate): SeedTemplate {
+  const sections: SeedTemplateSection[] = []
+  for (const s of t.sections) {
+    const m = /^<p>([^<]*\{\{governingLaw\}\}[^.]*\.)\s*(.*)<\/p>$/.exec(s.content)
+    if (!/^Governing Law/.test(s.title) || !m) { sections.push(s); continue }
+    sections.push({ title: 'Governing Law', sortOrder: s.sortOrder, content: '', slotFamily: 'Governing Law' })
+    const rest = m[2].trim()
+    if (rest) {
+      const title = s.title === 'Governing Law' ? 'Jurisdiction and Venue' : s.title.replace(/^Governing Law and /, '')
+      sections.push({ title, sortOrder: s.sortOrder + 1, content: `<p>${rest}</p>` })
+    }
+  }
+  return { ...t, sections }
+}
+
 // ─── The 20 templates ─────────────────────────────────────────────────────
-export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
+/** As first seeded, governing law as literal text (scripts/backfill-clause-families.ts recognises it). */
+export const UNIVERSAL_TEMPLATES_LITERAL: SeedTemplate[] = [
   // 1. Mutual NDA
   {
     name: 'Mutual Non-Disclosure Agreement',
     description: 'Two-way NDA for use during pre-contract diligence, partnership exploration, or any reciprocal exchange of confidential information.',
     contractType: 'NDA',
     isPublished: true,
+    isDefaultForType: true,
     variables: [...PARTIES_VARS, ...GOVERNING_LAW_VARS,
       { key: 'purpose',         label: 'Purpose of Disclosure', type: 'string', required: true, helpText: 'e.g., "evaluating a potential commercial partnership"' },
-      { key: 'confidentialityYears', label: 'Confidentiality Term (years)', type: 'number', required: true, defaultValue: 3 },
+      // docs/41 Part 2 — the playbook's preferred term (5 years, trade secrets
+      // for as long as they last). 3 years is its fallback, so the template
+      // was flagged by its own playbook.
+      { key: 'confidentialityYears', label: 'Confidentiality Term (years)', type: 'number', required: true, defaultValue: 5 },
     ],
     sections: [
       { title: 'Preamble',            sortOrder: 10, content: `<p>This Mutual Non-Disclosure Agreement (this "Agreement") is entered into as of {{effectiveDate}} (the "Effective Date") by and between {{customerName}}, {{customerEntity}}, with an address at {{customerAddress}}, and {{providerName}}, {{providerEntity}}, with an address at {{providerAddress}} (each a "Party" and collectively, the "Parties").</p>` },
@@ -100,7 +131,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
       { title: 'Preamble',            sortOrder: 10, content: `<p>This One-Way Non-Disclosure Agreement is entered into as of {{effectiveDate}} between {{customerName}} ("Recipient") and {{providerName}} ("Discloser").</p>` },
       { title: 'Confidential Information', sortOrder: 20, content: `<p>"Confidential Information" means any non-public information Discloser provides to Recipient in connection with {{purpose}}, whether marked confidential or reasonably understood to be confidential.</p>` },
       { title: 'Obligations',         sortOrder: 30, content: `<p>Recipient will not disclose Confidential Information to any third party and will use it solely to evaluate {{purpose}}. Standard exclusions apply for publicly-known, prior-known, independently-developed, or third-party-sourced information.</p>` },
-      { title: 'Term',                sortOrder: 40, content: `<p>Obligations continue for three (3) years from disclosure.</p>` },
+      { title: 'Term',                sortOrder: 40, content: `<p>Obligations continue for five (5) years from disclosure, or, with respect to trade secrets, for so long as the information remains a trade secret under applicable law.</p>` },
       { title: 'Governing Law',       sortOrder: 50, content: `<p>{{governingLaw}} law governs. Exclusive jurisdiction in {{venueLocation}}.</p>` },
     ],
   },
@@ -111,6 +142,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Customer-favorable master services agreement covering professional services delivered under one or more SOWs.',
     contractType: 'MSA',
     isPublished: true,
+    isDefaultForType: true,
     variables: [...PARTIES_VARS, ...PAYMENT_VARS, ...GOVERNING_LAW_VARS,
       { key: 'initialTerm',     label: 'Initial Term (years)',  type: 'number', required: true, defaultValue: 1 },
       { key: 'liabilityCapMultiple', label: 'Liability Cap (months of fees)', type: 'number', required: true, defaultValue: 12 },
@@ -138,6 +170,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Generic SOW template referencing an existing MSA. Use for professional services engagements.',
     contractType: 'SOW',
     isPublished: true,
+    isDefaultForType: true,
     variables: [
       { key: 'msaReference',    label: 'Referenced MSA',         type: 'string', required: true, helpText: 'e.g., "MSA dated [date]"' },
       { key: 'customerName',    label: 'Customer Name',          type: 'string', required: true },
@@ -330,6 +363,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Letter agreement memorializing the mutual termination of an existing contract.',
     contractType: 'Termination',
     isPublished: true,
+    isDefaultForType: true,
     variables: [
       { key: 'partyAName',      label: 'Party A Name',           type: 'string', required: true },
       { key: 'partyBName',      label: 'Party B Name',           type: 'string', required: true },
@@ -541,3 +575,5 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     ],
   },
 ]
+
+export const UNIVERSAL_TEMPLATES: SeedTemplate[] = UNIVERSAL_TEMPLATES_LITERAL.map(withGoverningLawSlot)
