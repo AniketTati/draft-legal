@@ -127,6 +127,10 @@ export const API_SCOPE_PERMISSIONS: Record<string, Permission[]> = {
   'templates:read':   [p(A.VIEW, R.TEMPLATE)],
   'templates:write':  [p(A.VIEW, R.TEMPLATE), p(A.CREATE, R.TEMPLATE), p(A.EDIT, R.TEMPLATE)],
   'reports:read':     [p(A.VIEW, R.REPORT)],
+  // docs/41 Part 17 — Salesforce's own key (its Named Credential): start
+  // requests (and convert self-serve ones), read contract status. Its calls
+  // must also carry the connected Salesforce org id (routes/salesforce.ts).
+  'salesforce':       [p(A.VIEW, R.REQUEST), p(A.CREATE, R.REQUEST), p(A.EDIT, R.REQUEST), p(A.VIEW, R.CONTRACT), p(A.CREATE, R.CONTRACT)],
   // Explicit full access — opt-in only. Empty scopes no longer grant this.
   'admin':            [p('*', '*', S.ORG)],
 }

@@ -8,12 +8,15 @@
  */
 import { prisma } from './prisma.js'
 import { queueWebhookDelivery } from './queue.js'
+import { noteIntegrationEvent } from './integrations/sync-queue.js'
 
 export async function fireWebhook(
   orgId: string,
   event: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  // docs/41 Part 17 — the same events keep a connected Salesforce current.
+  void noteIntegrationEvent(orgId, event, payload)
   try {
     const webhooks = await prisma.webhook.findMany({
       where: {
