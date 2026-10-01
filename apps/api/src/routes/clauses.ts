@@ -21,9 +21,21 @@ const CreateCategorySchema = z.object({
   // docs/41 P0.3 — presence rule: whether contracts of these types must have it.
   presence: z.enum(['required', 'not_allowed', 'optional']).optional(),
   presenceContractTypes: z.array(z.string().min(1).max(64)).max(32).optional(),
+  // docs/41 Part 7 — who decides exceptions to this category's positions: a
+  // person, or every holder of a role. Null clears it.
+  approverUserId: z.string().min(1).nullable().optional(),
+  approverRoleId: z.string().min(1).nullable().optional(),
 })
 
 const UpdateCategorySchema = CreateCategorySchema.partial()
+
+/** A clause approver must be a member, or a role, of the org (never another org's). */
+async function approverError(orgId: string, body: { approverUserId?: string | null; approverRoleId?: string | null }): Promise<string | null> {
+  if (body.approverUserId && body.approverRoleId) return 'Name a person or a role to decide exceptions, not both.'
+  if (body.approverUserId && !await prisma.user.count({ where: { id: body.approverUserId, orgId, deletedAt: null } })) return 'That person is not a member of this organization.'
+  if (body.approverRoleId && !await prisma.role.count({ where: { id: body.approverRoleId, OR: [{ orgId }, { orgId: null }] } })) return 'That role is not one of this organization’s.'
+  return null
+}
 
 const CreateClauseSchema = z.object({
   categoryId: z.string().min(1),
@@ -107,6 +119,8 @@ export async function clauseRoutes(app: FastifyInstance) {
   app.post('/categories', { preHandler: requirePermission('create', 'clause') }, async (req, reply) => {
     const { orgId } = req.user
     const body = CreateCategorySchema.parse(req.body)
+    const bad = await approverError(orgId, body)
+    if (bad) return reply.status(400).send({ detail: bad })
 
     const category = await prisma.clauseCategory.create({
       data: { orgId, ...body },
@@ -123,8 +137,18 @@ export async function clauseRoutes(app: FastifyInstance) {
 
     const existing = await prisma.clauseCategory.findFirst({ where: { id, orgId } })
     if (!existing) return reply.status(404).send({ detail: 'Category not found' })
+    const bad = await approverError(orgId, body)
+    if (bad) return reply.status(400).send({ detail: bad })
 
-    const updated = await prisma.clauseCategory.update({ where: { id }, data: body })
+    // Naming one clears the other: a category has one kind of approver.
+    const updated = await prisma.clauseCategory.update({
+      where: { id },
+      data: {
+        ...body,
+        ...(body.approverUserId && { approverRoleId: null }),
+        ...(body.approverRoleId && { approverUserId: null }),
+      },
+    })
     return reply.send(updated)
   })
 

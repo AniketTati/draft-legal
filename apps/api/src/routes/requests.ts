@@ -5,8 +5,9 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
-import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
+import { CreateRequestSchema, UpdateRequestSchema, AuditAction, requestTransitionRefusal } from '@clm/types'
+import { transition } from '../lib/lifecycle.js'
+import { queueClassifyRequest, queueParseDocument, queueDraftContract, queueNotification } from '../lib/queue.js'
 import { requestTerms } from '../lib/draft-save.js'
 import { z } from 'zod'
 import { chooseTemplate } from '../lib/draft-plan.js'
@@ -256,10 +257,19 @@ export async function requestRoutes(app: FastifyInstance) {
     })
 
     if (!existing) return reply.status(404).send({ detail: 'Request not found' })
+    // docs/41 Part 4 — "Decline request": a reason is required and kept;
+    // the request's own moves are checked (accepting is drafting it).
+    if (body.status && body.status !== existing.status) {
+      const refusal = requestTransitionRefusal(existing.status, body.status, body.rejectionReason)
+      if (refusal) return reply.status(409).send({ detail: refusal })
+    }
+    const { rejectionReason, ...rest } = body
+    const declining = body.status === 'REJECTED' && existing.status !== 'REJECTED'
+    const reopening = !!body.status && body.status !== 'REJECTED' && existing.status === 'REJECTED'
 
     const updated = await prisma.contractRequest.update({
       where: { id },
-      data: body,
+      data: { ...rest, ...(declining && { rejectionReason: rejectionReason?.trim() }), ...(reopening && { rejectionReason: null }) },
     })
 
     await createAuditEvent({
@@ -270,8 +280,15 @@ export async function requestRoutes(app: FastifyInstance) {
         : AuditAction.REQUEST_ASSIGNED,
       resourceType: 'contract_request',
       resourceId: id,
-      metadata: { changes: body },
+      metadata: { changes: rest, ...(body.status && { from: existing.status, to: body.status }), ...(declining && { reason: rejectionReason?.trim() }) },
     })
+    if (declining && existing.requestedById !== userId) {
+      queueNotification({
+        orgId, userId: existing.requestedById, type: 'REQUEST_DECLINED', title: 'Request declined',
+        body: `Your request "${existing.title}" was declined: “${rejectionReason?.trim()}”`,
+        resourceType: 'contract_request', resourceId: id,
+      })
+    }
 
     return reply.send(updated)
   })
@@ -375,6 +392,9 @@ export async function requestRoutes(app: FastifyInstance) {
     if (request.status === 'ACCEPTED' || request.status === 'COMPLETED') {
       return reply.status(400).send({ detail: 'Request already converted' })
     }
+    if (request.status === 'REJECTED') {
+      return reply.status(409).send({ detail: 'This request was declined. Reopen it before drafting from it.' })
+    }
 
     const attachments = (request.attachments as Array<{ filename: string; s3Key: string; mimeType: string; size: number }>) ?? []
 
@@ -413,7 +433,10 @@ export async function requestRoutes(app: FastifyInstance) {
         orgId,
         title:            request.title,
         type:             request.type,
+        // docs/41 Part 18 — it starts as the request it was, and is accepted into Draft below.
         status:           'DRAFT',
+        stage:            'request',
+        stageState:       'in_triage',
         analysisStatus:   hasAttachments ? 'PENDING' : 'DRAFTING',
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
@@ -476,6 +499,11 @@ export async function requestRoutes(app: FastifyInstance) {
     await prisma.contractRequest.update({
       where: { id },
       data:  { status: 'ACCEPTED' },
+    })
+    // Request → Draft, on the record (the banner's first step).
+    await transition({
+      orgId, contractId: contract.id, to: { stage: 'draft', state: 'drafting' }, source: 'import', userId,
+      reason: 'the request was accepted', extra: { requestId: id },
     })
 
     await createAuditEvent({

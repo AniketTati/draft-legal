@@ -21,8 +21,8 @@ import { resolveRevisionAuthors } from '../lib/revision-author.js'
 import { generatePlainDocx } from '../lib/docx-export.js'
 import { checkUpload, MIME } from '../lib/file-type.js'
 import { extractDocument } from '../lib/document.js'
-import { statusAfterTermsChange } from '../lib/contract-status.js'
-import { recordStatusChange } from '../lib/status-change.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { onSentToCounterparty } from '../lib/lifecycle.js'
 import { queueParseDocument } from '../lib/queue.js'
 import { DocxError, readDocxReview, type RedlineStats } from '../lib/ooxml/docx-redline.js'
 import { likeness, wordBag } from '../lib/ooxml/sequence-diff.js'
@@ -263,7 +263,6 @@ export async function externalEditRoutes(app: FastifyInstance) {
           where: { id },
           data:  {
             currentVersionId: version.id, updatedAt: new Date(), analysisStatus: 'PENDING',
-            ...(statusAfterTermsChange(contract.status) && { status: statusAfterTermsChange(contract.status) }),
           },
         })
         // Their comments, kept internal: threads and resolutions as they were.
@@ -293,8 +292,8 @@ export async function externalEditRoutes(app: FastifyInstance) {
       throw err
     }
 
-    const resetTo = statusAfterTermsChange(contract.status)
-    if (resetTo) await recordStatusChange({ orgId, contractId: id, from: contract.status, to: resetTo, userId, source: 'edit', reason: 'an edited copy came back from Google Docs', versionId: created.id })
+    // X42, docs/41 Part 18 — approvals given are asked again as their reset rules say.
+    await onApprovalChange({ orgId, contractId: id, versionId: created.id, source: 'edit', userId })
     // The same pipeline as any new file: text, clauses, review.
     queueParseDocument({ contractId: id, versionId: created.id, s3Key, mimeType: MIME.DOCX, orgId, filename })
     await createAuditEvent({
@@ -359,6 +358,8 @@ export async function externalEditRoutes(app: FastifyInstance) {
       },
       ipAddress: req.ip,
     })
+    // docs/41 Part 18 — downloaded for the counterparty: their turn.
+    await onSentToCounterparty({ orgId, contractId: id, userId, via: 'redline_download' })
     return sendDocx(reply, docx, fileName(contract.title, `our changes to their v${theirs.versionNumber}`), stats)
   })
 }

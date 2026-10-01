@@ -146,6 +146,8 @@ export const UpdateRequestSchema = z.object({
   assignedToId: z.string().optional(),
   status: z.nativeEnum(RequestStatus).optional(),
   priority: z.enum(['LOW', 'MEDIUM', 'HIGH', 'URGENT']).optional(),
+  // docs/41 Part 4 — why a request is declined (required with status REJECTED).
+  rejectionReason: z.string().trim().max(2000).optional(),
 })
 
 // ─── Users ───────────────────────────────────────────────────────────────────

@@ -1,33 +1,35 @@
 /**
- * docs/41 P0.10 — every change of a contract's status, on the record in one
- * shape, and the day it was signed kept.
+ * docs/41 P0.10, Part 18 — every move of a contract's stage, state or turn,
+ * on the record in one shape.
  *
  * Status changes were scattered across a dozen routes, workers and agent
- * tools; some wrote an audit event, some folded it into another one
- * (`statusFrom`/`statusTo` on CONTRACT_UPDATED), some wrote none. Analytics
- * had nothing to measure stage durations from, and an executed contract
- * didn't record when it was executed. Every site now sets the status through
- * `statusData` (which stamps `executedAt` on EXECUTED) and records it with
- * `recordStatusChange`: a CONTRACT_STATUS_CHANGED audit event on the
- * contract, with a typed payload. These are the stage events of docs/41
- * §6.3 — audit events, not a second log.
+ * tools; some wrote an audit event, some folded it into another one, some
+ * wrote none. Phase 0 gave them one shape (CONTRACT_STATUS_CHANGED). Part 18
+ * moved the contract from a status to a stage, a state within it and a turn
+ * (lib/lifecycle.ts makes every move); each move is recorded here as one
+ * STAGE_CHANGED audit event on the contract with a typed payload. These are
+ * the stage events of docs/41 §6.3 — audit events, not a second log. The
+ * payload keeps `from`/`to` as the derived status, so readers of the older
+ * events read the new ones the same way.
  */
-import { AuditAction } from '@clm/types'
+import { AuditAction, type Stage, type StageState, type Turn, type TransitionSource } from '@clm/types'
 import { createAuditEvent } from './audit.js'
+import { fireWebhook } from './webhook-events.js'
 
-/** What set the status: a person, the approval workflow, signing, the counterparty, the agent… */
-export type StatusChangeSource =
-  | 'manual' | 'approval' | 'signature' | 'counterparty' | 'edit' | 'agent' | 'revert' | 'system'
+export type StatusChangeSource = TransitionSource
 
-export interface StatusChange {
+/** Where a contract stood, or stands. */
+export interface StagePosition { stage: Stage; stageState: StageState; turn: Turn; status: string }
+
+export interface StageChange {
   orgId: string
   contractId: string
-  from: string
-  to: string
+  from: StagePosition
+  to: StagePosition
   /** Who did it; omitted for the system's own changes. */
   userId?: string | null
   source: StatusChangeSource
-  /** Why, when someone said (a revert, a return). */
+  /** Why, when someone said (a revert, a return, a cancellation). */
   reason?: string | null
   /** The version the contract stood on. */
   versionId?: string | null
@@ -35,16 +37,17 @@ export interface StatusChange {
   extra?: Record<string, unknown>
 }
 
-/** The `data` of a contract update that moves it to `to`: EXECUTED also records when. */
-export function statusData(to: string, at: Date = new Date()): { status: string; executedAt?: Date } {
-  return to === 'EXECUTED' ? { status: to, executedAt: at } : { status: to }
-}
-
-/** The audit payload of a status change, typed (pure, for tests and analytics readers). */
-export function statusChangeMetadata(c: Omit<StatusChange, 'orgId' | 'contractId' | 'userId'>): Record<string, unknown> {
+/** The audit payload of a stage change, typed (pure, for tests and analytics readers). */
+export function stageChangeMetadata(c: Omit<StageChange, 'orgId' | 'contractId' | 'userId'>): Record<string, unknown> {
   return {
-    from: c.from,
-    to: c.to,
+    from: c.from.status,
+    to: c.to.status,
+    fromStage: c.from.stage,
+    toStage: c.to.stage,
+    fromState: c.from.stageState,
+    toState: c.to.stageState,
+    fromTurn: c.from.turn,
+    toTurn: c.to.turn,
     source: c.source,
     ...(c.reason ? { reason: c.reason } : {}),
     ...(c.versionId ? { versionId: c.versionId } : {}),
@@ -52,15 +55,44 @@ export function statusChangeMetadata(c: Omit<StatusChange, 'orgId' | 'contractId
   }
 }
 
-/** Record a change that happened. A change to the same status records nothing. Never throws. */
-export async function recordStatusChange(c: StatusChange): Promise<void> {
-  if (!c.to || c.from === c.to) return
+/** Whether anything moved: the stage, its state or the turn. */
+export function moved(from: StagePosition, to: StagePosition): boolean {
+  return from.stage !== to.stage || from.stageState !== to.stageState || from.turn !== to.turn
+}
+
+/**
+ * Record a move that happened, and tell subscribers: `contract.stage_changed`
+ * when the stage or its state moved, `contract.turn_changed` when the turn
+ * did. A move to where it stood records nothing. Never throws.
+ */
+export async function recordStageChange(c: StageChange): Promise<void> {
+  if (!moved(c.from, c.to)) return
   await createAuditEvent({
     orgId: c.orgId,
     ...(c.userId && c.userId !== 'system' ? { userId: c.userId } : {}),
-    action: AuditAction.CONTRACT_STATUS_CHANGED,
+    action: AuditAction.STAGE_CHANGED,
     resourceType: 'contract',
     resourceId: c.contractId,
-    metadata: statusChangeMetadata(c),
-  }).catch(err => console.warn('[status-change] not recorded contractId=%s %s→%s: %s', c.contractId, c.from, c.to, (err as Error).message))
+    metadata: stageChangeMetadata(c),
+  }).catch(err => console.warn('[stage-change] not recorded contractId=%s %s/%s→%s/%s: %s', c.contractId, c.from.stage, c.from.stageState, c.to.stage, c.to.stageState, (err as Error).message))
+  if (c.from.stage !== c.to.stage || c.from.stageState !== c.to.stageState) {
+    void fireWebhook(c.orgId, 'contract.stage_changed', {
+      contractId: c.contractId,
+      from: { stage: c.from.stage, state: c.from.stageState },
+      to: { stage: c.to.stage, state: c.to.stageState },
+      status: c.to.status,
+      turn: c.to.turn,
+      source: c.source,
+      ...(c.reason ? { reason: c.reason } : {}),
+    })
+  }
+  if (c.from.turn !== c.to.turn) {
+    void fireWebhook(c.orgId, 'contract.turn_changed', {
+      contractId: c.contractId,
+      from: c.from.turn,
+      to: c.to.turn,
+      stage: c.to.stage,
+      source: c.source,
+    })
+  }
 }

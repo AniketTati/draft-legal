@@ -31,8 +31,6 @@ import {
 import { prisma } from './prisma.js'
 import { createAuditEvent } from './audit.js'
 import { reindexContract } from './elasticsearch.js'
-import { statusAfterTermsChange } from './contract-status.js'
-import { recordStatusChange } from './status-change.js'
 import { fireWebhook } from './webhook-events.js'
 import { normalizeForSearch, findQuote, findSpan, type NormalizedText, type Span } from './text-span.js'
 import { orgDateOrder } from './org-date-order.js'
@@ -800,8 +798,21 @@ async function deriveCalculated(tx: Tx, c: FieldContract, rows: ContractFieldVal
   return true
 }
 
+/**
+ * X42, docs/41 Part 18 — a term an approval judged (value, currency)
+ * changed: the approval reset rules decide what is asked again
+ * (lib/approval-reset.ts, loaded when used: this module is unit-tested and
+ * the queue opens Redis when loaded). The status change it made, if any.
+ */
+async function resetForField(c: FieldContract, field: string, userId: string): Promise<{ from: string; to: string } | undefined> {
+  const { onApprovalChange } = await import('./approval-reset.js')
+  await onApprovalChange({ orgId: c.orgId, contractId: c.id, fields: [field], source: 'edit', userId })
+  const now = await prisma.contract.findUnique({ where: { id: c.id }, select: { status: true } })
+  return now && now.status !== c.status ? { from: c.status, to: now.status } : undefined
+}
+
 async function commit(
-  tx: Tx, c: FieldContract, defs: FieldDef[], statusChange: { from: string; to: string } | undefined,
+  tx: Tx, c: FieldContract, defs: FieldDef[],
   opts: { keepUpdatedAt?: boolean } = {},
 ): Promise<ContractFieldValue[]> {
   let rows = await tx.contractFieldValue.findMany({ where: { contractId: c.id } })
@@ -819,7 +830,6 @@ async function commit(
     where: { id: c.id },
     data: {
       ...patch,
-      ...(statusChange ? { status: statusChange.to } : {}),
       // A maintenance pass changes no term: it must not reorder "recently edited".
       ...(opts.keepUpdatedAt ? { updatedAt: c.updatedAt } : {}),
     } as never,
@@ -836,7 +846,7 @@ export async function materializeContractFields(contractId: string): Promise<{ r
   return prisma.$transaction(async tx => {
     const loaded = await loadInTx(tx, contractId, null)
     if (!loaded) return null
-    const rows = await commit(tx, loaded.c, loaded.defs, undefined, { keepUpdatedAt: true })
+    const rows = await commit(tx, loaded.c, loaded.defs, { keepUpdatedAt: true })
     // B2 — and its quotes placed, so the Review Queue sees words a later version took out.
     await anchorRows(tx, loaded.c, rows)
     return { rows: rows.length }
@@ -866,8 +876,6 @@ function afterPersonWrite(
     reindexContract(c.id).catch(err => console.warn('[field-store] re-index failed contractId=%s: %s', c.id, (err as Error).message))
   }
   fireWebhook(c.orgId, 'contract.updated', { contractId: c.id, changes: [field], source: 'user' })
-  // docs/41 P0.10 — an approval undone by a changed term is a status change, on the record as one.
-  if (statusChange) void recordStatusChange({ orgId: c.orgId, contractId: c.id, from: statusChange.from, to: statusChange.to, userId, source: 'edit', reason: `${field} changed` })
   // Like the Review Queue always did: the field is named, its value isn't.
   return createAuditEvent({
     orgId: c.orgId, userId,
@@ -948,7 +956,8 @@ export async function setFieldValues(input: {
       planned.push({ def, value: parsed.value, v })
     }
     const now = new Date()
-    let statusChange: { from: string; to: string } | undefined
+    // X42, docs/41 Part 18 — a term an approval judged changed: the reset rules decide, after the write.
+    let judged: string | undefined
     for (const { def, value, v } of planned) {
       const before = rows.find(r => r.fieldKey === def.key)
       const data = {
@@ -975,23 +984,21 @@ export async function setFieldValues(input: {
         create: { orgId: c.orgId, contractId: c.id, fieldKey: def.key, kind: def.kind, label: def.kind === 'type' ? def.label : null, ...data },
         update: data,
       })
-      if (!statusChange && !input.skipApprovalReset && JUDGED_KEYS.has(def.key) && !sameValue(before?.value ?? null, value)) {
-        const to = statusAfterTermsChange(c.status)
-        if (to) statusChange = { from: c.status, to }
-      }
+      if (!judged && !input.skipApprovalReset && JUDGED_KEYS.has(def.key) && !sameValue(before?.value ?? null, value)) judged = def.key
     }
-    const after = await commit(tx, c, defs, statusChange)
+    const after = await commit(tx, c, defs)
     const fields = planned.map(p => viewOf(p.def, after.find(r => r.fieldKey === p.def.key)))
-    return { ok: true as const, fields, statusChange, c, planned }
+    return { ok: true as const, fields, judged, c, planned }
   })
   if (!result.ok) return result
-  if (input.bulk) return { ok: true, fields: result.fields, statusChange: result.statusChange }
+  const statusChange = result.judged ? await resetForField(result.c, result.judged, input.userId) : undefined
+  if (input.bulk) return { ok: true, fields: result.fields, statusChange }
   for (const [i, p] of result.planned.entries()) {
     const action = p.v.source === 'highlight' ? 'set_from_highlight' : p.v.source === 'variable' ? 'set_from_template' : p.v.source === 'import' ? 'set_from_import' : 'corrected'
     // The status change is recorded once, with the field that caused it.
-    await afterPersonWrite(result.c, input.userId, p.def.key, action, input.audit, i === 0 ? result.statusChange : undefined)
+    await afterPersonWrite(result.c, input.userId, p.def.key, action, input.audit, i === 0 ? statusChange : undefined)
   }
-  return { ok: true, fields: result.fields, statusChange: result.statusChange }
+  return { ok: true, fields: result.fields, statusChange }
 }
 
 /**
@@ -1069,7 +1076,7 @@ export async function verifyFieldValue(input: {
       },
       update: { confidence: 1, issue: null, candidates: Prisma.JsonNull, verifiedAt: now, verifiedById: input.userId, updatedById: input.userId },
     })
-    const after = await commit(tx, c, defs, undefined)
+    const after = await commit(tx, c, defs)
     return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), c, def }
   })
   if (!result.ok) return result
@@ -1101,7 +1108,7 @@ export async function verifyAllFieldValues(input: {
         data: { verifiedAt: now, verifiedById: input.userId, updatedById: input.userId, confidence: 1, issue: null },
       })
     }
-    const after = todo.length ? await commit(tx, c, defs, undefined) : rows
+    const after = todo.length ? await commit(tx, c, defs) : rows
     const views = defs.filter(d => visible(d, after.find(r => r.fieldKey === d.key))).map(d => viewOf(d, after.find(r => r.fieldKey === d.key)))
     return { c, verified: todo.map(r => r.fieldKey), verification: verificationOf(views) }
   })
@@ -1144,17 +1151,14 @@ export async function rejectFieldValue(input: { orgId: string; contractId: strin
       create: { orgId: c.orgId, contractId: c.id, fieldKey: def.key, kind: def.kind, valueType: def.type, label: def.kind === 'type' ? def.label : null, source: 'ai', ...data },
       update: data,
     })
-    let statusChange: { from: string; to: string } | undefined
-    if (JUDGED_KEYS.has(def.key) && before?.value != null) {
-      const to = statusAfterTermsChange(c.status)
-      if (to) statusChange = { from: c.status, to }
-    }
-    const after = await commit(tx, c, defs, statusChange)
-    return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), statusChange, c, def }
+    const judged = JUDGED_KEYS.has(def.key) && before?.value != null
+    const after = await commit(tx, c, defs)
+    return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), judged, c, def }
   })
   if (!result.ok) return result
-  await afterPersonWrite(result.c, input.userId, result.def.key, 'rejected', input.audit, result.statusChange)
-  return { ok: true, field: result.field, statusChange: result.statusChange }
+  const statusChange = result.judged ? await resetForField(result.c, result.def.key, input.userId) : undefined
+  await afterPersonWrite(result.c, input.userId, result.def.key, 'rejected', input.audit, statusChange)
+  return { ok: true, field: result.field, statusChange }
 }
 
 /**
@@ -1172,7 +1176,7 @@ export async function resolveSuggestion(input: { orgId: string; contractId: stri
     const suggestion = row?.suggestion as FieldSuggestion | null | undefined
     if (!row || !suggestion) return { ok: false as const, status: 404 as const, detail: 'No suggestion for this field' }
     const now = new Date()
-    let statusChange: { from: string; to: string } | undefined
+    let judged = false
     if (input.accept) {
       await tx.contractFieldValue.update({
         where: { id: row.id },
@@ -1184,19 +1188,17 @@ export async function resolveSuggestion(input: { orgId: string; contractId: stri
           suggestion: Prisma.JsonNull, candidates: Prisma.JsonNull, updatedById: input.userId,
         },
       })
-      if (JUDGED_KEYS.has(def.key) && !sameValue(row.value, suggestion.value)) {
-        const to = statusAfterTermsChange(c.status)
-        if (to) statusChange = { from: c.status, to }
-      }
+      judged = JUDGED_KEYS.has(def.key) && !sameValue(row.value, suggestion.value)
     } else {
       await tx.contractFieldValue.update({ where: { id: row.id }, data: { suggestion: Prisma.JsonNull, updatedById: input.userId } })
     }
-    const after = await commit(tx, c, defs, statusChange)
-    return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), statusChange, c, def }
+    const after = await commit(tx, c, defs)
+    return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), judged, c, def }
   })
   if (!result.ok) return result
-  await afterPersonWrite(result.c, input.userId, result.def.key, input.accept ? 'accepted_suggestion' : 'dismissed_suggestion', input.audit, result.statusChange)
-  return { ok: true, field: result.field, statusChange: result.statusChange }
+  const statusChange = result.judged ? await resetForField(result.c, result.def.key, input.userId) : undefined
+  await afterPersonWrite(result.c, input.userId, result.def.key, input.accept ? 'accepted_suggestion' : 'dismissed_suggestion', input.audit, statusChange)
+  return { ok: true, field: result.field, statusChange }
 }
 
 /**
@@ -1238,7 +1240,7 @@ export async function reassignLegacyValue(input: {
       where: { id: row.id },
       data: { value: Prisma.JsonNull, valueText: null, valueNumber: null, valueDate: null, verifiedAt: now, verifiedById: input.userId, updatedById: input.userId },
     })
-    const after = await commit(tx, c, defs, undefined)
+    const after = await commit(tx, c, defs)
     return { ok: true as const, field: viewOf(to, after.find(r => r.fieldKey === to.key)), c, to }
   })
   if (!result.ok) return result
@@ -1272,7 +1274,7 @@ export async function restoreFieldValues(contractId: string, changes: FieldChang
       })
       restored.push(ch.fieldKey)
     }
-    if (restored.length) await commit(tx, c, defs, undefined)
+    if (restored.length) await commit(tx, c, defs)
     return { restored, skipped }
   })
   if (result?.restored.length) {
@@ -1430,7 +1432,7 @@ export async function applyAmendmentValues(input: {
       })
       done.push({ fieldKey: def.key, before: snapshotOf(before), after: value, fromContractId: input.amendmentId })
     }
-    await commit(tx, c, defs, undefined)
+    await commit(tx, c, defs)
     return { c, done }
   })
   if (!result) return { ok: false, status: 404, detail: 'Contract not found' }
@@ -1478,7 +1480,7 @@ export async function restoreAmendmentValues(contractId: string, changes: FieldC
       })
       restored.push(ch.fieldKey)
     }
-    if (restored.length) await commit(tx, c, defs, undefined)
+    if (restored.length) await commit(tx, c, defs)
     return { restored, skipped }
   })
   if (result?.restored.length) {
@@ -1624,7 +1626,7 @@ export async function undoPersonValue(input: {
           verifiedAt: null, verifiedById: null, updatedById: input.userId, correctedFrom: Prisma.JsonNull,
         },
     })
-    await commit(tx, c, defs, undefined)
+    await commit(tx, c, defs)
     return 'restored' as const
   })
   if (result === 'restored') {
@@ -1883,7 +1885,7 @@ export async function applyExtraction(
         WHERE "contractId" = ${c.id} AND suggestion->>'reason' = 'proposed' AND suggestion->>'versionId' IS DISTINCT FROM ${opts.versionId}`
     }
     if (tracked) await offerProposals(tx, c, defs, proposals, tracked, { versionId: opts.versionId ?? null, at, dateOrder }, outcome)
-    await commit(tx, c, defs, undefined)
+    await commit(tx, c, defs)
     return true
   })
   if (!done) return null

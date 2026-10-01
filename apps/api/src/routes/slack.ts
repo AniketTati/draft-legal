@@ -17,8 +17,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
-import { advanceWorkflow } from '../lib/workflow-engine.js'
-import { notificationQueue } from '../lib/queue.js'
+import { decideStep } from '../lib/approval-flow.js'
 import {
   verifySlackSignature, findOrgsBySlackTeam, resolveSlackUser,
   searchResultBlocks, helpBlocks,
@@ -153,57 +152,41 @@ export async function slackRoutes(app: FastifyInstance) {
       ))
     }
 
-    // Mirror of POST /approvals/:instanceId/decide — org-scoped, step must
-    // be PENDING and assigned to this user.
-    const step = await prisma.approvalStep.findFirst({
-      where: { id: ref.stepId, approvalInstanceId: ref.instanceId, orgId: auth.orgId, approverId: user.id, status: 'PENDING' },
-    })
-    if (!step) {
-      return reply.send(ephemeral('⚠️ This approval step is not assigned to you (or was already decided).'))
-    }
+    // docs/41 Part 4 — a return needs a reason, and the Slack app has no
+    // dialog to ask for one (no views.open / view_submission handling). So
+    // Reject from Slack doesn't decide: it links to the contract, where the
+    // approver returns it (changes needed) or declines it, with a reason.
+    // Approve decides here, as POST /approvals/:instanceId/decide does.
     const instance = await prisma.approvalInstance.findFirst({
-      where: { id: ref.instanceId, orgId: auth.orgId },
+      where: { id: ref.instanceId, orgId: auth.orgId }, select: { contractId: true, status: true },
     })
     if (!instance || (instance.status !== 'PENDING' && instance.status !== 'ESCALATED')) {
       return reply.send(ephemeral('⚠️ This approval workflow is already closed.'))
     }
-
-    try { await notificationQueue.remove(`escalate-${ref.stepId}`) } catch { /* no-op */ }
-
-    // Compare-and-set on status — a double-click (or a concurrent decide
-    // from the web UI) must not overwrite an already-recorded decision.
-    // The findFirst above gives the friendly error message; this guard
-    // closes the race window between the check and the write.
-    const decided = await prisma.approvalStep.updateMany({
-      where: { id: ref.stepId, approverId: user.id, status: 'PENDING' },
-      data: {
-        status: decision, decision,
-        comment: decision === 'REJECTED' ? `Rejected via Slack by ${user.email}` : null,
-        decidedAt: new Date(),
-      },
-    })
-    if (decided.count === 0) {
-      return reply.send(ephemeral('⚠️ This step was already decided (possibly a double-click).'))
+    const link = `${APP_BASE}/contracts/${instance.contractId}?tab=approval`
+    if (decision === 'REJECTED') {
+      return reply.send(ephemeral(`✍️ Returning a contract needs a reason the owner can act on. <${link}|Return or decline it in draftLegal> — it takes a minute.`))
     }
-    createAuditEvent({
-      orgId: auth.orgId, userId: user.id,
-      action: AuditAction.APPROVAL_DECIDED,
-      resourceType: 'approval_step', resourceId: ref.stepId,
-      metadata: { decision, instanceId: ref.instanceId, via: 'slack' },
-    }).catch(() => {})
 
-    await advanceWorkflow(ref.instanceId, prisma)
+    // The same decision as the web (lib/approval-flow.ts): org-scoped, the
+    // step pending and theirs (or their role's), compare-and-set so a
+    // double-click can't decide twice.
+    const r = await decideStep({ orgId: auth.orgId, userId: user.id, stepId: ref.stepId, instanceId: ref.instanceId, decision: 'APPROVED', via: 'slack' })
+    if (!r.ok) {
+      return reply.send(ephemeral(r.status === 403
+        ? '⚠️ This approval step is not assigned to you (or was already decided).'
+        : r.status === 409 ? `⚠️ ${r.error}` : `⚠️ ${r.error}`))
+    }
 
-    const emoji = decision === 'APPROVED' ? '✅' : '❌'
     // replace_original swaps the button message for the outcome so the
     // channel doesn't keep a stale actionable card around.
     return reply.send({
       response_type: 'in_channel',
       replace_original: true,
-      text: `${emoji} ${decision === 'APPROVED' ? 'Approved' : 'Rejected'} by ${user.email} via Slack`,
+      text: `✅ Approved by ${user.email} via Slack`,
       blocks: [
         { type: 'section', text: { type: 'mrkdwn',
-          text: `${emoji} *${decision === 'APPROVED' ? 'Approved' : 'Rejected'}* by ${user.email} via Slack · <${APP_BASE}/contracts/${instance.contractId}?tab=approval|view in draftLegal>` } },
+          text: `✅ *Approved* by ${user.email} via Slack · <${link}|view in draftLegal>` } },
       ],
     })
   })

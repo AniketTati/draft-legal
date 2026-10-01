@@ -20,6 +20,7 @@ import type { AuditParams } from './audit.js'
 const CHANGES: Partial<Record<AuditAction, string>> = {
   [AuditAction.CONTRACT_UPDATED]:        'edited',
   [AuditAction.CONTRACT_STATUS_CHANGED]: 'changed the status of',
+  [AuditAction.STAGE_CHANGED]:           'moved',
   [AuditAction.VERSION_CREATED]:         'added a version to',
   [AuditAction.VERSION_RESTORED]:        'restored an earlier version of',
 }

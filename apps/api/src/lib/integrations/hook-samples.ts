@@ -11,6 +11,8 @@ export const SAMPLE_DATA: Record<string, Record<string, unknown>> = {
   'contract.uploaded':    { contractId: 'cmb1example0contract', title: 'Master Services Agreement', filename: 'msa.pdf', mimeType: 'application/pdf', fileSize: 248113 },
   'contract.updated':     { contractId: 'cmb1example0contract', title: 'Mutual NDA — Acme Corp', status: 'UNDER_NEGOTIATION', changes: ['status'], source: 'user' },
   'contract.executed':    { contractId: 'cmb1example0contract', executedAt: '2026-10-01T14:03:00.000Z' },
+  'contract.stage_changed': { contractId: 'cmb1example0contract', from: { stage: 'negotiate', state: 'with_us' }, to: { stage: 'approve', state: 'pending' }, status: 'PENDING_APPROVAL', turn: 'approvers', source: 'approval' },
+  'contract.turn_changed':  { contractId: 'cmb1example0contract', from: 'internal', to: 'counterparty', stage: 'negotiate', source: 'send' },
   'signature.sent':       { contractId: 'cmb1example0contract', signatureRequestId: 'cmb1example0sigreq', signerCount: 2, signOrder: 'parallel', expiresAt: '2026-10-31T00:00:00.000Z' },
   'signature.completed':  { contractId: 'cmb1example0contract', signatureRequestId: 'cmb1example0sigreq', signerCount: 2, completedAt: '2026-10-01T14:03:00.000Z' },
   'signature.voided':     { contractId: 'cmb1example0contract', signatureRequestId: 'cmb1example0sigreq', reason: 'Jane Doe declined: wrong entity' },

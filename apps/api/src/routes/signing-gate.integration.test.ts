@@ -12,7 +12,7 @@ vi.mock('../lib/queue.js', async (importOriginal) => ({
 }))
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
-import { recordStatusChange } from '../lib/status-change.js'
+import { createAuditEvent } from '../lib/audit.js'
 
 let app: TestApp
 let org: string, user: string
@@ -28,7 +28,7 @@ const send = (id: string) => app.inject({
   method: 'POST', url: `/api/v1/contracts/${id}/send-for-signature`, headers: auth(org, ['ADMIN'], user),
   payload: { signers: [{ name: 'Pat', email: 'pat@cp.test' }] },
 })
-const statusEvents = (id: string) => prisma.auditEvent.findMany({ where: { orgId: org, resourceId: id, action: 'CONTRACT_STATUS_CHANGED' }, orderBy: { createdAt: 'asc' } })
+const statusEvents = (id: string) => prisma.auditEvent.findMany({ where: { orgId: org, resourceId: id, action: 'STAGE_CHANGED' }, orderBy: { createdAt: 'asc' } })
 
 beforeAll(async () => {
   app = await getApp()
@@ -77,8 +77,9 @@ describe('the signing gate', () => {
 describe('taking a contract back from signature', () => {
   it('after a void, goes back to where it was worked on, with a reason, and needs approval again', async () => {
     const { id } = await withVersion('UNDER_NEGOTIATION')
-    // Its history: negotiated, sent for approval, approved, sent for signature.
-    await recordStatusChange({ orgId: org, contractId: id, from: 'UNDER_NEGOTIATION', to: 'PENDING_APPROVAL', userId: user, source: 'approval' })
+    // Its history: negotiated, sent for approval (recorded before stages, as
+    // a status change), approved, sent for signature.
+    await createAuditEvent({ orgId: org, userId: user, action: 'CONTRACT_STATUS_CHANGED' as never, resourceType: 'contract', resourceId: id, metadata: { from: 'UNDER_NEGOTIATION', to: 'PENDING_APPROVAL', source: 'approval' } })
     await prisma.contract.update({ where: { id }, data: { status: 'APPROVED' } })
     const sent = await send(id)
     expect(sent.statusCode).toBe(201)

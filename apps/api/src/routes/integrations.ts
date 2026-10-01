@@ -56,8 +56,11 @@ export const WEBHOOK_EVENTS = [
   'contract.uploaded',
   'contract.updated',
   'contract.executed',
-  // 'contract.expired' removed (H2): nothing in the product moves a contract
-  // to EXPIRED, so a subscriber would wait for an event that never comes.
+  // 'contract.expired' removed (H2). docs/41 Part 18 — every move of stage
+  // (expiry included, by the daily date job) is contract.stage_changed;
+  // whose move it is, contract.turn_changed.
+  'contract.stage_changed',
+  'contract.turn_changed',
   'signature.sent',
   'signature.completed',
   'signature.voided',

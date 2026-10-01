@@ -38,8 +38,9 @@ import { isClauseType } from '../lib/clause-types.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { htmlToText } from '../lib/html-text.js'
+import { requestException, EXCEPTION_KINDS } from '../lib/approval-flow.js'
 
-type Action = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline'
+type Action = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline' | 'request_exception'
 
 const OPEN = new Set(['open', 'exception_requested', 'exception_declined'])
 const DONE = new Set(['accepted', 'resolved', 'exception_approved'])
@@ -154,6 +155,8 @@ export async function reviewRoutes(app: FastifyInstance) {
       if (REDLINEABLE.has(f.kind) && f.clauseId && f.categoryId && covered.has(f.categoryId)) out.push('redline')
       // Confirming a required clause is missing is an exception (approvals), not "accept".
       if (f.kind !== 'missing_required') out.push('accept')
+      // docs/41 Part 7 — an exception to the playbook, for the clause approver to decide.
+      if ((f.status === 'open' || f.status === 'exception_declined') && EXCEPTION_KINDS.has(f.kind)) out.push('request_exception')
       out.push('resolve')
       return out
     }
@@ -289,6 +292,21 @@ export async function reviewRoutes(app: FastifyInstance) {
   app.post('/:id/findings/:findingId/reopen', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const r = await decide(req, 'open', null)
     return reply.status(r.status).send(r.body)
+  })
+
+  // ── Request an exception (docs/41 Part 7) ────────────────────────────────
+  // An approval step of kind clause_exception, for the category's clause
+  // approver; the finding's status follows it, and the recommendation with it.
+  app.post('/:id/findings/:findingId/exception', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { id, findingId } = req.params as { id: string; findingId: string }
+    const body = z.object({ reason: z.string().trim().min(3).max(2000) }).safeParse(req.body ?? {})
+    if (!body.success) return reply.status(400).send({ detail: 'Say why an exception is needed (at least 3 characters).' })
+    const contract = await contractOf(orgId, id)
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const r = await requestException({ orgId, contractId: id, findingId, userId, reason: body.data.reason })
+    if (!r.ok) return reply.status(r.status).send({ detail: r.error, ...(r.code && { code: r.code }) })
+    return reply.status(201).send({ stepId: r.stepId, approverIds: r.approverIds })
   })
 
   // ── Tag: the required clause is there, under another heading ────────────

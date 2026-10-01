@@ -25,7 +25,9 @@ import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { onVersionCreated } from '../lib/analysis-trigger.js'
-import { recordStatusChange, statusData } from '../lib/status-change.js'
+import { positionOf, transition } from '../lib/lifecycle.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { submitForApproval, decideStep } from '../lib/approval-flow.js'
 import { setValuesFromTemplate, setFieldValue, snapshotOf, undoPersonValue, type FieldSnapshot } from '../lib/field-store.js'
 import { orgDateOrder } from '../lib/org-date-order.js'
 import { createFieldDefinition, CreateFieldSchema, FIELD_TYPES } from './field-definitions.js'
@@ -46,7 +48,7 @@ import { findTopic } from '../lib/clause-topic.js'
 import { planDraft, renderPlanned } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
-import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
+import { manualRefusal, manualSource, manualTarget } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
 import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
@@ -483,7 +485,8 @@ const ApprovalDecideSchema = z.object({
   userId:     z.string().min(1),
   instanceId: z.string().min(1),
   stepId:     z.string().min(1),
-  decision:   z.enum(['APPROVED', 'REJECTED', 'DELEGATED']),
+  // REJECTED (older callers) is a return; a return or a decline needs a reason.
+  decision:   z.enum(['APPROVED', 'RETURNED', 'DECLINED', 'REJECTED', 'DELEGATED']),
   comment:    z.string().max(2000).optional(),
   delegateTo: z.string().optional(),
 })
@@ -2988,7 +2991,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const existing = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
       select: {
-        id: true, title: true, type: true, status: true,
+        id: true, title: true, type: true, status: true, stage: true, stageState: true, turn: true,
         ownerId: true, tags: true, analysisStatus: true, currentVersionId: true,
       },
     })
@@ -2998,22 +3001,26 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // snapshot can be computed exactly where the mutation happens.
     if (body.action === 'set_status') {
       const nextStatus = String(body.payload.status ?? '')
-      // X24 — the same manual table as REST; approval statuses are the workflow's.
-      const refusal = manualStatusRefusal(existing.status, nextStatus)
-      if (refusal) {
-        return reply.status(409).send({ detail: refusal, allowed: MANUAL_STATUS_TRANSITIONS[existing.status] ?? [] })
-      }
-      await prisma.contract.update({
-        where: { id: existing.id },
-        data:  statusData(nextStatus),
+      // X24 — the same manual rules as REST; approval is the workflow's.
+      // docs/41 Part 18 — a status names the stage it stands for.
+      const from = positionOf(existing)
+      const target = manualTarget(nextStatus)
+      if (!target) return reply.status(400).send({ detail: `Unknown status ${nextStatus}` })
+      const fromPoint = { stage: from.stage, state: from.stageState }
+      const refusal = manualRefusal(fromPoint, target, { source: 'agent' })
+      if (refusal) return reply.status(409).send({ detail: refusal })
+      const moved = await transition({
+        orgId: body.orgId, contractId: existing.id, to: { stage: target.stage, state: target.state },
+        source: manualSource(fromPoint, target, true), userId: body.userId, versionId: existing.currentVersionId,
       })
-      await recordStatusChange({ orgId: body.orgId, contractId: existing.id, from: existing.status, to: nextStatus, userId: body.userId, source: 'agent', versionId: existing.currentVersionId })
+      if (!moved.ok) return reply.status(moved.status).send({ detail: moved.refusal })
       return reply.send({
         ok: true,
         reversible: true,
         action: 'set_status',
         contractId: existing.id,
-        snapshot: { status: existing.status, after: nextStatus }, // for undo
+        // for undo: the stage it was in, and the one it moved to
+        snapshot: { status: existing.status, after: moved.to.status, stage: from.stage, stageState: from.stageState, afterStage: moved.to.stage, afterState: moved.to.stageState },
         diff: [{ field: 'status', before: existing.status, after: nextStatus }],
       })
     }
@@ -3100,10 +3107,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
       // X56 — as REST: a new type on an approved contract returns it to DRAFT
       // for approval again, on the record.
       const retyped = nextType !== existing.type
-      const status = retyped ? statusAfterTermsChange(existing.status) : undefined
-      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType, ...(status && { status }) } })
-      if (status) await recordStatusChange({ orgId: body.orgId, contractId: existing.id, from: existing.status, to: status, userId: body.userId, source: 'agent', reason: 'its type changed', versionId: existing.currentVersionId })
+      await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType } })
+      let status: string | undefined
       if (retyped) {
+        // docs/41 Part 18 — the approval's reset rules decide what is asked again.
+        await onApprovalChange({ orgId: body.orgId, contractId: existing.id, fields: ['type'], source: 'edit', userId: body.userId })
+        const now = (await prisma.contract.findUnique({ where: { id: existing.id }, select: { status: true } }))?.status
+        if (now && now !== existing.status) status = now
         await createAuditEvent({
           orgId: body.orgId, userId: body.userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: existing.id,
           metadata: { action: 'retype', source: 'agent', typeFrom: existing.type, typeTo: nextType, ...(status && { statusFrom: existing.status, statusTo: status }) },
@@ -3157,25 +3167,35 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const existing = await prisma.contract.findFirst({
       where: { id: body.data.contractId, orgId: body.data.orgId, deletedAt: null },
-      select: { id: true, status: true },
+      select: { id: true, status: true, stage: true, stageState: true, turn: true, executedAt: true },
     })
     if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
 
     const data: Record<string, unknown> = {}
     if (body.data.action === 'set_status') {
-      const previous = String(body.data.snapshot.status ?? '')
+      const snap = body.data.snapshot as { status?: unknown; after?: unknown; stage?: unknown; stageState?: unknown; afterStage?: unknown; afterState?: unknown }
+      const previous = typeof snap.stage === 'string' && typeof snap.stageState === 'string'
+        ? { stage: snap.stage, state: snap.stageState }
+        : typeof snap.status === 'string' && snap.status ? manualTarget(snap.status) : null
       if (!previous) return reply.status(400).send({ detail: 'snapshot.status missing' })
-      // X24 follow-up — only an exact undo: the contract must still have the
-      // status the action set. Restored over later changes, an undo could put
-      // APPROVED back on a contract renegotiated and rejected since. (A
-      // snapshot from before `after` was recorded falls back to the manual
-      // transition table.)
-      const after = body.data.snapshot.after
-      const stale = typeof after === 'string' ? existing.status !== after : manualStatusRefusal(existing.status, previous) !== null
+      // X24 follow-up — only an exact undo: the contract must still be where
+      // the action put it. Restored over later changes, an undo could put
+      // Approved back on a contract renegotiated and returned since.
+      const now = positionOf(existing)
+      const stale = typeof snap.afterStage === 'string'
+        ? now.stage !== snap.afterStage || now.stageState !== snap.afterState
+        : typeof snap.after === 'string' ? existing.status !== snap.after : true
       if (stale) {
-        return reply.status(409).send({ detail: `The contract's status has changed since (it is now ${existing.status}), so nothing was undone.` })
+        return reply.status(409).send({ detail: `The contract has moved since (it is now ${now.stage}), so nothing was undone.` })
       }
-      data.status = previous
+      const moved = await transition({
+        orgId: body.data.orgId, contractId: existing.id, to: { stage: previous.stage as never, state: previous.state as never },
+        source: 'undo', reason: 'an assistant change was undone',
+      })
+      if (!moved.ok) return reply.status(moved.status).send({ detail: moved.refusal })
+      // An undone execution is no longer executed.
+      if (existing.stage === 'active' && moved.to.stage !== 'active') await prisma.contract.update({ where: { id: existing.id }, data: { executedAt: null } })
+      return reply.send({ ok: true, undone: true, contractId: existing.id })
     } else if (body.data.action === 'assign_owner') {
       data.ownerId = body.data.snapshot.ownerId == null ? null : String(body.data.snapshot.ownerId)
     } else if (body.data.action === 'add_tag' || body.data.action === 'remove_tag') {
@@ -3184,14 +3204,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       data.tags = tags.map(String)
     }
 
-    await prisma.contract.update({
-      where: { id: existing.id },
-      // An undone EXECUTED is no longer executed.
-      data: data.status && existing.status === 'EXECUTED' ? { ...data, executedAt: null } : data,
-    })
-    if (typeof data.status === 'string') {
-      await recordStatusChange({ orgId: body.data.orgId, contractId: existing.id, from: existing.status, to: data.status, source: 'agent', reason: 'an assistant change was undone' })
-    }
+    await prisma.contract.update({ where: { id: existing.id }, data })
     return reply.send({ ok: true, undone: true, contractId: existing.id })
   })
 
@@ -3368,156 +3381,43 @@ export async function internalAiRoutes(app: FastifyInstance) {
   })
 
   // ── POST /internal/ai/tools/approval_route (D.5.6) ─────────────────────────
-  // Route a contract into its approval workflow. Inline happy path — the
-  // REST /submit-approval endpoint has the full behaviour (escalation
-  // queue, AI summary, notification) but coupling to those requires the
-  // BullMQ handles, which this plugin doesn't import. Agent-driven routes
-  // skip those queues; the approver still sees the item when they open
-  // /approvals (the dashboard query doesn't depend on notification).
+  // Route a contract into its approval workflow: the same submission as REST
+  // /submit-approval (lib/approval-flow.ts) — escalation timers, the AI
+  // summary and the approvers' notifications included.
   app.post('/tools/approval_route', async (req, reply) => {
     let body
     try { body = ApprovalRouteSchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-
-    const contract = await prisma.contract.findFirst({
+    const before = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
-      select: { id: true, title: true, type: true, status: true, value: true, currency: true, currentVersionId: true },
+      select: { stage: true, stageState: true },
     })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    if (!['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract.status)) {
-      return reply.status(409).send({
-        detail: `Cannot submit a contract with status ${contract.status} for approval`,
-      })
+    const r = await submitForApproval({ orgId: body.orgId, contractId: body.contractId, userId: body.userId, workflowDefinitionId: body.workflowDefinitionId, comment: body.comment, via: 'agent' })
+    if (!r.ok) {
+      const detail = r.error === 'No active approval workflow found for this org. Create one in Approvals → Manage Workflows.' ? 'No active approval workflow found for this org' : r.error
+      return reply.status(r.status).send({ detail, ...(r.instanceId && { instanceId: r.instanceId }) })
     }
-    const existing = await prisma.approvalInstance.findFirst({
-      where: { contractId: contract.id, status: { in: ['PENDING', 'ESCALATED'] } },
-    })
-    if (existing) {
-      return reply.status(409).send({ detail: 'Contract already has an active approval workflow', instanceId: existing.id })
+    // For undo: where it stood before it was submitted.
+    const previous = { previousStatus: r.previousStatus, previousStage: before?.stage, previousStageState: before?.stageState }
+    if (r.autoApproved) {
+      return reply.send({ ok: true, reversible: true, instanceId: r.instanceId, contractId: body.contractId, ...previous, autoApproved: true, workflowDefinitionId: r.workflowDefinitionId })
     }
-
-    // Resolve workflow — explicit id first, else first matching active.
-    let workflow = body.workflowDefinitionId
-      ? await prisma.workflowDefinition.findFirst({
-          where: { id: body.workflowDefinitionId, orgId: body.orgId, deletedAt: null, isActive: true },
-        })
-      : null
-    if (body.workflowDefinitionId && !workflow) {
-      return reply.status(422).send({ detail: 'That workflow is inactive or no longer exists. Omit it to use the workflow whose rules fit the contract.' })
-    }
-    const contractValue = contract.value != null ? Number(contract.value) : null
-    if (!workflow) {
-      // Z3 — the same choice as the REST route and the Send for review dialog.
-      const candidates = await prisma.workflowDefinition.findMany({
-        where: { orgId: body.orgId, isActive: true, deletedAt: null },
-      })
-      workflow = pickWorkflow(candidates, { type: contract.type, value: contractValue, currency: contract.currency })
-    }
-    if (!workflow) {
-      return reply.status(422).send({ detail: 'No active approval workflow found for this org' })
-    }
-
-    const stepDefs: WorkflowStepDef[] = Array.isArray(workflow.steps)
-      ? (workflow.steps as unknown as WorkflowStepDef[])
-      : []
-    if (stepDefs.length === 0) {
-      return reply.status(422).send({ detail: 'Workflow has no steps configured' })
-    }
-    const firstStepDef = stepDefs.sort((a, b) => a.order - b.order)[0]
-    const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
-
-    // Auto-approve path — matches the REST handler's fast lane.
-    if (checkAutoApprove(contract.type, contractValue, triggerRules, contract.currency)) {
-      const instance = await prisma.approvalInstance.create({
-        data: {
-          orgId: body.orgId,
-          contractId: contract.id,
-          workflowDefinitionId: workflow.id,
-          status: 'AUTO_APPROVED',
-          currentStepOrder: 0,
-          submittedById: body.userId,
-          // docs/41 P1 — the version approved: later changes are measured against it.
-          versionId: contract.currentVersionId ?? null,
-          decidedAt: new Date(),
-          aiSummary: body.comment ?? 'Auto-approved based on org rules.',
-          approvalRecommendation: 'ready_to_approve',
-        },
-      })
-      await prisma.contract.update({
-        where: { id: contract.id },
-        data:  { status: 'APPROVED' },
-      })
-      await recordStatusChange({ orgId: body.orgId, contractId: contract.id, from: contract.status, to: 'APPROVED', userId: body.userId, source: 'approval', reason: "approved automatically by the org's rules", extra: { instanceId: instance.id } })
-      return reply.send({
-        ok: true,
-        reversible: true,
-        instanceId: instance.id,
-        contractId: contract.id,
-        previousStatus: contract.status,
-        autoApproved: true,
-        workflowDefinitionId: workflow.id,
-      })
-    }
-
-    // Normal path — resolve the first approver(s) + create instance + step(s).
-    // Wave 3.8 — a parallel first step fans out to all its approvers at once.
-    const firstApproverIds = await resolveApprovers(firstStepDef, body.orgId, prisma as never)
-    if (firstApproverIds.length === 0) {
-      return reply.status(422).send({
-        detail: `Cannot resolve approver for step "${firstStepDef.name}"`,
-      })
-    }
-    const escalateAt = new Date(Date.now() + (firstStepDef.dueSoonHours ?? 48) * 60 * 60 * 1000)
-
-    const { inst, steps } = await prisma.$transaction(async (tx) => {
-      const inst = await tx.approvalInstance.create({
-        data: {
-          orgId: body.orgId,
-          contractId: contract.id,
-          workflowDefinitionId: workflow!.id,
-          status: 'PENDING',
-          currentStepOrder: firstStepDef.order,
-          submittedById: body.userId,
-          versionId: contract.currentVersionId ?? null,
-        },
-      })
-      const steps = await Promise.all(firstApproverIds.map(approverId =>
-        tx.approvalStep.create({
-          data: {
-            approvalInstanceId: inst.id,
-            orgId: body.orgId,
-            stepOrder: firstStepDef.order,
-            stepName:  firstStepDef.name,
-            approverId,
-            status: 'PENDING',
-            escalateAt,
-          },
-        }),
-      ))
-      await tx.contract.update({
-        where: { id: contract.id },
-        data:  { status: 'PENDING_APPROVAL' },
-      })
-      return { inst, steps }
-    })
-    await recordStatusChange({ orgId: body.orgId, contractId: contract.id, from: contract.status, to: 'PENDING_APPROVAL', userId: body.userId, source: 'approval', extra: { instanceId: inst.id } })
-
     return reply.send({
       ok: true,
       reversible: true,
-      instanceId: inst.id,
+      instanceId: r.instanceId,
       // Keep the singular fields for backward-compat (first of the batch), plus
       // the full set for parallel steps.
-      stepId: steps[0].id,
-      stepIds: steps.map(s => s.id),
-      contractId: contract.id,
-      previousStatus: contract.status,
-      workflowDefinitionId: workflow.id,
-      firstApproverId: firstApproverIds[0],
-      approverIds: firstApproverIds,
-      currentStepOrder: firstStepDef.order,
+      stepId: r.steps[0]?.id,
+      stepIds: r.steps.map(s => s.id),
+      contractId: body.contractId,
+      ...previous,
+      workflowDefinitionId: r.workflowDefinitionId,
+      firstApproverId: r.approverIds[0],
+      approverIds: r.approverIds,
+      currentStepOrder: r.currentStepOrder,
       autoApproved: false,
     })
   })
@@ -3533,6 +3433,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
       instanceId:     z.string().min(1),
       contractId:     z.string().min(1),
       previousStatus: z.string().min(1),
+      previousStage:      z.string().optional(),
+      previousStageState: z.string().optional(),
     }).safeParse(req.body)
     if (!body.success) {
       return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
@@ -3564,18 +3466,21 @@ export async function internalAiRoutes(app: FastifyInstance) {
     await prisma.$transaction(async (tx) => {
       await tx.approvalInstance.update({
         where: { id: instance.id },
-        data:  { status: 'CANCELLED', decidedAt: new Date() },
+        data:  { status: 'CANCELLED', outcome: 'cancelled', decidedAt: new Date() },
       })
       await tx.approvalStep.updateMany({
         where: { approvalInstanceId: instance.id, status: 'PENDING' },
         data:  { status: 'SKIPPED' },
       })
-      await tx.contract.update({
-        where: { id: body.data.contractId },
-        data:  { status: body.data.previousStatus },
-      })
     })
-    await recordStatusChange({ orgId: body.data.orgId, contractId: body.data.contractId, from: instance.status === 'AUTO_APPROVED' ? 'APPROVED' : 'PENDING_APPROVAL', to: body.data.previousStatus, source: 'agent', reason: 'the request for approval was undone', extra: { instanceId: instance.id } })
+    // Back to where it stood before it was submitted (the snapshot's stage, or the stage its status stands for).
+    const back = body.data.previousStage && body.data.previousStageState
+      ? { stage: body.data.previousStage, state: body.data.previousStageState }
+      : manualTarget(body.data.previousStatus) ?? { stage: 'draft', state: 'drafting' }
+    await transition({
+      orgId: body.data.orgId, contractId: body.data.contractId, to: { stage: back.stage as never, state: back.state as never },
+      source: 'undo', onlyFrom: ['approve'], reason: 'the request for approval was undone', extra: { instanceId: instance.id },
+    })
     return reply.send({ ok: true, undone: true, instanceId: instance.id })
   })
 
@@ -4520,12 +4425,14 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // org-wide list configure:workflow (/approvals/all).
     if (!await scopeOr403(reply, body.orgId, body.userId, 'workflow', body.scope === 'all' ? 'configure' : 'view')) return
 
-    const stepWhere: Record<string, unknown> = { orgId: body.orgId }
+    const stepWhere: Record<string, unknown> = { orgId: body.orgId, kind: 'approval', approvalInstanceId: { not: null } }
     if (body.scope === 'my-queue') {
-      // X9 — as REST's /approvals/my-queue: the caller's own steps, only the
-      // instance's current one (a later step isn't theirs to decide yet), on
-      // whichever contract — an approver sees what they are asked to approve.
-      stepWhere.approverId = body.userId
+      // X9 — as REST's /approvals/my-queue: the caller's own steps (and their
+      // role's pooled ones, docs/41 Part 6), only the instance's current one
+      // (a later step isn't theirs to decide yet), on whichever contract — an
+      // approver sees what they are asked to approve.
+      const roleIds = (await prisma.userRole.findMany({ where: { userId: body.userId }, select: { roleId: true } })).map(r => r.roleId)
+      stepWhere.OR = [{ approverId: body.userId }, { approverId: null, approverRoleId: { in: roleIds } }]
       stepWhere.status = body.status ?? 'PENDING'
     } else {
       if (scope.kind === 'own') stepWhere.instance = { contract: { ownerId: scope.userId } }
@@ -4539,12 +4446,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
       include: { instance: { select: { currentStepOrder: true } } },
     })
     const steps = (body.scope === 'my-queue'
-      ? found.filter(st => st.stepOrder === st.instance.currentStepOrder)
+      ? found.filter(st => st.stepOrder === st.instance?.currentStepOrder)
       : found
     ).slice(0, body.limit)
     if (steps.length === 0) return reply.send({ items: [], total: 0 })
 
-    const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId))]
+    const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId).filter((x): x is string => !!x))]
     const instances = await prisma.approvalInstance.findMany({
       where: { id: { in: instanceIds } },
       select: {
@@ -4564,7 +4471,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const ctrById  = new Map(contracts.map(c => [c.id, c]))
 
     const items = steps.map(s => {
-      const inst = instById.get(s.approvalInstanceId)
+      const inst = s.approvalInstanceId ? instById.get(s.approvalInstanceId) : undefined
       const ctr  = inst ? ctrById.get(inst.contractId) : null
       return {
         stepId:     s.id,
@@ -5175,140 +5082,34 @@ export async function internalAiRoutes(app: FastifyInstance) {
   })
 
   // ── POST /internal/ai/tools/approval_decide (L9) ───────────────────────────
-  // Internal twin of POST /api/v1/approvals/:instanceId/decide (approvals.ts).
+  // Internal twin of POST /api/v1/approvals/:instanceId/decide: the same
+  // decision (lib/approval-flow.ts decideStep).
   //
-  // THE LOAD-BEARING LINE is `approverId: body.userId` in the step where-clause
-  // below. The internal endpoints authenticate the SERVICE, and a valid
-  // internal secret maps to roles:['ADMIN'] — so nothing downstream of here
-  // constrains whose approval this is. Drop that one condition and this
-  // endpoint becomes an approval-forgery path: the agent could approve
-  // anything, on anyone's behalf, inside the org. agent-threads.ts checks the
-  // caller holds approve:workflow at all; this checks the step is THEIRS.
+  // THE LOAD-BEARING CHECK is that the step is the caller's: decideStep only
+  // decides a step whose approver is `body.userId` (or a pooled step of a
+  // role they hold). The internal endpoints authenticate the SERVICE, and a
+  // valid internal secret maps to roles:['ADMIN'] — so nothing downstream of
+  // here constrains whose approval this is. Without that check this endpoint
+  // becomes an approval-forgery path: the agent could approve anything, on
+  // anyone's behalf, inside the org. agent-threads.ts checks the caller
+  // holds approve:workflow at all; decideStep checks the step is THEIRS.
   app.post('/tools/approval_decide', async (req, reply) => {
     let body
     try { body = ApprovalDecideSchema.parse(req.body) }
     catch (err) {
       return reply.status(400).send({ detail: 'Invalid request', issues: (err as { issues?: unknown }).issues })
     }
-
-    // Same argument-level rules as the REST twin, so the two paths cannot
-    // disagree about the same decision.
-    if (body.decision === 'REJECTED' && !body.comment?.trim()) {
-      return reply.status(400).send({ detail: 'comment is required when rejecting' })
-    }
-    if (body.decision === 'DELEGATED' && !body.delegateTo) {
-      return reply.status(400).send({ detail: 'delegateTo is required when delegating' })
-    }
-
-    const step = await prisma.approvalStep.findFirst({
-      where: {
-        id:                 body.stepId,
-        approvalInstanceId: body.instanceId,
-        orgId:              body.orgId,
-        approverId:         body.userId,   // ← see the note above
-        status:             'PENDING',
-      },
+    const r = await decideStep({
+      orgId: body.orgId, userId: body.userId, stepId: body.stepId, instanceId: body.instanceId,
+      decision: body.decision, comment: body.comment, delegateTo: body.delegateTo, via: 'agent',
     })
-    if (!step) {
-      return reply.status(403).send({ detail: 'Step not found or not assigned to you' })
-    }
-
-    const instance = await prisma.approvalInstance.findFirst({
-      where: { id: body.instanceId, orgId: body.orgId },
-    })
-    if (!instance) return reply.status(404).send({ detail: 'Approval instance not found' })
-    if (instance.status !== 'PENDING' && instance.status !== 'ESCALATED') {
-      return reply.status(409).send({ detail: 'Workflow is already closed' })
-    }
-
-    // Cancel the escalation timer for this step, exactly as the REST twin does.
-    // Without this the step is decided but still escalates on the deadline.
-    try { await notificationQueue.remove(`escalate-${body.stepId}`) } catch { /* no-op */ }
-
-    if (body.decision === 'DELEGATED') {
-      const delegatee = await prisma.user.findFirst({
-        where: { id: body.delegateTo, orgId: body.orgId, deletedAt: null },
-      })
-      if (!delegatee) return reply.status(400).send({ detail: 'Delegatee user not found in this org' })
-
-      await prisma.$transaction([
-        prisma.approvalStep.update({
-          where: { id: body.stepId },
-          data: {
-            status: 'DELEGATED', decision: 'DELEGATED',
-            comment: body.comment?.trim(), delegatedToId: body.delegateTo,
-            decidedAt: new Date(),
-          },
-        }),
-        prisma.approvalStep.create({
-          data: {
-            approvalInstanceId: body.instanceId,
-            orgId:      body.orgId,
-            stepOrder:  step.stepOrder,
-            stepName:   step.stepName,
-            approverId: body.delegateTo as string,
-            status:     'PENDING',
-            escalateAt: step.escalateAt,   // preserve the original deadline
-          },
-        }),
-      ])
-
-      const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
-      queueNotification({
-        orgId:        body.orgId,
-        userId:       body.delegateTo as string,
-        type:         'DELEGATION',
-        title:        'Contract approval delegated to you',
-        body:         `"${contract?.title ?? 'Contract'}" approval has been delegated to you (${step.stepName}).`,
-        resourceType: 'approval_step',
-        resourceId:   body.stepId,
-        email:        delegatee.email,
-      })
-
-      createAuditEvent({
-        orgId:        body.orgId,
-        userId:       body.userId,
-        action:       AuditAction.APPROVAL_DECIDED,
-        resourceType: 'approval_step',
-        resourceId:   body.stepId,
-        metadata:     { decision: 'DELEGATED', delegateTo: body.delegateTo, instanceId: body.instanceId, via: 'agent' },
-      }).catch(() => {})
-
-      return reply.send({ stepId: body.stepId, decision: 'DELEGATED', delegatedTo: body.delegateTo })
-    }
-
-    await prisma.approvalStep.update({
-      where: { id: body.stepId },
-      data: {
-        status:    body.decision,
-        decision:  body.decision,
-        comment:   body.comment?.trim() ?? null,
-        decidedAt: new Date(),
-      },
-    })
-
-    createAuditEvent({
-      orgId:        body.orgId,
-      userId:       body.userId,
-      action:       AuditAction.APPROVAL_DECIDED,
-      resourceType: 'approval_step',
-      resourceId:   body.stepId,
-      metadata:     { decision: body.decision, instanceId: body.instanceId, via: 'agent' },
-    }).catch(() => {})
-
-    // Run the state machine to advance or close the workflow.
-    await advanceWorkflow(body.instanceId, prisma)
-
-    const updated = await prisma.approvalInstance.findUnique({ where: { id: body.instanceId } })
-    fireWebhook(body.orgId, 'approval.decided', {
-      instanceId: body.instanceId, contractId: instance.contractId, stepId: body.stepId, decision: body.decision,
-      instanceStatus: updated?.status ?? null, decidedBy: body.userId, via: 'agent',
-    })
+    if (!r.ok) return reply.status(r.status).send({ detail: r.error })
+    if (r.decision === 'DELEGATED') return reply.send({ stepId: r.stepId, decision: 'DELEGATED', delegatedTo: r.delegatedTo })
     return reply.send({
-      instanceId:     body.instanceId,
-      instanceStatus: updated?.status,
-      stepId:         body.stepId,
-      stepDecision:   body.decision,
+      instanceId:     r.instanceId,
+      instanceStatus: r.instanceStatus,
+      stepId:         r.stepId,
+      stepDecision:   r.decision,
     })
   })
 }

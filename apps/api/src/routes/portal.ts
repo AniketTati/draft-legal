@@ -23,7 +23,8 @@ import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { standingVersion } from '../lib/standing-version.js'
-import { recordStatusChange } from '../lib/status-change.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { onCounterpartyVersion } from '../lib/lifecycle.js'
 
 async function resolvePortalToken(portalToken: string) {
   let payload
@@ -324,24 +325,24 @@ export async function portalRoutes(app: FastifyInstance) {
       },
     })
 
-    // Flip status to UNDER_NEGOTIATION so the owner sees the
-    // NegotiationStatusStrip move to "Waiting on you", point the contract at
-    // the incoming version, and reset analysisStatus so the parse pipeline
-    // runs. `status` and `analysisStatus` are separate columns — both apply.
-    // These two must move together: currentVersionId on a not-yet-parsed
-    // version renders as "Preparing document…" only because analysisStatus
-    // is PENDING; without it the contract body would read as empty.
+    // Point the contract at the incoming version, and reset analysisStatus so
+    // the parse pipeline runs. These two must move together: currentVersionId
+    // on a not-yet-parsed version renders as "Preparing document…" only
+    // because analysisStatus is PENDING; without it the contract body would
+    // read as empty.
     await prisma.contract.update({
       where: { id: payload.contractId },
       data:  {
-        status:           'UNDER_NEGOTIATION',
         currentVersionId: version.id,
         analysisStatus:   'PENDING',
         updatedAt:        new Date(),
       },
     })
-    // docs/41 P0.10 — on the record as a status change, from the counterparty.
-    await recordStatusChange({ orgId: payload.orgId, contractId: payload.contractId, from: target.status, to: 'UNDER_NEGOTIATION', source: 'counterparty', versionId: version.id, extra: { via: 'portal' } })
+    // docs/41 Part 18 — the negotiation is back with us (Negotiate, our
+    // turn); a request for approval made before it is withdrawn and its
+    // approvers told (§6.5).
+    const reset = await onApprovalChange({ orgId: payload.orgId, contractId: payload.contractId, versionId: version.id, source: 'counterparty', via: 'portal' })
+    if (!reset.withdrawn) await onCounterpartyVersion({ orgId: payload.orgId, contractId: payload.contractId, versionId: version.id, via: 'portal' })
 
     // Extract text/HTML from the uploaded file so the owner can actually
     // diff the counterparty's turn against the previous version.

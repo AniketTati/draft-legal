@@ -13,6 +13,7 @@ import { GetObjectCommand } from '@aws-sdk/client-s3'
 import type { IntegrationConnection } from '@prisma/client'
 import { AuditAction } from '@clm/types'
 import { prisma } from '../prisma.js'
+import { approvalProgress } from '../workflow-engine.js'
 import { s3, S3_BUCKET } from '../storage.js'
 import { connectionTokens, storeTokens } from '../integrations/connection.js'
 import { applyOutboundMapping, mappingsForType, payloadHash, type FieldMapping } from '../integrations/mapping.js'
@@ -57,7 +58,7 @@ export function clientFor(conn: IntegrationConnection, fetchImpl?: Fetch): Sales
 }
 
 const CONTRACT_SELECT = {
-  id: true, orgId: true, title: true, type: true, status: true, contractNumber: true,
+  id: true, orgId: true, title: true, type: true, status: true, stage: true, stageState: true, turn: true, turnSince: true, contractNumber: true,
   value: true, currency: true, effectiveDate: true, expiryDate: true, counterpartyName: true,
   metadata: true, updatedAt: true, currentVersionId: true,
   counterparty: { select: { crmId: true } },
@@ -76,28 +77,34 @@ export async function statusFacts(orgId: string, contractIds: string[]): Promise
     prisma.approvalInstance.findMany({
       where: { orgId, contractId: { in: contractIds } },
       orderBy: { submittedAt: 'desc' },
-      select: { contractId: true, status: true, currentStepOrder: true, steps: { select: { status: true, stepOrder: true, approverId: true } } },
+      select: { contractId: true, status: true, currentStepOrder: true, definition: { select: { steps: true } }, steps: { where: { kind: 'approval' }, select: { status: true, decision: true, stepOrder: true, approverId: true, approverRoleId: true } } },
     }),
     prisma.auditEvent.findMany({
-      where: { orgId, resourceType: 'contract', resourceId: { in: contractIds }, action: AuditAction.CONTRACT_STATUS_CHANGED },
+      where: { orgId, resourceType: 'contract', resourceId: { in: contractIds }, action: { in: [AuditAction.STAGE_CHANGED, AuditAction.CONTRACT_STATUS_CHANGED] } },
       orderBy: { createdAt: 'desc' },
       distinct: ['resourceId'],
       select: { resourceId: true, createdAt: true },
     }),
   ])
-  const waiting = instances.flatMap(i => i.steps.filter(st => st.status === 'PENDING' && st.stepOrder === i.currentStepOrder).map(st => st.approverId))
-  const users = waiting.length
-    ? await prisma.user.findMany({ where: { orgId, id: { in: [...new Set(waiting)] } }, select: { id: true, name: true, email: true } })
-    : []
-  const nameOf = (id: string) => { const u = users.find(x => x.id === id); return u?.name || u?.email || 'someone' }
+  const waiting = instances.flatMap(i => i.steps.filter(st => st.status === 'PENDING' && st.stepOrder === i.currentStepOrder))
+  const userIds = [...new Set(waiting.map(st => st.approverId).filter((x): x is string => !!x))]
+  const roleIds = [...new Set(waiting.map(st => st.approverRoleId).filter((x): x is string => !!x))]
+  const [users, roles] = await Promise.all([
+    userIds.length ? prisma.user.findMany({ where: { orgId, id: { in: userIds } }, select: { id: true, name: true, email: true } }) : Promise.resolve([]),
+    roleIds.length ? prisma.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true } }) : Promise.resolve([]),
+  ])
+  // A role's pooled step waits on the role (docs/41 Part 6).
+  const nameOf = (st: { approverId: string | null; approverRoleId: string | null }) => {
+    if (!st.approverId) return `any ${roles.find(r => r.id === st.approverRoleId)?.name ?? 'approver'}`
+    const u = users.find(x => x.id === st.approverId); return u?.name || u?.email || 'someone'
+  }
   for (const id of contractIds) {
     const latest = instances.find(i => i.contractId === id)
     const open = latest && (latest.status === 'PENDING' || latest.status === 'ESCALATED')
     out.set(id, {
       approvals: latest && latest.steps.length ? {
-        approved: latest.steps.filter(st => st.status === 'APPROVED').length,
-        total: latest.steps.length,
-        ...(open && { waitingOn: latest.steps.filter(st => st.status === 'PENDING' && st.stepOrder === latest.currentStepOrder).map(st => nameOf(st.approverId)) }),
+        ...approvalProgress(latest),
+        ...(open && { waitingOn: latest.steps.filter(st => st.status === 'PENDING' && st.stepOrder === latest.currentStepOrder).map(nameOf) }),
       } : null,
       statusSince: changes.find(c => c.resourceId === id)?.createdAt ?? null,
     })

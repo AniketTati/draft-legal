@@ -75,8 +75,8 @@ describe('GET /contracts/:id/approval', () => {
 
     const timeline = (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/timeline`, headers: auth(org, ['ADMIN'], owner) })).json().data as Array<{ action: string; metadata: Record<string, unknown>; userName: string | null }>
     expect(timeline).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: 'APPROVAL_DECIDED', userName: 'Priya Approver', metadata: expect.objectContaining({ decision: 'REJECTED', reason: 'Liability cap must be 1x fees' }) }),
-      expect.objectContaining({ action: 'CONTRACT_STATUS_CHANGED', metadata: expect.objectContaining({ from: 'PENDING_APPROVAL', to: 'DRAFT', source: 'approval', reason: 'Liability cap must be 1x fees' }) }),
+      expect.objectContaining({ action: 'APPROVAL_DECIDED', userName: 'Priya Approver', metadata: expect.objectContaining({ decision: 'RETURNED', outcome: 'returned', reason: 'Liability cap must be 1x fees' }) }),
+      expect.objectContaining({ action: 'STAGE_CHANGED', metadata: expect.objectContaining({ from: 'PENDING_APPROVAL', to: 'DRAFT', toStage: 'draft', toState: 'returned', source: 'approval', reason: 'Liability cap must be 1x fees' }) }),
     ]))
 
     // Sent again: the new request is current, the returned one is history.

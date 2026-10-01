@@ -477,7 +477,7 @@ export async function salesforcePublicRoutes(app: FastifyInstance) {
     const c = await prisma.contract.findFirst({
       where: { id, orgId, deletedAt: null },
       select: {
-        id: true, title: true, type: true, status: true, contractNumber: true, value: true, currency: true,
+        id: true, title: true, type: true, status: true, stage: true, stageState: true, turn: true, turnSince: true, contractNumber: true, value: true, currency: true,
         effectiveDate: true, expiryDate: true, counterpartyName: true, metadata: true, updatedAt: true,
         counterparty: { select: { crmId: true } }, owner: { select: { name: true } },
       },

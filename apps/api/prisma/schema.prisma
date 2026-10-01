@@ -190,7 +190,19 @@ model Contract {
   contractNumber    String? // Auto-generated: CTR-2026-0001
   title             String
   type              String // ContractType enum
+  // docs/41 Part 18 — derived from stage + stageState (packages/types
+  // lifecycle.ts statusFor), kept for webhooks, analytics and API clients.
+  // Set only through lib/lifecycle.ts; a writer that still sets only the
+  // status gets its stage derived by the contracts_stage_sync trigger.
   status            String    @default("DRAFT") // ContractStatus enum
+  // docs/41 Part 18 — where the contract is, what is happening there, and
+  // whose move it is (docs/47-STAGE-STATE-TURN.md).
+  stage             String    @default("draft") // request | draft | negotiate | approve | sign | active | closed
+  stageState        String    @default("drafting")
+  turn              String    @default("internal") // internal | counterparty | approvers | signers | none
+  turnSince         DateTime  @default(now())
+  // The person whose move it is, when the turn is ours (the owner, unless someone else was handed it).
+  turnOwnerId       String?
   counterpartyId    String?
   counterpartyName  String?
   parentContractId  String? // For amendments — links to parent contract
@@ -257,6 +269,7 @@ model Contract {
   diligenceRoom     DiligenceRoom? @relation(fields: [diligenceRoomId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
+  @@index([orgId, stage])
   @@index([orgId, type])
   @@index([orgId, ownerId])
   @@index([orgId, counterpartyId])
@@ -375,6 +388,8 @@ model ContractRequest {
   metadata         Json      @default("{}")
   // P4.1 — optional link to the Matter this request belongs to.
   matterId         String?
+  // docs/41 Part 4 — why the request was declined ("Decline request").
+  rejectionReason  String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   deletedAt        DateTime?
@@ -826,6 +841,10 @@ model ClauseCategory {
   // for it yet. Applies to the contract types listed ([] = every type).
   presence              String   @default("optional")
   presenceContractTypes String[] @default([])
+  // docs/41 Part 7 — who decides an exception to this category's positions:
+  // a person, or every holder of a role (the first to decide claims it).
+  approverUserId        String?
+  approverRoleId        String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -1048,6 +1067,8 @@ model AuditEvent {
 
   @@index([orgId, createdAt])
   @@index([orgId, resourceType, resourceId])
+  // docs/41 §6.3 — stage events (STAGE_CHANGED) read by action, for durations.
+  @@index([orgId, action, createdAt])
   @@map("audit_events")
 }
 
@@ -1491,6 +1512,10 @@ model ApprovalInstance {
   keyRisks               Json      @default("[]") // [{ title, description, severity }]
   nonStandardTerms       String[]  @default([])
   approvalRecommendation String? // docs/41 P1: ready_to_approve | review | needs_exception | escalate | cant_recommend (older rows: approve | review_required | reject_advised)
+  // docs/41 Part 4 — what became of it: approved | returned | declined |
+  // withdrawn (a counterparty's version arrived) | cancelled. `status` keeps
+  // its older values (a return or a decline is REJECTED there).
+  outcome                String?
   // docs/41 P1 — the version submitted: the baseline later changes are
   // measured against once it is approved.
   versionId              String?
@@ -1513,14 +1538,33 @@ model ApprovalInstance {
 // One row per approver per step in a workflow instance
 model ApprovalStep {
   id                 String    @id @default(cuid())
-  approvalInstanceId String
+  // Null for a clause exception, which belongs to the contract, not to a round of approval.
+  approvalInstanceId String?
   orgId              String
+  // docs/41 Part 7 — approval (a step of a workflow) | clause_exception (an
+  // exception to a playbook position, asked for from a review finding).
+  kind               String    @default("approval")
+  contractId         String?
+  // The finding a clause exception was asked for (ReviewFinding.id), and its clause type.
+  findingId          String?
+  clauseType         String?
+  // The version the step was decided on (reset rules compare against it).
+  versionId          String?
   stepOrder          Int // matches WorkflowStepDef.order
   stepName           String
-  approverId         String // userId of assigned approver
+  // userId of the approver. Null while a role's step waits in its pool:
+  // every holder of approverRoleId sees it, and the first to decide claims it.
+  approverId         String?
+  approverRoleId     String?
   status             String    @default("PENDING") // ApprovalStatus enum
-  decision           String? // APPROVED | REJECTED | DELEGATED
+  decision           String? // APPROVED | RETURNED | DECLINED | DELEGATED (older rows: REJECTED)
   comment            String?
+  // docs/41 Part 4 — the findings and clauses a reviewer pointed at when returning or declining.
+  linkedFindingIds   String[]  @default([])
+  linkedClauseIds    String[]  @default([])
+  // A clause exception: who asked for it, and why.
+  requestedById      String?
+  requestNote        String?
   delegatedToId      String? // set when DELEGATED
   decidedAt          DateTime?
   escalationJobId    String? // BullMQ job ID — removed on decision to cancel timer
@@ -1528,11 +1572,13 @@ model ApprovalStep {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  instance ApprovalInstance @relation(fields: [approvalInstanceId], references: [id])
+  instance ApprovalInstance? @relation(fields: [approvalInstanceId], references: [id], onDelete: Restrict)
 
   @@index([approvalInstanceId])
   @@index([approverId, status])
+  @@index([approverRoleId, status])
   @@index([orgId, status])
+  @@index([contractId, kind])
   @@map("approval_steps")
 }
 

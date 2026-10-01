@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { prisma } from '../lib/prisma.js'
+import { onSentToCounterparty } from '../lib/lifecycle.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -150,6 +151,8 @@ export async function shareRoutes(app: FastifyInstance) {
     }
 
     createAuditEvent({ orgId, userId, action: AuditAction.LINK_SHARED, resourceType: 'contract', resourceId: contractId, metadata: { shareLinkId: shareLink.id, permissions: grantedPermissions, expiresAt, emailedTo: inviteEmail, versionId: contract.currentVersionId } }).catch(() => {})
+    // docs/41 Part 18 — sent to the counterparty: their turn (a draft starts the negotiation).
+    await onSentToCounterparty({ orgId, contractId, userId, via: inviteEmail ? 'email' : 'share_link' })
 
     return reply.status(201).send({
       shareLink,

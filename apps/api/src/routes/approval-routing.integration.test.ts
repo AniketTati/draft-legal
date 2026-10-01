@@ -29,7 +29,7 @@ async function routedTo(contractId: string): Promise<string[]> {
   const res = await submit(contractId)
   expect(res.statusCode, res.body).toBe(201)
   const steps = await prisma.approvalStep.findMany({ where: { instance: { contractId }, status: 'PENDING' } })
-  return steps.map(s => s.approverId)
+  return steps.map(s => s.approverId as string)
 }
 
 beforeAll(async () => {

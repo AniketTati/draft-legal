@@ -147,8 +147,9 @@ export function formatForSlack(event: string, data: Record<string, unknown>): Sl
           { type: 'actions', elements: [
             { type: 'button', style: 'primary', action_id: 'approval_approve',
               text: { type: 'plain_text', text: '✅ Approve' }, value: ref },
-            { type: 'button', style: 'danger', action_id: 'approval_reject',
-              text: { type: 'plain_text', text: '❌ Reject' }, value: ref },
+            // docs/41 Part 4 — a return needs a reason: the button links to it (routes/slack.ts).
+            { type: 'button', action_id: 'approval_reject',
+              text: { type: 'plain_text', text: '↩️ Return with a reason' }, value: ref },
             { type: 'button', action_id: 'approval_open',
               text: { type: 'plain_text', text: 'Open in draftLegal' }, url: `${link}?tab=approval` },
           ] },

@@ -86,6 +86,6 @@ export async function noteIntegrationEvent(orgId: string, event: string, payload
  * afterAuditEvent, as the change notice is.
  */
 export async function syncOnAuditEvent(event: { orgId: string; action: string; resourceType: string; resourceId: string }): Promise<void> {
-  if (event.resourceType !== 'contract' || !['CONTRACT_STATUS_CHANGED', 'CONTRACT_UPDATED'].includes(event.action)) return
+  if (event.resourceType !== 'contract' || !['STAGE_CHANGED', 'CONTRACT_STATUS_CHANGED', 'CONTRACT_UPDATED'].includes(event.action)) return
   await noteIntegrationEvent(event.orgId, 'contract.updated', { contractId: event.resourceId })
 }

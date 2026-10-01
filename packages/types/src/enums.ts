@@ -137,6 +137,13 @@ export enum AuditAction {
   CONTRACT_VIEWED = 'CONTRACT_VIEWED',
   CONTRACT_UPLOADED = 'CONTRACT_UPLOADED',
   CONTRACT_STATUS_CHANGED = 'CONTRACT_STATUS_CHANGED',
+  // docs/41 Part 18 / §6.3 — a move of stage, state or turn (lib/lifecycle.ts),
+  // with a typed payload. Replaces CONTRACT_STATUS_CHANGED for new changes;
+  // older ones keep their action and are read alongside.
+  STAGE_CHANGED = 'STAGE_CHANGED',
+  // docs/41 Part 4 — a clause marked "Not acceptable" (or acceptable) in the
+  // clause review drawer.
+  CLAUSE_REVIEWED = 'CLAUSE_REVIEWED',
   // docs/41 P0.1 — a draft written by the draft agent (from a request, or
   // added as a version): which template, and what it couldn't fill.
   CONTRACT_DRAFTED = 'CONTRACT_DRAFTED',
@@ -170,6 +177,12 @@ export enum AuditAction {
   APPROVAL_SUBMITTED = 'APPROVAL_SUBMITTED',
   APPROVAL_DECIDED = 'APPROVAL_DECIDED',
   APPROVAL_ESCALATED = 'APPROVAL_ESCALATED',
+  // docs/41 Part 18 — approvals asked for again after a change (reset rules),
+  // or a submission withdrawn by a counterparty's version.
+  APPROVALS_RESET = 'APPROVALS_RESET',
+  // docs/41 Part 7 — an exception to a playbook position asked for, and decided.
+  EXCEPTION_REQUESTED = 'EXCEPTION_REQUESTED',
+  EXCEPTION_DECIDED = 'EXCEPTION_DECIDED',
   // Signatures
   SIGNATURE_SENT = 'SIGNATURE_SENT',
   SIGNATURE_COMPLETED = 'SIGNATURE_COMPLETED',

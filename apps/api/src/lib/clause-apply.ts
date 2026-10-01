@@ -14,10 +14,8 @@
 import { prisma } from './prisma.js'
 import { htmlBlocks } from './ooxml/html-blocks.js'
 import { lockOf, lockedBody } from './external-edit.js'
-import { statusAfterTermsChange } from './contract-status.js'
 import { restorePii, piiRestorer, unresolvedPiiTokens } from './pii-policy.js'
 import { afterEdit } from './version-refresh.js'
-import { recordStatusChange } from './status-change.js'
 
 /**
  * Minimal HTML escape for splicing text into contract HTML.
@@ -611,8 +609,7 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
     })
     await tx.contract.update({
       where: { id: contract.id },
-      // X42 — a changed clause on an approved contract needs approving again.
-      data:  { currentVersionId: v.id, status: statusAfterTermsChange(contract.status) },
+      data:  { currentVersionId: v.id },
     })
     return v
   })
@@ -621,10 +618,10 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
   // number is now decided inside the transaction, so this is the only value
   // that is certainly the one on disk.
   const nextVersionNumber = newVersion.versionNumber
-  const resetTo = statusAfterTermsChange(contract.status)
-  if (resetTo) await recordStatusChange({ orgId: args.orgId, contractId: contract.id, from: contract.status, to: resetTo, userId: args.userId, source: 'edit', reason: 'a clause was rewritten', versionId: newVersion.id })
   // DD2 — the new version keeps the clauses, the revised one with its new words.
   await afterEdit({ contractId: contract.id, orgId: args.orgId, versionId: newVersion.id, fromVersionId: currentVersion.id })
+  // docs/41 Part 18 — approvals given are asked again as their reset rules say.
+  await resetApprovals({ orgId: args.orgId, contractId: contract.id, versionId: newVersion.id, fromVersionId: currentVersion.id, source: 'edit', userId: args.userId })
 
   return {
     ok: true,
@@ -917,13 +914,12 @@ export async function applyClauseBatch(args: {
         },
       },
     })
-    await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id, status: statusAfterTermsChange(contract.status) } })
+    await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id } })
     return v
   })
-  const resetTo = statusAfterTermsChange(contract.status)
-  if (resetTo) await recordStatusChange({ orgId, contractId: contract.id, from: contract.status, to: resetTo, userId, source: 'edit', reason: 'clauses were rewritten', versionId: newVersion.id })
   // DD2 — the new version keeps the clauses, the revised ones with their new words.
   await afterEdit({ contractId: contract.id, orgId, versionId: newVersion.id, fromVersionId: currentVersion.id })
+  await resetApprovals({ orgId, contractId: contract.id, versionId: newVersion.id, fromVersionId: currentVersion.id, source: 'edit', userId })
 
   return {
     ok: true,
@@ -939,4 +935,13 @@ export async function applyClauseBatch(args: {
       skippedCount: applied.filter(a => a.error).length,
     },
   }
+}
+
+/**
+ * docs/41 Part 18 — lib/approval-reset.ts, loaded when used: this module is
+ * unit-tested, and the queue it reaches opens a Redis connection when loaded.
+ */
+async function resetApprovals(args: import('./approval-reset.js').ChangeArgs): Promise<void> {
+  const { onApprovalChange } = await import('./approval-reset.js')
+  await onApprovalChange(args)
 }

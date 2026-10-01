@@ -3,14 +3,14 @@
  * Salesforce record, `DL_Contract__c`: status, stage, whose turn, dates,
  * value, counterparty, the deal it belongs to and a link back.
  *
- * `contractSyncPayload` is the one function that decides it. Stage and turn
- * come from the contract's status today, with what the core records about
- * it (docs/41 P0.6, P0.10): who an approval waits on, by name, and since when
- * the status stands (its last CONTRACT_STATUS_CHANGED event). docs/41 Part 18
- * adds a stored stage and turn to the contract; when a contract carries them
- * (`stage`, `turn`, `waitingSince`), they win, and nothing else here needs to
- * change.
+ * `contractSyncPayload` is the one function that decides it. docs/41 Part
+ * 18 — the contract's stored stage, state and turn (lib/lifecycle.ts) decide
+ * the stage on the path and whose move it is, and `turnSince` since when;
+ * with what the core records about it (docs/41 P0.6): who an approval waits
+ * on, by name. A contract read without them (an older caller) falls back to
+ * its status.
  */
+import { isStage, type Stage } from '@clm/types'
 import { CONTRACT_EXTERNAL_ID } from './client.js'
 
 export interface SyncContract {
@@ -32,10 +32,17 @@ export interface SyncContract {
   approvals?: { approved: number; total: number; waitingOn?: string[] } | null
   /** docs/41 P0.10 — when the status last changed (the latest status-change event). */
   statusSince?: Date | string | null
-  /** docs/41 Part 18 — a stored stage and turn, once the core branch adds them. */
+  /** docs/41 Part 18 — the stored stage, its state and turn, and since when the turn stands. */
   stage?: string | null
+  stageState?: string | null
   turn?: string | null
+  turnSince?: Date | string | null
   waitingSince?: Date | string | null
+}
+
+/** Our stages, as the Salesforce path names them. */
+const SF_STAGE: Record<Stage, string> = {
+  request: 'Request', draft: 'Draft', negotiate: 'Negotiate', approve: 'Approve', sign: 'Sign', active: 'Signed', closed: 'Closed',
 }
 
 /** The stage a status sits in, as Salesforce shows it on the path. */
@@ -56,9 +63,16 @@ const STAGE_BY_STATUS: Record<string, string> = {
 /** The stages in order, for the path on the Salesforce record (the LWC reads it too). */
 export const STAGES = ['Request', 'Draft', 'Review', 'Negotiate', 'Approve', 'Sign', 'Signed', 'Closed'] as const
 
-export function stageFor(contract: Pick<SyncContract, 'status' | 'stage'>): string {
+export function stageFor(contract: Pick<SyncContract, 'status' | 'stage' | 'stageState'>): string {
+  if (isStage(contract.stage)) return contract.stage === 'draft' && contract.stageState === 'ready' ? 'Review' : SF_STAGE[contract.stage]
   if (contract.stage) return contract.stage
   return STAGE_BY_STATUS[contract.status] ?? 'Draft'
+}
+
+function approversWords(a: SyncContract['approvals']): string {
+  if (!a) return 'Approvers'
+  const who = a.waitingOn?.length ? `: ${a.waitingOn.slice(0, 3).join(', ')}${a.waitingOn.length > 3 ? ` and ${a.waitingOn.length - 3} more` : ''}` : ''
+  return `Approvers${who} (${a.approved} of ${a.total})`
 }
 
 /**
@@ -67,19 +81,27 @@ export function stageFor(contract: Pick<SyncContract, 'status' | 'stage'>): stri
  * known (the last version could be either side's), so it says so.
  */
 export function turnFor(contract: SyncContract): string | null {
-  if (contract.turn) return contract.turn
   const owner = contract.owner?.name ? ` (${contract.owner.name})` : ''
+  // The stored turn (docs/41 Part 18).
+  switch (contract.turn) {
+    case 'internal':
+      if (contract.stage === 'approve' && contract.stageState === 'approved') return `Legal${owner}: send for signature`
+      if (contract.stageState === 'returned') return `Legal${owner}: fix and resubmit`
+      if (contract.stage === 'approve' && contract.stageState === 'declined') return `Legal${owner}: declined by an approver`
+      if (contract.stage === 'sign') return `Legal${owner}: signature ${contract.stageState === 'declined' ? 'declined' : 'voided'}`
+      return `Legal${owner}`
+    case 'counterparty': return contract.counterpartyName ? `Counterparty (${contract.counterpartyName})` : 'Counterparty'
+    case 'approvers':    return approversWords(contract.approvals)
+    case 'signers':      return 'Signers'
+    case 'none':         return null
+  }
+  if (contract.turn) return contract.turn
   switch (contract.status) {
     case 'DRAFT':
     case 'PENDING_REVIEW':
     case 'REJECTED':          return `Legal${owner}`
     case 'UNDER_NEGOTIATION': return `Legal or counterparty${owner}`
-    case 'PENDING_APPROVAL': {
-      const a = contract.approvals
-      if (!a) return 'Approvers'
-      const who = a.waitingOn?.length ? `: ${a.waitingOn.slice(0, 3).join(', ')}${a.waitingOn.length > 3 ? ` and ${a.waitingOn.length - 3} more` : ''}` : ''
-      return `Approvers${who} (${a.approved} of ${a.total})`
-    }
+    case 'PENDING_APPROVAL': return approversWords(contract.approvals)
     case 'APPROVED':          return `Legal${owner}: send for signature`
     case 'PENDING_SIGNATURE': return 'Signers'
     default:                  return null
@@ -131,7 +153,7 @@ export function contractSyncPayload(contract: SyncContract, now: Date = new Date
     DL_Status__c:           contract.status,
     DL_Stage__c:            stageFor(contract),
     DL_Waiting_On__c:       turnFor(contract),
-    DL_Waiting_Since__c:    isoOrNull(contract.waitingSince ?? contract.statusSince),
+    DL_Waiting_Since__c:    isoOrNull(contract.waitingSince ?? contract.turnSince ?? contract.statusSince),
     DL_Approvals__c:        contract.approvals ? `${contract.approvals.approved} of ${contract.approvals.total}` : null,
     DL_Effective_Date__c:   day(contract.effectiveDate),
     DL_Expiry_Date__c:      day(contract.expiryDate),
