@@ -202,7 +202,13 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
     # changes_json carries verbatim counterparty language (ourText/theirText/
     # context) lifted straight out of the diff, so it stays untrusted on this
     # second pass. This is the call that sets requires_human_gate.
-    playbook_json = json.dumps(state["playbook_positions"], indent=2)
+    has_playbook = bool(state["playbook_positions"])
+    playbook_json = json.dumps(state["playbook_positions"], indent=2) if has_playbook else (
+        # docs/41 P0.5 — no position applies: compare with our own text, and
+        # make no claim about market practice.
+        "None apply to this contract type. Compare each proposal only with our original text, set "
+        "playbookAlignment to \"outside_playbook\", and rate market as 0: do not judge market practice."
+    )
     changes_json = wrap_untrusted_document(
         json.dumps(state["changes"], indent=2),
         source="changes extracted verbatim from the counterparty redline",
@@ -219,6 +225,8 @@ async def step_score_changes(state: RedlineState) -> RedlineState:
             HumanMessage(content=prompt),
         ], config={"callbacks": resolved.callbacks})
         scored = _merge_scores(state["changes"], _parse_json(response.content))
+        if not has_playbook:
+            scored = [without_playbook(c) for c in scored]
 
         requires_gate = any(
             c.get("playbookAlignment") in ("walkaway", "outside_playbook") or
@@ -308,13 +316,31 @@ def _risk_score(f: dict[str, int] | None) -> int | None:
                         + 0.20 * f["market"] / 3))
 
 
-def _factor_words(f: dict[str, int]) -> str:
-    """'beyond our walkaway position; severe exposure, likely; clearly off-market'"""
-    return (f"{_DEVIATION_WORDS[f['deviation']]}; {_EXPOSURE_WORDS[f['exposure']]}, "
-            f"{_LIKELIHOOD_WORDS[f['likelihood']]}; {_MARKET_WORDS[f['market']]}")
+def _factor_words(f: dict[str, int], market: bool = True) -> str:
+    """'beyond our walkaway position; severe exposure, likely; clearly off-market'.
+    docs/41 P0.5 — without a playbook nothing was compared with the market, so
+    no market words."""
+    words = f"{_DEVIATION_WORDS[f['deviation']]}; {_EXPOSURE_WORDS[f['exposure']]}, {_LIKELIHOOD_WORDS[f['likelihood']]}"
+    return f"{words}; {_MARKET_WORDS[f['market']]}" if market else words
 
 
-def _with_risk_text(change: dict) -> dict:
+NOT_COVERED_NOTE = ("Not covered by your playbook — no positions apply to this contract type, "
+                    "so each change was compared with your original text only.")
+
+
+def without_playbook(change: dict) -> dict:
+    """docs/41 P0.5 — a change scored with no playbook position: compared with
+    our original text only. It claims no alignment and no market judgement
+    (the market factor is zeroed), and a person reviews it."""
+    out = {**change, "playbookAlignment": "not_covered", "requiresHumanReview": True}
+    for key in ("ourAssessment", "theirAssessment", "counterAssessment"):
+        a = out.get(key)
+        if isinstance(a, dict):
+            out[key] = {**a, "market": 0}
+    return out
+
+
+def _with_risk_text(change: dict, market: bool = True) -> dict:
     """Score our text, theirs and our counter from their factor ratings, and put
     the result where the redline panel already shows text: the reasoning line
     (always visible) and the counter-proposal note."""
@@ -334,12 +360,12 @@ def _with_risk_text(change: dict) -> dict:
     if before is not None and after is not None:
         why = change.get("riskReason") or change.get("reasoning") or ""
         out["riskDelta"] = after - before
-        out["reasoning"] = f"Risk {before} → {after} ({after - before:+d}): {_factor_words(theirs)}. {why}".strip()
+        out["reasoning"] = f"Risk {before} → {after} ({after - before:+d}): {_factor_words(theirs, market)}. {why}".strip()
     if revised is not None and change.get("counterText"):
         base = f"Revised risk if they accept: {revised}"
         if after is not None:
             base += f" (from {after}, {revised - after:+d})"
-        out["counterNote"] = f"{base}: {_factor_words(counter)}. {change.get('counterNote') or ''}".strip()
+        out["counterNote"] = f"{base}: {_factor_words(counter, market)}. {change.get('counterNote') or ''}".strip()
     return out
 
 
@@ -406,7 +432,8 @@ async def step_generate_counters(state: RedlineState) -> RedlineState:
         except Exception as e:
             logger.error("[redline] step3 error: %s", e)
 
-    final_changes = [_with_risk_text(c) for c in final_changes]
+    has_playbook = bool(state["playbook_positions"])
+    final_changes = [_with_risk_text(c, market=has_playbook) for c in final_changes]
 
     # Determine overall recommended action
     recommendations = [c.get("recommendation", "counter") for c in final_changes]

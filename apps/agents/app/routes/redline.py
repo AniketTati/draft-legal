@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
-from ..agents.redline_agent import run_redline
+from ..agents.redline_agent import run_redline, NOT_COVERED_NOTE
 from ..config import settings
 
 router = APIRouter()
@@ -92,7 +92,8 @@ async def _process_redline(
             if pb_res.is_success:
                 playbook_positions = pb_res.json().get("data", [])
                 if not playbook_positions:
-                    playbook_note = "No playbook positions apply to this contract type, so changes were scored on general market practice."
+                    # docs/41 P0.5 — said as it is: nothing was compared with a market.
+                    playbook_note = NOT_COVERED_NOTE
             else:
                 playbook_note = f"The playbook could not be loaded ({pb_res.status_code}), so changes were scored without it."
                 logger.warning("[redline] playbook fetch returned %s: %s", pb_res.status_code, pb_res.text[:200])

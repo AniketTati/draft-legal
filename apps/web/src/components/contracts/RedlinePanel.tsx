@@ -17,7 +17,7 @@ interface RedlineChange {
   context?: string
   sectionRef?: string | null
   recommendation?: 'accept' | 'reject' | 'counter'
-  playbookAlignment?: 'preferred' | 'acceptable' | 'fallback' | 'walkaway' | 'outside_playbook'
+  playbookAlignment?: 'preferred' | 'acceptable' | 'fallback' | 'walkaway' | 'outside_playbook' | 'not_covered'
   severity?: 'low' | 'medium' | 'high' | 'critical'
   reasoning?: string
   requiresHumanReview?: boolean
@@ -77,6 +77,12 @@ const ALIGNMENT_COLORS: Record<string, string> = {
   fallback:        'bg-attention-50 text-attention-700',
   walkaway:        'bg-risk-100 text-risk-900',
   outside_playbook: 'bg-attention-100 text-attention-700',
+  // docs/41 P0.5 — no position applies: compared with our own text only.
+  not_covered:      'bg-attention-100 text-attention-700',
+}
+
+const ALIGNMENT_LABEL: Record<string, string> = {
+  not_covered: 'not covered by your playbook',
 }
 
 const RECOMMENDATION_CONFIG = {
@@ -124,7 +130,7 @@ function ChangeCard({ change }: { change: RedlineChange }) {
                 )}
                 {change.playbookAlignment && (
                   <span className={`text-dense px-1.5 py-0.5 rounded-chip font-medium ${ALIGNMENT_COLORS[change.playbookAlignment] ?? ''}`}>
-                    {change.playbookAlignment.replace(/_/g, ' ')}
+                    {ALIGNMENT_LABEL[change.playbookAlignment] ?? change.playbookAlignment.replace(/_/g, ' ')}
                   </span>
                 )}
                 {change.requiresHumanReview && (

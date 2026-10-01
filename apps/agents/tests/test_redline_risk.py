@@ -131,3 +131,18 @@ def test_scores_without_ids_match_by_position_only_when_the_counts_agree():
     out = _merge_scores(changes, [{"recommendation": "accept"}])
     assert [c["recommendation"] for c in out] == ["counter", "counter"]
     assert _merge_scores(changes, "not json")[0]["recommendation"] == "counter"
+
+
+# docs/41 P0.5 — with no playbook position, nothing is said about the market.
+def test_without_playbook_claims_no_market_and_asks_a_person():
+    from app.agents.redline_agent import without_playbook, _with_risk_text
+    change = {
+        "playbookAlignment": "acceptable", "likelihood": 2,
+        "ourAssessment": {"deviation": 0, "exposure": 1, "market": 0},
+        "theirAssessment": {"deviation": 2, "exposure": 3, "market": 2},
+    }
+    out = without_playbook(change)
+    assert out["playbookAlignment"] == "not_covered" and out["requiresHumanReview"] is True
+    assert out["theirAssessment"]["market"] == 0
+    text = _with_risk_text(out, market=False)["reasoning"]
+    assert "market" not in text.lower()

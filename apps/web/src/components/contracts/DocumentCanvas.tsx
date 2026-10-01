@@ -38,6 +38,7 @@ import {
 } from './RiskDecorations'
 import GhostCompletion from '../editor/GhostCompletion'
 import ClauseClassifier from '../editor/ClauseClassifier'
+import { MARGIN_CLASSIFIER_ENABLED } from '@/lib/feature-flags'
 import DefinedTermGuard from '../editor/DefinedTermGuard'
 import { SourceHighlight } from './SourceHighlight'
 import { Variable } from '../editor/VariableMark'
@@ -136,11 +137,11 @@ export function DocumentCanvas({
           debounceMs:   800,
         }),
         // P6.2 — Background clause classifier. Margin badges computed
-        // live per paragraph. Fires in both view and edit mode — the
-        // ambient signal helps non-editing readers too.
+        // live per paragraph. docs/41 P0.5 — off unless the build turns it
+        // on: its "market" verdicts had no grounding (lib/feature-flags.ts).
         ClauseClassifier.configure({
           contractType: 'general commercial',
-          enabled:      true,
+          enabled:      MARGIN_CLASSIFIER_ENABLED,
           debounceMs:   1500,
           maxParagraphsPerDoc: 12,
         }),
