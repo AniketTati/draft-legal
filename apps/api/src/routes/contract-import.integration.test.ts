@@ -118,7 +118,7 @@ describe('an import', () => {
     for (const x of results) if (x.contractId) made[x.row] = x.contractId
 
     const acme = await prisma.contract.findUniqueOrThrow({ where: { id: made[2] } })
-    expect(acme).toMatchObject({ title: 'Acme MSA', type: 'MSA', status: 'EXECUTED', ownerId: colleague, counterpartyName: 'Acme Corp', currency: 'USD', analysisStatus: 'DONE', currentVersionId: null, tags: ['imported'] })
+    expect(acme).toMatchObject({ title: 'Acme MSA', type: 'MSA', status: 'EXECUTED', ownerId: colleague, counterpartyName: 'Acme Corp', currency: 'USD', analysisStatus: 'NOT_ANALYSED', currentVersionId: null, tags: ['imported'] })
     expect(Number(acme.value)).toBe(250000)
     expect(acme.metadata).toMatchObject({ _import: { batch, row: 2, file: 'Acme_MSA.pdf' }, _typeSource: 'person' })
     expect(results[0]).toMatchObject({ file: 'Acme_MSA.pdf', issues: [] })

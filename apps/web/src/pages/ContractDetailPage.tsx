@@ -4076,6 +4076,10 @@ export function ContractDetailPage() {
         )}
 
         <RailSection title="Overview" defaultOpen>
+          {/* docs/41 P0.1 — which version the analysis describes. */}
+          {versions.length > 0 && analysis.state === 'done' && (
+            <p className="text-[11px] text-ink-500 mb-1.5" data-testid="analysis-done-for">{analysis.text}</p>
+          )}
           {contract.summary ? (
             <p className="text-body text-ink-700">{contract.summary}</p>
           ) : (
