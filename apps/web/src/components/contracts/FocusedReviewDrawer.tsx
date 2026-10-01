@@ -520,7 +520,7 @@ export function FocusedReviewDrawer({
               className="flex-1"
               data-testid="review-reject"
             >
-              {/* docs/41 Part 4: "Reject" is the approver's word for a whole
+              {/* docs/41 Part 4: an approver returns or declines a whole
                   version. This is a verdict on one clause, so it says so. */}
               <XCircle className="size-4" />
               {state === 'rejected' ? 'Marked not acceptable' : 'Not acceptable'}

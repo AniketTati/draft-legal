@@ -86,7 +86,7 @@ const ALIGNMENT_LABEL: Record<string, string> = {
 }
 
 // docs/41 Part 4: `reject` here means "keep our text instead of theirs", a
-// choice about one change, not a verdict. "Reject" is the approver's word, so
+// choice about one change, not a verdict on the contract (an approver Returns or Declines), so
 // it reads as the Compare buttons do and is not red.
 const RECOMMENDATION_CONFIG = {
   accept:  { icon: CheckCircle2, color: 'text-brand-700',     label: 'Accept change', bg: 'bg-brand-50'     },

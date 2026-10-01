@@ -247,7 +247,7 @@ export function CompareMode({
           <div className="ml-auto flex items-center gap-2">
             {/* docs/41 Part 4: choosing between their text and ours is not an
                 approval decision, so neither choice is green or red, and
-                neither is called "Reject" (that word belongs to approvers).
+                neither is called "Reject" (the word meant nine things; approvers now Return or Decline).
                 Both stay outlined so the ink "Apply as new version" remains
                 the one primary. */}
             <Button
