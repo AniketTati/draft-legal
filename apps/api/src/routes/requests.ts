@@ -7,6 +7,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
 import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
+import { requestTerms } from '../lib/draft-save.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
@@ -267,6 +268,7 @@ export async function requestRoutes(app: FastifyInstance) {
 
     const hasAttachments = attachments.length > 0
     const reqMeta = (request.metadata ?? {}) as Record<string, unknown>
+    const aiTerms = (reqMeta._aiClassification as { extractedTerms?: Record<string, unknown> } | undefined)?.extractedTerms
 
     // Draft context — stored in metadata so retry can re-queue without the original request
     const draftContext = !hasAttachments ? {
@@ -278,6 +280,10 @@ export async function requestRoutes(app: FastifyInstance) {
       contractType:      request.type,
       counterpartyName:  request.counterpartyName ?? undefined,
       estimatedValue:    request.estimatedValue != null ? Number(request.estimatedValue) : undefined,
+      // docs/41 P0.4 — what the intake classifier read from the request
+      // (governing law, duration…). Dropped here before, so a request that
+      // named New York law was drafted as Delaware.
+      ...(Object.keys(requestTerms(aiTerms)).length && { extractedTerms: requestTerms(aiTerms) }),
     } : undefined
 
     // X21 — the contract belongs to whoever asked for it. It went to the
@@ -322,6 +328,9 @@ export async function requestRoutes(app: FastifyInstance) {
           // with the parse job below and is derived from s3Key for display.
         },
       })
+      // docs/41 P0.1 — the contract stands on its document (it had no current
+      // version, so the page and the playbook redline had nothing to read).
+      await prisma.contract.update({ where: { id: contract.id }, data: { currentVersionId: version.id } })
       queueParseDocument({
         contractId: contract.id,
         versionId:  version.id,

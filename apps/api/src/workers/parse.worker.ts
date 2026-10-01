@@ -23,6 +23,8 @@ import { refreshVersion } from '../lib/version-refresh.js'
 import { readTrackedChanges } from '../lib/tracked-changes.js'
 import { readExhibit } from '../lib/exhibits.js'
 import { MIME } from '../lib/file-type.js'
+import { finishAnalysis } from '../lib/analysis-trigger.js'
+import { afterAnalysis } from '../lib/presence-rules.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
@@ -269,12 +271,15 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
   })
 
   if (clauses.length === 0) {
-    console.warn('[parse-worker] no clauses found for versionId=%s — marking DONE (full-text already indexed above)', versionId)
-    await prisma.contract.update({
-      where: { id: contractId },
-      data: { analysisStatus: 'DONE', analysisError: null },
-    })
-    askRoomQuestions()
+    // docs/41 P0.1 — a document of real length with no clauses is a failed
+    // analysis, said so; it used to end DONE, an empty success that made an
+    // unread contract look clean. A short one (a cover note) can be DONE.
+    const { done } = await finishAnalysis(contractId, versionId, 0)
+    console.warn('[parse-worker] no clauses found for versionId=%s — %s (full-text already indexed above)', versionId, done ? 'DONE' : 'FAILED')
+    if (done) {
+      await afterAnalysis(contractId, versionId)
+      askRoomQuestions()
+    }
     return
   }
 
@@ -283,10 +288,9 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
   // Queue embeddings (Service 3b)
   queueEmbedContract(versionId)
 
-  await prisma.contract.update({
-    where: { id: contractId },
-    data: { analysisStatus: 'DONE', analysisError: null },
-  })
+  // docs/41 P0.1 — DONE, stamped with the version this analysis describes.
+  await finishAnalysis(contractId, versionId, clauses.filter(c => !c.isSubChunk).length)
+  await afterAnalysis(contractId, versionId)
   askRoomQuestions()
 
   // Score the freshly-extracted clauses against the org playbook. This is the

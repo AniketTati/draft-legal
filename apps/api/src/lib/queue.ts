@@ -45,7 +45,7 @@ export interface ExtractAiJob {
   versionId:     string
   orgId:         string
   contractType?: string            // injected when user corrects type
-  triggeredBy?:  'upload' | 'retype' | 'manual' | 'template' | 'exhibit'
+  triggeredBy?:  'upload' | 'retype' | 'manual' | 'template' | 'exhibit' | 'checkpoint'
   /** docs/39 A13 — a person set the type: the review keeps it and gives no opinion of its own. */
   typeLocked?:   boolean
 }
@@ -490,6 +490,8 @@ interface DraftContractJob {
   contractType: string
   counterpartyName?: string
   estimatedValue?: number
+  /** docs/41 P0.4 — the intake classifier's terms (governing law…), passed to drafting. */
+  extractedTerms?: Record<string, unknown>
 }
 export function queueDraftContract(payload: DraftContractJob): void {
   agentQueue.add('draft-contract', payload, {

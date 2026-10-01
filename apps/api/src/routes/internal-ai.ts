@@ -22,7 +22,8 @@ import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepD
 import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
-import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue, queueExtractAi } from '../lib/queue.js'
+import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
+import { onVersionCreated } from '../lib/analysis-trigger.js'
 import { setValuesFromTemplate, setFieldValue, snapshotOf, undoPersonValue, type FieldSnapshot } from '../lib/field-store.js'
 import { orgDateOrder } from '../lib/org-date-order.js'
 import { createFieldDefinition, CreateFieldSchema, FIELD_TYPES } from './field-definitions.js'
@@ -3790,7 +3791,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
           createdBy: body.userId,
           // docs/39 H3 — read like any other contract (below): the fields the
           // template didn't fill, its clauses, its summary.
-          analysisStatus: plainText.trim() ? 'EXTRACTING' : 'DONE',
+          // docs/41 P0.1 — onVersionCreated below queues the analysis, or
+          // marks it not analysed when there is no text (never DONE unread).
+          analysisStatus: 'PENDING',
           tags: ['template-draft'],
           // docs/39 H2 — the template's variables, kept with the draft: its
           // Variables panel names them and knows which field each one fills.
@@ -3842,9 +3845,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       audit: { source: 'template' },
       templateVariables: template.variables as Array<{ key: string; field?: string | null }>,
     }).catch(err => req.log.warn({ err }, '[contract_create_from_template] template values not saved as fields'))
-    if (plainText.trim()) {
-      queueExtractAi({ contractId: created.contract.id, versionId: created.version.id, orgId: body.orgId, contractType, triggeredBy: 'template' })
-    }
+    await onVersionCreated(created.contract.id, created.version.id, 'generated')
 
     // An agent-created contract is a real contract: record who caused it,
     // as the manual REST create does. (Moved here from /tools/contract_draft,

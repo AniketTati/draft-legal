@@ -6,6 +6,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
+// docs/41 P0.1 — with edit checkpoints off, an edit that changed a clause
+// asks for the playbook review itself (with them on, the checkpoint's
+// analysis includes it).
+process.env.ANALYSIS_CHECKPOINT_MS = '0'
+
 // Kept off the shared Redis queue, which the dev API's workers also consume.
 vi.mock('../lib/queue.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../lib/queue.js')>()),

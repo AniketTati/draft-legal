@@ -5,6 +5,8 @@
  *   extract-ai       : read, extract (agents /review/run) and save a contract's fields and clauses (lib/extraction-job.ts)
  *   classify-request : LLM intake classification (Haiku, 3K chars) → stores in request.metadata
  *   approval-summary : Phase 06 — AI executive summary for approvers (LangGraph 3-step pipeline)
+ *   draft-contract   : a draft from a converted request, saved and analysed (lib/draft-save.ts)
+ *   analysis-checkpoint: docs/41 P0.1 — an edited contract, analysed again once left alone (lib/analysis-trigger.ts)
  */
 import { Worker, type Job } from 'bullmq'
 import { redis } from '../lib/redis.js'
@@ -33,6 +35,8 @@ import { modelFetch } from '../lib/model-boundary.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { runExtractionJob, recordRunUsage, type ExtractionJobData, type RunUsage } from '../lib/extraction-job.js'
 import { callAgents } from '../lib/agents-call.js'
+import { saveDraftVersion, requestTerms, type DraftAgentResult } from '../lib/draft-save.js'
+import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -617,16 +621,24 @@ interface DraftContractJobData {
   contractType: string
   counterpartyName?: string
   estimatedValue?: number
+  /**
+   * docs/41 P0.4 — what the intake classifier read from the request
+   * (governing law, term, value…). It was dropped at convert, so a request
+   * that said "New York law" drafted as Delaware.
+   */
+  extractedTerms?: Record<string, unknown>
 }
 
 async function handleDraftContract(data: DraftContractJobData): Promise<void> {
-  const { contractId, orgId, userId, requestTitle, requestDescription, contractType, counterpartyName, estimatedValue } = data
+  const { contractId, orgId, userId, requestTitle, requestDescription, contractType, counterpartyName, estimatedValue, extractedTerms } = data
   console.info('[agent-worker] draft-contract start contractId=%s type=%s', contractId, contractType)
 
   const userMessage = `Draft a ${contractType} titled "${requestTitle}". ${requestDescription ?? ''}`
   const context: Record<string, unknown> = {}
   if (counterpartyName) context.counterpartyName = counterpartyName
   if (estimatedValue) context.estimatedValue = estimatedValue
+  const terms = requestTerms(extractedTerms)
+  if (Object.keys(terms).length) context.requestTerms = terms
 
   const res = await callAgents('/draft', {
     method:  'POST',
@@ -647,38 +659,13 @@ async function handleDraftContract(data: DraftContractJobData): Promise<void> {
     throw new Error(`Agents /draft returned ${res.status}: ${text.slice(0, 200)}`)
   }
 
-  const result = await res.json() as { html?: string; error?: string }
+  const result = await res.json() as DraftAgentResult
 
   if (result.error || !result.html) {
     throw new Error(`Draft agent error: ${result.error ?? 'No HTML returned'}`)
   }
 
-  // Save as version 1
-  const latest = await prisma.contractVersion.findFirst({
-    where: { contractId },
-    orderBy: { versionNumber: 'desc' },
-  })
-  const nextVersion = (latest?.versionNumber ?? 0) + 1
-
-  await prisma.contractVersion.create({
-    data: {
-      contractId,
-      versionNumber: nextVersion,
-      htmlContent:   result.html,
-      plainText:     htmlToText(result.html),
-      mimeType:      'text/html',
-      fileSize:      Buffer.byteLength(result.html),
-      changeNote:    'AI-generated first draft',
-      createdById:   userId,
-    },
-  })
-
-  // Mark contract as done drafting
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  { analysisStatus: 'DONE' },
-  })
-
+  await saveDraftVersion({ contractId, orgId, userId, result, changeNote: 'AI-generated first draft', source: 'request' })
   console.info('[agent-worker] draft-contract done contractId=%s', contractId)
 }
 
@@ -767,6 +754,10 @@ export const agentWorker = new Worker(
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {
       await handleDraftContract(job.data as DraftContractJobData)
+    } else if (job.name === 'analysis-checkpoint') {
+      // docs/41 P0.1 — an edited contract, left alone long enough: analysed again.
+      const outcome = await runCheckpointAnalysis(job.data as { contractId: string; orgId: string })
+      console.info('[agent-worker] analysis-checkpoint contractId=%s %s', (job.data as { contractId: string }).contractId, outcome)
     } else if (job.name === 'backfill-custom-field') {
       await handleBackfillCustomField(job.data as BackfillCustomFieldJob)
     } else if (job.name === 'extract-obligations') {

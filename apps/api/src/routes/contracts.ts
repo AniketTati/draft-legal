@@ -35,6 +35,7 @@ import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_T
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
+import { NOT_ANALYSED } from '../lib/analysis-trigger.js'
 import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
@@ -294,8 +295,9 @@ export async function contractRoutes(app: FastifyInstance) {
             tags:          ['bulk-import'],
             // P27 audit (2026-05-02). Bulk-import has no file → no
             // parse pipeline → no worker advances analysisStatus past
-            // PENDING. Same fix as POST /contracts blank-create.
-            analysisStatus: 'DONE',
+            // PENDING. docs/41 P0.1 — and nothing was analysed, so it
+            // says so rather than DONE.
+            analysisStatus: NOT_ANALYSED,
           },
           select: { id: true, createdAt: true, tags: true },
         })
@@ -415,10 +417,11 @@ export async function contractRoutes(app: FastifyInstance) {
     // P27 audit (2026-05-02). Blank-create has no file → no parse
     // pipeline → no worker will ever advance analysisStatus past
     // PENDING. The contract page polls and sits at "Processing
-    // starting…" forever. Default to DONE so the row is immediately
-    // usable; uploads override this back to PENDING (see /upload).
+    // starting…" forever. docs/41 P0.1 — NOT_ANALYSED, not DONE: the row
+    // is usable, and says truthfully that nothing has been read (DONE made
+    // an unread contract look analysed and clean). Uploads set PENDING.
     const contract = await prisma.contract.create({
-      data: { ...body, orgId, ownerId, analysisStatus: 'DONE' } as Prisma.ContractUncheckedCreateInput,
+      data: { ...body, orgId, ownerId, analysisStatus: NOT_ANALYSED } as Prisma.ContractUncheckedCreateInput,
     })
 
     // P81 audit (2026-05-02). Index every fresh contract into ES so
@@ -1518,6 +1521,7 @@ export async function contractRoutes(app: FastifyInstance) {
         contractType:      (draftCtx?.contractType as string) ?? contract.type,
         counterpartyName:  (draftCtx?.counterpartyName as string) ?? contract.counterpartyName ?? undefined,
         estimatedValue:    (draftCtx?.estimatedValue as number) ?? (contract.value != null ? Number(contract.value) : undefined),
+        extractedTerms:    draftCtx?.extractedTerms as Record<string, unknown> | undefined,
       })
       return reply.send({ status: 'queued', contractId: id, analysisStatus: 'DRAFTING', mode: 'draft' })
     }
@@ -1998,7 +2002,8 @@ export async function contractRoutes(app: FastifyInstance) {
     // worker is about to pick this up" — but no worker is enqueued for an
     // amendment (no file uploaded, no template materialised). Result: the
     // contract page sat at "Processing starting…" forever. An empty
-    // amendment draft has nothing to analyse, so mark it DONE up-front;
+    // amendment draft has nothing to analyse, so it is NOT_ANALYSED up
+    // front (docs/41 P0.1: never DONE unread);
     // the user's upload / paste flow will re-queue parse if/when a real
     // document attaches. We also create an empty initial ContractVersion
     // so the editor + risks panels have a row to write into.
@@ -2011,7 +2016,7 @@ export async function contractRoutes(app: FastifyInstance) {
         title,
         type,
         status: 'DRAFT',
-        analysisStatus: 'DONE',
+        analysisStatus: NOT_ANALYSED,
         parentContractId: parent.id,
         relationshipType,
         counterpartyId:   parent.counterpartyId,

@@ -12,6 +12,7 @@
 import { prisma } from './prisma.js'
 import { carryClauses, copyEmbeddings, type CarryResult } from './clause-carry.js'
 import type { RefreshVersionJob } from './queue.js'
+import { scheduleCheckpointAnalysis } from './analysis-trigger.js'
 
 export async function afterEdit(opts: { contractId: string; orgId: string; versionId: string; fromVersionId?: string | null }): Promise<CarryResult | null> {
   let carried: CarryResult | null = null
@@ -20,6 +21,12 @@ export async function afterEdit(opts: { contractId: string; orgId: string; versi
   } catch (err) {
     console.warn('[version-refresh] carrying clauses to versionId=%s failed: %s', opts.versionId, (err as Error).message)
   }
+  // docs/41 P0.1 — the edited version is analysed again once the contract
+  // has been left alone for two minutes (one delayed job per contract, pushed
+  // back by every save); that analysis includes the playbook review. With
+  // checkpoints off, only the review is asked for, as before.
+  const checkpoint = await scheduleCheckpointAnalysis(opts.contractId, opts.orgId)
+    .catch(err => { console.warn('[version-refresh] checkpoint not scheduled contractId=%s: %s', opts.contractId, (err as Error).message); return false })
   // Imported here, not at the top: clause-apply is unit-tested, and the
   // queue module opens a Redis connection when loaded.
   const { queueRefreshVersion } = await import('./queue.js')
@@ -28,9 +35,18 @@ export async function afterEdit(opts: { contractId: string; orgId: string; versi
     versionId: opts.versionId,
     orgId: opts.orgId,
     fromVersionId: carried?.fromVersionId ?? null,
-    review: (carried?.changed ?? 0) > 0,
+    review: !checkpoint && clausesChanged(carried),
   })
   return carried
+}
+
+/**
+ * Whether an edit changed the clauses: their words, or (docs/41 P0.1) any of
+ * them gone. A deleted clause used to count as no change, so deleting
+ * Governing Law asked for no review at all.
+ */
+export function clausesChanged(carried: Pick<CarryResult, 'changed' | 'dropped'> | null): boolean {
+  return (carried?.changed ?? 0) + (carried?.dropped ?? 0) > 0
 }
 
 /**

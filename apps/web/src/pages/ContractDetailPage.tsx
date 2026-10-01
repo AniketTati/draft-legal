@@ -89,6 +89,7 @@ import {
 } from '@/components/contracts/GoogleDocsEdit'
 
 import { currentVersionOf } from '@/lib/current-version'
+import { analysisLine } from '@/lib/analysis-state'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -1215,6 +1216,11 @@ export function ContractDetailPage() {
   // DD4 — the version the contract stands on, which an undo moves back; not
   // the newest.
   const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null; renderedPdfKey?: string | null }>, contract?.currentVersionId)
+  // docs/41 P0.1 — Not analysed · Analysing · Analysed · vN · Failed at a step · stale.
+  const analysis = analysisLine(
+    { analysisStatus: contract?.analysisStatus ?? '', analysisError: contract?.analysisError, currentVersionId: contract?.currentVersionId ?? null, metadata: contract?.metadata },
+    { currentVersionNumber: (standing as { versionNumber?: number } | undefined)?.versionNumber ?? null, checkpointSoon: true },
+  )
   // …and the version before it: what the negotiation diff compares by default.
   const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
   const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
@@ -2384,7 +2390,7 @@ export function ContractDetailPage() {
         <div className="bg-risk-50 border-b border-risk-200 text-risk-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <AlertCircle className="size-4 flex-shrink-0" />
           <span className="font-medium whitespace-nowrap flex-shrink-0">
-            {versions.length === 0 ? 'Draft generation failed' : 'Analysis failed'}
+            {versions.length === 0 ? 'Draft generation failed' : analysis.text}
           </span>
           {/* A1 — the extraction job names its step: "Analysis failed while saving what was read (attempt 3 of 3): …" */}
           {contract.analysisError && (
@@ -2404,6 +2410,26 @@ export function ContractDetailPage() {
               {versions.length === 0 ? 'Retry Draft' : 'Re-analyze'}
             </Button>
           </div>
+        </div>
+      )}
+      {/* docs/41 P0.1 — a contract nothing has read, or whose document changed
+          after it was read, says so: it used to say DONE, and every check
+          that loops over its clauses found nothing to flag. */}
+      {contract && versions.length > 0 && (analysis.state === 'not_analysed' || analysis.state === 'stale') && (
+        <div className="bg-attention-50 border-b border-attention-200 text-ink-950 px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-dense" data-testid="analysis-state-banner" data-state={analysis.state}>
+          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="font-medium">{analysis.text}</span>
+          {analysis.detail && <span className="text-ink-700 min-w-0 flex-1">{analysis.detail}</span>}
+          {canChangeStatus && (
+            <Button
+              variant="outline" size="xs" className="ml-auto flex-shrink-0 gap-1.5"
+              onClick={() => analyze.mutate()} disabled={analyze.isPending}
+              data-testid="analysis-state-analyse"
+            >
+              {analyze.isPending && <Loader2 className="size-3.5 animate-spin" />}
+              {analysis.state === 'stale' ? 'Analyse now' : 'Analyse'}
+            </Button>
+          )}
         </div>
       )}
       {/* docs/39 A7 — pages of the scan nothing could read, or past the limit
@@ -3960,7 +3986,9 @@ export function ContractDetailPage() {
             <p className="text-body text-ink-700">{contract.summary}</p>
           ) : (
             <p className="text-body text-ink-400 italic">
-              {contract.analysisStatus === 'DONE'
+              {analysis.state === 'not_analysed'
+                ? 'Not analysed yet — no summary.'
+                : contract.analysisStatus === 'DONE'
                 ? 'No AI summary available.'
                 : contract.analysisStatus === 'FAILED'
                   ? 'Analysis failed — re-run to generate a summary.'

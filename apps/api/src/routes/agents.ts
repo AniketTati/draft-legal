@@ -10,7 +10,8 @@ import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.j
 import { createAuditEvent } from '../lib/audit.js'
 import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
-import { queueClassifyDocument } from '../lib/queue.js'
+import { saveDraftVersion } from '../lib/draft-save.js'
+import { onVersionCreated } from '../lib/analysis-trigger.js'
 import { setValuesFromTemplate } from '../lib/field-store.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
@@ -436,24 +437,15 @@ export async function agentRoutes(app: FastifyInstance) {
         const { contractId, title } = body.saveAs
 
         if (contractId) {
-          // Add a new version to existing contract
-          const existing = await prisma.contractVersion.findFirst({
-            where: { contractId },
-            orderBy: { versionNumber: 'desc' },
+          // Add a new version to the existing contract. docs/41 P0.1 — as a
+          // draft from a request is saved: recorded, made current and
+          // analysed (it used to be neither current nor analysed).
+          const saved = await saveDraftVersion({
+            contractId, orgId, userId, result,
+            changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
+            source: 'agent_draft',
           })
-          const nextVersion = (existing?.versionNumber ?? 0) + 1
-
-          const version = await prisma.contractVersion.create({
-            data: {
-              contractId,
-              versionNumber: nextVersion,
-              htmlContent: result.html,
-              plainText: htmlToText(result.html),
-              changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
-              createdById: userId,
-            },
-          })
-          result.versionId = version.id
+          result.versionId = saved.versionId
         } else if (title) {
           // Create a new contract with this draft.
           //
@@ -481,7 +473,8 @@ export async function agentRoutes(app: FastifyInstance) {
                 createdBy: userId,
                 ...(counterparty && { counterpartyId: counterparty.id, counterpartyName: counterparty.name }),
                 ...(template && { metadata: { _template: { id: template.id, name: template.name, version: template.version, variables: template.variables } } as never }),
-                analysisStatus: plainText ? 'CLASSIFYING' : 'DONE',
+                // docs/41 P0.1 — onVersionCreated below says what happens next.
+                analysisStatus: 'PENDING',
                 versions: {
                   create: {
                     versionNumber: 1,
@@ -529,9 +522,9 @@ export async function agentRoutes(app: FastifyInstance) {
               audit: { source: 'template' },
               templateVariables: (template?.variables ?? null) as Array<{ key: string; field?: string | null }> | null,
             }).catch(err => app.log.warn({ err }, 'draft template values not saved as fields'))
-            if (plainText && contract.versions[0]) {
-              queueClassifyDocument({ contractId: contract.id, versionId: contract.versions[0].id, orgId })
-            }
+            // docs/41 P0.1 — the draft is the contract's current version, and is
+            // analysed (or marked not analysed, with nothing to read).
+            if (contract.versions[0]) await onVersionCreated(contract.id, contract.versions[0].id, 'generated')
           }
         }
       } catch (err) {

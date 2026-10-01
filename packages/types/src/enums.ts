@@ -137,6 +137,9 @@ export enum AuditAction {
   CONTRACT_VIEWED = 'CONTRACT_VIEWED',
   CONTRACT_UPLOADED = 'CONTRACT_UPLOADED',
   CONTRACT_STATUS_CHANGED = 'CONTRACT_STATUS_CHANGED',
+  // docs/41 P0.1 — a draft written by the draft agent (from a request, or
+  // added as a version): which template, and what it couldn't fill.
+  CONTRACT_DRAFTED = 'CONTRACT_DRAFTED',
   // Versions
   VERSION_CREATED = 'VERSION_CREATED',
   VERSION_RESTORED = 'VERSION_RESTORED',

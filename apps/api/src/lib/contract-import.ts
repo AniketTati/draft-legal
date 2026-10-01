@@ -22,6 +22,7 @@ import {
   type CatalogField, type DateOrder, type FieldValueType, type ImportTarget,
 } from '@clm/types'
 import { prisma } from './prisma.js'
+import { NOT_ANALYSED } from './analysis-trigger.js'
 import { fieldCatalog, catalogField } from './field-query.js'
 import { setFieldValues, type PersonValue } from './field-store.js'
 import { orgDateOrder } from './org-date-order.js'
@@ -187,8 +188,9 @@ export async function importRows(input: {
       const contract = await prisma.contract.create({
         data: {
           orgId, ownerId, createdBy: input.userId, title: title.slice(0, 500), type, status,
-          // A record until its document arrives (import-document reads it then).
-          analysisStatus: 'DONE',
+          // A record until its document arrives (import-document reads it
+          // then). docs/41 P0.1 — not analysed, and says so.
+          analysisStatus: NOT_ANALYSED,
           tags: ['imported'],
           metadata: {
             _import: { batch: input.batch, row: r.row, ...(r.file && { file: r.file }) },

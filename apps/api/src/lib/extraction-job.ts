@@ -202,12 +202,14 @@ async function save(deps: ExtractionDeps, data: ExtractAiJob, run: ReviewRun): P
   if (run.version.clauseSegments?.length || run.version.clauseFlags) {
     const r = await deps.api('POST', `/api/v1/contracts/${contractId}/versions/${versionId}/clauses`, orgId, run.version)
     if (r.status >= 300) throw new ExtractionStepError('saving', `the clauses were refused (${r.status}): ${r.text.slice(0, 200)}`)
-    if (run.version.clauseSegments?.length) {
-      // Search indexing is its own job with its own retries: a refusal here doesn't fail the extraction.
-      const c = await deps.api('POST', `/api/v1/contracts/${contractId}/versions/${versionId}/chunk`, orgId).catch(err => ({ status: 0, text: String(err) }))
-      if (c.status >= 300 || c.status === 0) console.warn('[extraction] chunk request failed contractId=%s status=%d', contractId, c.status)
-    }
   }
+  // Search indexing is its own job with its own retries: a refusal here
+  // doesn't fail the extraction. docs/41 P0.1 — asked for even when no
+  // clauses came back: that step finishes the analysis, and says "no clauses
+  // found" for a document that should have had some (it used to stay DONE
+  // from the save above, an empty success).
+  const c = await deps.api('POST', `/api/v1/contracts/${contractId}/versions/${versionId}/chunk`, orgId).catch(err => ({ status: 0, text: String(err) }))
+  if (c.status >= 300 || c.status === 0) console.warn('[extraction] chunk request failed contractId=%s status=%d', contractId, c.status)
 }
 
 /** One attempt of a contract's extraction job. Throws for BullMQ to retry. */
