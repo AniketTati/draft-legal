@@ -85,7 +85,7 @@ export async function onVersionCreated(
   if (reason === 'checkpoint' && contract.currentVersionId !== versionId) return 'skipped'
   // docs/41 P1 — the run every step of this analysis records itself on.
   if (version.plainText.trim() || version.s3Key) {
-    await startRun({ orgId: contract.orgId, contractId, versionId, reason: reason as RunReason })
+    await startRun({ orgId: contract.orgId, contractId, versionId, reason: reason as RunReason, mode: 'full' })
   }
 
   // Imported here: the queue module opens a Redis connection when loaded,
@@ -189,7 +189,83 @@ export async function runCheckpointAnalysis(data: { contractId: string; orgId: s
       return 'unchanged text'
     }
   }
+  // docs/41 P1 (Part 5) — an edit of an analysed contract: only what changed
+  // is read again. A rewrite too large for that is analysed in full.
+  if (stamp && c.analysisStatus === 'DONE') {
+    const done = await incrementalAnalysis(data.contractId, data.orgId, c.currentVersionId, stamp.versionId)
+    if (done) return done
+  }
   return onVersionCreated(data.contractId, c.currentVersionId, 'checkpoint')
+}
+
+/** Below this share of the analysed version's words kept, an edit is analysed in full. */
+export const INCREMENTAL_MIN_KEPT = 0.6
+/** Added text shorter than this isn't a clause of its own (a heading, a date, a word). */
+const NEW_CLAUSE_MIN_WORDS = 12
+
+/**
+ * docs/41 P1 (Part 5) — the edited version, analysed from the one analysed
+ * before it, without reading the whole document again:
+ *   - its clauses are the analysed version's, followed into the new words
+ *     (clause-carry.ts: unchanged ones keep their type and the model's
+ *     verdict; changed ones keep their type and lose the verdict);
+ *   - text added outside every clause, long enough to be one, becomes a new
+ *     clause of no type yet — the position check names its type;
+ *   - the findings are worked out against the baseline, and only the
+ *     clauses that changed go to the model's position check.
+ * The contract's summary, risk score and key terms are not read again (they
+ * are read again on the next full analysis). Returns null when the edit is
+ * too large, or the clauses can't be followed: then it is analysed in full.
+ */
+export async function incrementalAnalysis(contractId: string, orgId: string, versionId: string, analysedVersionId: string): Promise<'incremental' | null> {
+  const [now, analysed] = await Promise.all([
+    prisma.contractVersion.findFirst({ where: { id: versionId, contractId }, select: { plainText: true } }),
+    prisma.contractVersion.findFirst({ where: { id: analysedVersionId, contractId }, select: { plainText: true } }),
+  ])
+  if (!now?.plainText.trim() || !analysed?.plainText.trim()) return null
+  const { tokensOf, mapText, carryClauses } = await import('./clause-carry.js')
+  const before = tokensOf(analysed.plainText)
+  const map = mapText(before, tokensOf(now.plainText))
+  let kept = 0
+  for (let i = 0; i < before.length; i++) if (map.equal[i] >= 0) kept++
+  if (before.length === 0 || kept < before.length * INCREMENTAL_MIN_KEPT) return null
+
+  const { startRun, asStep } = await import('./analysis-runs.js')
+  await startRun({ orgId, contractId, versionId, reason: 'checkpoint', mode: 'incremental' })
+  await prisma.contract.update({ where: { id: contractId }, data: { analysisStatus: 'ANALYZING', analysisError: null } })
+  try {
+    const carried = await asStep(contractId, versionId, 'carry', async () => {
+      const r = await carryClauses({ contractId, toVersionId: versionId, fromVersionId: analysedVersionId })
+      const rows = await prisma.contractClause.findMany({ where: { versionId, isSubChunk: false }, orderBy: { sortOrder: 'asc' }, select: { content: true, sortOrder: true } })
+      if (rows.length === 0) throw new Error('the clauses could not be followed into the edit')
+      // New text outside every clause: a clause of its own, typed by the position check.
+      const spans = rows.map(c => { const at = now.plainText.indexOf(c.content); return at < 0 ? null : { start: at, end: at + c.content.length, sortOrder: c.sortOrder } }).filter((x): x is NonNullable<typeof x> => !!x)
+      const { insertedRuns } = await import('./review-findings.js')
+      let added = 0
+      for (const run of insertedRuns(analysed.plainText, now.plainText)) {
+        if (run.text.split(/\s+/).filter(Boolean).length < NEW_CLAUSE_MIN_WORDS) continue
+        if (spans.some(s => s.start <= run.start && run.end <= s.end)) continue
+        const before = spans.filter(s => s.end <= run.start).pop()
+        await prisma.contractClause.create({ data: {
+          versionId, clauseType: 'unclassified', content: run.text, sortOrder: before?.sortOrder ?? 0,
+          source: 'ai', docStart: run.start, docEnd: run.end, provenance: 'internal_edit',
+        } })
+        added++
+      }
+      return { ...r, clauses: rows.length + added, added }
+    }, { final: false, counts: r => ({ carried: r.carried, changed: r.changed, dropped: r.dropped, added: r.added }) })
+    // The analysis now describes this version. (A failure here falls back to
+    // a full analysis on the same run, so it isn't the run's failure.)
+    await asStep(contractId, versionId, 'index', () => finishAnalysis(contractId, versionId, carried.clauses), { final: false, counts: () => ({ clauses: carried.clauses }) })
+  } catch (err) {
+    console.warn('[analysis] incremental analysis of versionId=%s fell back to a full one: %s', versionId, (err as Error).message)
+    return null
+  }
+  const { afterAnalysis } = await import('./presence-rules.js')
+  await afterAnalysis(contractId, versionId)
+  const { queuePlaybookReview } = await import('./queue.js')
+  queuePlaybookReview({ contractId, orgId, versionId })
+  return 'incremental'
 }
 
 /**
