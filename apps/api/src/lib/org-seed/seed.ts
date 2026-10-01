@@ -57,7 +57,11 @@ async function seedCategories(orgId: string): Promise<Map<string, string>> {
     await prisma.$transaction(
       toCreate.map(c =>
         prisma.clauseCategory.create({
-          data: { orgId, name: c.name, description: c.description, sortOrder: c.sortOrder },
+          data: {
+            orgId, name: c.name, description: c.description, sortOrder: c.sortOrder,
+            // docs/41 P0.3 — the small set of clauses a contract must have.
+            ...(c.required && { presence: 'required', presenceContractTypes: c.required }),
+          },
         }),
       ),
     )

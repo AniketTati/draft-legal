@@ -13,6 +13,23 @@ import { api } from '@/lib/api'
 import { RailSection } from '@/components/contracts/RailSection'
 import { ShieldAlert, BookOpen } from 'lucide-react'
 
+/** docs/41 P0.3 — a deterministic finding: a required clause not detected, or one deleted or cut since the last analysed version. */
+export interface PresenceFinding {
+  kind:     'not_detected' | 'deleted' | 'cut' | 'not_allowed_present'
+  clauseType: string
+  label:    string
+  severity: 'medium' | 'high'
+  required: boolean
+  message:  string
+  evidence: { text?: string; before?: string; after?: string; sectionRef?: string | null }
+}
+
+export interface ContractChecks {
+  ready:    boolean
+  reasons:  Array<{ code: string; text: string }>
+  findings: PresenceFinding[]
+}
+
 export interface PlaybookFinding {
   clauseId:            string
   clauseType:          string
@@ -78,9 +95,46 @@ export function PlaybookReviewRailSection({
   const review = query.data?.review ?? null
   const missing = query.data?.missing ?? null
   const findings = review?.findings ?? []
+  // docs/41 P0.3 — what is missing or was taken out: worked out without a
+  // model, so it is shown whether or not a playbook review ran.
+  const checks = useQuery({
+    queryKey: ['contract-checks', contractId],
+    enabled:  !!contractId,
+    queryFn:  () => api.get<ContractChecks>(`/contracts/${contractId}/checks`).then(r => r.data),
+    staleTime: 15_000,
+  })
+  const presence = checks.data?.findings ?? []
 
   return (
-    <RailSection title="Playbook review" defaultOpen count={findings.length > 0 ? findings.length : null}>
+    <RailSection title="Playbook review" defaultOpen count={findings.length + presence.length > 0 ? findings.length + presence.length : null}>
+      {presence.length > 0 && (
+        <ol className="space-y-1.5 mb-2" data-testid="presence-findings">
+          {presence.map(f => (
+            <li key={`${f.kind}-${f.clauseType}`} className="text-[10.5px] border border-border rounded-md bg-card/60 px-2 py-1.5" data-kind={f.kind}>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className={`text-[9px] uppercase tracking-wider border rounded-chip px-1 ${SEVERITY_CLS[f.severity] ?? SEVERITY_CLS.low}`}>
+                  {f.kind === 'not_detected' ? 'not detected' : f.kind === 'not_allowed_present' ? 'not allowed' : f.kind}
+                </span>
+                {f.required && <span className="text-[9px] uppercase tracking-wider text-ink-500">required</span>}
+              </div>
+              <div className="font-medium text-ink-950 mt-0.5">{f.message}</div>
+              {f.kind === 'deleted' && f.evidence.text && (
+                <details className="mt-0.5">
+                  <summary className="cursor-pointer text-ink-500">Deleted text</summary>
+                  <blockquote className="mt-1 border-l-2 border-risk-200 pl-2 text-ink-700 whitespace-pre-wrap line-through decoration-risk-600/40">{f.evidence.text}</blockquote>
+                </details>
+              )}
+              {f.kind === 'cut' && f.evidence.before && (
+                <details className="mt-0.5">
+                  <summary className="cursor-pointer text-ink-500">Before and after</summary>
+                  <blockquote className="mt-1 border-l-2 border-paper-300 pl-2 text-ink-700 whitespace-pre-wrap">{f.evidence.before}</blockquote>
+                  <blockquote className="mt-1 border-l-2 border-attention-200 pl-2 text-ink-950 whitespace-pre-wrap">{f.evidence.after}</blockquote>
+                </details>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
       {query.isLoading ? (
         <p className="text-[11px] text-muted-foreground">Loading…</p>
       ) : !review ? (
@@ -110,7 +164,12 @@ export function PlaybookReviewRailSection({
             <p className="text-[11px] text-muted-foreground leading-relaxed mb-2" data-testid="playbook-review-summary">{review.summary}</p>
           )}
           {findings.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">Every reviewed clause matches a preferred position.</p>
+            // docs/41 P0.7 — no clauses means nothing was checked, not that all is well.
+            <p className="text-[11px] text-muted-foreground" data-testid="playbook-review-clear">
+              {review.clausesReviewed > 0
+                ? 'Every reviewed clause matches a preferred position.'
+                : 'Nothing to check — this contract has no analysed clauses.'}
+            </p>
           ) : (
             <ol className="space-y-1.5" data-testid="playbook-review-findings">
               {findings.map(f => (

@@ -17,6 +17,9 @@ const CreateCategorySchema = z.object({
   description: z.string().max(512).optional(),
   parentCategoryId: z.string().nullable().optional(),
   sortOrder: z.number().int().default(0),
+  // docs/41 P0.3 — presence rule: whether contracts of these types must have it.
+  presence: z.enum(['required', 'not_allowed', 'optional']).optional(),
+  presenceContractTypes: z.array(z.string().min(1).max(64)).max(32).optional(),
 })
 
 const UpdateCategorySchema = CreateCategorySchema.partial()

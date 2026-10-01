@@ -1056,6 +1056,13 @@ export function ContractDetailPage() {
     lastFieldsStamp.current = fieldsStamp
   }, [fieldsStamp, id, qc])
 
+  // docs/41 P0.3 — the deterministic checks describe the version the contract
+  // stands on: read again when it moves or its analysis finishes.
+  const checksStamp = contract ? `${contract.analysisStatus}|${contract.currentVersionId}` : null
+  useEffect(() => {
+    if (checksStamp) qc.invalidateQueries({ queryKey: ['contract-checks', id] })
+  }, [checksStamp, id, qc])
+
   // Binder split
   const [showSplitModal, setShowSplitModal] = useState(false)
   const [splitSpecs, setSplitSpecs] = useState<Array<{ pageStart: number; pageEnd: number; title: string; type: string }>>([])

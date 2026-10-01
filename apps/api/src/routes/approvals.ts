@@ -25,6 +25,22 @@ import { queueNotification, notificationQueue } from '../lib/queue.js'
 import { AuditAction, TriggerRulesSchema } from '@clm/types'
 import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { clauseVersionId } from '../lib/clause-version.js'
+import { recommendationGuard, recommendationGuards, guardedLabel, type GuardResult } from '../lib/recommendation-guard.js'
+
+/**
+ * docs/41 P0.2 — the recommendation as shown: the stored label, held back to
+ * "cant_recommend" with its reasons while the approval is open and a check
+ * fails (the contract may have changed since the summary was written). A
+ * decided approval keeps what it was decided on.
+ */
+function shownRecommendation(instance: { status: string; approvalRecommendation: string | null }, guard: GuardResult | undefined) {
+  const open = instance.status === 'PENDING' || instance.status === 'ESCALATED'
+  if (!open || !guard) return { approvalRecommendation: instance.approvalRecommendation, recommendationReasons: [] as string[] }
+  return {
+    approvalRecommendation: guardedLabel(instance.approvalRecommendation, guard),
+    recommendationReasons: guard.reasons.map(r => r.text),
+  }
+}
 
 // Wave 3.8 — validate workflow step definitions at save time. Each step must
 // name at least one approver, and a parallel step's requiredApprovals must be
@@ -129,6 +145,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const instanceMap = new Map(instances.map(i => [i.id, i]))
     const contractMap = new Map(contracts.map(c => [c.id, c]))
     const submitterMap = new Map(submitters.map(u => [u.id, u]))
+    const guards = await recommendationGuards(contracts.map(c => ({ id: c.id, orgId })))
 
     // P7.2.1 — Build the response from the GATED step list, not the
     // raw query result.
@@ -153,7 +170,7 @@ export async function approvalRoutes(app: FastifyInstance) {
           aiSummary:             instance.aiSummary,
           keyRisks:              instance.keyRisks,
           nonStandardTerms:      instance.nonStandardTerms,
-          approvalRecommendation: instance.approvalRecommendation,
+          ...shownRecommendation(instance, guards.get(instance.contractId)),
         } : null,
       }
     })
@@ -212,6 +229,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const contractMap  = new Map(contracts.map(c => [c.id, c]))
     const submitterMap = new Map(submitters.map(u => [u.id, u]))
     const approverMap  = new Map(approvers.map(u => [u.id, u]))
+    const guards = await recommendationGuards(contracts.map(c => ({ id: c.id, orgId })))
 
     const data = instances.map(instance => {
       // Step orders are whatever the workflow definition uses — the builder
@@ -243,7 +261,7 @@ export async function approvalRoutes(app: FastifyInstance) {
         currentApproverEmail: currentApprover?.email ?? null,
         waitingDays,
         totalSteps:        instance.steps.length,
-        approvalRecommendation: instance.approvalRecommendation,
+        ...shownRecommendation(instance, guards.get(instance.contractId)),
       }
     })
 
@@ -293,8 +311,10 @@ export async function approvalRoutes(app: FastifyInstance) {
       select: { id: true, name: true, steps: true },
     })
 
+    const guard = await recommendationGuard(instance.contractId, orgId)
     return reply.send({
       ...instance,
+      ...shownRecommendation(instance, guard),
       steps:      enrichedSteps,
       contract,
       submitter,
@@ -445,7 +465,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     // round-trip tokens (GET /contracts/:id/clauses); put the values back.
     const instance = await prisma.approvalInstance.findFirst({
       where: { id: instanceId, ...(orgId ? { orgId } : {}) },
-      select: { contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
+      select: { orgId: true, contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
     })
     if (!instance) return reply.status(404).send({ error: 'Approval not found' })
     let summary = req.body as Record<string, unknown>
@@ -476,13 +496,21 @@ export async function approvalRoutes(app: FastifyInstance) {
       approvalRecommendation?: string
     }
 
+    // docs/41 P0.2 — the model writes the explanation; the label it chose is
+    // stored only when the deterministic checks pass.
+    const guard = approvalRecommendation !== undefined
+      ? await recommendationGuard(instance.contract.id, instance.orgId)
+      : null
+    if (guard && !guard.passes) {
+      req.log.info({ instanceId, reasons: guard.reasons.map(r => r.code), modelLabel: approvalRecommendation }, 'approval recommendation held back by the guard')
+    }
     const updated = await prisma.approvalInstance.update({
       where: { id: instanceId },
       data:  {
         ...(aiSummary              !== undefined && { aiSummary }),
         ...(keyRisks               !== undefined && { keyRisks: keyRisks as never }),
         ...(nonStandardTerms       !== undefined && { nonStandardTerms }),
-        ...(approvalRecommendation !== undefined && { approvalRecommendation }),
+        ...(approvalRecommendation !== undefined && { approvalRecommendation: guard ? guardedLabel(approvalRecommendation, guard) : approvalRecommendation }),
       },
     })
 

@@ -617,6 +617,13 @@ model ClauseCategory {
   description      String?
   parentCategoryId String? // Self-referential for category tree
   sortOrder        Int      @default(0)
+  // docs/41 P0.3 — whether a contract must have a clause of this category:
+  // required | not_allowed | optional. On the category, not on a position:
+  // a category holds several positions (preferred, fallback…) that must not
+  // disagree about it, and a clause can be required with no position written
+  // for it yet. Applies to the contract types listed ([] = every type).
+  presence              String   @default("optional")
+  presenceContractTypes String[] @default([])
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 

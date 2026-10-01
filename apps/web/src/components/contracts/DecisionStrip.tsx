@@ -27,6 +27,7 @@ import { AssistChip, AssistMark } from '@/components/ui/assist'
 import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
+import { recommendationText } from '@/lib/recommendation'
 import {
   CheckCircle2, XCircle, ArrowRight, Loader2,
   ShieldAlert, TrendingUp, ChevronDown,
@@ -52,6 +53,8 @@ interface AwaitingMe {
     aiSummary?:              string
     keyRisks?:               KeyRisk[]
     approvalRecommendation?: string
+    /** docs/41 P0.2 — why the recommendation is held back, when it is. */
+    recommendationReasons?:  string[]
   }
 }
 
@@ -66,12 +69,6 @@ interface AwaitingMe {
  * unsure. The assist vocabulary is the whole answer: the diamond says who wrote
  * it, the words say what it advises. (Same call ApprovalCard's REC_LABEL makes.)
  */
-const REC_LABEL: Record<string, string> = {
-  approve:         'Approve',
-  review_required: 'Review required',
-  reject_advised:  'Reject advised',
-}
-
 export function DecisionStrip({
   awaitingMe,
   riskScore,
@@ -109,7 +106,8 @@ export function DecisionStrip({
   })
 
   const recKey = (awaitingMe.instance.approvalRecommendation ?? 'review_required').toLowerCase()
-  const recLabel = REC_LABEL[recKey] ?? REC_LABEL.review_required
+  // docs/41 P0.2 — "Ready to approve" only when the API's checks passed.
+  const recLabel = recommendationText(recKey, awaitingMe.instance.recommendationReasons) ?? 'Review required'
   const topRisk = awaitingMe.instance.keyRisks?.[0]
   const confidence = Math.max(0, Math.min(100, Math.round(
     // Confidence is derived: strong recommendation + few blockers → high.
@@ -117,6 +115,7 @@ export function DecisionStrip({
     // produces a proper confidence number we replace this.
     (recKey === 'approve' ? 90
       : recKey === 'reject_advised' ? 75
+      : recKey === 'cant_recommend' ? 30
       : 60) - (awaitingMe.instance.keyRisks?.length ?? 0) * 5
   )))
   // "The mark scales with how sure it is" — a hollow diamond on a shaky
@@ -172,9 +171,12 @@ export function DecisionStrip({
           <span>Risk {riskPct != null ? `${riskPct}%` : '—'}</span>
         </div>
 
-        {/* AI Recommendation — advice, not a verdict. See REC_LABEL. */}
+        {/* AI Recommendation — advice, not a verdict. It carries no meaning
+            colour: a model advising is not a decision, and emerald or red here
+            would read as one. "Ready to approve" appears only when every check
+            on the analysis passed (lib/recommendation.ts). */}
         <AssistChip icon={<AssistMark confidence={confidenceBand} className="size-[5px]" />}>
-          AI: {recLabel}
+          <span title={awaitingMe.instance.recommendationReasons?.join('; ') || undefined} data-testid="decision-recommendation">AI: {recLabel}</span>
         </AssistChip>
 
         {/* Top blocker — clickable "jump" link */}

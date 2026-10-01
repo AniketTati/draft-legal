@@ -69,7 +69,7 @@ Return ONLY the summary text, nothing else."""
 _FLAG_RISKS_PROMPT = """You are a contract risk analyst. Identify non-standard or unfavorable terms that a business approver should be aware of.
 
 Contract type: {contract_type}
-AI risk score: {risk_score} (0 = no risk, 1 = high risk)
+AI risk score: {risk_score} (0 = no risk, 1 = high risk; "unknown" means the contract was not scored — never read it as low risk)
 AI-identified risk factors: {risk_factors_json}
 
 Extracted clauses with risk ratings:
@@ -97,12 +97,13 @@ _RECOMMEND_PROMPT = """You are a contract approval advisor. Based on the risk an
 
 Contract type: {contract_type}
 Value: {value}
-AI risk score: {risk_score} (0 = no risk, 1 = high risk)
+AI risk score: {risk_score} (0 = no risk, 1 = high risk; "unknown" means the contract was not scored — never read it as low risk)
 Key risks identified: {key_risks_json}
 Executive summary: {executive_summary}
 
 Rules for recommendation:
-- "approve": risk_score < 0.35 AND no high/critical severity risks AND standard contract type
+- "approve": risk_score is a number < 0.35 AND no high/critical severity risks AND standard contract type
+- an "unknown" risk score is never "approve"
 - "review_required": risk_score 0.35–0.67 OR any medium severity risks OR unusual terms present
 - "reject_advised": risk_score > 0.67 OR any critical severity risks OR missing standard protections
 
@@ -134,6 +135,18 @@ def _safe_json(text: str) -> Any:
             except json.JSONDecodeError:
                 pass
     return None
+
+
+def _risk_text(score: float | None) -> str:
+    """docs/41 P0.2 — a score nobody computed is unknown, never 0 (it was
+    read as 0, so a never-analysed contract looked risk-free)."""
+    return "unknown" if score is None else f"{score:.2f}"
+
+
+def unscored(state: dict) -> bool:
+    """Nothing to judge from: no risk score, or no clauses read. The API's
+    guard holds the label back in this case too; the model is not asked."""
+    return state.get('risk_score') is None or not state.get('clauses')
 
 
 # ─── Graph nodes ──────────────────────────────────────────────────────────────
@@ -182,7 +195,7 @@ async def step_flag_risks(state: ApprovalState) -> dict:
 
         prompt = _FLAG_RISKS_PROMPT.format(
             contract_type=state['contract_type'],
-            risk_score=state['risk_score'] or 0,
+            risk_score=_risk_text(state['risk_score']),
             risk_factors_json=json.dumps(state['risk_factors'][:10]),
             clauses_json=json.dumps(all_clauses[:10], indent=2)[:4000],
         )
@@ -205,6 +218,9 @@ async def step_flag_risks(state: ApprovalState) -> dict:
 
 async def step_recommend(state: ApprovalState) -> dict:
     """Step 3: produce approval recommendation (smart model)."""
+    if unscored(state):
+        # docs/41 P0.2 — no score or no clauses: nothing supports "approve".
+        return {'approval_recommendation': 'review_required'}
     try:
         resolved = await resolve_llm(
             'reasoning',
@@ -215,7 +231,7 @@ async def step_recommend(state: ApprovalState) -> dict:
         prompt = _RECOMMEND_PROMPT.format(
             contract_type=state['contract_type'],
             value=value_str,
-            risk_score=state['risk_score'] or 0,
+            risk_score=_risk_text(state['risk_score']),
             key_risks_json=json.dumps(state['key_risks'][:5], indent=2),
             executive_summary=state['executive_summary'],
         )

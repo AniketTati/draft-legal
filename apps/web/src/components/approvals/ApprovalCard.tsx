@@ -11,6 +11,7 @@ import { UserPicker } from '@/components/common/UserPicker'
 import { useNavigate } from 'react-router-dom'
 import { Chip, Eyebrow } from '@/components/ui/primitives'
 import { AssistMark, AssistChip } from '@/components/ui/assist'
+import { recommendationText } from '@/lib/recommendation'
 import {
   CheckCircle2, XCircle, ArrowRight, ChevronDown, ChevronUp,
   AlertTriangle, Building2, DollarSign, Calendar, Loader2, ExternalLink,
@@ -34,6 +35,8 @@ interface InstanceContext {
   keyRisks?: Array<{ title: string; description: string; severity: string }>
   nonStandardTerms?: string[]
   approvalRecommendation?: string
+  /** docs/41 P0.2 — why the recommendation is held back, when it is. */
+  recommendationReasons?: string[]
 }
 
 interface Props {
@@ -84,17 +87,6 @@ const SEVERITY_COLOR: Record<string, string> = {
   critical: 'bg-risk-100 border-risk-200 text-risk-900',
 }
 
-/**
- * The recommendation carries no meaning colour on purpose. A model advising
- * "Approve" is not an approval, and emerald here would read as one; the assist
- * mark says who wrote it and the words say what it advises.
- */
-const REC_LABEL: Record<string, string> = {
-  approve:         'AI recommends: Approve',
-  review_required: 'AI recommends: Review Required',
-  reject_advised:  'AI recommends: Reject',
-}
-
 export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contract, instance, onDecided }: Props) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -126,7 +118,10 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
   }
 
   const hasRisks = (instance.keyRisks?.length ?? 0) > 0 || (instance.nonStandardTerms?.length ?? 0) > 0
-  const rec = instance.approvalRecommendation ? REC_LABEL[instance.approvalRecommendation] : null
+  // docs/41 P0.2 — "Ready to approve" only when the API's checks passed; else
+  // "Can't recommend — <reason>". No meaning colour: advice, not a decision.
+  const recText = recommendationText(instance.approvalRecommendation, instance.recommendationReasons)
+  const rec = recText ? `AI: ${recText}` : null
 
   const waited = waitingDaysSince(instance.submittedAt)
   const summaryStillLanding =

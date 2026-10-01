@@ -35,7 +35,8 @@ import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_T
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
-import { NOT_ANALYSED } from '../lib/analysis-trigger.js'
+import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
+import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
@@ -2645,6 +2646,29 @@ export async function contractRoutes(app: FastifyInstance) {
       })
       .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
     return reply.send({ ...review, findings: ordered })
+  })
+
+  // ── GET /:id/checks (docs/41 P0.2/P0.3) ────────────────────────────────────
+  // The deterministic checks on the version the contract stands on: what its
+  // analysis describes, the presence findings (required clauses not detected,
+  // clauses deleted or cut since the version analysed before), and whether
+  // the approval recommendation may say "Ready to approve" — with the reasons
+  // it may not. No model is called.
+  app.get('/:id/checks', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id } = req.params as { id: string }
+    const contract = await prisma.contract.findFirst({
+      where: { id, orgId, deletedAt: null },
+      select: { id: true, analysisStatus: true, analysisError: true, currentVersionId: true, metadata: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const guard = await recommendationGuard(id, orgId)
+    return reply.send({
+      analysis: analysisState(contract),
+      ready: guard.passes,
+      reasons: guard.reasons,
+      findings: guard.findings,
+    })
   })
 
   app.post('/:id/redline', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
