@@ -160,6 +160,16 @@ export async function cleanupOrg(orgId: string): Promise<void> {
   // Agent threads hold a userId FK, so they have to go before the users do.
   // Tool calls and messages cascade from the thread.
   await del(() => prisma.agentThread.deleteMany({ where: { orgId } }))
+  // docs/41 Part 1 — templates, their snapshots and the clause library (families, versions).
+  await del(() => prisma.templateSection.deleteMany({ where: { template: { orgId } } }))
+  await del(() => prisma.templateVersion.deleteMany({ where: { orgId } }))
+  await del(() => prisma.template.deleteMany({ where: { orgId } }))
+  await del(() => prisma.playbookPosition.deleteMany({ where: { orgId } }))
+  await del(() => prisma.clauseLibraryVersion.deleteMany({ where: { orgId } }))
+  await del(() => prisma.clauseLibraryItem.deleteMany({ where: { orgId } }))
+  await del(() => prisma.clauseFamily.deleteMany({ where: { orgId } }))
+  await del(() => prisma.clauseCategory.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contractRequest.deleteMany({ where: { orgId } }))
   await del(() => prisma.userRole.deleteMany({ where: { user: { orgId } } }))
   await del(() => prisma.role.deleteMany({ where: { orgId } }))
   await del(() => prisma.user.deleteMany({ where: { orgId } }))

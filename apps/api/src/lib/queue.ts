@@ -492,6 +492,9 @@ interface DraftContractJob {
   estimatedValue?: number
   /** docs/41 P0.4 — the intake classifier's terms (governing law…), passed to drafting. */
   extractedTerms?: Record<string, unknown>
+  /** docs/41 Part 1 — the template and clause choices the requester picked. */
+  templateId?: string
+  slotChoices?: Record<string, string>
 }
 export function queueDraftContract(payload: DraftContractJob): void {
   agentQueue.add('draft-contract', payload, {

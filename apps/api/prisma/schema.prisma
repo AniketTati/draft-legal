@@ -38,6 +38,9 @@ model Organization {
   clauseCategories    ClauseCategory[]
   clauseItems         ClauseLibraryItem[]
   playbookPositions   PlaybookPosition[]
+  clauseFamilies      ClauseFamily[]
+  clauseLibraryVersions ClauseLibraryVersion[]
+  templateVersions    TemplateVersion[]
   contractComments    ContractComment[]
   shareLinks          ContractShareLink[]
   workflowDefinitions WorkflowDefinition[]
@@ -582,6 +585,14 @@ model Template {
   isPublished  Boolean   @default(false)
   version      Int       @default(1)
   usageCount   Int       @default(0)
+  // docs/41 Part 1 — the template drafting uses for its contract type when
+  // nobody picked one. At most one per org and type (a partial unique index
+  // in the migration: only live defaults count).
+  isDefaultForType      Boolean @default(false)
+  // The snapshot drafts are made from (TemplateVersion). Edits after it are a
+  // draft revision that drafting doesn't see until it is published again.
+  publishedVersionId    String?
+  hasUnpublishedChanges Boolean @default(false)
   createdById  String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -589,10 +600,37 @@ model Template {
 
   org      Organization      @relation(fields: [orgId], references: [id])
   sections TemplateSection[]
+  publishedVersions TemplateVersion[]
 
   @@index([orgId, contractType])
   @@index([orgId, isPublished])
   @@map("templates")
+}
+
+/// docs/41 Part 1 — a template as it was published: every section's text and,
+/// for each clause slot, the approved variants of its family at the version
+/// they had then (pinned). Drafts are made from this, so a later edit to the
+/// template or the library doesn't change what a draft says until the
+/// template is published again.
+model TemplateVersion {
+  id            String   @id @default(cuid())
+  orgId         String
+  templateId    String
+  /// Template.version at publish.
+  version       Int
+  /// lib/template-snapshot.ts TemplateSnapshot.
+  snapshot      Json
+  /// Template lint at publish (lib/template-lint.ts), kept with what it judged.
+  lint          Json     @default("[]")
+  publishedById String
+  publishedAt   DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  template Template     @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, version])
+  @@index([orgId, templateId])
+  @@map("template_versions")
 }
 
 model TemplateSection {
@@ -603,10 +641,14 @@ model TemplateSection {
   content          String   @default("") // HTML content (may contain {{variable}} tokens)
   conditionalLogic Json? // { field, operator, value } — if set, section only included when true
   clauseRefs       Json     @default("[]") // [clauseLibraryItemId] — clause library items embedded
+  // docs/41 Part 1 — a clause slot: the section's text is the variant of this
+  // clause family drafting picks (lib/clause-resolution.ts), not `content`.
+  slotFamilyId     String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  template   Template      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  slotFamily ClauseFamily? @relation(fields: [slotFamilyId], references: [id])
 
   @@index([templateId])
   @@map("template_sections")
@@ -634,6 +676,7 @@ model ClauseCategory {
   children          ClauseCategory[]    @relation("CategoryTree")
   clauseItems       ClauseLibraryItem[]
   playbookPositions PlaybookPosition[]
+  families          ClauseFamily[]
 
   @@index([orgId])
   @@index([orgId, parentCategoryId])
@@ -655,18 +698,87 @@ model ClauseLibraryItem {
   sourceContractId String?
   sourceVersionId  String?
   sourceSection    String?
+  // docs/41 Part 1 — a variant of a clause family (Governing law: New York).
+  // `condition` (packages/types clause-families.ts) picks it for a draft;
+  // `matchValues` are the values a request may name it by ("New York",
+  // "NY"), matched exactly, never by similarity. One live default per family
+  // (a partial unique index in the migration). Each edit of its words is a
+  // new, immutable ClauseLibraryVersion and bumps `version`.
+  familyId         String?
+  variantLabel     String?
+  condition        Json?
+  matchValues      String[]  @default([])
+  isFamilyDefault  Boolean   @default(false)
+  variantOrder     Int       @default(0)
+  version          Int       @default(1)
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
-  org      Organization   @relation(fields: [orgId], references: [id])
-  category ClauseCategory @relation(fields: [categoryId], references: [id])
+  org          Organization           @relation(fields: [orgId], references: [id])
+  category     ClauseCategory         @relation(fields: [categoryId], references: [id])
+  family       ClauseFamily?          @relation(fields: [familyId], references: [id])
+  textVersions ClauseLibraryVersion[]
+  positions    PlaybookPosition[]
 
   @@index([orgId, categoryId])
   @@index([orgId, isApproved])
   @@index([sourceContractId])
+  @@index([familyId])
   @@map("clause_library_items")
+}
+
+/// docs/41 Part 1 / §6.2 — one clause the org has approved alternatives for
+/// (Governing law), with the rules that pick one per draft. A template slot
+/// points at the family, not at a variant, so variants can be added, replaced
+/// or re-defaulted without touching the templates that use them.
+model ClauseFamily {
+  id          String    @id @default(cuid())
+  orgId       String
+  categoryId  String?
+  name        String
+  description String?
+  /// The request/contract term whose value names a variant (governingLaw):
+  /// a request that says "New York law" picks the variant matching it.
+  requestKey  String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  org      Organization        @relation(fields: [orgId], references: [id])
+  category ClauseCategory?     @relation(fields: [categoryId], references: [id])
+  variants ClauseLibraryItem[]
+  slots    TemplateSection[]
+
+  @@index([orgId, deletedAt])
+  @@map("clause_families")
+}
+
+/// docs/41 Part 1 — a library clause's words at one version, never changed
+/// once written. A template's published snapshot pins (item, version); a
+/// draft records the version it used.
+model ClauseLibraryVersion {
+  id           String   @id @default(cuid())
+  orgId        String
+  itemId       String
+  version      Int
+  title        String
+  content      String
+  variantLabel String?
+  condition    Json?
+  matchValues  String[] @default([])
+  note         String?
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  org  Organization      @relation(fields: [orgId], references: [id])
+  item ClauseLibraryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, version])
+  @@index([orgId])
+  @@map("clause_library_versions")
 }
 
 model PlaybookPosition {
@@ -699,12 +811,17 @@ model PlaybookPosition {
   //     severity: 'low' | 'medium' | 'high' | 'walkaway'
   //   }
   rules            Json?
+  // docs/41 §6.2 — one clause model: a position can be a library variant (the
+  // approved words themselves), so a template using that variant and the
+  // playbook judging it can't disagree.
+  libraryItemId    String?
   createdById      String
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  org            Organization   @relation(fields: [orgId], references: [id])
-  clauseCategory ClauseCategory @relation(fields: [clauseCategoryId], references: [id])
+  org            Organization       @relation(fields: [orgId], references: [id])
+  clauseCategory ClauseCategory     @relation(fields: [clauseCategoryId], references: [id])
+  libraryItem    ClauseLibraryItem? @relation(fields: [libraryItemId], references: [id])
 
   @@index([orgId, clauseCategoryId])
   @@index([orgId, positionType])

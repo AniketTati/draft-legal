@@ -9,6 +9,7 @@
  */
 
 import type { Template, TemplateSection, ClauseLibraryItem } from '@prisma/client'
+import { fingerprint } from './fingerprint.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,8 @@ export interface GenerateResult {
   sectionsIncluded: number
   sectionsExcluded: number
   unfilledVariables: string[]
+  /** docs/41 Part 2 — each included section's fingerprint and where its words came from. */
+  sections: Array<{ sectionId: string; slot?: string; fp: string; source: string }>
 }
 
 // ─── Variable Interpolation ─────────────────────────────────────────────────
@@ -147,10 +150,18 @@ export interface GenerateOptions {
   template: TemplateWithSections
   variables: VariableMap
   clauseMap?: Map<string, ClauseLibraryItem>
+  /**
+   * docs/41 Part 1 — a clause slot's words, by section id: the variant
+   * drafting picked (source `library:<itemId>:<version>`), or the choice
+   * blank when nothing decided it. A slot section's own `content` is not used.
+   */
+  slotText?: Map<string, { html: string; source: string; familyId: string }>
 }
 
+const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+
 export function generateDocument(options: GenerateOptions): GenerateResult {
-  const { template, variables, clauseMap = new Map() } = options
+  const { template, variables, clauseMap = new Map(), slotText = new Map() } = options
 
   const sortedSections = [...template.sections].sort((a, b) => a.sortOrder - b.sortOrder)
 
@@ -158,6 +169,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
   let sectionsExcluded = 0
   const allUnfilled: string[] = []
   const htmlParts: string[] = []
+  const stamped: GenerateResult['sections'] = []
 
   // Opening wrapper with template metadata
   htmlParts.push(
@@ -176,14 +188,21 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     const clauseRefs: string[] = Array.isArray(section.clauseRefs)
       ? (section.clauseRefs as string[])
       : []
-    let sectionContent = resolveClauseRefs(section.content, clauseRefs, clauseMap)
+    const slot = slotText.get(section.id)
+    const sectionContent = slot ? slot.html : resolveClauseRefs(section.content, clauseRefs, clauseMap)
 
     // Interpolate variables
     const { html: interpolated, unfilled } = interpolateVariables(sectionContent, variables)
     allUnfilled.push(...unfilled)
 
+    // docs/41 Part 2 — the section's fingerprint and source, so review can
+    // tell approved words left unchanged from words someone changed.
+    const source = slot?.source ?? `template:${template.id}:${template.version}:${section.id}`
+    const fp = fingerprint(interpolated, variables)
+    stamped.push({ sectionId: section.id, ...(slot && { slot: slot.familyId }), fp, source })
+
     htmlParts.push(
-      `<section class="contract-section" data-section-id="${section.id}">`,
+      `<section class="contract-section" data-section-id="${section.id}" data-fp="${fp}" data-source="${escapeAttr(source)}">`,
       section.title ? `<h2 class="section-title">${section.title}</h2>` : '',
       interpolated,
       `</section>`,
@@ -197,6 +216,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     sectionsIncluded,
     sectionsExcluded,
     unfilledVariables: [...new Set(allUnfilled)],
+    sections: stamped,
   }
 }
 

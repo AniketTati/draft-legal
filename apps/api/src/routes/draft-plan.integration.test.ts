@@ -195,12 +195,20 @@ describe('confirm → apply → undo', () => {
       method: 'POST', url: `/api/v1/agent/threads/${thread}/actions/apply`, headers: auth(org, ['ADMIN'], owner),
       payload: {
         toolName: 'contract_create_from_template',
-        args: { templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech' },
+        args: {
+          templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech',
+          slotChoices: p.slotChoices, slotDecisions: p.slotDecisions, variableSources: p.variableSources,
+        },
       },
     })
     expect(applied.statusCode).toBe(200)
     const { result, toolCallId } = applied.json()
     expect(result.html).toContain('New York')
+    // docs/41 Part 1 — exactly what the card showed, and why it says it.
+    expect(result.html).toBe(p.html)
+    const origin = ((await prisma.contract.findUniqueOrThrow({ where: { id: result.contractId } })).metadata as { _origin?: Record<string, unknown> })._origin
+    expect(origin).toMatchObject({ templateId: p.templateId, templateDecidedBy: 'explicit' })
+    expect(origin?.variables).toEqual(expect.arrayContaining([{ key: 'governing_law', value: 'New York', source: 'user' }, { key: 'payment_terms', value: 'net 30', source: 'template_default' }]))
 
     const created = await prisma.contract.findUnique({ where: { id: result.contractId } })
     expect(created).toMatchObject({ ownerId: owner, type: 'NDA', status: 'DRAFT', title: 'Initech — NDA', deletedAt: null })

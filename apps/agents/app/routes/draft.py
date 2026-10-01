@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from typing import Any
 import os
 
-from app.agents.draft_agent import run_draft
+from app.agents.draft_agent import run_draft, extract_variables
 
 router = APIRouter()
 INTERNAL_SECRET = os.getenv("INTERNAL_SERVICE_SECRET", "")
@@ -40,3 +40,17 @@ async def draft_contract(req: DraftRequest, x_internal_secret: str = Header(defa
     # codes. Previously we raised HTTPException(500) for *any* error, which
     # turned user errors into server errors and also lost the error code.
     return result
+
+
+class ExtractVariablesRequest(BaseModel):
+    org_id: str
+    user_message: str
+    variables: list[dict[str, Any]] = []
+
+
+@router.post("/draft/extract-variables")
+async def draft_extract_variables(req: ExtractVariablesRequest, x_internal_secret: str = Header(default="")):
+    """docs/41 Part 1 — values a request states, each with its quote. Nothing else."""
+    if INTERNAL_SECRET and x_internal_secret != INTERNAL_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return await extract_variables(req.user_message, req.org_id, req.variables)

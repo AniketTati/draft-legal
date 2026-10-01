@@ -140,6 +140,13 @@ export enum AuditAction {
   // docs/41 P0.1 — a draft written by the draft agent (from a request, or
   // added as a version): which template, and what it couldn't fill.
   CONTRACT_DRAFTED = 'CONTRACT_DRAFTED',
+  // docs/41 Part 1 — a template published (its snapshot drafts are made
+  // from), its default-for-type flag, a clause family's variants or default,
+  // and a clause choice made in a draft.
+  TEMPLATE_PUBLISHED = 'TEMPLATE_PUBLISHED',
+  TEMPLATE_DEFAULT_CHANGED = 'TEMPLATE_DEFAULT_CHANGED',
+  CLAUSE_FAMILY_CHANGED = 'CLAUSE_FAMILY_CHANGED',
+  CLAUSE_CHOICE_MADE = 'CLAUSE_CHOICE_MADE',
   // Versions
   VERSION_CREATED = 'VERSION_CREATED',
   VERSION_RESTORED = 'VERSION_RESTORED',

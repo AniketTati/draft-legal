@@ -116,6 +116,9 @@ def build_contract_create_from_template(org_id: str, user_id: str | None = None)
         if unfilled:
             shown = ", ".join(unfilled[:6]) + ("…" if len(unfilled) > 6 else "")
             summary += f" — {len(unfilled)} term(s) left blank to fill in: {shown}"
+        open_slots = [sl.get("familyName") for sl in (plan.get("slots") or []) if sl.get("decidedBy") == "unresolved"]
+        if open_slots:
+            summary += f" — {len(open_slots)} clause choice(s) to make: {', '.join(n for n in open_slots if n)}"
 
         # The args are exactly what /tools/contract_create_from_template takes;
         # the apply RPC injects userId (from the JWT) and records the ToolCall.
@@ -127,6 +130,11 @@ def build_contract_create_from_template(org_id: str, user_id: str | None = None)
         }
         if plan.get("counterpartyName"):
             args["counterpartyName"] = plan["counterpartyName"]
+        # docs/41 Part 1 — the variant each clause slot uses and why, so Apply
+        # drafts exactly what the card shows and records how it was decided.
+        for key in ("slotChoices", "slotDecisions", "variableSources"):
+            if plan.get(key):
+                args[key] = plan[key]
         return {
             "awaitingConfirmation": True,
             "args": args,

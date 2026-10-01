@@ -38,7 +38,7 @@ interface PlaybookRule {
   severity:     PlaybookSeverity
 }
 
-interface PlaybookBound {
+export interface PlaybookBound {
   min?:         number
   max?:         number
   units?:       string
@@ -204,4 +204,21 @@ export function ruleTextsFor<T extends { id: string; content: string }>(group: r
     texts.set(c.id, c === lead ? { own: c.content, all, caps } : { own: c.content, all: null, caps: null })
   }
   return { lead, texts, caps }
+}
+
+/**
+ * docs/41 Part 2 — a figure read from words (a confidentiality term of 3
+ * years) against a bound that isn't about a cap: template lint judges a
+ * template's own wording with it.
+ */
+export function evaluateNumericBound(value: number, bound: Pick<PlaybookBound, 'min' | 'max' | 'units'>): { passed: boolean; reason: string } {
+  const unit = bound.units ? ` ${bound.units}` : ''
+  if (bound.min != null && value < bound.min) return { passed: false, reason: `${value}${unit} is below your minimum of ${bound.min}${unit}` }
+  if (bound.max != null && value > bound.max) return { passed: false, reason: `${value}${unit} is above your maximum of ${bound.max}${unit}` }
+  return { passed: true, reason: `${value}${unit} is within your bounds` }
+}
+
+/** A position's bounds that measure years (a term), keyed as written. */
+export function yearBounds(rules: PlaybookRules | null | undefined): Array<[string, PlaybookBound]> {
+  return Object.entries(rules?.bounds ?? {}).filter(([key, b]) => /year/i.test(`${key} ${b.units ?? ''} ${b.description ?? ''}`))
 }

@@ -42,7 +42,7 @@ import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey, matchCategory } from '../lib/clause-category.js'
 import { findTopic } from '../lib/clause-topic.js'
-import { planDraft } from '../lib/draft-plan.js'
+import { planDraft, renderPlanned } from '../lib/draft-plan.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope, type ToolResource } from '../lib/agent-scope.js'
 import { MANUAL_STATUS_TRANSITIONS, manualStatusRefusal, statusAfterTermsChange } from '../lib/contract-status.js'
@@ -616,6 +616,17 @@ const ContractCreateFromTemplateSchema = z.object({
   // C12 — the type the drafting plan chose (an untyped template can be
   // picked for, say, an NDA); falls back to the template's own type.
   contractType:     z.string().max(50).optional(),
+  // docs/41 Part 1 — from the plan: the variant each clause slot uses, how
+  // each was decided, and where each value came from, so the contract says
+  // what the confirm card showed and records why.
+  slotChoices:      z.record(z.string().max(64)).optional(),
+  slotDecisions:    z.record(z.object({
+    decidedBy: z.enum(['user', 'request_value', 'rule', 'default', 'unresolved']),
+    ruleId:    z.string().max(64).optional(),
+    rule:      z.string().max(500).optional(),
+    evidence:  z.object({ key: z.string().max(64), value: z.string().max(500), quote: z.string().max(2000).nullable().optional() }).optional(),
+  })).optional(),
+  variableSources:  z.record(z.string().max(32)).optional(),
 })
 
 // D.5.6 — approval_route write tool input. Inline workflow-driven path;
@@ -3757,24 +3768,18 @@ export async function internalAiRoutes(app: FastifyInstance) {
     })
     if (!template) return reply.status(404).send({ detail: 'Template not found in this org' })
 
-    // Resolve clause library references the template's sections point at.
-    // Mirrors POST /templates/:id/generate so the output HTML matches what
-    // the template preview would show.
-    const allClauseRefs = template.sections.flatMap(s =>
-      Array.isArray(s.clauseRefs) ? (s.clauseRefs as string[]) : [],
-    )
-    const clauseItems = allClauseRefs.length
-      ? await prisma.clauseLibraryItem.findMany({
-          where: { id: { in: allClauseRefs }, orgId: body.orgId, deletedAt: null },
-        })
-      : []
-    const clauseMap = new Map(clauseItems.map(c => [c.id, c]))
-
-    const generated = generateDocument({
+    // docs/41 Part 1 — made from the template as published, with the plan's
+    // variant in each clause slot (lib/draft-plan.ts renderPlanned), so the
+    // output matches the confirm card and records why it says what it says.
+    const generated = (await renderPlanned({
+      orgId: body.orgId,
       template,
-      variables: body.variables as Record<string, string>,
-      clauseMap,
-    })
+      variables: Object.fromEntries(Object.entries(body.variables).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)])),
+      slotChoices: body.slotChoices,
+      decisions: body.slotDecisions,
+      variableSources: body.variableSources,
+      contractType: body.contractType ?? template.contractType,
+    }))!
 
     const title =
       body.title?.trim() ||
@@ -3807,7 +3812,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           tags: ['template-draft'],
           // docs/39 H2 — the template's variables, kept with the draft: its
           // Variables panel names them and knows which field each one fills.
-          metadata: { _template: { id: template.id, name: template.name, version: template.version, variables: template.variables } } as never,
+          metadata: { _template: { id: template.id, name: template.name, version: generated.origin.templateVersion, variables: template.variables }, _origin: generated.origin } as never,
         },
       })
       const version = await tx.contractVersion.create({
@@ -3868,6 +3873,15 @@ export async function internalAiRoutes(app: FastifyInstance) {
       resourceId:   created.contract.id,
       metadata:     { source: 'agent_tool', tool: 'contract_create_from_template', template: template.name },
     }).catch(err => req.log.warn({ err }, '[contract_create_from_template] audit failed'))
+    // docs/41 Part 1 — the draft's origin on the record, as a request's draft has it.
+    createAuditEvent({
+      orgId:        body.orgId,
+      userId:       body.userId,
+      action:       AuditAction.CONTRACT_DRAFTED,
+      resourceType: 'contract',
+      resourceId:   created.contract.id,
+      metadata:     { source: 'assistant', versionNumber: 1, templateId: template.id, templateName: template.name, unfilled: generated.unfilledVariables, origin: generated.origin },
+    }).catch(err => req.log.warn({ err }, '[contract_create_from_template] drafted audit failed'))
 
     return reply.send({
       ok: true,

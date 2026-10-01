@@ -35,7 +35,8 @@ import { modelFetch } from '../lib/model-boundary.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { runExtractionJob, recordRunUsage, type ExtractionJobData, type RunUsage } from '../lib/extraction-job.js'
 import { callAgents } from '../lib/agents-call.js'
-import { saveDraftVersion, requestTerms, type DraftAgentResult } from '../lib/draft-save.js'
+import { saveDraftVersion } from '../lib/draft-save.js'
+import { draftFromRequest, type RequestDraftContext } from '../lib/request-draft.js'
 import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
@@ -615,61 +616,28 @@ async function handleApprovalSummary(data: ApprovalSummaryJob): Promise<void> {
 
 // ─── draft-contract ──────────────────────────────────────────────────────────
 
-interface DraftContractJobData {
+/**
+ * The convert route's `_draftContext` (routes/requests.ts), plus what the
+ * requester picked on the request page (docs/41 Part 1).
+ */
+type DraftContractJobData = RequestDraftContext & {
   contractId: string
   orgId: string
   userId: string
-  requestTitle: string
-  requestDescription: string
-  contractType: string
-  counterpartyName?: string
-  estimatedValue?: number
-  /**
-   * docs/41 P0.4 — what the intake classifier read from the request
-   * (governing law, term, value…). It was dropped at convert, so a request
-   * that said "New York law" drafted as Delaware.
-   */
-  extractedTerms?: Record<string, unknown>
 }
 
+/**
+ * docs/41 Part 1 — the request's draft, made as the assistant makes one: the
+ * template and the clause slots chosen by rule (lib/draft-plan.ts), the
+ * agent asked only to read values out of the request's words, with quotes
+ * (lib/request-draft.ts). No LLM picks a template or a clause.
+ */
 async function handleDraftContract(data: DraftContractJobData): Promise<void> {
-  const { contractId, orgId, userId, requestTitle, requestDescription, contractType, counterpartyName, estimatedValue, extractedTerms } = data
+  const { contractId, orgId, userId, contractType } = data
   console.info('[agent-worker] draft-contract start contractId=%s type=%s', contractId, contractType)
-
-  const userMessage = `Draft a ${contractType} titled "${requestTitle}". ${requestDescription ?? ''}`
-  const context: Record<string, unknown> = {}
-  if (counterpartyName) context.counterpartyName = counterpartyName
-  if (estimatedValue) context.estimatedValue = estimatedValue
-  const terms = requestTerms(extractedTerms)
-  if (Object.keys(terms).length) context.requestTerms = terms
-
-  const res = await callAgents('/draft', {
-    method:  'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
-    },
-    body: JSON.stringify({
-      user_message: userMessage,
-      org_id: orgId,
-      user_id: userId,
-      context,
-    }),
-  }, { orgId, toolName: 'draft_contract', scope: contractId, contractId })
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`Agents /draft returned ${res.status}: ${text.slice(0, 200)}`)
-  }
-
-  const result = await res.json() as DraftAgentResult
-
-  if (result.error || !result.html) {
-    throw new Error(`Draft agent error: ${result.error ?? 'No HTML returned'}`)
-  }
-
+  const result = await draftFromRequest({ orgId, contractId, ctx: data })
   await saveDraftVersion({ contractId, orgId, userId, result, changeNote: 'AI-generated first draft', source: 'request' })
-  console.info('[agent-worker] draft-contract done contractId=%s', contractId)
+  console.info('[agent-worker] draft-contract done contractId=%s template=%s', contractId, result.usedTemplateId)
 }
 
 // ─── backfill-custom-field (X2) ──────────────────────────────────────────────
