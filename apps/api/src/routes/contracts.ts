@@ -37,6 +37,7 @@ import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
 import { startRun, failOpenRuns } from '../lib/analysis-runs.js'
+import { contractPlaybook } from '../lib/playbooks.js'
 import { recordStatusChange, statusData } from '../lib/status-change.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
@@ -2632,7 +2633,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { metadata: true, type: true, currentVersionId: true },
+      select: { id: true, metadata: true, type: true, currentVersionId: true, playbookId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
@@ -2640,9 +2641,9 @@ export async function contractRoutes(app: FastifyInstance) {
       { findings?: Array<Record<string, unknown>>; versionId?: string } | undefined
     if (!review) {
       // V1 — say WHY there is no review: the job skips contracts whose type
-      // has no playbook positions (same filter as handlePlaybookReview).
-      const positions = await prisma.playbookPosition.findMany({ where: { orgId }, select: { contractTypes: true } })
-      const playbookPositionCount = positions.filter(p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type)).length
+      // has no playbook positions (same playbook as handlePlaybookReview).
+      const { where: positionScope } = await contractPlaybook(orgId, contract)
+      const playbookPositionCount = positionScope ? await prisma.playbookPosition.count({ where: positionScope }) : 0
       return reply.status(404).send({
         detail: playbookPositionCount === 0
           ? `No playbook positions apply to ${contract.type} contracts, so this contract has not been reviewed against a playbook.`
@@ -2694,6 +2695,35 @@ export async function contractRoutes(app: FastifyInstance) {
       })
       .sort((a, b) => (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER))
     return reply.send({ ...review, findings: ordered })
+  })
+
+  // ── GET /:id/playbook (docs/41 P1, Part 3) ─────────────────────────────
+  // The playbook this contract is reviewed against, and why: chosen on it,
+  // the default for its type, the only one, or "choose one" — never a guess.
+  app.get('/:id/playbook', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id } = req.params as { id: string }
+    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, type: true, playbookId: true } })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const { resolution, where } = await contractPlaybook(orgId, contract)
+    const positionCount = where ? await prisma.playbookPosition.count({ where }) : 0
+    return reply.send({ ...resolution, positionCount, contractType: contract.type })
+  })
+
+  // ── PUT /:id/playbook — choose this contract's playbook (null: the default again)
+  app.put('/:id/playbook', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { id } = req.params as { id: string }
+    const { playbookId } = (req.body ?? {}) as { playbookId?: string | null }
+    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, type: true, playbookId: true } })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    if (playbookId && !await prisma.playbook.findFirst({ where: { id: playbookId, orgId, deletedAt: null }, select: { id: true } })) {
+      return reply.status(404).send({ detail: 'Playbook not found' })
+    }
+    await prisma.contract.update({ where: { id }, data: { playbookId: playbookId ?? null } })
+    createAuditEvent({ orgId, userId, action: AuditAction.PLAYBOOK_CHANGED, resourceType: 'contract', resourceId: id, metadata: { from: contract.playbookId, to: playbookId ?? null } }).catch(() => {})
+    const { resolution } = await contractPlaybook(orgId, { ...contract, playbookId: playbookId ?? null })
+    return reply.send(resolution)
   })
 
   // ── GET /:id/checks (docs/41 P0.2/P0.3) ────────────────────────────────────

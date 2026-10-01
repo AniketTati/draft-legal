@@ -18,6 +18,7 @@ import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
+import { contractPlaybook, resolvePlaybook, positionWhere } from '../lib/playbooks.js'
 import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
@@ -2363,7 +2364,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null, ...contractScopeWhere(scope) },
-      select: { id: true, title: true, type: true, currentVersionId: true },
+      select: { id: true, title: true, type: true, currentVersionId: true, playbookId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found in this org' })
 
@@ -2406,14 +2407,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // Load every position for the contract's type (or type-agnostic).
     // We also pull `rules` (P1.2) — the structured playbook schema the
     // evaluator walks to emit concrete violations.
+    // docs/41 P1 — of the playbook this contract is reviewed against
+    // (lib/playbooks.ts), so the check and the review read the same one.
+    const { resolution: playbookResolution, where: positionScope } = await contractPlaybook(body.orgId, contract)
     const positions = await prisma.playbookPosition.findMany({
-      where: {
-        orgId: body.orgId,
-        OR: [
-          { contractTypes: { isEmpty: true } },
-          { contractTypes: { has: contract.type } },
-        ],
-      },
+      where: positionScope ?? { id: '__none__' },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       select: {
         clauseCategoryId: true,
@@ -2714,6 +2712,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
           type:          contract.type,
           totalClauses:  totalClauseCount,
         },
+        // docs/41 P1 — which playbook was read, and why.
+        playbook: { id: playbookResolution.playbook?.id || null, name: playbookResolution.playbook?.name ?? null, why: playbookResolution.why, explanation: playbookResolution.explanation },
         summary:  buildSummary(judged),
         checks:   judged,
         uncovered,
@@ -2729,6 +2729,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         type:          contract.type,
         totalClauses:  totalClauseCount,
       },
+      playbook: { id: playbookResolution.playbook?.id || null, name: playbookResolution.playbook?.name ?? null, why: playbookResolution.why, explanation: playbookResolution.explanation },
       summary: buildSummary(checks),
       checks,
       uncovered,
@@ -4327,13 +4328,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // 1) Playbook positions for that category (type-filtered when set).
     const playbook = matchCategory && playbookScope.kind !== 'none'
       ? await prisma.playbookPosition.findMany({
-          where: {
-            orgId: body.orgId,
-            clauseCategoryId: matchCategory.id,
-            ...(body.contractType
-              ? { OR: [{ contractTypes: { isEmpty: true } }, { contractTypes: { has: body.contractType } }] }
-              : {}),
-          },
+          // docs/41 P1 — of the playbook a contract of this type is reviewed against.
+          where: { AND: [
+            body.contractType ? positionWhere(body.orgId, await resolvePlaybook(body.orgId, { type: body.contractType }), body.contractType) ?? { id: '__none__' } : { orgId: body.orgId },
+            { clauseCategoryId: matchCategory.id },
+          ] },
           orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
           select: {
             id: true, positionType: true, content: true, notes: true,

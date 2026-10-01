@@ -38,6 +38,7 @@ import { callAgents } from '../lib/agents-call.js'
 import { saveDraftVersion, requestTerms, type DraftAgentResult } from '../lib/draft-save.js'
 import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
 import { runJobStep, type StepOutcome } from '../lib/analysis-runs.js'
+import { contractPlaybook } from '../lib/playbooks.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -489,7 +490,7 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, type: true, currentVersionId: true },
+    select: { id: true, type: true, currentVersionId: true, playbookId: true },
   })
   if (!contract) {
     console.info('[agent-worker] playbook-review skip contractId=%s — contract gone', contractId)
@@ -512,17 +513,16 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     return
   }
 
-  const positions = await prisma.playbookPosition.findMany({
-    where:  { orgId },
+  // docs/41 P1 — the positions of the playbook this contract is reviewed
+  // against (lib/playbooks.ts), for its type.
+  const { where: positionScope } = await contractPlaybook(orgId, contract)
+  const relevant = positionScope ? await prisma.playbookPosition.findMany({
+    where:  positionScope,
     select: {
       positionType: true, content: true, notes: true, contractTypes: true,
       clauseCategory: { select: { name: true } },
     },
-  })
-  // A position pinned to specific contract types must not be applied to others.
-  const relevant = positions.filter(
-    p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type),
-  )
+  }) : []
   if (relevant.length === 0) {
     console.info('[agent-worker] playbook-review skip contractId=%s — no playbook positions for type=%s',
       contractId, contract.type)

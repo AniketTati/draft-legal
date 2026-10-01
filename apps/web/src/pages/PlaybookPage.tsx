@@ -16,6 +16,7 @@ import { ContractEditor } from '@/components/editor/ContractEditor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ClauseCategory, PlaybookPosition } from '@clm/types'
+import { PlaybookSwitcher } from '@/components/playbook/PlaybookSwitcher'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -375,6 +376,8 @@ export function PlaybookPage() {
   // Which rung the editor should open on when the user adds from a gap card.
   const [addType, setAddType] = useState<PlaybookPosition['positionType'] | undefined>()
   const [pendingDelete, setPendingDelete] = useState<PlaybookPosition | undefined>()
+  // docs/41 P1 — the playbook whose positions are shown and added to.
+  const [playbookId, setPlaybookId] = useState<string | null>(null)
 
   const { data: categoriesData } = useQuery({
     queryKey: ['clause-categories'],
@@ -385,16 +388,16 @@ export function PlaybookPage() {
   // whether this is a brand-new playbook (show explainer) or a populated
   // one (auto-select the first category). Cheap query — runs once.
   const { data: allPositionsData } = useQuery({
-    queryKey: ['playbook-all'],
-    queryFn: () => api.get('/playbook/positions').then(r => r.data),
+    queryKey: ['playbook-all', playbookId],
+    queryFn: () => api.get('/playbook/positions', { params: playbookId ? { playbookId } : {} }).then(r => r.data),
     staleTime: 30_000,
   })
 
   const { data: playbookData } = useQuery({
-    queryKey: ['playbook', selectedCategoryId],
+    queryKey: ['playbook', selectedCategoryId, playbookId],
     queryFn: () =>
       api.get('/playbook/positions', {
-        params: selectedCategoryId ? { clauseCategoryId: selectedCategoryId } : {},
+        params: { ...(selectedCategoryId && { clauseCategoryId: selectedCategoryId }), ...(playbookId && { playbookId }) },
       }).then(r => r.data),
     enabled: !!selectedCategoryId,
   })
@@ -405,12 +408,13 @@ export function PlaybookPage() {
   const refreshPlaybook = () => {
     qc.invalidateQueries({ queryKey: ['playbook'] })
     qc.invalidateQueries({ queryKey: ['playbook-all'] })
+    qc.invalidateQueries({ queryKey: ['playbooks'] })
   }
 
   const createMutation = useMutation({
     // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
     meta: { errorHandled: true },
-    mutationFn: (body: any) => api.post('/playbook/positions', body),
+    mutationFn: (body: any) => api.post('/playbook/positions', { ...body, ...(playbookId && { playbookId }) }),
     onSuccess: () => { refreshPlaybook(); setShowEditor(false); setAddType(undefined) },
   })
 
@@ -494,6 +498,7 @@ export function PlaybookPage() {
             <h1 className="text-title text-ink-950">Playbook</h1>
           </div>
           <p className="text-[11.5px] text-ink-500 mt-0.5">Negotiation positions per clause type</p>
+          <PlaybookSwitcher value={playbookId} onChange={setPlaybookId} />
         </div>
         <div className="flex-1 overflow-y-auto p-3">
           {categories.map(cat => (

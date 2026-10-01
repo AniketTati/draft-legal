@@ -151,6 +151,9 @@ export async function cleanupOrg(orgId: string): Promise<void> {
   await del(() => prisma.diligenceCell.deleteMany({ where: { orgId } }))
   await del(() => prisma.diligenceRoom.deleteMany({ where: { orgId } }))
   await del(() => prisma.contract.deleteMany({ where: { orgId } }))
+  // docs/41 P1 — playbooks, after the contracts that may name one.
+  await del(() => prisma.playbookPosition.deleteMany({ where: { orgId } }))
+  await del(() => prisma.playbook.deleteMany({ where: { orgId } }))
   await del(() => prisma.contractFieldDefinition.deleteMany({ where: { orgId } }))
   await del(() => prisma.fieldSuggestion.deleteMany({ where: { orgId } }))
   await del(() => prisma.fieldValueRun.deleteMany({ where: { orgId } }))

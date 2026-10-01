@@ -39,6 +39,7 @@ model Organization {
   clauseCategories    ClauseCategory[]
   clauseItems         ClauseLibraryItem[]
   playbookPositions   PlaybookPosition[]
+  playbooks           Playbook[]
   contractComments    ContractComment[]
   shareLinks          ContractShareLink[]
   workflowDefinitions WorkflowDefinition[]
@@ -220,11 +221,15 @@ model Contract {
 
   // P4.1 — optional matter link. null = ungrouped (current behaviour).
   matterId          String?
+  // docs/41 P1 — the playbook a person chose for this contract. Null: the
+  // default for its type, or the only one (lib/playbooks.ts resolvePlaybook).
+  playbookId        String?
 
   org               Organization        @relation(fields: [orgId], references: [id])
   owner             User                @relation("ContractOwner", fields: [ownerId], references: [id])
   counterparty      Counterparty?       @relation(fields: [counterpartyId], references: [id])
   matter            Matter?             @relation(fields: [matterId], references: [id])
+  playbook          Playbook?           @relation(fields: [playbookId], references: [id], onDelete: SetNull)
   versions          ContractVersion[]
   parentContract    Contract?           @relation("ContractAmendments", fields: [parentContractId], references: [id])
   amendments        Contract[]          @relation("ContractAmendments")
@@ -713,6 +718,9 @@ model PlaybookPosition {
   id               String   @id @default(cuid())
   orgId            String
   clauseCategoryId String
+  // docs/41 P1 — the playbook it belongs to. Null only for a position written
+  // by an older path; it is read as part of the org's default playbook.
+  playbookId       String?
   positionType     String // preferred | acceptable | fallback | walkaway
   content          String   @default("") // HTML — what we want to see in this position
   notes            String? // Legal team guidance notes
@@ -745,10 +753,43 @@ model PlaybookPosition {
 
   org            Organization   @relation(fields: [orgId], references: [id])
   clauseCategory ClauseCategory @relation(fields: [clauseCategoryId], references: [id])
+  playbook       Playbook?      @relation(fields: [playbookId], references: [id], onDelete: SetNull)
 
   @@index([orgId, clauseCategoryId])
   @@index([orgId, positionType])
+  @@index([playbookId])
   @@map("playbook_positions")
+}
+
+/// docs/41 P1 (Part 3) — a named set of positions, for the contract types it
+/// covers. There was no Playbook object: "the playbook" was every position
+/// the org had, filtered by type, so two playbooks for one type couldn't
+/// exist and nobody could say which one a review used. Which one applies to
+/// a contract is decided in code, never by a model (lib/playbooks.ts): the
+/// one chosen on the contract, else the default for its type, else the only
+/// one that covers it, else the person is asked.
+model Playbook {
+  id               String    @id @default(cuid())
+  orgId            String
+  name             String
+  description      String?
+  /// The contract types it covers; [] = every type.
+  contractTypes    String[]  @default([])
+  /// The one used for its types when a contract names none.
+  isDefaultForType Boolean   @default(false)
+  /// Raised when its positions change, so a review can say which it used.
+  version          Int       @default(1)
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  org       Organization       @relation(fields: [orgId], references: [id])
+  positions PlaybookPosition[]
+  contracts Contract[]
+
+  @@index([orgId])
+  @@map("playbooks")
 }
 
 // ─── Audit Events (append-only, immutable) ────────────────────────────────

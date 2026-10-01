@@ -10,6 +10,7 @@ import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.j
 import { createAuditEvent } from '../lib/audit.js'
 import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
+import { resolvePlaybook, positionWhere } from '../lib/playbooks.js'
 import { saveDraftVersion } from '../lib/draft-save.js'
 import { onVersionCreated } from '../lib/analysis-trigger.js'
 import { setValuesFromTemplate } from '../lib/field-store.js'
@@ -784,20 +785,13 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'clauseText and clauseCategoryId are required' })
     }
 
-    // Fetch playbook positions from DB
-    const positions = await prisma.playbookPosition.findMany({
-      where: {
-        orgId,
-        clauseCategoryId,
-        ...(contractType ? {
-          OR: [
-            { contractTypes: { isEmpty: true } },
-            { contractTypes: { has: contractType } },
-          ],
-        } : {}),
-      },
+    // Fetch playbook positions from DB: of the playbook a contract of this
+    // type is reviewed against (docs/41 P1), when a type is given.
+    const scoped = contractType ? positionWhere(orgId, await resolvePlaybook(orgId, { type: contractType }), contractType) : { orgId }
+    const positions = scoped ? await prisma.playbookPosition.findMany({
+      where: { AND: [scoped, { clauseCategoryId }] },
       orderBy: { sortOrder: 'asc' },
-    })
+    }) : []
 
     if (!positions.length) {
       return reply.status(404).send({ detail: 'No playbook positions found for this category' })

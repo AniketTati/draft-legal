@@ -14,6 +14,7 @@
  */
 
 import { prisma } from '../prisma.js'
+import { defaultPlaybookId } from '../playbooks.js'
 import { UNIVERSAL_CATEGORIES }       from './universal/categories.js'
 import { UNIVERSAL_CLAUSES }          from './universal/clauses.js'
 import { UNIVERSAL_TEMPLATES }        from './universal/templates.js'
@@ -198,7 +199,9 @@ async function seedPlaybook(orgId: string, adminId: string, categoryIdBySlug: Ma
     .filter((p): p is NonNullable<typeof p> => p !== null)
 
   if (toCreate.length === 0) return 0
-  const result = await prisma.playbookPosition.createMany({ data: toCreate })
+  // docs/41 P1 — into the org's default playbook.
+  const playbookId = await defaultPlaybookId(orgId, adminId)
+  const result = await prisma.playbookPosition.createMany({ data: toCreate.map(p => ({ ...p, playbookId })) })
   return result.count
 }
 

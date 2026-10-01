@@ -140,6 +140,10 @@ export enum AuditAction {
   // docs/41 P0.1 — a draft written by the draft agent (from a request, or
   // added as a version): which template, and what it couldn't fill.
   CONTRACT_DRAFTED = 'CONTRACT_DRAFTED',
+  // docs/41 P1 — a playbook made, renamed, given types or made the default;
+  // a contract's playbook chosen; a review finding accepted or resolved.
+  PLAYBOOK_CHANGED = 'PLAYBOOK_CHANGED',
+  REVIEW_FINDING_DECIDED = 'REVIEW_FINDING_DECIDED',
   // Versions
   VERSION_CREATED = 'VERSION_CREATED',
   VERSION_RESTORED = 'VERSION_RESTORED',

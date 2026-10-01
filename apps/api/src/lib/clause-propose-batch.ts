@@ -21,6 +21,7 @@
  */
 import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
+import { contractPlaybook } from './playbooks.js'
 import { matchCategory, normalisedKey } from './clause-category.js'
 import { htmlBlocks } from './ooxml/html-blocks.js'
 import { modelFetch } from './model-boundary.js'
@@ -80,7 +81,7 @@ export async function proposeClauseBatch(args: {
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, type: true, currentVersionId: true },
+    select: { id: true, type: true, currentVersionId: true, playbookId: true },
   })
   if (!contract) return { ok: false, status: 404, detail: 'Contract not found' }
   if (!contract.currentVersionId) {
@@ -117,17 +118,13 @@ export async function proposeClauseBatch(args: {
     where:  { orgId },
     select: { id: true, name: true },
   })
-  const positions = await prisma.playbookPosition.findMany({
-    where: {
-      orgId,
-      OR: [
-        { contractTypes: { isEmpty: true } },
-        { contractTypes: { has: contract.type } },
-      ],
-    },
+  // docs/41 P1 — of the playbook this contract is reviewed against.
+  const { where: positionScope } = await contractPlaybook(orgId, contract)
+  const positions = positionScope ? await prisma.playbookPosition.findMany({
+    where: positionScope,
     orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     select: { clauseCategoryId: true, positionType: true, content: true, rules: true },
-  })
+  }) : []
   const positionsByCategory = new Map<string, typeof positions>()
   for (const p of positions) {
     const arr = positionsByCategory.get(p.clauseCategoryId) ?? []
