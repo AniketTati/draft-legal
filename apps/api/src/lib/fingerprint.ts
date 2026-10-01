@@ -54,9 +54,14 @@ export function fingerprint(text: string, variables: Record<string, unknown> = {
   return createHash('sha256').update(withPlaceholders(text, variables)).digest('hex')
 }
 
-/** The fingerprint of a template section's HTML (its `{{key}}` tokens still in it). */
+/**
+ * The fingerprint of a section's HTML: a template's (its `{{key}}` tokens
+ * still in it) or a generated one (its values in `data-variable` spans,
+ * read back as `{{key}}`). Generation stamps with this, and
+ * `originSections` checks a stamp the same way.
+ */
 export function sectionFingerprint(html: string): string {
-  return fingerprint(htmlToText(html))
+  return fingerprint(htmlToText(placeholderHtml(html).html))
 }
 
 // ── Reading a generated document's sections ─────────────────────────────────
@@ -80,8 +85,9 @@ export function placeholderHtml(html: string): { html: string; variables: Record
   const variables: Record<string, string> = {}
   const out = html.replace(VARIABLE_SPAN, (_m, key: string, inner: string) => {
     const value = htmlToText(inner).trim()
-    // An unfilled variable reads "[[key]]": it has no value to remember.
-    if (!(key in variables) && value && value !== `[[${key}]]`) variables[key] = value
+    // An unfilled variable reads "[[key]]", and an open clause choice
+    // "[[Choose …]]": neither has a value to remember.
+    if (!(key in variables) && value && !/^\[\[[\s\S]*\]\]$/.test(value)) variables[key] = value
     return `{{${key}}}`
   })
   return { html: out, variables }
@@ -125,6 +131,52 @@ export function originSections(html: string): OriginSection[] {
   return out
 }
 
+/**
+ * The generated sections review compares a version with. A draft that
+ * recorded its origin (`metadata._origin.sections`) names the fingerprints
+ * it was made with, and a clause choice made later is a section stamped in
+ * a later version: each recorded fingerprint is read from the earliest
+ * version carrying it. With no origin recorded, the earliest stamped
+ * version's sections are used as they are.
+ */
+export function generatedSections(
+  versions: Array<{ htmlContent: string | null }>,
+  recorded?: Array<{ fp: string; source: string }> | null,
+): OriginSection[] {
+  const stamped = versions.filter(v => v.htmlContent?.includes('data-fp="'))
+  if (!stamped.length) return []
+  if (!recorded?.length) return originSections(stamped[0].htmlContent!)
+  const wanted = new Set(recorded.map(r => r.fp))
+  const found = new Map<string, OriginSection>()
+  for (const v of stamped) {
+    for (const s of originSections(v.htmlContent!)) {
+      if (wanted.has(s.fp) && s.verified && !found.has(s.fp)) found.set(s.fp, s)
+    }
+    if (found.size === wanted.size) break
+  }
+  return recorded.map(r => found.get(r.fp)).filter((s): s is OriginSection => !!s)
+}
+
+/**
+ * Stamp the section holding a clause choice with the chosen words'
+ * fingerprint and source, so review reads the option, unchanged, as
+ * standard (lib/fingerprint.ts reads the stamp back the same way). Returns
+ * the HTML and the new fingerprint; the HTML as it was when the section's
+ * wrapper is gone.
+ */
+export function restampSection(html: string, sectionId: string, source: string): { html: string; fp: string | null } {
+  const open = new RegExp(`<section\\b[^>]*\\bdata-section-id="${sectionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[^>]*>`).exec(html)
+  if (!open) return { html, fp: null }
+  const start = open.index + open[0].length
+  const end = html.indexOf('</section>', start)
+  if (end < 0) return { html, fp: null }
+  const fp = sectionFingerprint(html.slice(start, end))
+  const tag = open[0]
+    .replace(/\bdata-fp="[^"]*"/, `data-fp="${fp}"`)
+    .replace(/\bdata-source="[^"]*"/, `data-source="${source.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"`)
+  return { html: html.slice(0, open.index) + tag + html.slice(start), fp }
+}
+
 /** A section's words with the variables' current values in. */
 export function filledText(section: Pick<OriginSection, 'placeholderText' | 'variables'>, current: Record<string, string>): string {
   return section.placeholderText.replace(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g, (whole, key: string) => {
@@ -145,7 +197,8 @@ export function standardSpans(origin: OriginSection[], currentText: string, curr
   const values = variablesOf(currentHtml)
   const out: StandardSpan[] = []
   for (const s of origin) {
-    if (!s.verified) continue
+    // An open clause choice (`choice:<familyId>`) is a blank to fill, never standard words.
+    if (!s.verified || s.source.startsWith('choice:')) continue
     const text = filledText(s, values)
     if (text.length >= 20 && now.includes(text)) out.push({ source: s.source, text })
   }

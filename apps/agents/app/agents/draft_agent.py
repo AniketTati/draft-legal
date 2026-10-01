@@ -568,3 +568,77 @@ async def run_draft(
         "unfilledVariables": final_state["unfilled_variables"],
         "error": final_state.get("error"),
     }
+
+
+# ─── Variable extraction only (docs/41 Part 1) ────────────────────────────────
+# The request → draft path no longer lets a model pick the template, choose a
+# clause, or fill anything from defaults: the API's planner does that by rule.
+# The model only reads values the request states, and must quote the words it
+# read each from. A value whose quote is not in the request is dropped here
+# (and again by the API), so nothing reaches a draft without evidence.
+
+_EXTRACT_PROMPT = """Read the request below and find the values it STATES for these template variables.
+
+Request:
+\"\"\"
+{user_message}
+\"\"\"
+
+Variables:
+{variable_defs}
+
+Return ONLY valid JSON:
+{{
+  "values": [
+    {{ "key": "<variable key>", "value": "<the value, as the template expects it>", "quote": "<the exact words from the request that state it>" }}
+  ]
+}}
+
+Rules:
+- Include a variable only if the request states its value. Never guess, infer a default, or use general practice.
+- "quote" must be copied character for character from the request.
+- For a country, use its ISO 3166 two-letter code as the value (quote the words that name it).
+- Leave out anything the request does not say."""
+
+
+def _norm_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')).strip().lower()
+
+
+def keep_quoted(values: list, user_message: str, keys: set[str]) -> list[dict]:
+    """Only the values for known keys whose quote is in the request's own words."""
+    text = _norm_text(user_message)
+    out: list[dict] = []
+    for v in values or []:
+        if not isinstance(v, dict):
+            continue
+        key, value, quote = v.get("key"), v.get("value"), v.get("quote")
+        if key not in keys or value in (None, "") or not isinstance(quote, str) or not quote.strip():
+            continue
+        if _norm_text(quote) not in text:
+            continue
+        out.append({"key": key, "value": str(value).strip(), "quote": quote.strip()})
+    return out
+
+
+async def extract_variables(user_message: str, org_id: str, variables: list[dict]) -> dict[str, Any]:
+    """{values: [{key, value, quote}]} — values the request states, each quoted."""
+    if not user_message.strip() or not variables:
+        return {"values": []}
+    resolved = await resolve_llm("default", org_id=org_id, trace_name="draft.extract_variables")
+    prompt = _EXTRACT_PROMPT.format(
+        user_message=user_message[:6000],
+        variable_defs=json.dumps([{k: v.get(k) for k in ("key", "label", "type", "options") if v.get(k)} for v in variables], indent=2),
+    )
+    response = await resolved.llm.ainvoke([
+        SystemMessage(content="You read values out of a contract request, quoting the words for each." + PII_TOKEN_RULE),
+        HumanMessage(content=prompt),
+    ], config={"callbacks": resolved.callbacks})
+    try:
+        parsed = loads_lenient(response.content)
+    except json.JSONDecodeError:
+        logger.warning("extract_variables: JSON parse failed")
+        parsed = {}
+    raw = parsed.get("values") if isinstance(parsed, dict) else None
+    keys = {str(v.get("key")) for v in variables if v.get("key")}
+    return {"values": keep_quoted(raw if isinstance(raw, list) else [], user_message, keys)}

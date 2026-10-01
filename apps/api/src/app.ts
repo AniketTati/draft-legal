@@ -27,6 +27,8 @@ import { fieldSuggestionRoutes } from './routes/field-suggestions.js'
 import { fieldRunRoutes } from './routes/field-runs.js'
 import { templateRoutes } from './routes/templates.js'
 import { clauseRoutes } from './routes/clauses.js'
+import { clauseFamilyRoutes } from './routes/clause-families.js'
+import { draftOriginRoutes } from './routes/draft-origin.js'
 import { playbookRoutes } from './routes/playbook.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
@@ -267,6 +269,8 @@ export async function buildApp() {
   await app.register(healthRoutes)
   await app.register(authRoutes,         { prefix: '/api/v1/auth' })
   await app.register(contractRoutes,     { prefix: '/api/v1/contracts' })
+  // docs/41 Part 1 — a draft's origin, and a clause choice made in it.
+  await app.register(draftOriginRoutes,  { prefix: '/api/v1/contracts' })
   await app.register(searchRoutes,       { prefix: '/api/v1/search' })
   await app.register(counterpartyRoutes, { prefix: '/api/v1/counterparties' })
   await app.register(requestRoutes,      { prefix: '/api/v1/requests' })
@@ -277,6 +281,7 @@ export async function buildApp() {
   await app.register(fieldRunRoutes, { prefix: '/api/v1/field-runs' })
   await app.register(templateRoutes,        { prefix: '/api/v1/templates' })
   await app.register(clauseRoutes,          { prefix: '/api/v1/clauses' })
+  await app.register(clauseFamilyRoutes,    { prefix: '/api/v1/clause-families' })
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })

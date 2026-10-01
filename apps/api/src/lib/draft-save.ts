@@ -12,7 +12,7 @@
  * fields (H3), it is on the record (CONTRACT_DRAFTED), and the version is
  * analysed like any other (lib/analysis-trigger.ts).
  */
-import { AuditAction } from '@clm/types'
+import { AuditAction, type DraftOrigin } from '@clm/types'
 import { prisma } from './prisma.js'
 import { htmlToText } from './html-text.js'
 import { createAuditEvent } from './audit.js'
@@ -32,6 +32,12 @@ export interface DraftAgentResult {
   missingFields?: string[]
   unfilledVariables?: string[]
   reviewNotes?: string
+  /**
+   * docs/41 Part 1 — why the draft says what it says: the template version,
+   * each clause slot's decision and each value's source (lib/draft-plan.ts).
+   * Saved as `metadata._origin` and on the CONTRACT_DRAFTED event.
+   */
+  origin?: DraftOrigin
 }
 
 /**
@@ -57,7 +63,8 @@ async function templateRecord(orgId: string, result: DraftAgentResult) {
   return {
     id: template.id,
     name: template.name,
-    version: template.version,
+    // The published version it was drafted from, when the planner recorded one.
+    version: result.origin?.templateId === template.id ? result.origin.templateVersion : template.version,
     variables: template.variables,
     values: result.variableValues ?? {},
     ...(result.variableSources && { sources: result.variableSources }),
@@ -100,6 +107,9 @@ export async function saveDraftVersion(input: {
     // written meanwhile.
     await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_template}', ${JSON.stringify(template)}::jsonb) WHERE id = ${contractId}`
   }
+  if (result.origin) {
+    await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_origin}', ${JSON.stringify(result.origin)}::jsonb) WHERE id = ${contractId}`
+  }
 
   // docs/39 H3 — the values the draft was filled with are its fields (set
   // from the template); the analysis that follows reads the rest.
@@ -126,6 +136,7 @@ export async function saveDraftVersion(input: {
       templateName:  template?.name ?? result.usedTemplateName ?? null,
       unfilled:      result.unfilledVariables ?? [],
       ...(result.variableSources && { sources: result.variableSources }),
+      ...(result.origin && { origin: result.origin }),
     },
   }).catch(err => console.warn('[draft-save] audit failed contractId=%s: %s', contractId, (err as Error).message))
 

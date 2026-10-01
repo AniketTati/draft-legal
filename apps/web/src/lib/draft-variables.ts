@@ -52,7 +52,9 @@ export function labelOfKey(key: string): string {
 export function variableRows(places: VariablePlace[], infos: DraftVariable[] = []): VariableRow[] {
   const byKey = new Map<string, VariablePlace[]>()
   for (const p of places) byKey.set(p.key, [...(byKey.get(p.key) ?? []), p])
-  return [...byKey.entries()].map(([key, ps]) => {
+  // docs/41 Part 1 — a clause choice's blank (slot_…) isn't a value to type:
+  // it is chosen among approved wordings, in the Origin panel.
+  return [...byKey.entries()].filter(([key]) => !key.startsWith('slot_')).map(([key, ps]) => {
     const counts = new Map<string, number>()
     for (const p of ps) counts.set(p.text, (counts.get(p.text) ?? 0) + 1)
     let text = ps[0].text

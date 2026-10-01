@@ -6,8 +6,12 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { sanitizeHtml } from '@/lib/sanitize'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload } from 'lucide-react'
-import { api } from '@/lib/api'
+import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload, Layers, Star } from 'lucide-react'
+import { api, apiErrorMessage } from '@/lib/api'
+import { useClauseFamilies } from '@/components/clauses/ClauseFamiliesView'
+import { SlotSectionPanel } from '@/components/templates/SlotSectionPanel'
+import { TemplateChecks, type LintWarning } from '@/components/templates/TemplateChecks'
+import { toast } from '@/components/common/Toaster'
 import { ContractEditor, type VariableSelection } from '@/components/editor/ContractEditor'
 import { FieldSelect, MakeVariablePopover, SuggestedVariables, type MadeVariable } from '@/components/templates/TemplateVariables'
 import { useFieldCatalog } from '@/lib/field-catalog'
@@ -120,6 +124,15 @@ function TemplateCard({
           <StatusPill meaning="inflight">
             <Lock className="size-3" /> Draft — not usable yet
           </StatusPill>
+        )}
+        {/* docs/41 Part 1 — the type's default, and edits drafts don't use yet. */}
+        {template.isDefaultForType && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-ink-700" data-testid={`template-default-${template.id}`}>
+            <Star className="size-3" /> Default for {template.contractType}
+          </span>
+        )}
+        {template.hasUnpublishedChanges && (
+          <StatusPill meaning="inflight">Changes not published</StatusPill>
         )}
         {usageCount >= 5 && (
           <span
@@ -260,13 +273,14 @@ function TemplateBuilderModal({
 }: {
   template?: Template
   onClose: () => void
-  onSave: (data: any) => void
+  /** docs/41 Part 1 — saving keeps a draft revision; publishing is what drafts use. */
+  onSave: (data: any, publish: boolean) => Promise<unknown>
   onPreview?: () => void
 }) {
   const [name, setName] = useState(template?.name ?? '')
   const [description, setDescription] = useState(template?.description ?? '')
   const [contractType, setContractType] = useState(template?.contractType ?? '')
-  const [isPublished, setIsPublished] = useState(template?.isPublished ?? false)
+  const { data: families = [] } = useClauseFamilies()
   const [variables, setVariables] = useState<VariableDef[]>(
     (template?.variables as VariableDef[]) ?? [],
   )
@@ -274,7 +288,7 @@ function TemplateBuilderModal({
   const [sections, setSections] = useState<any[]>(
     template?.sections ?? [{ title: 'Section 1', content: '', sortOrder: 0, clauseRefs: [], conditionalLogic: null }],
   )
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState<null | 'save' | 'publish'>(null)
   // docs/39 H1 — the fields a variable can fill; words being made a variable.
   const { data: catalog = [] } = useFieldCatalog()
   const [makeVar, setMakeVar] = useState<VariableSelection | null>(null)
@@ -318,15 +332,26 @@ function TemplateBuilderModal({
     setActiveSectionIdx(sections.length)
   }
 
-  const handleSave = async () => {
+  /** docs/41 Part 1 — a clause slot: its words are the option of a clause family drafting picks. */
+  const addSlot = () => {
+    const f = families[0]
+    setSections(s => [...s, { title: f?.name ?? 'Clause', content: '', sortOrder: s.length, clauseRefs: [], conditionalLogic: null, slotFamilyId: f?.id ?? null }])
+    setActiveSectionIdx(sections.length)
+  }
+
+  const handleSave = async (publish: boolean) => {
     if (!name.trim()) return
-    setSaving(true)
+    setSaving(publish ? 'publish' : 'save')
     try {
-      await onSave({ name, description, contractType: contractType || null, isPublished, variables, sections })
+      await onSave({
+        name, description, contractType: contractType || null, variables,
+        sections: sections.map((sec, i) => ({ ...sec, sortOrder: i, slotFamilyId: sec.slotFamilyId ?? null })),
+      }, publish)
     } finally {
-      setSaving(false)
+      setSaving(null)
     }
   }
+  const active = sections[activeSectionIdx]
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch bg-ink-950/40">
@@ -337,23 +362,30 @@ function TemplateBuilderModal({
             {template ? 'Edit Template' : 'New Template'}
           </h2>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 text-dense text-ink-700">
-              <input type="checkbox" checked={isPublished} onChange={e => setIsPublished(e.target.checked)} className="accent-ink-950" />
-              Published
-            </label>
             {onPreview && (
               <Button variant="outline" onClick={onPreview}>
                 <Eye />
                 Preview
               </Button>
             )}
+            {/* docs/41 Part 1 — a save is a draft revision; drafts use what is published. */}
             <Button
-              onClick={handleSave}
-              disabled={saving || !name.trim()}
+              variant="outline"
+              onClick={() => handleSave(false)}
+              disabled={!!saving || !name.trim()}
               data-testid="template-save-btn"
+              title={template?.isPublished ? 'Saves your changes; drafts keep using the published version until you publish' : undefined}
             >
-              {saving && <Loader2 className="animate-spin" />}
-              Save Template
+              {saving === 'save' && <Loader2 className="animate-spin" />}
+              {template?.isPublished ? 'Save changes' : 'Save draft'}
+            </Button>
+            <Button
+              onClick={() => handleSave(true)}
+              disabled={!!saving || !name.trim()}
+              data-testid="template-publish-btn"
+            >
+              {saving === 'publish' && <Loader2 className="animate-spin" />}
+              Publish
             </Button>
             <button onClick={onClose} className="text-ink-400 hover:text-ink-700"><X className="size-4" /></button>
           </div>
@@ -362,6 +394,7 @@ function TemplateBuilderModal({
         <div className="flex flex-1 min-h-0">
           {/* Left panel: metadata + variables */}
           <div className="w-72 shrink-0 border-r border-paper-200 p-4 overflow-y-auto space-y-4">
+            {template?.id && <TemplateChecks templateId={template.id} onPublish={() => handleSave(true)} publishing={saving === 'publish'} />}
             <div className="space-y-3">
               <div>
                 <label className="text-[11px] font-medium text-ink-700 mb-1 block">Template Name *</label>
@@ -398,7 +431,16 @@ function TemplateBuilderModal({
             <div>
               <div className="flex items-center justify-between mb-1">
                 <p className="text-eyebrow uppercase text-ink-700">Sections</p>
-                <Button variant="outline" size="xs" onClick={addSection}>+ Add</Button>
+                <div className="flex gap-1">
+                  <Button variant="outline" size="xs" onClick={addSection}>+ Text</Button>
+                  <Button
+                    variant="outline" size="xs" onClick={addSlot} disabled={!families.length}
+                    title={families.length ? 'A section whose words are the option of a clause family drafting picks' : 'Create a clause family on the Clauses page first'}
+                    data-testid="add-clause-slot"
+                  >
+                    + Clause slot
+                  </Button>
+                </div>
               </div>
               <div className="space-y-0.5">
                 {sections.map((s, i) => (
@@ -408,6 +450,7 @@ function TemplateBuilderModal({
                     // Active section is the rail's nav selection — ink.
                     className={`w-full text-left text-[12.5px] px-2 py-1.5 rounded-md truncate transition-colors ${i === activeSectionIdx ? 'bg-ink-950 text-white font-medium' : 'text-ink-700 hover:bg-paper-100'}`}
                   >
+                    {s.slotFamilyId && <Layers className="inline size-3 mr-1 -mt-0.5" aria-label="Clause slot" />}
                     {s.title || `Section ${i + 1}`}
                   </button>
                 ))}
@@ -431,8 +474,16 @@ function TemplateBuilderModal({
                   className="text-section text-ink-950 border-0 border-b border-paper-200 pb-2 mb-3 w-full outline-none placeholder:text-ink-400 focus:border-brand-700"
                   placeholder="Section title..."
                 />
+                {active?.slotFamilyId !== undefined && active?.slotFamilyId !== null ? (
+                  <SlotSectionPanel
+                    family={families.find(f => f.id === active.slotFamilyId)}
+                    families={families}
+                    onChangeFamily={id => setSections(s => s.map((sec, i) => i === activeSectionIdx ? { ...sec, slotFamilyId: id, title: sec.title || families.find(f => f.id === id)?.name } : sec))}
+                  />
+                ) : (
                 <div className="flex-1 min-h-0">
                   <ContractEditor
+                    key={activeSectionIdx}
                     initialContent={sections[activeSectionIdx].content}
                     onChange={(html) => updateSectionContent(activeSectionIdx, html)}
                     variableKeys={variables.map(v => v.key)}
@@ -449,6 +500,7 @@ function TemplateBuilderModal({
                     />
                   )}
                 </div>
+                )}
               </>
             )}
           </div>
@@ -533,27 +585,49 @@ export function TemplatesPage() {
       }).then(r => r.data),
   })
 
+  /**
+   * docs/41 Part 1 — saving keeps a draft revision; publishing snapshots the
+   * template (its clause slots' options pinned) and lints it against the
+   * playbook. Sections are saved before anything is published, in order, so
+   * the snapshot is of what was saved.
+   */
+  const afterSave = async (id: string, publish: boolean) => {
+    qc.invalidateQueries({ queryKey: ['templates'] })
+    qc.invalidateQueries({ queryKey: ['template', id] })
+    qc.invalidateQueries({ queryKey: ['template-lint', id] })
+    if (!publish) { setShowBuilder(false); setEditTemplate(undefined); return }
+    const r = await api.post<{ template: Template; version: number; lint: LintWarning[] }>(`/templates/${id}/publish`)
+    if (r.data.lint.length) {
+      // Kept open: the builder lists what the playbook says about it.
+      toast.info(`Published as version ${r.data.version}, with ${r.data.lint.length} ${r.data.lint.length === 1 ? 'thing' : 'things'} to look at`, { description: r.data.lint[0].message, durationMs: 9000 })
+      setEditTemplate(r.data.template)
+      qc.invalidateQueries({ queryKey: ['template', id] })
+    } else {
+      toast.success(`Published as version ${r.data.version}`)
+      setShowBuilder(false)
+      setEditTemplate(undefined)
+    }
+  }
+
   const createMutation = useMutation({
-    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
     meta: { errorHandled: true },
-    mutationFn: (body: any) => {
+    mutationFn: async ({ body, publish }: { body: any; publish: boolean }) => {
       const { sections, ...templateData } = body
-      return api.post('/templates', { ...templateData, sections })
+      const created = (await api.post<Template>('/templates', { ...templateData, sections })).data
+      await afterSave(created.id, publish)
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); setShowBuilder(false) },
+    onError: e => toast.error('Not saved', { description: apiErrorMessage(e) }),
   })
 
   const updateMutation = useMutation({
-    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
     meta: { errorHandled: true },
-    mutationFn: ({ id, body }: { id: string; body: any }) => {
+    mutationFn: async ({ id, body, publish }: { id: string; body: any; publish: boolean }) => {
       const { sections, ...templateData } = body
-      return Promise.all([
-        api.patch(`/templates/${id}`, templateData),
-        api.put(`/templates/${id}/sections`, { sections }),
-      ])
+      await api.patch(`/templates/${id}`, templateData)
+      await api.put(`/templates/${id}/sections`, { sections })
+      await afterSave(id, publish)
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); setShowBuilder(false); setEditTemplate(undefined) },
+    onError: e => toast.error('Not saved', { description: apiErrorMessage(e) }),
   })
 
   const deleteMutation = useMutation({
@@ -761,12 +835,13 @@ export function TemplatesPage() {
       {/* Template Builder Modal */}
       {showBuilder && (
         <TemplateBuilderModal
+          key={editTemplate ? `${editTemplate.id}:${editTemplate.version}` : 'new'}
           template={editTemplate}
           onClose={() => { setShowBuilder(false); setEditTemplate(undefined) }}
-          onSave={(data) =>
-            editTemplate
-              ? updateMutation.mutateAsync({ id: editTemplate.id, body: data })
-              : createMutation.mutateAsync(data)
+          onSave={(data, publish) =>
+            (editTemplate
+              ? updateMutation.mutateAsync({ id: editTemplate.id, body: data, publish })
+              : createMutation.mutateAsync({ body: data, publish })).catch(() => {})
           }
           onPreview={editTemplate ? () => setPreviewId(editTemplate.id) : undefined}
         />

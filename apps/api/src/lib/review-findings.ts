@@ -34,7 +34,7 @@ import { presenceFindings, type PresenceRule } from './presence-rules.js'
 import { evaluatePlaybookRules, dedupeViolations, ruleTextsFor, type PlaybookRules } from './playbook-rules.js'
 import { diffSequences, fold, likeness, wordBag } from './ooxml/sequence-diff.js'
 import { readability } from './unreadable-text.js'
-import { originSections, standardSpans, standardSourceOf, provenanceOf, normaliseText } from './fingerprint.js'
+import { generatedSections, standardSpans, standardSourceOf, provenanceOf, normaliseText } from './fingerprint.js'
 import { contractPlaybook } from './playbooks.js'
 
 export type FindingKind =
@@ -549,7 +549,7 @@ export interface ComputedReview {
 export async function computeAndStoreFindings(contractId: string, versionId: string): Promise<ComputedReview | null> {
   const contract = await prisma.contract.findUnique({
     where: { id: contractId },
-    select: { id: true, orgId: true, type: true, playbookId: true },
+    select: { id: true, orgId: true, type: true, playbookId: true, metadata: true },
   })
   const version = await prisma.contractVersion.findFirst({
     where: { id: versionId, contractId },
@@ -565,14 +565,25 @@ export async function computeAndStoreFindings(contractId: string, versionId: str
     baseline ? prisma.contractVersion.findUnique({ where: { id: baseline.versionId }, select: { plainText: true } }) : Promise.resolve(null),
     prisma.clauseCategory.findMany({ where: { orgId }, select: { id: true, name: true, presence: true, presenceContractTypes: true } }),
     contractPlaybook(orgId, contract),
-    prisma.contractVersion.findFirst({ where: { contractId, htmlContent: { contains: 'data-fp="' } }, orderBy: { versionNumber: 'asc' }, select: { htmlContent: true } }),
+    // The generated versions up to this one: the first is the draft as made;
+    // a later one can carry a clause choice made after (routes/draft-origin.ts).
+    prisma.contractVersion.findMany({
+      where: { contractId, versionNumber: { lte: version.versionNumber }, htmlContent: { contains: 'data-fp="' } },
+      orderBy: { versionNumber: 'asc' },
+      take: 20,
+      select: { htmlContent: true },
+    }),
   ])
   const positions = playbook.where
     ? await prisma.playbookPosition.findMany({ where: playbook.where, select: { id: true, clauseCategoryId: true, positionType: true, content: true, rules: true } })
     : []
 
   // Fingerprints: which clauses are still the generated words.
-  const spans = origin ? standardSpans(originSections(origin.htmlContent), version.plainText, version.htmlContent) : []
+  // A draft's recorded origin (metadata._origin.sections) is preferred: it
+  // names the fingerprints the draft was made with.
+  const recorded = (contract.metadata as { _origin?: { sections?: Array<{ fp: string; source: string }> } } | null)?._origin?.sections
+  const generated = generatedSections(origin, recorded)
+  const spans = generated.length ? standardSpans(generated, version.plainText, version.htmlContent ?? '') : []
   const counterparty = /^(portal|email):/.test(version.createdById)
   const provenance = new Map<string, { provenance: string; sourceRef: string | null }>()
   for (const c of current) {
@@ -580,7 +591,7 @@ export async function computeAndStoreFindings(contractId: string, versionId: str
     c.standardSource = source
     provenance.set(c.id, source
       ? { provenance: provenanceOf(source), sourceRef: source }
-      : { provenance: counterparty ? 'counterparty' : origin ? 'internal_edit' : (c.provenance ?? 'unknown'), sourceRef: null })
+      : { provenance: counterparty ? 'counterparty' : generated.length ? 'internal_edit' : (c.provenance ?? 'unknown'), sourceRef: null })
   }
   for (const c of baselineClauses) c.standardSource = c.sourceRef ?? null
 

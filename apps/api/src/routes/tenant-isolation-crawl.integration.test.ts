@@ -78,7 +78,11 @@ async function seedOrgB(): Promise<void> {
   B.template = (await prisma.template.create({ data: { orgId: orgB, name: `${MARK} template`, ...by, sections: { create: [{ title: `${MARK} section`, content: `${MARK} body`, sortOrder: 0 }] } }, include: { sections: true } })).id
   B.section = (await prisma.templateSection.findFirstOrThrow({ where: { templateId: B.template } })).id
   B.category = (await prisma.clauseCategory.create({ data: { orgId: orgB, name: `${MARK} category` } })).id
-  B.libraryItem = (await prisma.clauseLibraryItem.create({ data: { orgId: orgB, categoryId: B.category, title: `${MARK} item`, content: `${MARK} item`, ...by } })).id
+  // docs/41 Part 1 — a clause family with the item as its variant, and a published snapshot.
+  B.family = (await prisma.clauseFamily.create({ data: { orgId: orgB, name: `${MARK} family`, description: MARK, requestKey: 'governingLaw', ...by } })).id
+  B.libraryItem = (await prisma.clauseLibraryItem.create({ data: { orgId: orgB, categoryId: B.category, title: `${MARK} item`, content: `${MARK} item`, familyId: B.family, variantLabel: MARK, isApproved: true, ...by } })).id
+  B.clauseVersion = (await prisma.clauseLibraryVersion.create({ data: { orgId: orgB, itemId: B.libraryItem, version: 1, title: `${MARK} item`, content: `${MARK} item`, ...by } })).id
+  B.templateVersion = (await prisma.templateVersion.create({ data: { orgId: orgB, templateId: B.template, version: 1, snapshot: { name: MARK }, publishedById: user.id } })).id
   B.position = (await prisma.playbookPosition.create({ data: { orgId: orgB, clauseCategoryId: B.category, positionType: 'preferred', content: `${MARK} position`, ...by } })).id
   B.request = (await prisma.contractRequest.create({ data: { orgId: orgB, title: `${MARK} request`, type: 'NDA', requestedById: user.id, description: `${MARK} request` } })).id
   B.workflow = (await prisma.workflowDefinition.create({ data: { orgId: orgB, name: `${MARK} workflow`, ...by } })).id
@@ -116,6 +120,7 @@ const PARAM_TARGET: Record<string, string> = {
   clauseId: 'clause', instanceId: 'instance', versionId: 'version', v1Id: 'version', v2Id: 'version',
   commentId: 'comment', workflowId: 'workflow', contractId: 'contract', srId: 'signatureRequest',
   linkId: 'shareLink', userId: 'user', toolCallId: 'toolCall', deliveryId: 'delivery',
+  familyId: 'family', itemId: 'libraryItem',
 }
 const SEGMENT_TARGET: Record<string, string> = {
   contracts: 'contract', matters: 'matter', counterparties: 'counterparty', templates: 'template',
@@ -126,6 +131,7 @@ const SEGMENT_TARGET: Record<string, string> = {
   diligence: 'room', rooms: 'room', skills: 'skill', users: 'user', roles: 'role', team: 'user',
   'review-queue': 'contract', audit: 'audit', renewals: 'contract', sections: 'section',
   'field-suggestions': 'fieldSuggestion', 'field-runs': 'fieldRun', 'saved-views': 'savedView',
+  'clause-families': 'family', variants: 'libraryItem',
 }
 const LITERAL_PARAM: Record<string, string> = { index: '0', provider: 'openai' }
 
@@ -156,6 +162,8 @@ function sink(extra: Record<string, unknown> = {}): Record<string, unknown> {
     invoiceId: B.invoice, threadId: B.thread, sessionId: B.thread, skillId: B.skill, roleId: B.role,
     ownerId: B.user, assigneeId: B.user, assignedToId: B.user, approverId: B.user, delegateToId: B.user,
     categoryId: B.category, clauseCategoryId: B.category, fieldId: B.fieldDef, roomId: B.room, webhookId: B.webhook,
+    familyId: B.family, slotFamilyId: B.family, variantId: B.libraryItem, itemId: B.libraryItem, libraryItemId: B.libraryItem,
+    slots: { [B.family]: B.libraryItem }, slotChoices: { [B.family]: B.libraryItem },
     title: 'QA crawl', name: 'QA crawl', description: 'QA crawl', vendorName: 'QA crawl', amount: 1,
     invoiceDate: new Date().toISOString(), type: 'NDA', contractType: 'NDA', body: 'QA crawl', content: 'QA crawl',
     message: 'QA crawl', userMessage: 'QA crawl', query: 'QA crawl', question: 'QA crawl', q: 'QA crawl',

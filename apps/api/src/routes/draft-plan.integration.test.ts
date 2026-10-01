@@ -44,14 +44,15 @@ beforeAll(async () => {
     '<p>{{counterparty}} agrees to keep our information confidential under {{jurisdiction}} law.</p>')
   licenseTemplate = await template('Software License Agreement', null, '<p>License to {{counterparty_name}}.</p>')
 
-  // Forward the apply RPC's internal HTTP call into this app.
+  // Forward the apply RPC's internal HTTP call into this app, whatever
+  // port API_URL / PORT name (routes/agent-threads.ts).
   const realFetch = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const url = String(input)
-    if (url.startsWith('http://localhost:3001/api/')) {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+    if (url.hostname === 'localhost' && url.pathname.startsWith('/api/')) {
       const res = await app.inject({
         method: (init?.method ?? 'GET') as 'POST',
-        url: url.slice('http://localhost:3001'.length),
+        url: url.pathname + url.search,
         headers: init?.headers as Record<string, string>,
         payload: init?.body as string | undefined,
       })
@@ -195,12 +196,20 @@ describe('confirm → apply → undo', () => {
       method: 'POST', url: `/api/v1/agent/threads/${thread}/actions/apply`, headers: auth(org, ['ADMIN'], owner),
       payload: {
         toolName: 'contract_create_from_template',
-        args: { templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech' },
+        args: {
+          templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech',
+          slotChoices: p.slotChoices, slotDecisions: p.slotDecisions, variableSources: p.variableSources,
+        },
       },
     })
     expect(applied.statusCode).toBe(200)
     const { result, toolCallId } = applied.json()
     expect(result.html).toContain('New York')
+    // docs/41 Part 1 — exactly what the card showed, and why it says it.
+    expect(result.html).toBe(p.html)
+    const origin = ((await prisma.contract.findUniqueOrThrow({ where: { id: result.contractId } })).metadata as { _origin?: Record<string, unknown> })._origin
+    expect(origin).toMatchObject({ templateId: p.templateId, templateDecidedBy: 'explicit' })
+    expect(origin?.variables).toEqual(expect.arrayContaining([{ key: 'governing_law', value: 'New York', source: 'user' }, { key: 'payment_terms', value: 'net 30', source: 'template_default' }]))
 
     const created = await prisma.contract.findUnique({ where: { id: result.contractId } })
     expect(created).toMatchObject({ ownerId: owner, type: 'NDA', status: 'DRAFT', title: 'Initech — NDA', deletedAt: null })

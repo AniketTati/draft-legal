@@ -13,8 +13,15 @@
  * --key: the variable key (every template of the org that has it);
  * --value: the default to set (else the template's own default is kept);
  * dry run unless --apply.
+ *
+ * docs/41 Part 1 — where the law is a clause slot, the default is the clause
+ * family's: with --value, the family whose request key is --key (Governing
+ * Law) gets the variant named --value as its default, and the templates that
+ * slot it are published again so drafts pick it up.
  */
+import { matchKey } from '@clm/types'
 import { prisma } from '../src/lib/prisma.js'
+import { publishTemplate } from '../src/lib/template-publish.js'
 
 const args = process.argv.slice(2)
 const flag = (name: string) => args.find(a => a.startsWith(`--${name}=`))?.slice(name.length + 3)
@@ -45,6 +52,26 @@ async function main() {
     changed++
   }
   console.log(`${changed} template${changed === 1 ? '' : 's'}${apply ? ' updated' : ' would be updated (pass --apply)'}.`)
+
+  if (value === undefined) return
+  const families = await prisma.clauseFamily.findMany({
+    where: { orgId, deletedAt: null, requestKey: key },
+    include: { variants: { where: { deletedAt: null, isApproved: true } }, slots: { where: { template: { deletedAt: null, isPublished: true } }, select: { templateId: true } } },
+  })
+  for (const f of families) {
+    const v = f.variants.find(x => [x.variantLabel ?? x.title, ...x.matchValues].some(n => matchKey(n) === matchKey(value)))
+    if (!v) { console.log(`  ${f.name}: no approved variant for ${value}`); continue }
+    console.log(`  ${f.name}: default ${v.variantLabel ?? v.title}${apply ? '' : ' — dry run'}`)
+    if (!apply) continue
+    await prisma.$transaction([
+      prisma.clauseLibraryItem.updateMany({ where: { orgId, familyId: f.id, isFamilyDefault: true, NOT: { id: v.id } }, data: { isFamilyDefault: false } }),
+      prisma.clauseLibraryItem.update({ where: { id: v.id }, data: { isFamilyDefault: true } }),
+    ])
+    const admin = await prisma.user.findFirst({ where: { orgId, deletedAt: null }, orderBy: { createdAt: 'asc' }, select: { id: true } })
+    for (const templateId of new Set(f.slots.map(s => s.templateId))) {
+      if (admin) await publishTemplate(orgId, templateId, admin.id)
+    }
+  }
 }
 
 main()

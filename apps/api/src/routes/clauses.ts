@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { clauseTypeLabel } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
+import { recordClauseVersion, updateClauseItem } from '../lib/clause-library-versions.js'
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
@@ -209,6 +210,20 @@ export async function clauseRoutes(app: FastifyInstance) {
     return reply.send((await withSources(orgId, [clause]))[0])
   })
 
+  // ── docs/41 Part 1 — a clause's words at every version ────────────────────
+  app.get('/:id/versions', { preHandler: requirePermission('view', 'clause') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId } = req.user
+    const clause = await prisma.clauseLibraryItem.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, version: true } })
+    if (!clause) return reply.status(404).send({ detail: 'Clause not found' })
+    const versions = await prisma.clauseLibraryVersion.findMany({
+      where: { orgId, itemId: id },
+      orderBy: { version: 'desc' },
+      select: { id: true, version: true, title: true, content: true, variantLabel: true, condition: true, matchValues: true, note: true, createdById: true, createdAt: true },
+    })
+    return reply.send({ current: clause.version, data: versions })
+  })
+
   // ── docs/39 E4 — save wording from a contract ─────────────────────────────
   // Unapproved until someone who approves clauses does; it keeps the contract
   // (and section) it came from. The same wording already in the library is
@@ -256,6 +271,7 @@ export async function clauseRoutes(app: FastifyInstance) {
       },
       include: { category: { select: { id: true, name: true } } },
     })
+    await recordClauseVersion(prisma, clause, userId, note)
     return reply.status(201).send({ clause: { ...clause, sourceContract: { id: contract.id, title: contract.title } }, duplicate: false })
   })
 
@@ -281,6 +297,8 @@ export async function clauseRoutes(app: FastifyInstance) {
       },
       include: { category: { select: { id: true, name: true } } },
     })
+    // docs/41 Part 1 — its words, kept as version 1.
+    await recordClauseVersion(prisma, clause, userId, 'Initial version')
 
     return reply.status(201).send(clause)
   })
@@ -294,25 +312,11 @@ export async function clauseRoutes(app: FastifyInstance) {
     const existing = await prisma.clauseLibraryItem.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!existing) return reply.status(404).send({ detail: 'Clause not found' })
 
-    // Append new version to history if content changed
-    const existingVersions = Array.isArray(existing.versions) ? (existing.versions as any[]) : []
-    const newVersions =
-      body.content && body.content !== existing.content
-        ? [
-            ...existingVersions,
-            {
-              version: existingVersions.length + 1,
-              content: body.content,
-              changedById: userId,
-              changedAt: new Date().toISOString(),
-              note: (req.body as any).changeNote ?? '',
-            },
-          ]
-        : existingVersions
-
-    const updated = await prisma.clauseLibraryItem.update({
-      where: { id },
-      data: { ...body, versions: newVersions },
+    // docs/41 Part 1 — a change of its words is a new, immutable version
+    // (templates pin the version they were published with).
+    await updateClauseItem({ orgId, id, userId, data: body, note: (req.body as { changeNote?: string }).changeNote ?? '' })
+    const updated = await prisma.clauseLibraryItem.findFirst({
+      where: { id, orgId },
       include: { category: { select: { id: true, name: true } } },
     })
 

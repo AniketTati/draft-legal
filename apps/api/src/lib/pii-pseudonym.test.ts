@@ -53,7 +53,8 @@ describe('the agents service keeps round-trip tokens intact (source tripwires)',
     expect(py('routes', 'assist.py')).toContain('_REDLINE_SYSTEM + PII_TOKEN_RULE')
     expect(py('routes', 'assist.py')).toContain('_BATCH_REDLINE_SYSTEM + PII_TOKEN_RULE')
     expect(py('agents', 'playbook_review_agent.py')).toContain(') + PII_TOKEN_RULE')
-    expect(py('agents', 'draft_agent.py').match(/PII_TOKEN_RULE\)/g)?.length).toBe(2)
+    // Filling variables, and (docs/41 Part 1) reading quoted values out of a request.
+    expect(py('agents', 'draft_agent.py').match(/PII_TOKEN_RULE\)/g)?.length).toBe(3)
   })
 
   it('the extraction names the version it read, so the API restores against that one', () => {

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { api, apiErrorMessage } from '@/lib/api'
+import { RequestDraftPlan } from './RequestDraftPlan'
 import { Button } from '@/components/ui/button'
 import { StatusPill } from '@/components/ui/status-pill'
 import { Chip, Eyebrow } from '@/components/ui/primitives'
@@ -114,8 +115,8 @@ export function RequestDetailPanel({ request, onClose }: Props) {
 
   const aiClassification = request.metadata?._aiClassification as AiClassification | undefined
 
-  const failed = (e: unknown) =>
-    setActionError((e as Error)?.message ?? 'That did not save. The request is unchanged.')
+  // The server's own words (docs/41: "pick a template first" says which).
+  const failed = (e: unknown) => setActionError(apiErrorMessage(e))
 
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
@@ -289,6 +290,9 @@ export function RequestDetailPanel({ request, onClose }: Props) {
             <Eyebrow className="mb-1.5">Description</Eyebrow>
             <p className="text-body text-ink-700 whitespace-pre-wrap">{request.description}</p>
           </div>
+
+          {/* docs/41 Part 1 — the template and clause choices drafting will use. */}
+          {isActionable && <RequestDraftPlan requestId={request.id} editable={isActionable} />}
 
           {/* Assignee */}
           <div>

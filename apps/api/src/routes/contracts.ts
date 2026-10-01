@@ -1547,6 +1547,8 @@ export async function contractRoutes(app: FastifyInstance) {
         counterpartyName:  (draftCtx?.counterpartyName as string) ?? contract.counterpartyName ?? undefined,
         estimatedValue:    (draftCtx?.estimatedValue as number) ?? (contract.value != null ? Number(contract.value) : undefined),
         extractedTerms:    draftCtx?.extractedTerms as Record<string, unknown> | undefined,
+        templateId:        draftCtx?.templateId as string | undefined,
+        slotChoices:       draftCtx?.slotChoices as Record<string, string> | undefined,
       })
       return reply.send({ status: 'queued', contractId: id, analysisStatus: 'DRAFTING', mode: 'draft' })
     }

@@ -30,7 +30,15 @@ const CreatePositionSchema = z.object({
   sortOrder: z.number().int().default(0),
   // docs/41 P1 — the playbook it goes into; the org's default when omitted.
   playbookId: z.string().min(1).optional(),
+  // docs/41 §6.2 — the library variant this position is (one clause model).
+  libraryItemId: z.string().max(64).nullable().optional(),
 })
+
+/** A position may name only a live library clause of its own org. */
+async function unknownLibraryItem(orgId: string, libraryItemId: string | null | undefined): Promise<boolean> {
+  if (!libraryItemId) return false
+  return !await prisma.clauseLibraryItem.findFirst({ where: { id: libraryItemId, orgId, deletedAt: null }, select: { id: true } })
+}
 
 const UpdatePositionSchema = CreatePositionSchema.partial().omit({ clauseCategoryId: true })
 
@@ -132,6 +140,7 @@ export async function playbookRoutes(app: FastifyInstance) {
       where: { id: body.clauseCategoryId, orgId },
     })
     if (!category) return reply.status(404).send({ detail: 'Clause category not found' })
+    if (await unknownLibraryItem(orgId, body.libraryItemId)) return reply.status(404).send({ detail: 'Clause not found' })
 
     let playbookId = body.playbookId
     if (playbookId) {
@@ -162,6 +171,7 @@ export async function playbookRoutes(app: FastifyInstance) {
     if (body.playbookId && !await prisma.playbook.findFirst({ where: { id: body.playbookId, orgId, deletedAt: null }, select: { id: true } })) {
       return reply.status(404).send({ detail: 'Playbook not found' })
     }
+    if (await unknownLibraryItem(orgId, body.libraryItemId)) return reply.status(404).send({ detail: 'Clause not found' })
 
     const updated = await prisma.playbookPosition.update({
       where: { id },

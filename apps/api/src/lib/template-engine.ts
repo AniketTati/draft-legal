@@ -35,10 +35,11 @@ export interface GenerateResult {
   sectionsExcluded: number
   unfilledVariables: string[]
   /**
-   * docs/41 P1 (Part 2) — each section (and library clause) written, with
-   * the fingerprint stamped on it (`metadata._origin.sections`).
+   * docs/41 Part 2 — each section (and library clause) written, with the
+   * fingerprint stamped on it and where its words came from; saved as
+   * `metadata._origin.sections`. A clause slot's section names its family.
    */
-  origin: { sections: Array<{ sectionId: string; fp: string; source: string }> }
+  sections: Array<{ sectionId: string; slot?: string; fp: string; source: string }>
 }
 
 // ─── Variable Interpolation ─────────────────────────────────────────────────
@@ -160,10 +161,18 @@ export interface GenerateOptions {
   template: TemplateWithSections
   variables: VariableMap
   clauseMap?: Map<string, ClauseLibraryItem>
+  /**
+   * docs/41 Part 1 — a clause slot's words, by section id: the variant
+   * drafting picked (source `library:<itemId>:<version>`), or the choice
+   * blank when nothing decided it. A slot section's own `content` is not used.
+   */
+  slotText?: Map<string, { html: string; source: string; familyId: string }>
 }
 
+const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
+
 export function generateDocument(options: GenerateOptions): GenerateResult {
-  const { template, variables, clauseMap = new Map() } = options
+  const { template, variables, clauseMap = new Map(), slotText = new Map() } = options
 
   const sortedSections = [...template.sections].sort((a, b) => a.sortOrder - b.sortOrder)
 
@@ -171,7 +180,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
   let sectionsExcluded = 0
   const allUnfilled: string[] = []
   const htmlParts: string[] = []
-  const origin: GenerateResult['origin'] = { sections: [] }
+  const stamped: GenerateResult['sections'] = []
 
   // Opening wrapper with template metadata
   htmlParts.push(
@@ -190,16 +199,20 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     const clauseRefs: string[] = Array.isArray(section.clauseRefs)
       ? (section.clauseRefs as string[])
       : []
-    const sectionContent = resolveClauseRefs(section.content, clauseRefs, clauseMap)
-    // docs/41 P1 (Part 2) — the section's words with its variables as
-    // {{key}}, hashed: review compares them with the contract's words to
-    // tell a clause still as the template wrote it (lib/fingerprint.ts).
+    // A clause slot's words are the variant drafting picked (or the choice
+    // blank); a slot section's own content is not used.
+    const slot = slotText.get(section.id)
+    const sectionContent = slot ? slot.html : resolveClauseRefs(section.content, clauseRefs, clauseMap)
+    // docs/41 Part 2 — the section's words (its title too) with its variables
+    // as {{key}}, hashed: review compares them with the contract's words to
+    // tell a clause still as the template (or library) wrote it
+    // (lib/fingerprint.ts reads the stamp back the same way).
     const inner = [section.title ? `<h2 class="section-title">${section.title}</h2>` : '', sectionContent].filter(Boolean).join('\n')
     const fp = sectionFingerprint(inner)
-    const source = `template:${template.id}:${template.version}:${section.id}`
-    origin.sections.push({ sectionId: section.id, fp, source })
+    const source = slot?.source ?? `template:${template.id}:${template.version}:${section.id}`
+    stamped.push({ sectionId: section.id, ...(slot && { slot: slot.familyId }), fp, source })
     for (const ref of sectionContent.matchAll(/data-clause-id="([^"]+)" data-fp="([0-9a-f]{64})" data-source="([^"]+)"/g)) {
-      origin.sections.push({ sectionId: `${section.id}/${ref[1]}`, fp: ref[2], source: ref[3] })
+      stamped.push({ sectionId: `${section.id}/${ref[1]}`, fp: ref[2], source: ref[3] })
     }
 
     // Interpolate variables
@@ -207,7 +220,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     allUnfilled.push(...unfilled)
 
     htmlParts.push(
-      `<section class="contract-section" data-section-id="${section.id}" data-fp="${fp}" data-source="${source}">`,
+      `<section class="contract-section" data-section-id="${section.id}" data-fp="${fp}" data-source="${escapeAttr(source)}">`,
       interpolated,
       `</section>`,
     )
@@ -220,7 +233,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     sectionsIncluded,
     sectionsExcluded,
     unfilledVariables: [...new Set(allUnfilled)],
-    origin,
+    sections: stamped,
   }
 }
 

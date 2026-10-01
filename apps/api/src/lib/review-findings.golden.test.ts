@@ -15,7 +15,10 @@ import type { TemplateSection } from '@prisma/client'
 import { computeFindings, positionCheckTargets, pairClauses, type ClauseIn, type CategoryIn, type FindingDraft, type ReviewInput } from './review-findings.js'
 import { policy, type PolicyFinding, type GuardInput } from './recommendation-guard.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
-import { originSections, standardSpans, standardSourceOf, fingerprint } from './fingerprint.js'
+import { originSections, standardSpans, standardSourceOf, fingerprint, generatedSections, restampSection } from './fingerprint.js'
+import { resolveSlots } from './clause-resolution.js'
+import type { TemplateSnapshot } from './template-snapshot.js'
+import type { SlotVariant } from '@clm/types'
 import { htmlToText } from './html-text.js'
 
 const CATEGORIES: CategoryIn[] = [
@@ -97,12 +100,13 @@ describe('golden: Exclusions cut in half', () => {
 describe('golden: a template draft left unchanged', () => {
   const template: TemplateWithSections = {
     id: 'tpl1', orgId: 'o', name: 'Mutual NDA', description: null, contractType: 'NDA', variables: [], isPublished: true, version: 3, usageCount: 0,
+    isDefaultForType: false, publishedVersionId: null, hasUnpublishedChanges: false,
     createdById: 'u', createdAt: new Date(), updatedAt: new Date(), deletedAt: null,
     sections: [
       { id: 's1', title: '1. Confidentiality', content: `<p>${CONF.replace('the Purpose', '{{purpose}}')}</p>` },
       { id: 's2', title: '2. Term', content: `<p>${TERM}</p>` },
       { id: 's3', title: '3. Governing Law', content: '<p>This Agreement is governed by the laws of {{governing_law}}, without regard to its conflict-of-laws principles.</p>' },
-    ].map((s, i) => ({ ...s, templateId: 'tpl1', sortOrder: i, conditionalLogic: null, clauseRefs: [], createdAt: new Date(), updatedAt: new Date() })) as TemplateSection[],
+    ].map((s, i) => ({ ...s, templateId: 'tpl1', sortOrder: i, conditionalLogic: null, clauseRefs: [], slotFamilyId: null, createdAt: new Date(), updatedAt: new Date() })) as TemplateSection[],
   }
   const generated = generateDocument({ template, variables: { purpose: 'evaluating a partnership', governing_law: 'the State of New York' } })
   const text = htmlToText(generated.html)
@@ -113,14 +117,14 @@ describe('golden: a template draft left unchanged', () => {
   ]
 
   it('stamps every section with the fingerprint of its words, variables as placeholders', () => {
-    expect(generated.origin.sections).toHaveLength(3)
-    expect(generated.origin.sections[0]).toMatchObject({ sectionId: 's1', source: 'template:tpl1:3:s1' })
-    expect(generated.html).toContain(`data-fp="${generated.origin.sections[0].fp}"`)
+    expect(generated.sections).toHaveLength(3)
+    expect(generated.sections[0]).toMatchObject({ sectionId: 's1', source: 'template:tpl1:3:s1' })
+    expect(generated.html).toContain(`data-fp="${generated.sections[0].fp}"`)
     const read = originSections(generated.html)
     expect(read.map(s => s.verified)).toEqual([true, true, true])
     expect(read[0].variables).toEqual({ purpose: 'evaluating a partnership' })
     // The same fingerprint from the filled text and its values.
-    expect(fingerprint(htmlToText(`<h2>1. Confidentiality</h2>${CONF.replace('the Purpose', 'evaluating a partnership')}`), { purpose: 'evaluating a partnership' })).toBe(generated.origin.sections[0].fp)
+    expect(fingerprint(htmlToText(`<h2>1. Confidentiality</h2>${CONF.replace('the Purpose', 'evaluating a partnership')}`), { purpose: 'evaluating a partnership' })).toBe(generated.sections[0].fp)
   })
 
   it('is all Standard, sends nothing to the model, and is Ready', () => {
@@ -150,6 +154,90 @@ describe('golden: a template draft left unchanged', () => {
     const html = generated.html.replace('>the State of New York<', '>the State of Delaware<')
     const spans = standardSpans(originSections(generated.html), htmlToText(html), html)
     expect(standardSourceOf('This Agreement is governed by the laws of the State of Delaware, without regard to its conflict-of-laws principles.', spans)).toBe('template:tpl1:3:s3')
+  })
+})
+
+describe('golden: a draft made by rule, governing law a clause slot', () => {
+  // As the seed has it (docs/41 B6): governing law is a clause family with
+  // no default, so the request's words decide it, or it is left open.
+  const LAW = (place: string) => `<p>This Agreement is governed by the laws of the State of ${place}, without regard to its conflict-of-laws principles.</p>`
+  const variant = (id: string, label: string, order: number): SlotVariant => ({
+    id, label, version: 1, content: LAW(label), condition: null, matchValues: [label], isDefault: false, order,
+  })
+  const NY = variant('ny', 'New York', 0)
+  const DE = variant('de', 'Delaware', 1)
+  const snapshot: TemplateSnapshot = {
+    templateId: 'tpl2', name: 'Mutual NDA', contractType: 'NDA', version: 4, variables: [],
+    sections: [
+      { id: 's1', title: '1. Confidentiality', sortOrder: 0, content: `<p>${CONF.replace('the Purpose', '{{purpose}}')}</p>`, conditionalLogic: null, clauseRefs: [] },
+      { id: 's2', title: '2. Term', sortOrder: 1, content: `<p>${TERM}</p>`, conditionalLogic: null, clauseRefs: [] },
+      { id: 's3', title: '3. Governing Law', sortOrder: 2, content: '', conditionalLogic: null, clauseRefs: [], slot: { family: { id: 'fam_law', name: 'Governing Law', requestKey: 'governingLaw' }, variants: [NY, DE] } },
+    ],
+  }
+  const template = {
+    id: 'tpl2', orgId: 'o', name: 'Mutual NDA', version: 4,
+    sections: snapshot.sections.map(sec => ({ ...sec, templateId: 'tpl2', slotFamilyId: sec.slot?.family.id ?? null })),
+  } as unknown as TemplateWithSections
+  const REQUEST = 'Mutual NDA with Initech to evaluate a partnership. It should be governed by New York law.'
+  const variables = { purpose: 'evaluating a partnership' }
+  const GOV_NY = 'This Agreement is governed by the laws of the State of New York, without regard to its conflict-of-laws principles.'
+  const filled = () => [
+    clause('confidentiality', CONF.replace('the Purpose', 'evaluating a partnership')),
+    clause('termination', TERM),
+    clause('governing_law', GOV_NY),
+  ]
+
+  const resolved = resolveSlots({ snapshot, requestValues: { governingLaw: { value: 'New York' } }, requestText: REQUEST, requireQuote: true })
+  const generated = generateDocument({ template, variables, slotText: resolved.slotText })
+  const text = htmlToText(generated.html)
+
+  it('resolves the slot to New York from the request, and stamps it as the library wording', () => {
+    expect(resolved.slots[0]).toMatchObject({ familyId: 'fam_law', variantId: 'ny', decidedBy: 'request_value' })
+    expect(generated.sections.map(sec => sec.source)).toEqual(['template:tpl2:4:s1', 'template:tpl2:4:s2', 'library:ny:1'])
+    expect(originSections(generated.html).map(sec => sec.verified)).toEqual([true, true, true])
+  })
+
+  it('unedited: every clause is standard, nothing goes to the model, and it is Ready', () => {
+    const current = filled()
+    const spans = standardSpans(generatedSections([{ htmlContent: generated.html }], generated.sections), text, generated.html)
+    for (const c of current) c.standardSource = standardSourceOf(c.content, spans)
+    expect(current.map(c => c.standardSource)).toEqual(['template:tpl2:4:s1', 'template:tpl2:4:s2', 'library:ny:1'])
+    const { findings, changedClauseIds } = review(current, null, { currentText: text })
+    expect(findings).toEqual([])
+    expect(positionCheckTargets(current, changedClauseIds)).toEqual([])
+    expect(label(findings).label).toBe('ready_to_approve')
+  })
+
+  it('the slot\'s words edited: governing law is no longer standard, and is a modified finding', () => {
+    const before = filled()
+    for (const c of before) c.standardSource = c.clauseType === 'governing_law' ? 'library:ny:1' : `template:tpl2:4:${c.clauseType === 'termination' ? 's2' : 's1'}`
+    const editedGov = GOV_NY.replace('the State of New York', 'the State of New York and the courts of Manhattan only')
+    const editedText = text.replace(GOV_NY, editedGov)
+    const spans = standardSpans(generatedSections([{ htmlContent: generated.html }], generated.sections), editedText, generated.html)
+    const current = [before[0], before[1], { ...before[2], id: 'c-gov', content: editedGov }].map(c => ({ ...c, standardSource: standardSourceOf(c.content, spans) }))
+    expect(current.map(c => c.standardSource)).toEqual(['template:tpl2:4:s1', 'template:tpl2:4:s2', null])
+    const { findings, changedClauseIds } = review(current, before, { currentText: editedText })
+    expect(findings.map(f => [f.kind, f.clauseId])).toEqual([['modified', 'c-gov']])
+    expect(positionCheckTargets(current, changedClauseIds).map(c => c.id)).toEqual(['c-gov'])
+  })
+
+  it('left open, then chosen: the blank is never standard; the option chosen later is, read from the draft\'s recorded origin', () => {
+    const open = resolveSlots({ snapshot })
+    expect(open.slots[0].variantId).toBeFalsy()
+    const v1 = generateDocument({ template, variables, slotText: open.slotText })
+    const blankSpans = standardSpans(generatedSections([{ htmlContent: v1.html }], v1.sections), htmlToText(v1.html), v1.html)
+    expect(blankSpans.map(sp => sp.source).sort()).toEqual(['template:tpl2:4:s1', 'template:tpl2:4:s2'])
+
+    // As routes/draft-origin.ts does: the blank becomes New York's words, the section re-stamped.
+    const replaced = v1.html.replace(/<p><span[^>]*data-slot="fam_law"[^>]*>[\s\S]*?<\/span><\/p>/, LAW('New York'))
+    const v2 = restampSection(replaced, 's3', 'library:ny:1')
+    expect(v2.fp).toBe(generated.sections[2].fp)
+    const recorded = v1.sections.map(sec => sec.slot === 'fam_law' ? { ...sec, fp: v2.fp!, source: 'library:ny:1' } : sec)
+    const versions = [{ htmlContent: v1.html }, { htmlContent: v2.html }]
+    const spans = standardSpans(generatedSections(versions, recorded), htmlToText(v2.html), v2.html)
+    expect(standardSourceOf(GOV_NY, spans)).toBe('library:ny:1')
+    // Without the recorded origin, only the draft as first made is read: the choice isn't in it.
+    expect(standardSourceOf(GOV_NY, standardSpans(generatedSections(versions), htmlToText(v2.html), v2.html))).toBeNull()
   })
 })
 
