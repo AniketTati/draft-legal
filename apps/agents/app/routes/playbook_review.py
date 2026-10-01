@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ..agents.playbook_review_agent import run_playbook_review
+from ..agents.playbook_review_agent import run_playbook_review, run_position_check
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -42,6 +42,9 @@ class PlaybookReviewRequest(BaseModel):
     # orgId keeps working during a rolling deploy — it just resolves against
     # the platform key instead of the org's BYOK key.
     orgId: Optional[str] = None
+    # docs/41 P1 — "positions": one verdict per clause, with its quote (the
+    # API's findings read them). Absent: the older review of deviations.
+    mode: Optional[str] = None
 
 
 @router.post("/playbook-review")
@@ -50,6 +53,20 @@ async def playbook_review(body: PlaybookReviewRequest):
         "[playbook-review] START contractId=%s clauses=%d positions=%d",
         body.contractId, len(body.clauses), len(body.playbookPositions),
     )
+    if body.mode == "positions":
+        try:
+            result = await run_position_check(
+                clauses=[c.model_dump() for c in body.clauses],
+                playbook_positions=body.playbookPositions,
+                contract_type=body.contractType or "unknown",
+                org_id=body.orgId,
+            )
+        except Exception as e:
+            logger.error("[position-check] FAILED contractId=%s: %s", body.contractId, e)
+            raise HTTPException(status_code=502, detail=f"Position check failed: {e}") from e
+        logger.info("[position-check] DONE contractId=%s verdicts=%d", body.contractId, len(result["verdicts"]))
+        return result
+
     try:
         result = await run_playbook_review(
             clauses=[c.model_dump() for c in body.clauses],

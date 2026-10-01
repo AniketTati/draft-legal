@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { presenceFindings, applicableRules, type PresenceRule, type ClauseLike } from './presence-rules.js'
-import { guardReasons, guardedLabel } from './recommendation-guard.js'
 
 const STANDALONE = ['NDA', 'MSA']
 const RULES: PresenceRule[] = [
@@ -60,27 +59,5 @@ describe('presence rules (docs/41 P0.3)', () => {
   it('a clause the playbook doesn\'t allow', () => {
     const f = run([CONF, TERM, GOV, { clauseType: 'non_compete', content: 'No competing for two years.' }], null)
     expect(f).toEqual([expect.objectContaining({ kind: 'not_allowed_present', label: 'Non-Compete' })])
-  })
-})
-
-describe('the approval guard (docs/41 P0.2)', () => {
-  const done = { kind: 'done' as const, versionId: 'v5', versionNumber: 5, clauses: 3 }
-  it('a null risk score is unknown — never ready', () => {
-    const r = guardReasons({ analysis: done, clauseCount: 3, riskScore: null, findings: [], counterpartyVersionAfterAnalysis: null })
-    expect(r.map(x => x.code)).toEqual(['risk_unknown'])
-    expect(guardedLabel('approve', { passes: false })).toBe('cant_recommend')
-  })
-
-  it('ready only when every check passes', () => {
-    expect(guardReasons({ analysis: done, clauseCount: 3, riskScore: 0.1, findings: [], counterpartyVersionAfterAnalysis: null })).toEqual([])
-    expect(guardedLabel('approve', { passes: true })).toBe('approve')
-  })
-
-  it('missing, stale and empty analysis, deletions and a later counterparty version all hold it back', () => {
-    const deleted = run([CONF, TERM], [CONF, TERM, GOV])
-    const codes = (a: Parameters<typeof guardReasons>[0]) => guardReasons(a).map(x => x.code)
-    expect(codes({ analysis: { kind: 'not_analysed', reason: null }, clauseCount: 0, riskScore: null, findings: [], counterpartyVersionAfterAnalysis: null })).toEqual(['analysis_missing', 'risk_unknown'])
-    expect(codes({ analysis: { kind: 'stale', analysedVersionId: 'v4', analysedVersionNumber: 4 }, clauseCount: 3, riskScore: 0.1, findings: deleted, counterpartyVersionAfterAnalysis: null })).toEqual(['analysis_stale', 'required_deleted'])
-    expect(codes({ analysis: done, clauseCount: 0, riskScore: 0.1, findings: [], counterpartyVersionAfterAnalysis: { versionNumber: 6 } })).toEqual(['no_clauses', 'counterparty_version'])
   })
 })

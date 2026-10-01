@@ -15,16 +15,15 @@
  *     was there and is gone is "Deleted since vN", with the deleted text; a
  *     clause cut by more than 30% is flagged too ("half of Exclusions").
  *
- * The findings are stored with the analysis (`metadata._presence`) in the
- * shape milestone 2's ReviewFinding table will take, and read live for a
- * version edited since (its clauses are carried from the analysed one, and a
- * deleted clause is not carried). The approval guard (recommendation-guard.ts)
- * reads them.
+ * docs/41 P1 — these checks are now two of the review-findings service's
+ * sources (lib/review-findings.ts), which stores ReviewFinding rows; the
+ * deletion and cut checks there work clause by clause, against the version
+ * a person relied on.
  */
-import { analysisStampOf, clauseTypeLabel } from '@clm/types'
-import { prisma } from './prisma.js'
+import { clauseTypeLabel } from '@clm/types'
 import { matchCategory, type MatchedCategory } from './clause-category.js'
 import { asStep } from './analysis-runs.js'
+import { computeAndStoreFindings, type ComputedReview } from './review-findings.js'
 
 export type PresenceFindingKind = 'not_detected' | 'deleted' | 'cut' | 'not_allowed_present'
 
@@ -155,84 +154,20 @@ export function presenceFindings(input: {
   return out.sort((a, b) => rank(a) - rank(b))
 }
 
-/** What `metadata._presence` holds. */
-export interface StoredPresence {
-  versionId: string
-  baselineVersionId: string | null
-  computedAt: string
-  findings: PresenceFinding[]
-}
-
-export function storedPresenceOf(metadata: unknown): StoredPresence | null {
-  const p = (metadata as { _presence?: StoredPresence } | null)?._presence
-  return p && typeof p.versionId === 'string' && Array.isArray(p.findings) ? p : null
-}
-
-const clausesOf = (versionId: string) => prisma.contractClause.findMany({
-  where: { versionId, isSubChunk: false },
-  orderBy: { sortOrder: 'asc' },
-  select: { clauseType: true, content: true, sectionRef: true },
-})
-
 /**
- * The findings for a version of a contract: against the org's rules and the
- * version given as its baseline. A deletion stays flagged while the clause
- * stays gone, across later analyses (`carried`), not only for the one
- * analysis after it.
+ * docs/41 P1 — run after a version's analysis is stamped (analysis-trigger
+ * finishAnalysis): its review findings (lib/review-findings.ts), worked out
+ * and stored, as the last step of its analysis run. They used to be stored
+ * here as `metadata._presence`; ReviewFinding rows replace that.
  */
-export async function computePresence(contractId: string, versionId: string, baselineVersionId: string | null, carried: PresenceFinding[] = []): Promise<PresenceFinding[]> {
-  const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { orgId: true, type: true } })
-  if (!contract) return []
-  const [rules, current, baseline, baselineVersion] = await Promise.all([
-    prisma.clauseCategory.findMany({ where: { orgId: contract.orgId }, select: { id: true, name: true, presence: true, presenceContractTypes: true } }),
-    clausesOf(versionId),
-    baselineVersionId && baselineVersionId !== versionId ? clausesOf(baselineVersionId) : Promise.resolve(null),
-    baselineVersionId ? prisma.contractVersion.findFirst({ where: { id: baselineVersionId, contractId }, select: { versionNumber: true } }) : Promise.resolve(null),
-  ])
-  const findings = presenceFindings({
-    rules, contractType: contract.type, current, baseline,
-    versionId, baselineVersionId: baseline ? baselineVersionId : null, baselineVersionNumber: baseline ? baselineVersion?.versionNumber ?? null : null,
-  })
-  const typesNow = new Set(current.map(c => c.clauseType))
-  const have = new Set(findings.map(f => `${f.kind}|${f.clauseType}`))
-  for (const f of carried) {
-    if (f.kind !== 'deleted' || typesNow.has(f.clauseType) || have.has(`deleted|${f.clauseType}`)) continue
-    findings.push({ ...f, versionId })
-  }
-  return findings
-}
-
-/**
- * docs/41 P0.3 — run after a version's analysis is stamped (analysis-trigger
- * finishAnalysis): its presence findings, stored with it.
- */
-export async function afterAnalysis(contractId: string, versionId: string): Promise<void> {
+export async function afterAnalysis(contractId: string, versionId: string): Promise<ComputedReview | null> {
   try {
-    // docs/41 P1 — the last step of the version's analysis run.
-    await asStep(contractId, versionId, 'findings', async () => {
-      const row = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
-      const stamp = analysisStampOf(row?.metadata)
-      const previous = storedPresenceOf(row?.metadata)
-      const findings = await computePresence(contractId, versionId, stamp?.versionId === versionId ? stamp.baselineVersionId : null, previous?.findings ?? [])
-      const stored: StoredPresence = { versionId, baselineVersionId: stamp?.baselineVersionId ?? null, computedAt: new Date().toISOString(), findings }
-      await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_presence}', ${JSON.stringify(stored)}::jsonb) WHERE id = ${contractId}`
-      return findings
-    }, { last: true, counts: f => ({ findings: f.length }) })
+    return await asStep(contractId, versionId, 'findings', () => computeAndStoreFindings(contractId, versionId), {
+      last: true,
+      counts: r => ({ findings: r?.findings.filter(f => f.status !== 'resolved').length ?? 0, standardClauses: r?.standardClauseIds.length ?? 0, changedClauses: r?.changedClauseIds.length ?? 0 }),
+    })
   } catch (err) {
     console.warn('[presence] findings not computed contractId=%s: %s', contractId, (err as Error).message)
+    return null
   }
-}
-
-/**
- * The findings for the version the contract stands on now: the stored ones
- * when they are for it, else worked out live against the version last
- * analysed (an edit made since — its carried clauses lack what was deleted).
- */
-export async function currentPresence(contract: { id: string; currentVersionId: string | null; metadata: unknown }): Promise<PresenceFinding[]> {
-  if (!contract.currentVersionId) return []
-  const stored = storedPresenceOf(contract.metadata)
-  if (stored?.versionId === contract.currentVersionId) return stored.findings
-  const stamp = analysisStampOf(contract.metadata)
-  if (!stamp) return []
-  return computePresence(contract.id, contract.currentVersionId, stamp.versionId, stored?.findings ?? [])
 }

@@ -74,22 +74,24 @@ describe('deleted governing law', () => {
     await prisma.contract.update({ where: { id }, data: { currentVersionId: v2.id } })
     res = (await checks(id)).json()
     expect(res.ready).toBe(false)
-    expect(res.findings[0]).toMatchObject({ kind: 'deleted', label: 'Governing Law', required: true, message: 'Governing Law — deleted since v1 (required).' })
-    expect(res.findings[0].evidence.text).toContain('State of New York')
+    expect(res.findings[0]).toMatchObject({ kind: 'deleted', severity: 'high', status: 'open', title: 'Governing Law — deleted since v1 (required)' })
+    const review = (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/review`, headers: auth(org, ['ADMIN'], owner) })).json()
+    expect(review.groups.needsAttention[0].evidence.baselineQuote).toContain('State of New York')
     expect(res.reasons.map((r: { code: string }) => r.code)).toEqual(['analysis_stale', 'required_deleted'])
 
     // Analysed again: still deleted, still not ready.
     await analysed(id, v2, 2)
     res = (await checks(id)).json()
     expect(res.reasons.map((r: { code: string }) => r.code)).toEqual(['required_deleted'])
-    const stored = (await prisma.contract.findUniqueOrThrow({ where: { id } })).metadata as { _presence: { versionId: string; findings: Array<{ kind: string; baselineVersionId: string }> } }
-    expect(stored._presence).toMatchObject({ versionId: v2.id, findings: [{ kind: 'deleted', baselineVersionId: v1.id }] })
+    // docs/41 P1 — stored as review findings of v2, measured against v1.
+    const stored = await prisma.reviewFinding.findMany({ where: { versionId: v2.id } })
+    expect(stored.map(f => ({ kind: f.kind, baselineVersionId: f.baselineVersionId }))).toEqual([{ kind: 'deleted', baselineVersionId: v1.id }])
 
     // And the next analysis still remembers it while the clause stays gone.
     const v3 = await version(id, 3, [['confidentiality', CONF], ['termination', `${TERM} Renewal requires written notice.`]])
     await analysed(id, v3, 2)
     res = (await checks(id)).json()
-    expect(res.findings.map((f: { kind: string; clauseType: string }) => `${f.kind}:${f.clauseType}`)).toContain('deleted:governing_law')
+    expect(res.findings.map((f: { kind: string; title: string }) => `${f.kind}:${f.title}`)).toContain('deleted:Governing Law — deleted since v1 (required)')
   })
 })
 
@@ -127,14 +129,14 @@ describe('the recommendation an approver sees', () => {
     expect(item.instance.approvalRecommendation).toBe('cant_recommend')
   })
 
-  it('an analysed contract with a known score and nothing missing keeps the model\'s "approve"', async () => {
+  it('an analysed contract with a known score and nothing missing is "Ready to approve" — the policy\'s label, not the model\'s', async () => {
     const id = await makeContract(org, owner, { title: 'Clean NDA', type: 'NDA' })
     await prisma.contract.update({ where: { id }, data: { riskScore: 0.12 } })
     const v1 = await version(id, 1, [['confidentiality', CONF], ['termination', TERM], ['governing_law', GOV]])
     await analysed(id, v1, 3)
     const inst = await pending(id)
     const detail = (await app.inject({ method: 'GET', url: `/api/v1/approvals/${inst}`, headers: auth(org, ['ADMIN'], approver) })).json()
-    expect(detail.approvalRecommendation).toBe('approve')
+    expect(detail.approvalRecommendation).toBe('ready_to_approve')
     expect(detail.recommendationReasons).toEqual([])
   })
 })

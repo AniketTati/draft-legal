@@ -33,6 +33,7 @@ model Organization {
   savedViews          SavedView[]
   contractExhibits    ContractExhibit[]
   analysisRuns        AnalysisRun[]
+  reviewFindings      ReviewFinding[]
   clauseTypes         ClauseTypeDefinition[]
   diligenceCells      DiligenceCell[]
   templates           Template[]
@@ -241,6 +242,7 @@ model Contract {
   fieldValues       ContractFieldValue[]
   exhibits          ContractExhibit[]
   analysisRuns      AnalysisRun[]
+  reviewFindings    ReviewFinding[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -319,6 +321,17 @@ model ContractClause {
   // docs/39 B2 — where the clause sits in its version's plainText.
   docStart       Int?
   docEnd         Int?
+  // docs/41 P1 (Part 2) — where the words came from: template | library
+  // (matched, unchanged, against the fingerprint generation stamped) |
+  // counterparty | internal_edit | unknown. A template or library clause is
+  // "Standard" and isn't sent to a model for an opinion.
+  provenance     String?
+  // template:<templateId>:<version>:<sectionId> | library:<itemId>:<version>
+  sourceRef      String?
+  // docs/41 P1 (Part 7) — the model's judgement of this clause against the
+  // playbook's positions, for the version it is on:
+  // { positionId, verdict: meets_preferred|meets_fallback|needs_approval|not_met, quote, explanation, at }
+  positionVerdict Json?
   // Chunking metadata
   isSubChunk     Boolean                      @default(false) // true for sliding-window sub-chunks of long clauses
   windowIndex    Int? // sub-chunk index within parent clause (null for primary)
@@ -499,6 +512,55 @@ model ContractExhibit {
   @@unique([contractId, s3Key])
   @@index([orgId])
   @@map("contract_exhibits")
+}
+
+/// docs/41 P1 (Workstream A, Part 7) — one thing the review of a version
+/// found, measured against a baseline (the version last sent, approved, or
+/// generated; else the one analysed before): a required clause not
+/// detected, a clause deleted, cut or changed, a clause the playbook doesn't
+/// allow, a position not met, text that doesn't read as language. Each
+/// carries the words that show it. Computed per (version, baseline) by
+/// lib/review-findings.ts; the recommendation is a policy over these rows,
+/// never a model's opinion.
+model ReviewFinding {
+  id                String    @id @default(cuid())
+  orgId             String
+  contractId        String
+  versionId         String
+  baselineVersionId String?
+  /// missing_required | deleted | not_allowed_present | modified | added |
+  /// material_cut | position_not_met | position_fallback |
+  /// needs_approval_position | unreadable_text | drafting | compliance
+  kind              String
+  /// The same finding across recomputes and versions (kind + clause type + rule).
+  key               String
+  clauseType        String?
+  clauseId          String?
+  categoryId        String?
+  positionId        String?
+  /// low | medium | high | critical
+  severity          String
+  title             String
+  explanation       String
+  /// { quote, baselineQuote, offsets: { start, end }, sectionRef }
+  evidence          Json      @default("{}")
+  /// deterministic | llm
+  source            String
+  /// open | resolved | accepted | exception_requested | exception_approved | exception_declined
+  status            String    @default("open")
+  resolvedById      String?
+  resolvedAt        DateTime?
+  resolutionNote    String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, key])
+  @@index([orgId, contractId])
+  @@index([contractId, versionId, status])
+  @@map("review_findings")
 }
 
 /// docs/41 P1 (Workstream A) — one analysis of one version: why it ran, each
@@ -1260,7 +1322,10 @@ model ApprovalInstance {
   aiSummary              String?
   keyRisks               Json      @default("[]") // [{ title, description, severity }]
   nonStandardTerms       String[]  @default([])
-  approvalRecommendation String? // "approve" | "review_required" | "reject_advised"
+  approvalRecommendation String? // docs/41 P1: ready_to_approve | review | needs_exception | escalate | cant_recommend (older rows: approve | review_required | reject_advised)
+  // docs/41 P1 — the version submitted: the baseline later changes are
+  // measured against once it is approved.
+  versionId              String?
   submittedAt            DateTime  @default(now())
   decidedAt              DateTime?
   createdAt              DateTime  @default(now())

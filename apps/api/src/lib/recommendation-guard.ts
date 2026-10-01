@@ -20,25 +20,48 @@
  *   - a clause the playbook doesn't allow;
  *   - a counterparty version arriving after the analysis.
  * The model may still write the explanation; it never writes the label.
+ *
+ * docs/41 P1 (Part 7) — the label itself is now a policy over the version's
+ * review findings (lib/review-findings.ts), never a model's choice:
+ *   - Can't recommend: the analysis is missing, failed, running or stale,
+ *     or found no clauses;
+ *   - Escalate: a critical finding, a clause the playbook doesn't allow, or
+ *     an exception that was declined;
+ *   - Needs exception: a position that needs approval, or an exception
+ *     asked for (a required clause confirmed missing);
+ *   - Review: anything else open — a deletion, a cut, a change no position
+ *     covers, a required clause not detected, text that doesn't read — and
+ *     every guard reason above;
+ *   - Ready to approve: none of these.
  */
-import { analysisState, type AnalysisState } from '@clm/types'
+import { analysisState, type AnalysisState, type RecommendationLabel } from '@clm/types'
 import { prisma } from './prisma.js'
-import { currentPresence, type PresenceFinding } from './presence-rules.js'
 import { analysisStampOf } from './analysis-trigger.js'
+import { findingsFor } from './review-findings.js'
 
 export type GuardCode =
   | 'analysis_missing' | 'analysis_failed' | 'analysis_running' | 'analysis_stale'
   | 'no_clauses' | 'risk_unknown'
   | 'required_missing' | 'required_deleted' | 'clause_deleted' | 'clause_cut' | 'not_allowed_present'
-  | 'counterparty_version'
+  | 'unreadable_text' | 'counterparty_version'
 
 export interface GuardReason { code: GuardCode; text: string }
 
+export type { RecommendationLabel }
+
+/** A finding as the policy reads it (a ReviewFinding row). */
+export interface PolicyFinding { id: string; kind: string; severity: string; status: string; title: string }
+
+export interface RecommendationReason { code: string; text: string; findingIds: string[] }
+
+export interface Recommendation { label: RecommendationLabel; reasons: RecommendationReason[] }
+
 export interface GuardResult {
-  /** Every check passed: the model's label stands. */
+  /** Every hard guard passed (the label may still be Review on findings). */
   passes: boolean
   reasons: GuardReason[]
-  findings: PresenceFinding[]
+  findings: PolicyFinding[]
+  recommendation: Recommendation
 }
 
 export interface GuardInput {
@@ -46,12 +69,17 @@ export interface GuardInput {
   /** Clauses on the version the contract stands on (carried ones included). */
   clauseCount: number
   riskScore: number | null
-  findings: PresenceFinding[]
+  findings: PolicyFinding[]
   /** The counterparty's newest version, when it arrived after the last analysis. */
   counterpartyVersionAfterAnalysis: { versionNumber: number } | null
 }
 
-/** Pure: the reasons the recommendation can't be "approve". */
+/** Statuses that still need something from someone. */
+const OPEN = new Set(['open', 'exception_requested', 'exception_declined'])
+export const isOpen = (f: Pick<PolicyFinding, 'status'>) => OPEN.has(f.status)
+const lower = (t: string) => t.replace(/\.$/, '')
+
+/** Pure: the hard guards — the reasons the label can never be "Ready to approve". */
 export function guardReasons(input: GuardInput): GuardReason[] {
   const out: GuardReason[] = []
   const a = input.analysis
@@ -66,10 +94,12 @@ export function guardReasons(input: GuardInput): GuardReason[] {
   if (input.riskScore == null) out.push({ code: 'risk_unknown', text: 'its risk score is unknown' })
 
   for (const f of input.findings) {
-    if (f.kind === 'not_detected') out.push({ code: 'required_missing', text: `${f.label} was not detected (required)` })
-    else if (f.kind === 'deleted') out.push({ code: f.required ? 'required_deleted' : 'clause_deleted', text: f.message.replace(/\.$/, '') })
-    else if (f.kind === 'cut') out.push({ code: 'clause_cut', text: f.message.replace(/\.$/, '') })
-    else if (f.kind === 'not_allowed_present') out.push({ code: 'not_allowed_present', text: f.message.replace(/\.$/, '') })
+    if (!isOpen(f)) continue
+    if (f.kind === 'missing_required') out.push({ code: 'required_missing', text: `${lower(f.title).replace(/ — not detected$/, '')} was not detected (required)` })
+    else if (f.kind === 'deleted') out.push({ code: f.severity === 'high' ? 'required_deleted' : 'clause_deleted', text: lower(f.title) })
+    else if (f.kind === 'material_cut') out.push({ code: 'clause_cut', text: lower(f.title) })
+    else if (f.kind === 'not_allowed_present') out.push({ code: 'not_allowed_present', text: lower(f.title) })
+    else if (f.kind === 'unreadable_text') out.push({ code: 'unreadable_text', text: lower(f.title) })
   }
   if (input.counterpartyVersionAfterAnalysis) {
     out.push({ code: 'counterparty_version', text: `the counterparty sent v${input.counterpartyVersionAfterAnalysis.versionNumber} after the last analysis` })
@@ -77,27 +107,65 @@ export function guardReasons(input: GuardInput): GuardReason[] {
   return out
 }
 
-/** The label stored and shown: the model's, unless the guard holds it back. */
-export function guardedLabel(modelLabel: string | null | undefined, guard: Pick<GuardResult, 'passes'>): string | null {
-  if (!guard.passes) return 'cant_recommend'
-  return modelLabel ?? null
+const CANT: GuardCode[] = ['analysis_missing', 'analysis_failed', 'analysis_running', 'analysis_stale', 'no_clauses']
+
+/** Pure: the recommendation, from the guards and the open findings. Never a model's. */
+export function policy(input: GuardInput): Recommendation {
+  const guards = guardReasons(input)
+  const open = input.findings.filter(isOpen)
+  const ids = (fs: PolicyFinding[]) => fs.map(f => f.id)
+  const byTitle = (fs: PolicyFinding[], code: string): RecommendationReason[] => fs.map(f => ({ code, text: lower(f.title), findingIds: [f.id] }))
+
+  if (guards.some(g => CANT.includes(g.code))) {
+    return { label: 'cant_recommend', reasons: guards.map(g => ({ code: g.code, text: g.text, findingIds: [] })) }
+  }
+  const critical = open.filter(f => f.severity === 'critical' || f.kind === 'not_allowed_present' || f.status === 'exception_declined')
+  if (critical.length) return { label: 'escalate', reasons: byTitle(critical, 'escalate') }
+
+  const exception = open.filter(f => f.kind === 'needs_approval_position' || f.status === 'exception_requested')
+  if (exception.length) return { label: 'needs_exception', reasons: byTitle(exception, 'needs_exception') }
+
+  // Anything still open but a fallback position (which your playbook allows).
+  const toReview = open.filter(f => f.kind !== 'position_fallback' || f.severity !== 'low')
+  const findingCodes = new Set(['required_missing', 'required_deleted', 'clause_deleted', 'clause_cut', 'not_allowed_present', 'unreadable_text'])
+  const otherGuards = guards.filter(g => !findingCodes.has(g.code))
+  if (toReview.length || otherGuards.length) {
+    return {
+      label: 'review',
+      reasons: [
+        ...otherGuards.map(g => ({ code: g.code, text: g.text, findingIds: [] as string[] })),
+        ...byTitle(toReview, 'review'),
+      ],
+    }
+  }
+  return { label: 'ready_to_approve', reasons: open.length ? [{ code: 'fallback', text: `${open.length} clause${open.length === 1 ? ' is' : 's are'} at a fallback position your playbook allows`, findingIds: ids(open) }] : [] }
+}
+
+/** The label stored and shown: the policy's. A model's label is never used. */
+export function guardedLabel(_modelLabel: string | null | undefined, guard: Pick<GuardResult, 'recommendation'>): RecommendationLabel {
+  return guard.recommendation.label
 }
 
 /** Versions made by the counterparty: a portal upload or an emailed redline. */
 const COUNTERPARTY = /^(portal|email):/
 
-/** The guard for one contract, as it stands now. */
+/** The guard and recommendation for one contract, as it stands now. */
 export async function recommendationGuard(contractId: string, orgId: string): Promise<GuardResult> {
   const c = await prisma.contract.findFirst({
     where: { id: contractId, orgId },
     select: { id: true, analysisStatus: true, analysisError: true, currentVersionId: true, metadata: true, riskScore: true },
   })
-  if (!c) return { passes: false, reasons: [{ code: 'analysis_missing', text: 'the contract was not found' }], findings: [] }
+  if (!c) {
+    const reasons: GuardReason[] = [{ code: 'analysis_missing', text: 'the contract was not found' }]
+    return { passes: false, reasons, findings: [], recommendation: { label: 'cant_recommend', reasons: reasons.map(r => ({ ...r, findingIds: [] })) } }
+  }
   const analysis = analysisState(c)
   const stamp = analysisStampOf(c.metadata)
-  const [clauseCount, findings, counterparty] = await Promise.all([
+  const [clauseCount, rows, counterparty] = await Promise.all([
     c.currentVersionId ? prisma.contractClause.count({ where: { versionId: c.currentVersionId, isSubChunk: false } }) : Promise.resolve(0),
-    currentPresence(c),
+    // Findings are only worked out for a version something has read: the
+    // analysis's own, or one edited since (its clauses carried).
+    c.currentVersionId && analysis.kind !== 'not_analysed' ? findingsFor(contractId, c.currentVersionId) : Promise.resolve([]),
     stamp
       ? prisma.contractVersion.findFirst({
           where: { contractId, createdAt: { gt: new Date(stamp.at) }, OR: [{ createdById: { startsWith: 'portal:' } }, { createdById: { startsWith: 'email:' } }] },
@@ -106,11 +174,13 @@ export async function recommendationGuard(contractId: string, orgId: string): Pr
         })
       : Promise.resolve(null),
   ])
-  const reasons = guardReasons({
+  const findings: PolicyFinding[] = rows.map(f => ({ id: f.id, kind: f.kind, severity: f.severity, status: f.status, title: f.title }))
+  const input: GuardInput = {
     analysis, clauseCount, riskScore: c.riskScore, findings,
     counterpartyVersionAfterAnalysis: counterparty && COUNTERPARTY.test(counterparty.createdById) ? { versionNumber: counterparty.versionNumber } : null,
-  })
-  return { passes: reasons.length === 0, reasons, findings }
+  }
+  const reasons = guardReasons(input)
+  return { passes: reasons.length === 0, reasons, findings, recommendation: policy(input) }
 }
 
 /** The guard for each of several contracts (the approval queues). */

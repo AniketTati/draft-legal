@@ -3372,7 +3372,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where: { id: body.contractId, orgId: body.orgId, deletedAt: null },
-      select: { id: true, title: true, type: true, status: true, value: true, currency: true },
+      select: { id: true, title: true, type: true, status: true, value: true, currency: true, currentVersionId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
     if (!['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract.status)) {
@@ -3427,9 +3427,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
           status: 'AUTO_APPROVED',
           currentStepOrder: 0,
           submittedById: body.userId,
+          // docs/41 P1 — the version approved: later changes are measured against it.
+          versionId: contract.currentVersionId ?? null,
           decidedAt: new Date(),
           aiSummary: body.comment ?? 'Auto-approved based on org rules.',
-          approvalRecommendation: 'approve',
+          approvalRecommendation: 'ready_to_approve',
         },
       })
       await prisma.contract.update({
@@ -3467,6 +3469,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           status: 'PENDING',
           currentStepOrder: firstStepDef.order,
           submittedById: body.userId,
+          versionId: contract.currentVersionId ?? null,
         },
       })
       const steps = await Promise.all(firstApproverIds.map(approverId =>

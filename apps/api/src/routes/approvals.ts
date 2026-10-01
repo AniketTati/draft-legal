@@ -28,17 +28,17 @@ import { clauseVersionId } from '../lib/clause-version.js'
 import { recommendationGuard, recommendationGuards, guardedLabel, type GuardResult } from '../lib/recommendation-guard.js'
 
 /**
- * docs/41 P0.2 — the recommendation as shown: the stored label, held back to
- * "cant_recommend" with its reasons while the approval is open and a check
- * fails (the contract may have changed since the summary was written). A
- * decided approval keeps what it was decided on.
+ * docs/41 P0.2 / P1 — the recommendation as shown while the approval is
+ * open: the policy over the contract's findings as it stands now (it may
+ * have changed since the summary was written), with its reasons. A decided
+ * approval keeps what it was decided on.
  */
 function shownRecommendation(instance: { status: string; approvalRecommendation: string | null }, guard: GuardResult | undefined) {
   const open = instance.status === 'PENDING' || instance.status === 'ESCALATED'
   if (!open || !guard) return { approvalRecommendation: instance.approvalRecommendation, recommendationReasons: [] as string[] }
   return {
     approvalRecommendation: guardedLabel(instance.approvalRecommendation, guard),
-    recommendationReasons: guard.reasons.map(r => r.text),
+    recommendationReasons: guard.recommendation.reasons.map(r => r.text),
   }
 }
 
@@ -510,13 +510,11 @@ export async function approvalRoutes(app: FastifyInstance) {
       approvalRecommendation?: string
     }
 
-    // docs/41 P0.2 — the model writes the explanation; the label it chose is
-    // stored only when the deterministic checks pass.
-    const guard = approvalRecommendation !== undefined
-      ? await recommendationGuard(instance.contract.id, instance.orgId)
-      : null
-    if (guard && !guard.passes) {
-      req.log.info({ instanceId, reasons: guard.reasons.map(r => r.code), modelLabel: approvalRecommendation }, 'approval recommendation held back by the guard')
+    // docs/41 P1 — the model writes the explanation, from the findings; the
+    // label is the policy's over those findings, whatever the model sent.
+    const guard = await recommendationGuard(instance.contract.id, instance.orgId)
+    if (approvalRecommendation && approvalRecommendation !== guard.recommendation.label) {
+      req.log.info({ instanceId, label: guard.recommendation.label, modelLabel: approvalRecommendation }, 'approval recommendation is the policy\'s, not the model\'s')
     }
     const updated = await prisma.approvalInstance.update({
       where: { id: instanceId },
@@ -524,7 +522,7 @@ export async function approvalRoutes(app: FastifyInstance) {
         ...(aiSummary              !== undefined && { aiSummary }),
         ...(keyRisks               !== undefined && { keyRisks: keyRisks as never }),
         ...(nonStandardTerms       !== undefined && { nonStandardTerms }),
-        ...(approvalRecommendation !== undefined && { approvalRecommendation: guard ? guardedLabel(approvalRecommendation, guard) : approvalRecommendation }),
+        approvalRecommendation: guardedLabel(approvalRecommendation, guard),
       },
     })
 

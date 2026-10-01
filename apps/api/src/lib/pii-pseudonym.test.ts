@@ -67,9 +67,11 @@ describe('the agents service keeps round-trip tokens intact (source tripwires)',
     }
     expect(py('agents', 'ask_agent.py')).toContain('SystemMessage(content=_ASK_SYSTEM + PII_TOKEN_RULE)')
     expect(py('agents', 'assist_agent.py').match(/SystemMessage\(content=system_content \+ PII_TOKEN_RULE\)/g)?.length).toBe(2)
-    for (const file of ['redline_agent.py', 'approval_agent.py']) {
+    // docs/41 P1 — the approval summary has two model steps now (summarize,
+    // explain the findings); the third (flag risks) reads the findings, no model.
+    for (const [file, prompts] of [['redline_agent.py', 3], ['approval_agent.py', 2]] as const) {
       const src = py('agents', file)
-      expect(src.match(/SystemMessage\(content="[^"]+" \+ PII_TOKEN_RULE\)/g)?.length, file).toBe(3)
+      expect(src.match(/SystemMessage\(content="[^"]+" \+ PII_TOKEN_RULE\)/g)?.length, file).toBe(prompts)
       expect(src, file).not.toMatch(/SystemMessage\(content="[^"]+"\)/)
     }
   })

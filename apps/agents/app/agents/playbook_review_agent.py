@@ -197,3 +197,126 @@ async def run_playbook_review(
         "clausesReviewed": len(trimmed),
         "playbookPositions": len(playbook_positions),
     }
+
+
+# ─── docs/41 P1 — the position check ──────────────────────────────────────────
+#
+# The API now sends only the clauses that changed since the version a person
+# relied on, or that no template fingerprint matches: text left as our
+# template wrote it is Standard and is not sent. For each clause it gets one
+# verdict, with the words that decided it. The verdict is never the
+# recommendation: the API's policy over all the findings decides that.
+
+VERDICTS = ("meets_preferred", "meets_fallback", "needs_approval", "not_met", "not_covered")
+
+_POSITION_PROMPT = """You are checking clauses of a contract against our playbook positions. Judge EVERY clause below, one by one.
+
+Our positions. Each has an id, the kind of clause it is for, its rung (preferred, acceptable, fallback, walkaway) and its language:
+{positions_json}
+
+Contract type: {contract_type}
+
+For each clause return one object:
+- clauseId: the clause's id, exactly as given
+- positionId: the id of the position whose language this clause is closest to, or null when none of our positions is for this kind of clause
+- verdict, one of:
+  "meets_preferred" — it gives us what our preferred or acceptable position asks for
+  "meets_fallback" — it only reaches our fallback position
+  "needs_approval" — it is worse than our fallback position but does not reach our walkaway position
+  "not_met" — it reaches or goes beyond our walkaway position, or contradicts what our positions ask for
+  "not_covered" — none of our positions is for this kind of clause (positionId is then null)
+- quote: the exact words of the clause, copied character for character (at most 40 words), that decided the verdict
+- explanation: one plain sentence for a lawyer: what the clause says, and what our position asks for
+
+FIGURES — a clause may come with "facts": its liability caps, measured from its own words. Use those figures as given; do not work out a cap's size yourself.
+
+Do not judge whether the clause is common or usual in the market: judge it only against OUR positions above.
+
+Return ONLY a valid JSON array, one object per clause — no markdown, no prose.
+
+Clauses:
+{clauses_json}"""
+
+
+async def run_position_check(
+    clauses: list[dict],
+    playbook_positions: list[dict],
+    contract_type: str,
+    org_id: str | None = None,
+) -> dict:
+    """
+    Returns:
+      {
+        verdicts: [{clauseId, positionId, verdict, quote, explanation}],  # one per clause judged
+        clausesChecked: int,
+        playbookPositions: int,
+      }
+    A verdict whose clause, position or kind isn't one we sent is dropped:
+    the API would otherwise show a judgement about text that isn't there.
+    """
+    if not clauses or not playbook_positions:
+        return {"verdicts": [], "clausesChecked": 0, "playbookPositions": len(playbook_positions)}
+
+    trimmed = [
+        {
+            "id": c.get("id"),
+            "clauseType": c.get("clauseType"),
+            "sectionRef": c.get("sectionRef"),
+            "content": sanitize_untrusted((c.get("content") or "")[:_MAX_CLAUSE_CHARS]),
+            **({"facts": [sanitize_untrusted(f) for f in c["facts"]]} if c.get("facts") else {}),
+        }
+        for c in clauses[:_MAX_CLAUSES]
+    ]
+    resolved = await resolve_llm(
+        "reasoning",
+        org_id=org_id,
+        streaming=True,
+        trace_name="playbook_review.position_check",
+    )
+    prompt = _POSITION_PROMPT.format(
+        # The org's own positions: trusted, not framed as untrusted.
+        positions_json=json.dumps(playbook_positions, indent=2)[:60_000],
+        contract_type=contract_type or "unknown",
+        clauses_json=wrap_untrusted_document(
+            json.dumps(trimmed, indent=2),
+            source="contract clause text",
+        ),
+    ) + PII_TOKEN_RULE
+
+    response = await resolved.llm.ainvoke([
+        SystemMessage(content="You check contract clauses against a company's own playbook. Return only valid JSON."),
+        HumanMessage(content=prompt),
+    ], config={"callbacks": resolved.callbacks})
+    raw = _parse_json(response.content)
+    if not isinstance(raw, list):
+        logger.warning("[position-check] model did not return a JSON array — no verdicts")
+        raw = []
+
+    clause_ids = {c["id"] for c in trimmed if c.get("id")}
+    position_ids = {p.get("id") for p in playbook_positions if p.get("id")}
+    seen: set[str] = set()
+    verdicts = []
+    for v in raw:
+        if not isinstance(v, dict):
+            continue
+        cid = v.get("clauseId")
+        verdict = v.get("verdict")
+        if cid not in clause_ids or cid in seen or verdict not in VERDICTS:
+            continue
+        pid = v.get("positionId")
+        if pid is not None and pid not in position_ids:
+            pid = None
+        if verdict != "not_covered" and pid is None:
+            # A judgement against no position of ours is not a judgement against the playbook.
+            verdict = "not_covered"
+        seen.add(cid)
+        verdicts.append({
+            "clauseId": cid,
+            "positionId": pid,
+            "verdict": verdict,
+            "quote": str(v.get("quote") or "")[:600],
+            "explanation": str(v.get("explanation") or "")[:600],
+        })
+
+    logger.info("[position-check] %d clauses → %d verdicts", len(trimmed), len(verdicts))
+    return {"verdicts": verdicts, "clausesChecked": len(trimmed), "playbookPositions": len(playbook_positions)}

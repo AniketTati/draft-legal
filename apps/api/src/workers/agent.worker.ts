@@ -27,7 +27,8 @@ import { answerColumn, answerDocument } from '../lib/diligence-columns.js'
 import { agentsAskFields } from '../lib/diligence-agents.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, CLAUSE_TYPE_LABELS } from '@clm/types'
+import { matchCategory } from '../lib/clause-category.js'
 import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
@@ -39,6 +40,8 @@ import { saveDraftVersion, requestTerms, type DraftAgentResult } from '../lib/dr
 import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
 import { runJobStep, type StepOutcome } from '../lib/analysis-runs.js'
 import { contractPlaybook } from '../lib/playbooks.js'
+import { computeAndStoreFindings, positionCheckTargets, type PositionVerdict, type Verdict } from '../lib/review-findings.js'
+import { normaliseText } from '../lib/fingerprint.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -376,6 +379,35 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
   try {
     await setMeta({ _playbookRedlineStatus: 'RUNNING' })
 
+    // docs/41 P1 — "Fix all fixable": the review's findings already say which
+    // clauses and why; nothing is worked out again.
+    if (data.targets?.clauseIds.length) {
+      const { clauseIds, hints, severity = {}, findingIds = {} } = data.targets
+      const proposed = await proposeClauseBatch({ orgId, contractId, clauseIds, aggression, hints })
+      if (!proposed.ok) throw new Error(`${proposed.detail}${proposed.upstream ? `: ${proposed.upstream}` : ''}`)
+      const rows = await prisma.contractClause.findMany({ where: { id: { in: clauseIds } }, select: { id: true, content: true, sectionRef: true } })
+      const byId = new Map(rows.map(c => [c.id, c]))
+      const proposals = proposed.data.proposals.map(p => ({
+        clauseId: p.clauseId, clauseType: p.clauseType,
+        sectionRef: byId.get(p.clauseId)?.sectionRef ?? null,
+        originalText: byId.get(p.clauseId)?.content ?? '',
+        proposedText: p.proposedText, rationale: p.rationale, changes: p.changes,
+        severity: severity[p.clauseId] ?? null, findingId: findingIds[p.clauseId] ?? null, error: p.error,
+      }))
+      await setMeta({
+        _playbookRedlineStatus: 'DONE',
+        _playbookRedline: {
+          versionId, aggression, proposals, source: 'review',
+          deviationCount: clauseIds.length,
+          proposedCount: proposals.filter(p => p.proposedText).length,
+          failedCount: proposals.filter(p => p.error).length,
+          worstSeverity: null, truncated: false, uncoveredClauses: 0,
+          stagedAt: new Date().toISOString(),
+        },
+      })
+      return
+    }
+
     // 1. Which clauses deviate. Ask for the WHOLE document — Phase 0 raised the
     //    cap for exactly this caller.
     const checkRes = await fetch(`${API_INTERNAL_URL}/api/internal/ai/tools/playbook_check`, {
@@ -485,7 +517,24 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
   }
 }
 
-async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
+/** The built-in clause type a playbook category is (the first that names it). */
+function clauseTypeFor(categoryName: string | null | undefined): string | null {
+  if (!categoryName) return null
+  const cat = { id: 'c', name: categoryName }
+  return Object.keys(CLAUSE_TYPE_LABELS).find(t => matchCategory([cat], t)) ?? null
+}
+
+/**
+ * docs/41 P1 (Part 7) — the model's position check, after the findings.
+ *
+ * Only the clauses the findings say changed since the baseline (all of them
+ * on a contract with none) and that aren't standard (still the template's
+ * words) are sent, each judged against the positions of the playbook this
+ * contract is reviewed against: a verdict, a quote and a sentence, stored on
+ * the clause. The findings are then worked out again with the verdicts in.
+ * The model judges clauses; it never writes the recommendation.
+ */
+async function handlePlaybookReview(data: PlaybookReviewJob): Promise<StepOutcome> {
   const { contractId, orgId } = data
 
   const contract = await prisma.contract.findFirst({
@@ -494,39 +543,47 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
   })
   if (!contract) {
     console.info('[agent-worker] playbook-review skip contractId=%s — contract gone', contractId)
-    return
+    return { skipped: 'the contract was deleted' }
   }
   // DD2 — a review after edits takes the version the contract stands on now.
   const versionId = data.versionId ?? contract.currentVersionId
-  if (!versionId) return
+  if (!versionId) return { skipped: 'the contract has no version' }
 
-  // Review the version that was just extracted, not whatever is "current" by
-  // the time this runs — the pointer may have moved on, and the stamp below
-  // must describe the document actually scored.
-  const clauses = await prisma.contractClause.findMany({
+  // Which clauses changed, and which are standard: the findings, fresh.
+  const review = await computeAndStoreFindings(contractId, versionId)
+  if (!review) return { skipped: 'the version is gone' }
+  const rows = await prisma.contractClause.findMany({
     where:   { versionId, isSubChunk: false },
-    select:  { id: true, clauseType: true, content: true, sectionRef: true },
-    orderBy: { id: 'asc' },
+    select:  { id: true, clauseType: true, content: true, sectionRef: true, sortOrder: true, positionVerdict: true, sourceRef: true },
+    orderBy: { sortOrder: 'asc' },
   })
-  if (clauses.length === 0) {
+  if (rows.length === 0) {
     console.info('[agent-worker] playbook-review skip contractId=%s — no clauses extracted', contractId)
-    return
+    return { skipped: 'no clauses to check' }
+  }
+  const targets = positionCheckTargets(
+    rows.map(r => ({ ...r, positionVerdict: r.positionVerdict as PositionVerdict | null, standardSource: r.sourceRef })),
+    review.changedClauseIds,
+  )
+  const standard = review.standardClauseIds.length
+  if (targets.length === 0) {
+    return { skipped: standard ? 'every changed clause is standard or already checked' : 'no changed clauses to check', counts: { checked: 0, standard } }
   }
 
   // docs/41 P1 — the positions of the playbook this contract is reviewed
   // against (lib/playbooks.ts), for its type.
-  const { where: positionScope } = await contractPlaybook(orgId, contract)
+  const { resolution, where: positionScope } = await contractPlaybook(orgId, contract)
   const relevant = positionScope ? await prisma.playbookPosition.findMany({
     where:  positionScope,
     select: {
-      positionType: true, content: true, notes: true, contractTypes: true,
+      id: true, positionType: true, content: true, notes: true, contractTypes: true,
       clauseCategory: { select: { name: true } },
     },
   }) : []
   if (relevant.length === 0) {
     console.info('[agent-worker] playbook-review skip contractId=%s — no playbook positions for type=%s',
       contractId, contract.type)
-    return
+    return { skipped: resolution.playbook ? `${resolution.playbook.name} has no positions for this type` : resolution.explanation, counts: { checked: 0, standard } }
   }
 
   const res = await callAgents('/playbook-review', {
@@ -535,16 +592,18 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     body:    JSON.stringify({
       contractId,
       orgId,
+      mode: 'positions',
       // DD1 — a clause's caps, measured from its words, so the review states
       // them instead of working them out.
-      clauses: clauses.map(c => {
+      clauses: targets.map(c => {
         const facts = liabilityCaps(c.content).map(x => x.statement)
-        return facts.length ? { ...c, facts } : c
+        return { id: c.id, clauseType: c.clauseType, content: c.content, sectionRef: c.sectionRef, ...(facts.length && { facts }) }
       }),
       playbookPositions: relevant.map(p => ({
+        id:           p.id,
         clauseType:   p.clauseCategory?.name ?? 'other',
         positionType: p.positionType,
-        content:      p.content,
+        content:      htmlToText(p.content),
         notes:        p.notes,
       })),
       contractType: contract.type,
@@ -558,39 +617,60 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /playbook-review returned ${res.status}: ${text.slice(0, 200)}`)
   }
-  const result = await res.json() as {
-    findings: unknown[]
-    summary: string
-    requiresHumanGate: boolean
-    clausesReviewed: number
-    playbookPositions: number
+  const result = await res.json() as { verdicts?: Array<{ clauseId: string; positionId: string | null; verdict: Verdict; quote: string; explanation: string }> }
+
+  // Each verdict on its clause, with a quote that is really in the clause:
+  // a quote the model made up is replaced by the clause's own words.
+  const typeOf = new Map(relevant.map(p => [p.id, p.positionType]))
+  const at = new Date().toISOString()
+  let stored = 0
+  for (const v of result.verdicts ?? []) {
+    const clause = targets.find(c => c.id === v.clauseId)
+    if (!clause) continue
+    const real = v.quote && normaliseText(clause.content).includes(normaliseText(v.quote))
+    const verdict: PositionVerdict = {
+      positionId: v.positionId, verdict: v.verdict,
+      quote: real ? v.quote : clause.content.slice(0, 300),
+      explanation: v.explanation || 'No reason was given.',
+      positionType: v.positionId ? typeOf.get(v.positionId) ?? null : null,
+      at,
+    }
+    // docs/41 P1 — new text from an edit has no type yet: the position it
+    // was judged against names it (the only re-classification an edit gets).
+    const retyped = clause.clauseType === 'unclassified' && v.positionId ? clauseTypeFor(relevant.find(p => p.id === v.positionId)?.clauseCategory?.name) : null
+    await prisma.contractClause.update({ where: { id: clause.id }, data: { positionVerdict: verdict as object, ...(retyped && { clauseType: retyped }) } })
+    stored++
   }
 
-  // Re-read metadata immediately before merging. The LLM round-trip above can
-  // take tens of seconds, and anything written to contract.metadata in that
-  // window (e.g. POST /:id/redline setting _redlineStatus) would be silently
-  // clobbered by a snapshot taken before the call.
-  const fresh = await prisma.contract.findUnique({
-    where:  { id: contractId },
-    select: { metadata: true },
+  // The rail's older review and the redline targets read this; kept for a release (docs/41 Part 8).
+  const verdicts = result.verdicts ?? []
+  const legacy = verdicts.filter(v => v.verdict !== 'meets_preferred' && v.verdict !== 'not_covered').map(v => {
+    const walkaway = v.positionId && typeOf.get(v.positionId) === 'walkaway'
+    return {
+      clauseId: v.clauseId,
+      clauseType: targets.find(c => c.id === v.clauseId)?.clauseType ?? 'other',
+      playbookAlignment: v.verdict === 'meets_fallback' ? 'fallback' : walkaway ? 'walkaway' : 'outside_playbook',
+      severity: v.verdict === 'meets_fallback' ? 'low' : walkaway ? 'critical' : 'high',
+      recommendation: v.verdict === 'meets_fallback' ? 'accept' : 'negotiate',
+      reasoning: v.explanation,
+      requiresHumanReview: v.verdict !== 'meets_fallback',
+    }
   })
-  const existing = (fresh?.metadata as Record<string, unknown> | null) ?? {}
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  {
-      metadata: {
-        ...existing,
-        _playbookReview: {
-          ...result,
-          reviewedAt: new Date().toISOString(),
-          versionId,
-        },
-      } as never,
-    },
-  })
+  await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_playbookReview}', ${JSON.stringify({
+    findings: legacy,
+    summary: legacy.length ? `${legacy.length} of ${targets.length} changed clause(s) are not at your preferred position.` : `Checked ${targets.length} changed clause(s) against your playbook.`,
+    requiresHumanGate: legacy.some(f => f.requiresHumanReview),
+    clausesReviewed: targets.length,
+    playbookPositions: relevant.length,
+    playbook: resolution.playbook ? { id: resolution.playbook.id, name: resolution.playbook.name, version: resolution.playbook.version } : null,
+    reviewedAt: at,
+    versionId,
+  })}::jsonb) WHERE id = ${contractId}`
 
-  console.info('[agent-worker] playbook-review done contractId=%s findings=%d gate=%s',
-    contractId, result.findings.length, result.requiresHumanGate)
+  // The findings again, with the verdicts in.
+  await computeAndStoreFindings(contractId, versionId)
+  console.info('[agent-worker] playbook-review done contractId=%s checked=%d verdicts=%d standard=%d', contractId, targets.length, stored, standard)
+  return { counts: { checked: targets.length, verdicts: stored, standard } }
 }
 
 // ─── approval-summary ─────────────────────────────────────────────────────────

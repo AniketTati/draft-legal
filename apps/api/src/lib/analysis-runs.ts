@@ -242,7 +242,7 @@ export interface StepOutcome {
   counts?: Record<string, number>
   model?: string
   /** What runs next, once this step's end is recorded (the findings after the index). */
-  after?: () => Promise<void>
+  after?: () => Promise<unknown>
 }
 
 /** The step each queued job is, for the jobs that are analysis steps. */

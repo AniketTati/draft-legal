@@ -149,7 +149,7 @@ export async function shareRoutes(app: FastifyInstance) {
       })
     }
 
-    createAuditEvent({ orgId, userId, action: AuditAction.LINK_SHARED, resourceType: 'contract', resourceId: contractId, metadata: { shareLinkId: shareLink.id, permissions: grantedPermissions, expiresAt, emailedTo: inviteEmail } }).catch(() => {})
+    createAuditEvent({ orgId, userId, action: AuditAction.LINK_SHARED, resourceType: 'contract', resourceId: contractId, metadata: { shareLinkId: shareLink.id, permissions: grantedPermissions, expiresAt, emailedTo: inviteEmail, versionId: contract.currentVersionId } }).catch(() => {})
 
     return reply.status(201).send({
       shareLink,

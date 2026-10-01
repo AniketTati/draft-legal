@@ -321,6 +321,11 @@ export interface PlaybookRedlineJob {
   userId:     string
   versionId:  string
   aggression: 'least' | 'moderate' | 'aggressive'
+  /**
+   * docs/41 P1 — "Fix all fixable": the clauses the review's findings name,
+   * with each one's category and issue, instead of working them out again.
+   */
+  targets?: { clauseIds: string[]; hints: Record<string, { category?: string; issue?: string }>; severity?: Record<string, string | null>; findingIds?: Record<string, string> }
 }
 export interface BackfillCustomFieldJob {
   orgId:             string

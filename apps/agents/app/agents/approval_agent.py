@@ -1,9 +1,14 @@
 """
-Approval Agent — Phase 06
-3-step LangGraph pipeline that generates an executive summary for approvers:
+Approval Agent — Phase 06, reworked for docs/41 P1 (Part 7)
+LangGraph pipeline that writes the summary an approver reads:
   Step 1 — Summarize (fast model): 3-5 sentence plain-language summary of the contract
-  Step 2 — Flag Risks (smart model): identify non-standard/unfavorable terms from extracted clauses
-  Step 3 — Recommend (smart model): approve / review_required / reject_advised based on risk profile
+  Step 2 — Risks from findings (no model): the review's open findings, as key risks
+  Step 3 — Explain (smart model): why the review found what it found, quoting the clauses
+
+The model never chooses the recommendation. The API's policy over the review
+findings does (recommendation-guard.ts), and stores it whatever this sends;
+this pipeline sends none. It used to: a model read a risk score of null as 0
+and said Approve after Governing Law was deleted.
 
 Output is stored on ApprovalInstance via PATCH /api/v1/approvals/:instanceId/summary.
 """
@@ -37,11 +42,13 @@ class ApprovalState(TypedDict):
     key_terms:            dict
     risk_factors:         list[str]
     risk_score:           float | None
+    # docs/41 P1 — the review's open findings: [{kind, severity, title, explanation, evidence: {quote, baselineQuote}}]
+    findings:             list[dict]
+    recommendation:       str | None   # the API's label, to explain (never chosen here)
     # outputs
     executive_summary:    str
     key_risks:            list[dict]   # [{title, description, severity}]
     non_standard_terms:   list[str]
-    approval_recommendation: str       # "approve" | "review_required" | "reject_advised"
     error:                str | None
 
 
@@ -66,52 +73,23 @@ Write a 3-5 sentence plain-language executive summary. Focus on:
 Use plain language. Avoid legal jargon. No markdown, no bullet points.
 Return ONLY the summary text, nothing else."""
 
-_FLAG_RISKS_PROMPT = """You are a contract risk analyst. Identify non-standard or unfavorable terms that a business approver should be aware of.
+_EXPLAIN_PROMPT = """You are writing for a business approver (not a lawyer) why a contract's review found what it found.
 
-Contract type: {contract_type}
-AI risk score: {risk_score} (0 = no risk, 1 = high risk; "unknown" means the contract was not scored — never read it as low risk)
-AI-identified risk factors: {risk_factors_json}
+The review's recommendation is: {recommendation}. It was decided by fixed rules from the findings below; do not change it, argue with it, or give your own.
 
-Extracted clauses with risk ratings:
-{clauses_json}
+Findings (each with the contract's own words as evidence):
+{findings_json}
 
-Return ONLY valid JSON with two keys:
-{{
-  "keyRisks": [
-    {{
-      "title": "Short risk title (5-10 words)",
-      "description": "One sentence explanation of why this is a concern",
-      "severity": "low|medium|high|critical"
-    }}
-  ],
-  "nonStandardTerms": [
-    "Short description of a non-standard term"
-  ]
-}}
+Write 2-4 plain sentences: what the approver needs to look at first and why, quoting the contract's words (in quotation marks) from the evidence above. Only say what the findings and their quotes show. Do not judge anything against "the market" or "common practice".
+Return ONLY the sentences, nothing else."""
 
-Focus on: uncapped liability, missing limitation clauses, auto-renewal without notice, unusual IP assignment,
-one-sided termination rights, penalties/liquidated damages, unusual arbitration clauses.
-Return at most 5 keyRisks and 5 nonStandardTerms. If there are none, return empty arrays."""
-
-_RECOMMEND_PROMPT = """You are a contract approval advisor. Based on the risk analysis below, provide an approval recommendation.
-
-Contract type: {contract_type}
-Value: {value}
-AI risk score: {risk_score} (0 = no risk, 1 = high risk; "unknown" means the contract was not scored — never read it as low risk)
-Key risks identified: {key_risks_json}
-Executive summary: {executive_summary}
-
-Rules for recommendation:
-- "approve": risk_score is a number < 0.35 AND no high/critical severity risks AND standard contract type
-- an "unknown" risk score is never "approve"
-- "review_required": risk_score 0.35–0.67 OR any medium severity risks OR unusual terms present
-- "reject_advised": risk_score > 0.67 OR any critical severity risks OR missing standard protections
-
-Return ONLY valid JSON:
-{{
-  "recommendation": "approve|review_required|reject_advised",
-  "rationale": "One sentence explaining the recommendation"
-}}"""
+_LABEL_WORDS = {
+    "ready_to_approve": "Ready to approve",
+    "review": "Review",
+    "needs_exception": "Needs exception",
+    "escalate": "Escalate",
+    "cant_recommend": "Can't recommend",
+}
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,78 +157,60 @@ async def step_summarize(state: ApprovalState) -> dict:
         return {'executive_summary': f'Summary unavailable ({type(e).__name__})', 'error': str(e)}
 
 
+_SEVERITY = {"critical": "critical", "high": "high", "medium": "medium", "low": "low"}
+
+
+def risks_from_findings(findings: list[dict]) -> dict:
+    """Step 2 — the review's open findings, as the key risks an approver sees.
+    No model: each is a finding with its evidence, not an opinion."""
+    open_ = [f for f in findings if f.get("status", "open") in ("open", "exception_requested", "exception_declined")]
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    open_.sort(key=lambda f: order.get(f.get("severity", "low"), 3))
+    key_risks = [
+        {"title": f.get("title", ""), "description": f.get("explanation", ""), "severity": _SEVERITY.get(f.get("severity", "low"), "low")}
+        for f in open_[:5]
+    ]
+    non_standard = [f.get("title", "") for f in open_ if f.get("kind") in ("modified", "added", "position_not_met", "position_fallback", "needs_approval_position", "material_cut")][:5]
+    return {"key_risks": key_risks, "non_standard_terms": non_standard}
+
+
 async def step_flag_risks(state: ApprovalState) -> dict:
-    """Step 2: identify non-standard and unfavorable terms (smart model)."""
-    if state.get('error') and not state.get('executive_summary'):
-        return {'key_risks': [], 'non_standard_terms': []}
+    return risks_from_findings(state.get("findings") or [])
+
+
+async def step_explain(state: ApprovalState) -> dict:
+    """Step 3: explain the findings, quoting the contract (smart model). Never a label."""
+    findings = [f for f in (state.get("findings") or []) if f.get("status", "open") in ("open", "exception_requested", "exception_declined")]
+    label = _LABEL_WORDS.get(state.get("recommendation") or "", "Review")
+    if not findings:
+        # Nothing to explain: the model is not asked.
+        return {}
     try:
         resolved = await resolve_llm(
             'reasoning',
             org_id=state.get('org_id'),
-            trace_name='approval.flag_risks',
+            trace_name='approval.explain',
         )
-        # Only send unfavorable/unusual clauses to keep prompt concise
-        risky_clauses = [c for c in state['clauses'] if c.get('riskRating') in ('unfavorable', 'unusual', 'high')]
-        all_clauses = risky_clauses if risky_clauses else state['clauses'][:10]
-
-        prompt = _FLAG_RISKS_PROMPT.format(
-            contract_type=state['contract_type'],
-            risk_score=_risk_text(state['risk_score']),
-            risk_factors_json=json.dumps(state['risk_factors'][:10]),
-            clauses_json=json.dumps(all_clauses[:10], indent=2)[:4000],
-        )
-        response = await resolved.llm.ainvoke(
-            [SystemMessage(content="You are a contract risk analyst." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
-            config={"callbacks": resolved.callbacks},
-        )
-        raw = response.content if hasattr(response, 'content') else str(response)
-        parsed = _safe_json(raw)
-        if parsed and isinstance(parsed, dict):
-            return {
-                'key_risks': parsed.get('keyRisks', [])[:5],
-                'non_standard_terms': parsed.get('nonStandardTerms', [])[:5],
+        slim = [
+            {
+                "title": f.get("title"),
+                "severity": f.get("severity"),
+                "explanation": f.get("explanation"),
+                "quote": ((f.get("evidence") or {}).get("quote") or "")[:400],
+                "before": ((f.get("evidence") or {}).get("baselineQuote") or "")[:400],
             }
-        return {'key_risks': [], 'non_standard_terms': []}
-    except Exception as e:
-        logger.error('step_flag_risks failed: %s', e)
-        return {'key_risks': [], 'non_standard_terms': [], 'error': str(e)}
-
-
-async def step_recommend(state: ApprovalState) -> dict:
-    """Step 3: produce approval recommendation (smart model)."""
-    if unscored(state):
-        # docs/41 P0.2 — no score or no clauses: nothing supports "approve".
-        return {'approval_recommendation': 'review_required'}
-    try:
-        resolved = await resolve_llm(
-            'reasoning',
-            org_id=state.get('org_id'),
-            trace_name='approval.recommend',
-        )
-        value_str = f"${state['contract_value']:,.2f}" if state['contract_value'] else "Not specified"
-        prompt = _RECOMMEND_PROMPT.format(
-            contract_type=state['contract_type'],
-            value=value_str,
-            risk_score=_risk_text(state['risk_score']),
-            key_risks_json=json.dumps(state['key_risks'][:5], indent=2),
-            executive_summary=state['executive_summary'],
-        )
+            for f in findings[:12]
+        ]
+        prompt = _EXPLAIN_PROMPT.format(recommendation=label, findings_json=json.dumps(slim, indent=2)[:12_000])
         response = await resolved.llm.ainvoke(
-            [SystemMessage(content="You are a contract approval advisor." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
+            [SystemMessage(content="You explain contract review findings to a business approver." + PII_TOKEN_RULE), HumanMessage(content=prompt)],
             config={"callbacks": resolved.callbacks},
         )
-        raw = response.content if hasattr(response, 'content') else str(response)
-        parsed = _safe_json(raw)
-        if parsed and isinstance(parsed, dict):
-            rec = parsed.get('recommendation', 'review_required')
-            rationale = parsed.get('rationale', '')
-            if rec not in ('approve', 'review_required', 'reject_advised'):
-                rec = 'review_required'
-            return {'approval_recommendation': rec, 'executive_summary': f"{state['executive_summary']}\n\n{rationale}".strip()}
-        return {'approval_recommendation': 'review_required'}
+        why = (response.content if hasattr(response, 'content') else str(response)).strip()
+        return {'executive_summary': f"{state['executive_summary']}\n\n{why}".strip()}
     except Exception as e:
-        logger.error('step_recommend failed: %s', e)
-        return {'approval_recommendation': 'review_required', 'error': str(e)}
+        logger.error('step_explain failed: %s', e)
+        return {'error': str(e)}
 
 
 # ─── Graph construction ───────────────────────────────────────────────────────
@@ -259,11 +219,11 @@ def _build_graph() -> StateGraph:
     g = StateGraph(ApprovalState)
     g.add_node('summarize',  step_summarize)
     g.add_node('flag_risks', step_flag_risks)
-    g.add_node('recommend',  step_recommend)
+    g.add_node('explain',    step_explain)
     g.set_entry_point('summarize')
     g.add_edge('summarize',  'flag_risks')
-    g.add_edge('flag_risks', 'recommend')
-    g.add_edge('recommend',  END)
+    g.add_edge('flag_risks', 'explain')
+    g.add_edge('explain',    END)
     return g.compile()
 
 
@@ -283,8 +243,10 @@ async def run_approval_summary(
     risk_factors:     list[str],
     risk_score:       float | None,
     org_id:           str | None = None,
+    findings:         list[dict] | None = None,
+    recommendation:   str | None = None,
 ) -> dict:
-    """Run the 3-step approval summary pipeline. Returns structured result dict."""
+    """Run the approval summary pipeline. Returns structured result dict, with no recommendation of its own."""
     initial_state: ApprovalState = {
         'org_id':               org_id,
         'contract_plain_text':  plain_text,
@@ -296,11 +258,12 @@ async def run_approval_summary(
         'key_terms':            key_terms,
         'risk_factors':         risk_factors,
         'risk_score':           risk_score,
+        'findings':             findings or [],
+        'recommendation':       recommendation,
         # outputs — filled by graph nodes
         'executive_summary':    '',
         'key_risks':            [],
         'non_standard_terms':   [],
-        'approval_recommendation': 'review_required',
         'error':                None,
     }
     final_state = await _graph.ainvoke(initial_state)
@@ -308,6 +271,5 @@ async def run_approval_summary(
         'executiveSummary':       final_state.get('executive_summary', ''),
         'keyRisks':               final_state.get('key_risks', []),
         'nonStandardTerms':       final_state.get('non_standard_terms', []),
-        'approvalRecommendation': final_state.get('approval_recommendation', 'review_required'),
         'error':                  final_state.get('error'),
     }

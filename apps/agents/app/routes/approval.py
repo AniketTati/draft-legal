@@ -79,7 +79,19 @@ async def _process_approval_summary(
             clauses_data = clauses_r.json()
             clauses = clauses_data.get("data", clauses_data) if isinstance(clauses_data, dict) else clauses_data
 
-        # 4. Run the 3-step LangGraph pipeline
+        # 3b. docs/41 P1 — the review's findings and the recommendation the
+        # API's policy made of them: the summary explains these, and sends
+        # no recommendation of its own.
+        findings: list[dict] = []
+        recommendation = None
+        review_r = await client.get(f"{_API}/api/v1/contracts/{contract_id}/review", headers=headers)
+        if review_r.status_code == 200:
+            review = review_r.json()
+            recommendation = (review.get("recommendation") or {}).get("label")
+            for group in ("needsAttention", "notDetected"):
+                findings.extend((review.get("groups") or {}).get(group) or [])
+
+        # 4. Run the LangGraph pipeline
         key_terms = contract.get("keyTerms") or {}
         risk_factors = contract.get("riskFactors") or []
         result = await run_approval_summary(
@@ -93,6 +105,8 @@ async def _process_approval_summary(
             risk_factors=risk_factors,
             risk_score=contract.get("riskScore"),
             org_id=org_id,
+            findings=findings,
+            recommendation=recommendation,
         )
 
         if result.get("error"):
@@ -106,13 +120,12 @@ async def _process_approval_summary(
                 "aiSummary":             result.get("executiveSummary", ""),
                 "keyRisks":              result.get("keyRisks", []),
                 "nonStandardTerms":      result.get("nonStandardTerms", []),
-                "approvalRecommendation": result.get("approvalRecommendation", "review_required"),
             },
         )
         if patch_r.status_code not in (200, 204):
             logger.error("[approval-summary] PATCH summary failed: %s %s", patch_r.status_code, patch_r.text[:200])
         else:
-            logger.info("[approval-summary] DONE instanceId=%s recommendation=%s", instance_id, result.get("approvalRecommendation"))
+            logger.info("[approval-summary] DONE instanceId=%s findings=%d", instance_id, len(findings))
 
 
 @router.post("/approval-summary")

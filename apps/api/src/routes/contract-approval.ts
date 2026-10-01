@@ -76,7 +76,7 @@ export async function contractApprovalRoutes(app: FastifyInstance) {
         keyRisks: i.keyRisks,
         nonStandardTerms: i.nonStandardTerms,
         approvalRecommendation: isLatest && guard ? guardedLabel(i.approvalRecommendation, guard) : i.approvalRecommendation,
-        recommendationReasons: isLatest && guard ? guard.reasons.map(r => r.text) : [],
+        recommendationReasons: isLatest && guard ? guard.recommendation.reasons.map(r => r.text) : [],
         steps: i.steps.map(s => ({
           id: s.id, stepOrder: s.stepOrder, stepName: s.stepName,
           approverId: s.approverId, approverName: nameOf(s.approverId),

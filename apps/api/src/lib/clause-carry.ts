@@ -270,6 +270,10 @@ export async function carryClauses(opts: { contractId: string; toVersionId: stri
         content: subs.length ? text : primary.content,
         interpretation: primary.interpretation, riskRating: primary.riskRating,
         reviewState: primary.reviewState, reviewedAt: primary.reviewedAt, reviewedById: primary.reviewedById,
+        // docs/41 P1 — the same words: where they came from, and the model's
+        // verdict on them, still hold (a changed clause gets neither).
+        provenance: primary.provenance, sourceRef: primary.sourceRef,
+        positionVerdict: primary.positionVerdict ?? Prisma.DbNull,
       })
     } else {
       // The new words must still be about what the old ones were: a place

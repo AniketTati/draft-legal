@@ -2844,9 +2844,11 @@ export async function contractRoutes(app: FastifyInstance) {
           status:           'AUTO_APPROVED',
           currentStepOrder: 0,
           submittedById:    userId,
+          // docs/41 P1 — the version approved: later changes are measured against it.
+          versionId:        contract.currentVersionId,
           decidedAt:        new Date(),
           aiSummary:        'Auto-approved based on org rules.',
-          approvalRecommendation: 'approve',
+          approvalRecommendation: 'ready_to_approve',
         },
       })
 
@@ -2894,6 +2896,8 @@ export async function contractRoutes(app: FastifyInstance) {
           status:           'PENDING',
           currentStepOrder: firstStepDef.order,
           submittedById:    userId,
+          // docs/41 P1 — the version submitted: once approved, the baseline later changes are measured against.
+          versionId:        contract.currentVersionId,
         },
       })
 
