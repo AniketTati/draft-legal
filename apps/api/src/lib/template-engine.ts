@@ -9,6 +9,7 @@
  */
 
 import type { Template, TemplateSection, ClauseLibraryItem } from '@prisma/client'
+import { sectionFingerprint } from './fingerprint.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,11 @@ export interface GenerateResult {
   sectionsIncluded: number
   sectionsExcluded: number
   unfilledVariables: string[]
+  /**
+   * docs/41 P1 (Part 2) — each section (and library clause) written, with
+   * the fingerprint stamped on it (`metadata._origin.sections`).
+   */
+  origin: { sections: Array<{ sectionId: string; fp: string; source: string }> }
 }
 
 // ─── Variable Interpolation ─────────────────────────────────────────────────
@@ -134,11 +140,18 @@ export function resolveClauseRefs(
   for (const clauseId of clauseRefs) {
     const clause = clauseMap.get(clauseId)
     if (clause && !sectionContent.includes(clauseId)) {
-      additionalContent += `\n<div class="clause-library-ref" data-clause-id="${clause.id}">\n${clause.content}\n</div>\n`
+      // docs/41 P1 — stamped like a section: the library wording, unchanged, is standard.
+      additionalContent += `\n<div class="clause-library-ref" data-clause-id="${clause.id}" data-fp="${sectionFingerprint(clause.content)}" data-source="${librarySource(clause)}">\n${clause.content}\n</div>\n`
     }
   }
 
   return sectionContent + additionalContent
+}
+
+/** `library:<itemId>:<version>`: the item's saved versions plus the current one. */
+export function librarySource(clause: Pick<ClauseLibraryItem, 'id' | 'versions'>): string {
+  const n = Array.isArray(clause.versions) ? clause.versions.length + 1 : 1
+  return `library:${clause.id}:${n}`
 }
 
 // ─── Main Assembly ───────────────────────────────────────────────────────────
@@ -158,6 +171,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
   let sectionsExcluded = 0
   const allUnfilled: string[] = []
   const htmlParts: string[] = []
+  const origin: GenerateResult['origin'] = { sections: [] }
 
   // Opening wrapper with template metadata
   htmlParts.push(
@@ -176,15 +190,24 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     const clauseRefs: string[] = Array.isArray(section.clauseRefs)
       ? (section.clauseRefs as string[])
       : []
-    let sectionContent = resolveClauseRefs(section.content, clauseRefs, clauseMap)
+    const sectionContent = resolveClauseRefs(section.content, clauseRefs, clauseMap)
+    // docs/41 P1 (Part 2) — the section's words with its variables as
+    // {{key}}, hashed: review compares them with the contract's words to
+    // tell a clause still as the template wrote it (lib/fingerprint.ts).
+    const inner = [section.title ? `<h2 class="section-title">${section.title}</h2>` : '', sectionContent].filter(Boolean).join('\n')
+    const fp = sectionFingerprint(inner)
+    const source = `template:${template.id}:${template.version}:${section.id}`
+    origin.sections.push({ sectionId: section.id, fp, source })
+    for (const ref of sectionContent.matchAll(/data-clause-id="([^"]+)" data-fp="([0-9a-f]{64})" data-source="([^"]+)"/g)) {
+      origin.sections.push({ sectionId: `${section.id}/${ref[1]}`, fp: ref[2], source: ref[3] })
+    }
 
     // Interpolate variables
-    const { html: interpolated, unfilled } = interpolateVariables(sectionContent, variables)
+    const { html: interpolated, unfilled } = interpolateVariables(inner, variables)
     allUnfilled.push(...unfilled)
 
     htmlParts.push(
-      `<section class="contract-section" data-section-id="${section.id}">`,
-      section.title ? `<h2 class="section-title">${section.title}</h2>` : '',
+      `<section class="contract-section" data-section-id="${section.id}" data-fp="${fp}" data-source="${source}">`,
       interpolated,
       `</section>`,
     )
@@ -197,6 +220,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     sectionsIncluded,
     sectionsExcluded,
     unfilledVariables: [...new Set(allUnfilled)],
+    origin,
   }
 }
 
