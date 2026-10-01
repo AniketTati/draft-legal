@@ -13,6 +13,12 @@ import type { QueryClient } from '@tanstack/react-query'
 export const approvalKeys = {
   /** GET /contracts/:id/approval — the contract's approval, as the contract page shows it. */
   contract: (contractId: string) => ['contract-approval', contractId] as const,
+  /** docs/41 Part 6 — GET /inbox: every view (mine, waiting, team) and the badge share this prefix. */
+  inbox: ['inbox'] as const,
+  inboxView: (view: string, filters: Record<string, unknown> = {}) => ['inbox', view, filters] as const,
+  /** docs/41 Parts 12, 18 — GET /contracts/:id/stage (the banner) and /history. */
+  stage: (contractId: string) => ['contract-stage', contractId] as const,
+  history: (contractId: string, filter = 'all') => ['contract-history', contractId, filter] as const,
   /** GET /approvals/my-queue */
   myQueue: ['approval-queue'] as const,
   /** GET /approvals/all */
@@ -25,12 +31,16 @@ export const approvalKeys = {
 export function invalidateApproval(qc: QueryClient, contractId?: string | null, instanceId?: string | null): void {
   qc.invalidateQueries({ queryKey: approvalKeys.myQueue })
   qc.invalidateQueries({ queryKey: approvalKeys.all })
+  // The inbox and its badge: one count, from the same query (docs/41 Part 6).
+  qc.invalidateQueries({ queryKey: approvalKeys.inbox })
   // The sidebar's approvals badge and the dashboard's counts.
   qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
   if (instanceId) qc.invalidateQueries({ queryKey: approvalKeys.instance(instanceId) })
   if (contractId) {
     qc.invalidateQueries({ queryKey: approvalKeys.contract(contractId) })
     qc.invalidateQueries({ queryKey: ['contract', contractId] })
+    qc.invalidateQueries({ queryKey: approvalKeys.stage(contractId) })
+    qc.invalidateQueries({ queryKey: ['contract-history', contractId] })
     // Activity: the decision, with its reason, is on the contract's timeline.
     qc.invalidateQueries({ queryKey: ['contract-timeline', contractId] })
     qc.invalidateQueries({ queryKey: ['contract-checks', contractId] })

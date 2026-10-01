@@ -3,6 +3,7 @@ import { NavLink } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { cn } from '@/lib/utils'
 import { api } from '@/lib/api'
+import { approvalKeys } from '@/lib/approval-keys'
 import { useAuthStore } from '@/store/auth'
 import { Wordmark } from '@/components/brand/Wordmark'
 import {
@@ -101,7 +102,7 @@ const NAV_SECTIONS: NavSection[] = [
     // Things needing user action — both have queues that drain to zero.
     label: 'Queues',
     items: [
-      { to: '/approvals',    icon: CheckSquare, label: 'Approvals', badge: 'pendingApprovals' },
+      { to: '/approvals',    icon: CheckSquare, label: 'Inbox', badge: 'pendingApprovals' },
       // Phase 07 — Signatures promoted once the eSignature flow shipped.
       { to: '/signatures',   icon: PenSquare,   label: 'Signatures', badge: 'signaturesAwaitingMe' },
       { to: '/review-queue', icon: ScanSearch,  label: 'Extraction Queue' },
@@ -185,6 +186,17 @@ export function Sidebar() {
     refetchInterval: 60_000,
   })
 
+  // docs/41 Part 6 — the Inbox badge is the length of "Needs my action",
+  // from the very query (and cache entry) the Inbox page lists, so the two
+  // can't disagree.
+  const { data: inbox } = useQuery<{ counts: { mine: number } }>({
+    queryKey: approvalKeys.inboxView('mine'),
+    queryFn: () => api.get('/inbox', { params: { view: 'mine' } }).then((r) => r.data),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+
   // There is no "signatures awaiting me" count on the API, so the badge is
   // derived from the same PENDING list the Signatures page reads. `total` is
   // the org's pending requests, not the user's, so it cannot stand in.
@@ -230,7 +242,7 @@ export function Sidebar() {
   }, [pendingSignatures, myEmail])
 
   const badgeCounts: Record<BadgeKey, number> = {
-    pendingApprovals:     stats?.pendingApprovals ?? 0,
+    pendingApprovals:     inbox?.counts.mine ?? stats?.pendingApprovals ?? 0,
     openRequests:         stats?.openRequests ?? 0,
     signaturesAwaitingMe,
     // Expiring inside 90 days with no renew/exit decision recorded — the

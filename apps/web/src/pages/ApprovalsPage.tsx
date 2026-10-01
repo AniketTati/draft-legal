@@ -1,452 +1,268 @@
 /**
- * Approvals Page — Phase 06 + P7.2.2
+ * Inbox — docs/41 Part 6 (it replaces the Approvals page's tabs).
  *
- * Three tabs:
- *   • My Queue — pending approval steps assigned to me (the current step only)
- *   • All approvals — org-wide oversight (admin / legal_ops only) — P7.2.2 / F-11
- *   • Manage Workflows — workflow definition CRUD
+ * The page counted two different things under labels that didn't say so
+ * (My Queue = steps waiting on me; All approvals = every open workflow), and
+ * the sidebar badge came from a third query. Now one question per view, each
+ * answered by GET /inbox, counted by contract:
+ *
+ *   • Needs my action — contracts waiting on me, each once, with what I must
+ *     do: approve, decide an exception, fix and resubmit, respond to the
+ *     counterparty, send for signature, sign… The sidebar badge is this
+ *     list's length, from the same cached response.
+ *   • Waiting on others — what I own or submitted, who has it, since when.
+ *   • Team — everything in flight (configure:workflow), with filters: stuck
+ *     (an approval nobody can decide), aging, by stage.
+ *   • Manage workflows — workflow definitions, as before.
+ *
+ * Bulk decisions act on the approvals of the list as filtered, and say so.
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
-import { useAuthStore } from '@/store/auth'
-import { ApprovalCard, waitingDaysSince } from '@/components/approvals/ApprovalCard'
+import { usePermission } from '@/lib/permissions'
+import { ApprovalCard } from '@/components/approvals/ApprovalCard'
 import { WorkflowDefinitionList } from '@/components/approvals/WorkflowDefinitionList'
-import { CheckSquare, Settings2, Loader2, Inbox, AlertTriangle, Globe2, ArrowRight, ListChecks } from 'lucide-react'
+import { Inbox, Settings2, Loader2, AlertTriangle, Users, Clock, ListChecks, ArrowRight, CheckCircle2, XCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { CountBadge, EmptyState } from '@/components/ui/primitives'
+import { CountBadge, EmptyState, Chip } from '@/components/ui/primitives'
 
-type Tab = 'queue' | 'all' | 'workflows'
+type Tab = 'mine' | 'waiting' | 'team' | 'workflows'
 
-interface AllApprovalRow {
-  instanceId:        string
-  // `value` is a Prisma Decimal, which serialises as a STRING over JSON. It was
-  // typed `number` and formatted with `.toLocaleString()`, which is a no-op on a
-  // string — so the org-wide table printed "USD 13155831" while every other
-  // surface printed "USD 13,155,831". Type it honestly and coerce once.
-  contract?:         { id: string; title: string; type: string; value?: number | string | null; currency?: string | null; counterpartyName?: string | null; status: string }
-  status:            string
-  submittedAt:       string
-  submittedByName:   string
-  currentStepOrder:  number
-  /** 1-based position of the current step in the workflow, and its step count (C2). */
-  currentStepPosition?: number | null
-  stepCount?:        number | null
-  currentStepName:   string | null
-  currentApproverName: string | null
-  currentApproverEmail: string | null
-  waitingDays:       number
-  totalSteps:        number
-  approvalRecommendation: string | null
+interface InboxAction {
+  kind: 'approve' | 'decide_exception' | 'sign' | 'fix_and_resubmit' | 'decide_declined' | 'respond_to_counterparty' | 'send_for_signature' | 'take_back_signature'
+  label: string
+  since: string
+  stepId?: string
+  instanceId?: string
+  findingId?: string
+  signatureRequestId?: string
+  detail?: string | null
 }
 
-/** Contract value with thousands separators, or null when there isn't one. */
-function money(value: number | string | null | undefined, currency?: string | null): string | null {
-  if (value == null || value === '') return null
-  const n = Number(value)
-  if (!Number.isFinite(n) || n === 0) return null
-  return `${currency ?? 'USD'} ${n.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+export interface InboxRow {
+  contractId: string
+  title: string
+  type: string
+  counterpartyName: string | null
+  value: number | null
+  currency: string | null
+  stage: string
+  stageState: string
+  turn: string
+  turnSince: string
+  line: string
+  owner: { id: string; name: string }
+  actions: InboxAction[]
+  primary: InboxAction | null
+  waitingOn: { who: string; names: string[]; since: string; sinceWords: string | null } | null
+  approvals: { approved: number; total: number } | null
+  stuck?: string | null
 }
 
-/**
- * "step 3 of 5" — but only when the denominator can actually be true.
- *
- * /approvals/all computes `totalSteps` from an instance's PENDING steps only,
- * so a workflow three steps in reports one remaining step and the table
- * rendered "step 3 of 1". A denominator smaller than the numerator is provably
- * wrong, and a wrong number beside a right one is worse than no number: it
- * makes the reader distrust the step name too. Drop it when it can't hold.
- */
-function stepLabel(order: number, total: number): string {
-  return total >= order && total > 0 ? `step ${order} of ${total}` : `step ${order}`
+interface InboxResponse {
+  view: string
+  data: InboxRow[]
+  total: number
+  counts: { mine: number }
+  canTeam: boolean
+  stages?: Array<{ stage: string; label: string }>
 }
 
+/** The queue's cards, for the approval steps (they carry the AI summary). */
 interface QueueItem {
-  stepId:      string
-  instanceId:  string
-  stepOrder:   number
-  stepName:    string
-  status:      string
+  stepId: string
+  instanceId: string
+  stepName: string
   escalateAt?: string
-  contract: {
-    id:              string
-    title:           string
-    type:            string
-    value?:          number | null
-    counterpartyName?: string | null
-    status:          string
-  }
-  instance: {
-    id:                    string
-    status:                string
-    submittedAt:           string
-    submittedByName?:      string
-    aiSummary?:            string
-    keyRisks?:             Array<{ title: string; description: string; severity: string }>
-    nonStandardTerms?:     string[]
-    approvalRecommendation?: string
-  }
+  contract: { id: string; title: string; type: string; value?: number | null; counterpartyName?: string | null; status: string }
+  instance: { id: string; status: string; submittedAt: string; submittedByName?: string; aiSummary?: string; keyRisks?: Array<{ title: string; description: string; severity: string }>; nonStandardTerms?: string[]; approvalRecommendation?: string; recommendationReasons?: string[] }
+}
+
+function money(value: number | null, currency: string | null): string | null {
+  if (value == null || !Number.isFinite(value) || value === 0) return null
+  return `${currency ?? 'USD'} ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+}
+
+function daysSince(iso: string): number {
+  const t = new Date(iso).getTime()
+  return Number.isFinite(t) ? Math.max(0, Math.floor((Date.now() - t) / 86_400_000)) : 0
+}
+
+function AgeDot({ iso }: { iso: string }) {
+  const d = daysSince(iso)
+  return (
+    <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium tabular-nums text-ink-700" title={new Date(iso).toLocaleString()}>
+      <span className={`size-1.5 rounded-full shrink-0 ${d >= 7 ? 'bg-risk-600' : d >= 3 ? 'bg-attention-600' : 'bg-ink-350'}`} />
+      {d === 0 ? 'today' : `${d}d`}
+    </span>
+  )
 }
 
 export function ApprovalsPage() {
-  const [tab, setTab] = useState<Tab>('queue')
+  const [tab, setTab] = useState<Tab>('mine')
+  const [query, setQuery] = useState('')
   const [bulkOpen, setBulkOpen] = useState(false)
-  // P7.2.2 — Show "All approvals" tab only to admins / legal-ops.
-  // The /approvals/all endpoint is gated on `configure:workflow` so a
-  // non-admin call would 403; we hide the tab proactively to avoid
-  // showing a feature the user can't use.
+  const [team, setTeam] = useState<{ stuck: boolean; agingDays: number | null; stage: string }>({ stuck: false, agingDays: null, stage: '' })
+  const canTeam = usePermission('configure', 'workflow')
   const qc = useQueryClient()
-  const userRoles = (useAuthStore(s => s.user?.roles ?? []) as readonly string[])
-  const canSeeAll = userRoles.includes('ADMIN') || userRoles.includes('LEGAL_OPS')
 
-  const { data, isLoading, refetch } = useQuery<{ data: QueueItem[]; total: number }>({
+  const params = tab === 'team'
+    ? { view: 'team', ...(team.stuck && { stuck: '1' }), ...(team.agingDays && { agingDays: String(team.agingDays) }), ...(team.stage && { stage: team.stage }) }
+    : { view: tab === 'waiting' ? 'waiting' : 'mine' }
+  // "mine" shares its cache entry with the sidebar badge (approvalKeys.inboxView('mine')).
+  const key = tab === 'team' ? approvalKeys.inboxView('team', team) : approvalKeys.inboxView(params.view)
+  const { data, isLoading, isError, error } = useQuery<InboxResponse>({
+    queryKey: key,
+    queryFn: () => api.get('/inbox', { params }).then(r => r.data),
+    enabled: tab !== 'workflows',
+    staleTime: 10_000,
+  })
+  // The mine count for the tab badge, whichever view is open.
+  const { data: mine } = useQuery<InboxResponse>({
+    queryKey: approvalKeys.inboxView('mine'),
+    queryFn: () => api.get('/inbox', { params: { view: 'mine' } }).then(r => r.data),
+    staleTime: 10_000,
+  })
+  // The approval steps' cards (AI summary, risks) for rows whose action is "Approve".
+  const { data: queue } = useQuery<{ data: QueueItem[] }>({
     queryKey: approvalKeys.myQueue,
-    queryFn:  () => api.get('/approvals/my-queue').then(r => r.data),
-    enabled:  tab === 'queue',
+    queryFn: () => api.get('/approvals/my-queue').then(r => r.data),
+    enabled: tab === 'mine',
     staleTime: 10_000,
   })
+  const cardOf = useMemo(() => new Map((queue?.data ?? []).map(q => [q.stepId, q])), [queue])
 
-  // P7.2.2 — All-approvals query (admin only). Lazy: only fires when
-  // the tab is active so we don't burn a query for non-admin viewers.
-  const { data: allData, isLoading: allLoading } = useQuery<{ data: AllApprovalRow[]; total: number }>({
-    queryKey: approvalKeys.all,
-    queryFn:  () => api.get('/approvals/all').then(r => r.data),
-    enabled:  tab === 'all' && canSeeAll,
-    staleTime: 10_000,
-  })
-
-  const items = data?.data ?? []
-  const pendingCount = data?.total ?? 0
-  const allCount = allData?.total ?? 0
-
-  // The page's own stated job is "spot where deals are stuck", but the endpoint
-  // orders by submittedAt DESC — newest first, i.e. the LEAST stuck at the top
-  // and the three-week-old blocker at the bottom of the scroll. Sort by the
-  // column the sentence is about.
-  const allItems = [...(allData?.data ?? [])].sort((a, b) => b.waitingDays - a.waitingDays)
-  const myEmail = useAuthStore(s => s.user?.email)?.toLowerCase()
-  const stuckCount = allItems.filter(r => r.waitingDays >= 7).length
-  const unroutedCount = allItems.filter(r => r.totalSteps === 0 && !r.currentStepName).length
-
-  // B.6.21 — warn when the org has zero workflow definitions. Without
-  // one, every `Submit for Approval` silently fails. This tells the
-  // user up-front + deep-links them to the fix.
-  //
-  // The endpoint returns either a raw array or `{data:[…]}` depending
-  // on the call site history; normalise defensively.
   const { data: workflowsData } = useQuery<unknown>({
     queryKey: ['approval-workflows'],
     queryFn: () => api.get('/approvals/workflows').then(r => r.data),
     staleTime: 30_000,
   })
-  const workflowList = Array.isArray(workflowsData)
-    ? workflowsData
-    : Array.isArray((workflowsData as { data?: unknown[] } | null)?.data)
-      ? (workflowsData as { data: unknown[] }).data
-      : null
-  const showNoWorkflowsWarning = workflowList !== null && workflowList.length === 0
+  const workflowList = Array.isArray(workflowsData) ? workflowsData : (workflowsData as { data?: unknown[] } | null)?.data ?? null
+  const showNoWorkflowsWarning = Array.isArray(workflowList) && workflowList.length === 0
+
+  const rows = (data?.data ?? []).filter(r => {
+    const q = query.trim().toLowerCase()
+    return !q || r.title.toLowerCase().includes(q) || (r.counterpartyName ?? '').toLowerCase().includes(q) || r.type.toLowerCase().includes(q)
+  })
+  // What a bulk decision acts on: the approvals of the list as it is filtered.
+  const bulkTargets = rows.flatMap(r => r.actions.filter(a => a.kind === 'approve' && a.stepId && a.instanceId).map(a => ({ row: r, action: a })))
+  const mineCount = mine?.counts.mine ?? 0
+
+  const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode; badge?: number; tone?: 'attention' | 'neutral' }> = [
+    { id: 'mine', label: 'Needs my action', icon: <Inbox className="size-4" />, badge: mineCount, tone: 'attention' },
+    { id: 'waiting', label: 'Waiting on others', icon: <Clock className="size-4" /> },
+    ...(canTeam ? [{ id: 'team' as Tab, label: 'Team', icon: <Users className="size-4" /> }] : []),
+    { id: 'workflows', label: 'Manage workflows', icon: <Settings2 className="size-4" /> },
+  ]
 
   return (
     <div className="h-full flex flex-col bg-paper-50">
-      {/* Header */}
       <div className="bg-card border-b border-paper-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-title text-ink-950">Approvals</h1>
-            <p className="text-body text-ink-500 mt-0.5">
-              {pendingCount > 0
-                ? `${pendingCount} contract${pendingCount === 1 ? '' : 's'} waiting on your decision.`
-                : 'Decisions routed to you, and the org-wide view of everything in flight.'}
-            </p>
-          </div>
-        </div>
-
-        {/* Tabs — the selected tab is a selection, so ink carries it. */}
+        <h1 className="text-title text-ink-950">Inbox</h1>
+        <p className="text-body text-ink-500 mt-0.5">
+          {mineCount > 0
+            ? `${mineCount} contract${mineCount === 1 ? '' : 's'} need${mineCount === 1 ? 's' : ''} something from you.`
+            : 'Nothing is waiting on you. Contracts others have are under Waiting on others.'}
+        </p>
         <div className="flex gap-1 mt-3 border-b border-paper-200 -mb-px">
-          {([
-            { id: 'queue' as Tab,     label: 'My Queue', icon: <CheckSquare className="size-4" />, badge: pendingCount },
-            ...(canSeeAll ? [{ id: 'all' as Tab, label: 'All approvals', icon: <Globe2 className="size-4" />, badge: allCount }] : []),
-            { id: 'workflows' as Tab, label: 'Manage Workflows', icon: <Settings2 className="size-4" /> },
-          ] as { id: Tab; label: string; icon: React.ReactNode; badge?: number }[]).map(t => (
+          {tabs.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium border-b-2 transition-colors ${
-                tab === t.id
-                  ? 'border-ink-950 text-ink-950'
-                  : 'border-transparent text-ink-500 hover:text-ink-950'
-              }`}
+              className={`flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium border-b-2 transition-colors ${tab === t.id ? 'border-ink-950 text-ink-950' : 'border-transparent text-ink-500 hover:text-ink-950'}`}
+              data-testid={`inbox-tab-${t.id}`}
             >
               {t.icon}
               {t.label}
-              {t.badge != null && t.badge > 0 && (
-                // My Queue is the only badge that is genuinely blocked on this
-                // user; the org-wide count is oversight, so it stays neutral.
-                <CountBadge tone={t.id === 'queue' ? 'attention' : 'neutral'}>
-                  {t.badge}
-                </CountBadge>
-              )}
+              {t.badge != null && t.badge > 0 && <CountBadge tone={t.tone ?? 'neutral'}>{t.badge}</CountBadge>}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-
-        {/* B.6.21 — No-workflow warning (global across both tabs) */}
-        {showNoWorkflowsWarning && (
-          <div
-            role="alert"
-            data-testid="no-workflows-warning"
-            className="max-w-3xl mx-auto mb-5 rounded-md border border-attention-200 bg-attention-50 px-4 py-3 flex items-start gap-3"
-          >
+        {showNoWorkflowsWarning && tab !== 'workflows' && (
+          <div role="alert" data-testid="no-workflows-warning" className="max-w-5xl mx-auto mb-5 rounded-md border border-attention-200 bg-attention-50 px-4 py-3 flex items-start gap-3">
             <AlertTriangle className="size-4 text-attention-600 shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
-              <p className="text-body font-semibold text-attention-700">
-                No approval workflows defined yet.
-              </p>
-              <p className="text-dense text-ink-700 mt-0.5">
-                Until someone creates a workflow, the "Submit for Approval"
-                button on contracts won't know where to route decisions and
-                will fail quietly. Create one to unblock your team.
-              </p>
+              <p className="text-body font-semibold text-attention-700">No approval workflows yet.</p>
+              <p className="text-dense text-ink-700 mt-0.5">Contracts can't be submitted for approval until one exists.</p>
             </div>
-            <button
-              onClick={() => setTab('workflows')}
-              className="text-dense font-semibold text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-ink-950 shrink-0"
-            >
-              Create workflow →
-            </button>
+            <button onClick={() => setTab('workflows')} className="text-dense font-semibold text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-ink-950 shrink-0">Create workflow →</button>
           </div>
         )}
 
-        {/* ── My Queue ────────────────────────────────────────────────── */}
-        {tab === 'queue' && (
-          <>
-            {isLoading ? (
-              <div className="flex justify-center items-center py-20">
-                <Loader2 className="size-6 animate-spin text-ink-400" />
-              </div>
-            ) : items.length === 0 ? (
-              <div className="max-w-3xl mx-auto">
-                <EmptyState
-                  icon={<Inbox />}
-                  title="All clear"
-                  description="No contracts are awaiting your approval."
-                />
-              </div>
-            ) : (
-              <>
-                {items.length > 1 && (
-                  <div className="max-w-5xl mx-auto mb-3 flex items-center justify-between gap-2">
-                    {/* The count is already in the header and on the tab. What a
-                        queue owner cannot see anywhere else is how bad the
-                        backlog has got, so spend this line on the oldest wait. */}
-                    <span className="text-dense text-ink-500">
-                      Oldest first · longest wait is{' '}
-                      <span className="font-medium text-ink-950 tabular-nums">
-                        {Math.max(...items.map(i => waitingDaysSince(i.instance.submittedAt)))} days
-                      </span>
-                    </span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setBulkOpen(true)}
-                      data-testid="bulk-approve-btn"
-                    >
-                      <ListChecks />
-                      Bulk decision…
-                    </Button>
-                  </div>
-                )}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 max-w-5xl mx-auto items-start">
-                  {items.map(item => (
-                    <ApprovalCard
-                      key={item.stepId}
-                      stepId={item.stepId}
-                      instanceId={item.instanceId}
-                      stepName={item.stepName}
-                      escalateAt={item.escalateAt}
-                      contract={item.contract}
-                      instance={item.instance}
-                      onDecided={() => refetch()}
-                    />
-                  ))}
-                </div>
-                {bulkOpen && (
-                  <BulkDecisionDialog
-                    items={items}
-                    onClose={() => setBulkOpen(false)}
-                    onDone={() => { setBulkOpen(false); refetch() }}
-                    // docs/41 P0.6 — the badge, the other tab and each contract page follow.
-                    onDecided={(contractIds) => { for (const c of contractIds) invalidateApproval(qc, c); if (!contractIds.length) invalidateApproval(qc) }}
-                  />
-                )}
-              </>
-            )}
-          </>
-        )}
-
-        {/* ── All approvals (admin oversight) — P7.2.2 ─────────────────── */}
-        {tab === 'all' && (
-          <>
-            {allLoading ? (
-              <div className="flex justify-center items-center py-20">
-                <Loader2 className="size-6 animate-spin text-ink-400" />
-              </div>
-            ) : allItems.length === 0 ? (
-              <div className="max-w-3xl mx-auto">
-                <EmptyState
-                  icon={<Globe2 />}
-                  title="No approvals in flight"
-                  description="No contracts are pending approval anywhere in the org."
-                />
-              </div>
-            ) : (
-              <div className="max-w-5xl mx-auto" data-testid="all-approvals-list">
-                <p className="text-body text-ink-500 mb-3">
-                  Every approval in flight across the org, oldest wait first.
-                  {stuckCount > 0 && (
-                    <>
-                      {' '}
-                      <span className="font-medium text-ink-950">
-                        {stuckCount} {stuckCount === 1 ? 'has' : 'have'} been waiting a week or more.
-                      </span>
-                    </>
-                  )}
-                  {unroutedCount > 0 && (
-                    <>
-                      {' '}
-                      <span className="font-medium text-risk-700">
-                        {unroutedCount} {unroutedCount === 1 ? 'is' : 'are'} unrouted and cannot move at all.
-                      </span>
-                    </>
-                  )}
-                </p>
-                <div className="rounded-card border border-paper-200 bg-card overflow-hidden">
-                  <div className="overflow-x-auto">
-                  <table className="w-full table-fixed text-[13px]">
-                    <thead className="bg-paper-50">
-                      <tr className="text-left text-eyebrow uppercase text-ink-500">
-                        <th className="px-4 py-2 font-semibold">Contract</th>
-                        <th className="px-3 py-2 font-semibold w-[19%]">Current step</th>
-                        <th className="px-3 py-2 font-semibold w-[15%]">Awaiting</th>
-                        <th className="px-3 py-2 font-semibold w-[12%]">Submitted</th>
-                        <th className="px-3 py-2 font-semibold w-[76px]">Waiting</th>
-                        <th className="px-3 py-2 w-[64px]"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-paper-200">
-                      {allItems.map(row => {
-                        // Age of a stuck approval. A week idle is exposure and
-                        // three days is someone's turn — but a fresh one is not
-                        // "binding", so it does not get the brand green a decided
-                        // contract wears. Nothing has happened yet: neutral.
-                        const dotClass = row.waitingDays >= 7 ? 'bg-risk-600' :
-                                         row.waitingDays >= 3 ? 'bg-attention-600' :
-                                         'bg-ink-350'
-                        const waitingText = row.waitingDays === 0 ? 'today' :
-                                            row.waitingDays === 1 ? '1d' :
-                                            `${row.waitingDays}d`
-                        const valueText = money(row.contract?.value, row.contract?.currency)
-                        // Oversight normally means "someone else's problem". When
-                        // the org-wide view lands on the viewer it stops being
-                        // oversight and becomes their turn, so say so — otherwise
-                        // an admin scans past their own blocker.
-                        const isMine = !!myEmail && row.currentApproverEmail?.toLowerCase() === myEmail
-                        // An instance still marked PENDING with no pending step
-                        // left cannot advance on its own: nobody holds it and no
-                        // decision will ever arrive. The table used to render
-                        // that as three em-dashes at the bottom of the scroll,
-                        // which is how three contracts sat unrouted for ten
-                        // weeks. Name it.
-                        const unrouted = row.totalSteps === 0 && !row.currentStepName
-                        return (
-                          <tr key={row.instanceId} className="hover:bg-paper-50 transition-colors">
-                            <td className="px-4 py-2">
-                              <Link
-                                to={`/contracts/${row.contract?.id}`}
-                                className="font-medium text-ink-950 hover:underline underline-offset-2 decoration-paper-300 truncate block"
-                                title={row.contract?.title}
-                              >
-                                {row.contract?.title ?? 'Unknown'}
-                              </Link>
-                              {(row.contract?.counterpartyName || valueText) && (
-                                <div className="text-[11px] text-ink-500 mt-0.5 truncate">
-                                  {row.contract?.counterpartyName}
-                                  {valueText && <span className="tabular-nums">{row.contract?.counterpartyName ? ' · ' : ''}{valueText}</span>}
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 text-ink-700 text-[11.5px]">
-                              {unrouted ? (
-                                <span
-                                  className="inline-flex items-center gap-1 font-medium text-risk-700"
-                                  title="This approval is still open but has no pending step, so no decision can be recorded against it. It needs to be re-routed or withdrawn."
-                                >
-                                  <AlertTriangle className="size-3 shrink-0" />
-                                  Unrouted
-                                </span>
-                              ) : (
-                                <>
-                                  <div className="font-medium truncate" title={row.currentStepName ?? undefined}>{row.currentStepName ?? '—'}</div>
-                                  <div className="text-ink-400 mt-0.5 tabular-nums">{stepLabel(row.currentStepPosition ?? row.currentStepOrder, row.stepCount ?? row.totalSteps)}</div>
-                                </>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 text-ink-700 text-[13px]">
-                              <div className="truncate" title={row.currentApproverName ?? 'unassigned'}>
-                                {row.currentApproverName ?? <span className="text-ink-400 italic text-[11.5px]">nobody</span>}
-                              </div>
-                              {isMine && (
-                                <span className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-attention-700">
-                                  <span className="size-1.5 rounded-full bg-attention-600" />
-                                  You
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-3 py-2 text-ink-500 text-[11.5px]">
-                              <div className="truncate" title={row.submittedByName}>{row.submittedByName}</div>
-                              <div className="text-ink-400 mt-0.5 tabular-nums">{new Date(row.submittedAt).toLocaleDateString()}</div>
-                            </td>
-                            <td className="px-3 py-2">
-                              <span className="inline-flex items-center gap-1.5 text-[11.5px] font-medium tabular-nums text-ink-700">
-                                <span className={`size-1.5 rounded-full shrink-0 ${dotClass}`} />
-                                {waitingText}
-                              </span>
-                            </td>
-                            <td className="px-3 py-2 text-right">
-                              <Link
-                                to={`/contracts/${row.contract?.id}`}
-                                className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
-                              >
-                                Open
-                                <ArrowRight className="size-3" />
-                              </Link>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                  </div>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* ── Manage Workflows ────────────────────────────────────────── */}
-        {tab === 'workflows' && (
+        {tab === 'workflows' ? (
           <div className="max-w-3xl mx-auto">
-            <p className="text-body text-ink-500 mb-5">
-              Workflow definitions control how contracts are routed for approval.
-              Set a default workflow so contracts are auto-routed on submission.
-            </p>
+            <p className="text-body text-ink-500 mb-5">Workflows decide who approves a contract, in what order, and when an approval is asked for again after a change.</p>
             <WorkflowDefinitionList />
+          </div>
+        ) : (
+          <div className="max-w-5xl mx-auto">
+            {/* Filters: the text filter narrows every view; Team has its own. */}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <label className="relative flex-1 min-w-[200px] max-w-sm">
+                <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400" />
+                <input
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  placeholder="Filter by title, counterparty or type"
+                  className="w-full h-8 pl-8 pr-2 text-[13px] rounded-md border border-input bg-card placeholder:text-ink-400 focus:outline-none focus:border-brand-700"
+                  data-testid="inbox-filter"
+                />
+              </label>
+              {tab === 'team' && (
+                <>
+                  <label className="inline-flex items-center gap-1.5 text-dense text-ink-700">
+                    <input type="checkbox" className="size-3.5 accent-ink-950" checked={team.stuck} onChange={e => setTeam(t => ({ ...t, stuck: e.target.checked }))} data-testid="team-stuck" />
+                    Stuck (no one can approve)
+                  </label>
+                  <select value={team.agingDays ?? ''} onChange={e => setTeam(t => ({ ...t, agingDays: e.target.value ? Number(e.target.value) : null }))} className="h-8 rounded-md border border-input bg-card text-[13px] px-2" data-testid="team-aging">
+                    <option value="">Any age</option>
+                    {[3, 7, 14, 30].map(d => <option key={d} value={d}>Waiting {d}+ days</option>)}
+                  </select>
+                  <select value={team.stage} onChange={e => setTeam(t => ({ ...t, stage: e.target.value }))} className="h-8 rounded-md border border-input bg-card text-[13px] px-2" data-testid="team-stage">
+                    <option value="">Every stage</option>
+                    {(data?.stages ?? []).map(s => <option key={s.stage} value={s.stage}>{s.label}</option>)}
+                  </select>
+                </>
+              )}
+              {tab === 'mine' && bulkTargets.length > 1 && (
+                <Button variant="outline" size="sm" className="ml-auto" onClick={() => setBulkOpen(true)} data-testid="bulk-approve-btn">
+                  <ListChecks />Decide {bulkTargets.length} approvals at once…
+                </Button>
+              )}
+            </div>
+
+            {isLoading ? (
+              <div className="flex justify-center items-center py-20"><Loader2 className="size-6 animate-spin text-ink-400" /></div>
+            ) : isError ? (
+              <div role="alert" className="rounded-md border border-risk-200 bg-risk-50 px-4 py-3 text-dense text-risk-700">{serverMessage(error, 'The inbox could not be loaded.')}</div>
+            ) : rows.length === 0 ? (
+              <EmptyState
+                icon={<Inbox />}
+                title={tab === 'mine' ? 'All clear' : tab === 'waiting' ? 'Nothing waiting on others' : 'Nothing in flight matches'}
+                description={tab === 'mine' ? 'No contract needs anything from you right now.' : tab === 'waiting' ? 'Contracts you own or submitted that someone else has will show here.' : 'Change the filters to see more.'}
+              />
+            ) : tab === 'mine' ? (
+              <div className="space-y-3" data-testid="inbox-mine">
+                {rows.map(r => <MineRow key={r.contractId} row={r} cardOf={cardOf} onDone={() => invalidateApproval(qc, r.contractId)} />)}
+              </div>
+            ) : (
+              <OthersTable rows={rows} team={tab === 'team'} />
+            )}
+
+            {bulkOpen && (
+              <BulkDecisionDialog
+                targets={bulkTargets}
+                filtered={!!query.trim()}
+                onClose={() => setBulkOpen(false)}
+                onDecided={(contractIds) => { for (const c of contractIds) invalidateApproval(qc, c); if (!contractIds.length) invalidateApproval(qc) }}
+              />
+            )}
           </div>
         )}
       </div>
@@ -454,221 +270,246 @@ export function ApprovalsPage() {
   )
 }
 
-// ─── Bulk-decision dialog (P10D) ─────────────────────────────────────
-//
-// Renders a checklist of the user's PENDING approval steps. The user
-// picks a decision (Approve / Reject), optionally adds a bulk comment
-// applied to every selected item, and submits.
-function BulkDecisionDialog({
-  items,
-  onClose,
-  onDone,
-  onDecided,
-}: {
-  items: QueueItem[]
+/** One contract that needs me: what to do, why, and the way to do it. */
+function MineRow({ row, cardOf, onDone }: { row: InboxRow; cardOf: Map<string, QueueItem>; onDone: () => void }) {
+  const [open, setOpen] = useState(false)
+  const primary = row.primary!
+  const approve = row.actions.find(a => a.kind === 'approve')
+  const card = approve?.stepId ? cardOf.get(approve.stepId) : undefined
+  const exception = row.actions.find(a => a.kind === 'decide_exception')
+  const value = money(row.value, row.currency)
+  const linkTo = primary.kind === 'sign' && primary.signatureRequestId ? `/signatures` : `/contracts/${row.contractId}`
+
+  return (
+    <div className="rounded-card border border-paper-200 bg-card" data-testid={`inbox-row-${row.contractId}`}>
+      <div className="px-4 py-3 flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <Link to={`/contracts/${row.contractId}`} className="text-[13.5px] font-semibold text-ink-950 hover:underline underline-offset-2 decoration-paper-300 truncate block">{row.title}</Link>
+          <div className="text-[11.5px] text-ink-500 mt-0.5 truncate">
+            {row.type}{row.counterpartyName ? ` · ${row.counterpartyName}` : ''}{value ? ` · ${value}` : ''} · {row.line}
+          </div>
+          {primary.detail && (
+            <p className="mt-1.5 text-dense text-ink-700">
+              {primary.kind === 'fix_and_resubmit' || primary.kind === 'decide_declined' ? <>Reason: “{primary.detail}”</> : primary.detail}
+            </p>
+          )}
+          {row.actions.length > 1 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {row.actions.slice(1).map((a, i) => <Chip key={i}>Also: {a.label}</Chip>)}
+            </div>
+          )}
+        </div>
+        <div className="shrink-0 flex items-center gap-2">
+          <AgeDot iso={primary.since} />
+          {primary.kind === 'approve' && card ? (
+            <Button size="sm" variant={open ? 'outline' : 'default'} onClick={() => setOpen(o => !o)} data-testid="inbox-approve">{open ? 'Close' : 'Review and decide'}</Button>
+          ) : primary.kind === 'decide_exception' ? (
+            <Button size="sm" variant={open ? 'outline' : 'default'} onClick={() => setOpen(o => !o)} data-testid="inbox-exception">{open ? 'Close' : primary.label}</Button>
+          ) : (
+            <Button size="sm" asChild><Link to={linkTo}>{primary.label}<ArrowRight /></Link></Button>
+          )}
+        </div>
+      </div>
+      {open && primary.kind === 'approve' && card && (
+        <div className="border-t border-paper-200 p-3 bg-paper-50">
+          <ApprovalCard stepId={card.stepId} instanceId={card.instanceId} stepName={card.stepName} escalateAt={card.escalateAt} contract={card.contract} instance={card.instance} onDecided={onDone} />
+        </div>
+      )}
+      {open && primary.kind === 'decide_exception' && exception?.stepId && (
+        <ExceptionDecision stepId={exception.stepId} contractId={row.contractId} title={exception.detail ?? 'the clause'} onDone={onDone} />
+      )}
+    </div>
+  )
+}
+
+/** docs/41 Part 7 — an exception to a playbook position: approve it, or decline it with a reason. */
+function ExceptionDecision({ stepId, contractId, title, onDone }: { stepId: string; contractId: string; title: string; onDone: () => void }) {
+  const qc = useQueryClient()
+  const [decision, setDecision] = useState<'APPROVED' | 'DECLINED' | null>(null)
+  const [comment, setComment] = useState('')
+  const { data: approval } = useQuery<{ exceptions?: Array<{ id: string; reason: string | null; requestedBy: string | null }> }>({
+    queryKey: approvalKeys.contract(contractId),
+    queryFn: () => api.get(`/contracts/${contractId}/approval`).then(r => r.data),
+  })
+  const asked = approval?.exceptions?.find(e => e.id === stepId)
+  const decide = useMutation({
+    mutationFn: () => api.post(`/approvals/steps/${stepId}/decide`, { decision, comment: comment.trim() || undefined }).then(r => r.data),
+    onSuccess: () => { invalidateApproval(qc, contractId); qc.invalidateQueries({ queryKey: ['contract-review', contractId] }); onDone() },
+    onError: () => {},
+  })
+  return (
+    <div className="border-t border-paper-200 px-4 py-3 space-y-2 bg-paper-50" data-testid="exception-decision">
+      <p className="text-dense text-ink-700">
+        Exception asked for: <span className="font-medium text-ink-950">{title}</span>
+        {asked?.requestedBy && <> by {asked.requestedBy}</>}
+        {asked?.reason && <> — “{asked.reason}”</>}
+      </p>
+      <div className="flex gap-2">
+        <Button size="sm" variant={decision === 'APPROVED' ? 'brand' : 'outline'} onClick={() => setDecision('APPROVED')}><CheckCircle2 />Approve exception</Button>
+        <Button size="sm" variant={decision === 'DECLINED' ? 'destructive' : 'danger'} onClick={() => setDecision('DECLINED')}><XCircle />Decline</Button>
+      </div>
+      {decision && (
+        <textarea
+          value={comment}
+          onChange={e => setComment(e.target.value)}
+          rows={2}
+          placeholder={decision === 'DECLINED' ? 'Why not (required). The person who asked sees this.' : 'Optional note'}
+          className="w-full text-[13px] rounded-md border border-input bg-card px-2.5 py-1.5 placeholder:text-ink-400 focus:outline-none focus:border-brand-700"
+        />
+      )}
+      {decision && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => decide.mutate()} disabled={decide.isPending || (decision === 'DECLINED' && !comment.trim())}>
+            {decide.isPending && <Loader2 className="animate-spin" />}{decision === 'APPROVED' ? 'Approve exception' : 'Decline exception'}
+          </Button>
+          {decide.isError && <span className="text-dense text-risk-700">{serverMessage(decide.error, 'The decision wasn’t recorded — try again.')}</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Waiting on others and Team: who has each contract, and since when. */
+function OthersTable({ rows, team }: { rows: InboxRow[]; team: boolean }) {
+  return (
+    <div className="rounded-card border border-paper-200 bg-card overflow-hidden" data-testid={team ? 'inbox-team' : 'inbox-waiting'}>
+      <div className="overflow-x-auto">
+        <table className="w-full table-fixed text-[13px]">
+          <thead className="bg-paper-50">
+            <tr className="text-left text-eyebrow uppercase text-ink-500">
+              <th className="px-4 py-2 font-semibold">Contract</th>
+              <th className="px-3 py-2 font-semibold w-[26%]">Where it is</th>
+              <th className="px-3 py-2 font-semibold w-[22%]">Who has it</th>
+              <th className="px-3 py-2 font-semibold w-[76px]">Since</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-paper-200">
+            {rows.map(r => (
+              <tr key={r.contractId} className="hover:bg-paper-50 transition-colors">
+                <td className="px-4 py-2">
+                  <Link to={`/contracts/${r.contractId}`} className="font-medium text-ink-950 hover:underline underline-offset-2 decoration-paper-300 truncate block" title={r.title}>{r.title}</Link>
+                  <div className="text-[11px] text-ink-500 mt-0.5 truncate">{r.type}{r.counterpartyName ? ` · ${r.counterpartyName}` : ''}{team ? ` · owner ${r.owner.name}` : ''}</div>
+                </td>
+                <td className="px-3 py-2 text-[11.5px] text-ink-700">
+                  <div className="truncate" title={r.line}>{r.line.split(' · ').slice(0, 2).join(' · ')}</div>
+                  {r.approvals && r.stage === 'approve' && <div className="text-ink-400 tabular-nums mt-0.5">Approvals {r.approvals.approved} of {r.approvals.total}</div>}
+                </td>
+                <td className="px-3 py-2 text-[12px] text-ink-700">
+                  {r.stuck ? (
+                    <span className="inline-flex items-start gap-1 font-medium text-risk-700" title={r.stuck}><AlertTriangle className="size-3 shrink-0 mt-0.5" />Stuck: {r.stuck}</span>
+                  ) : (
+                    <div className="truncate" title={r.waitingOn?.names.join(', ')}>
+                      {r.waitingOn?.who === 'Approvers' || r.waitingOn?.who === 'Signers' ? `${r.waitingOn.who}: ${r.waitingOn.names.join(', ') || '—'}` : r.waitingOn?.names.join(', ') || r.waitingOn?.who || '—'}
+                    </div>
+                  )}
+                </td>
+                <td className="px-3 py-2"><AgeDot iso={r.waitingOn?.since ?? r.turnSince} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── Bulk decision (P10D) ───────────────────────────────────────────────────
+// docs/41 Part 6 — acts only on the approvals of the list as it is shown
+// (after the filter), and the dialog says so. A return needs a reason,
+// applied to each.
+function BulkDecisionDialog({ targets, filtered, onClose, onDecided }: {
+  targets: Array<{ row: InboxRow; action: InboxAction }>
+  filtered: boolean
   onClose: () => void
-  onDone: () => void
-  /** The contracts a decision landed on, once the run ends (failures included). */
   onDecided?: (contractIds: string[]) => void
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set(items.map(i => i.stepId)))
-  const [decision, setDecision] = useState<'APPROVED' | 'REJECTED'>('APPROVED')
+  const [selected, setSelected] = useState<Set<string>>(new Set(targets.map(t => t.action.stepId!)))
+  const [decision, setDecision] = useState<'APPROVED' | 'RETURNED'>('APPROVED')
   const [comment, setComment] = useState('')
   const [progress, setProgress] = useState<{ done: number; failed: number; total: number } | null>(null)
-  const [failures, setFailures] = useState<{ stepId: string; title: string; detail: string }[]>([])
+  const [failures, setFailures] = useState<Array<{ stepId: string; title: string; detail: string }>>([])
 
-  const toggle = (id: string) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id); else next.add(id)
-      return next
-    })
-  }
-
-  // L6 #10 — this used to `catch { failed++ }`, throwing away the server's
-  // per-step detail, then close the dialog unconditionally after 600 ms with
-  // the failure count rendered in emerald success green. The user got a green
-  // tick, a number, and no way to learn which items failed or why.
+  const toggle = (id: string) => setSelected(prev => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n })
   const submit = async () => {
-    const targets = items.filter(i => selected.has(i.stepId))
-    setProgress({ done: 0, failed: 0, total: targets.length })
+    const chosen = targets.filter(t => selected.has(t.action.stepId!))
+    setProgress({ done: 0, failed: 0, total: chosen.length })
     setFailures([])
     let done = 0
-    const failedItems: { stepId: string; title: string; detail: string }[] = []
-    for (const t of targets) {
+    const failed: Array<{ stepId: string; title: string; detail: string }> = []
+    for (const t of chosen) {
       try {
-        await api.post(`/approvals/${t.instanceId}/decide`, {
-          stepId:   t.stepId,
-          decision,
-          comment:  comment.trim() || undefined,
-        })
+        await api.post(`/approvals/${t.action.instanceId}/decide`, { stepId: t.action.stepId, decision, comment: comment.trim() || undefined, via: 'bulk' })
         done++
       } catch (err) {
-        const detail = serverMessage(err, 'Request failed')
-        failedItems.push({ stepId: t.stepId, title: t.contract?.title ?? t.stepName ?? t.stepId, detail })
+        failed.push({ stepId: t.action.stepId!, title: t.row.title, detail: serverMessage(err, 'Request failed') })
       }
-      setProgress({ done, failed: failedItems.length, total: targets.length })
+      setProgress({ done, failed: failed.length, total: chosen.length })
     }
-    setFailures(failedItems)
-    const failedSteps = new Set(failedItems.map(f => f.stepId))
-    onDecided?.([...new Set(targets.filter(t => !failedSteps.has(t.stepId)).map(t => t.contract?.id).filter((c): c is string => !!c))])
-    // Only close on a clean run. Closing over failures is what made a partial
-    // failure indistinguishable from success.
-    if (failedItems.length === 0) setTimeout(() => onDone(), 600)
+    setFailures(failed)
+    const failedSteps = new Set(failed.map(f => f.stepId))
+    onDecided?.([...new Set(chosen.filter(t => !failedSteps.has(t.action.stepId!)).map(t => t.row.contractId))])
+    if (!failed.length) setTimeout(onClose, 600)
   }
-
-  const retryFailed = () => {
-    setSelected(new Set(failures.map(f => f.stepId)))
-    setProgress(null)
-    setFailures([])
-  }
-
-  const isRejecting = decision === 'REJECTED'
-  const valid = selected.size > 0 && (!isRejecting || comment.trim().length > 0) && !progress
+  const returning = decision === 'RETURNED'
+  const valid = selected.size > 0 && (!returning || comment.trim().length > 0) && !progress
 
   return (
     <div role="dialog" className="fixed inset-0 z-50 bg-ink-950/40 flex items-center justify-center p-4 overflow-auto" onClick={onClose} data-testid="bulk-decision-dialog">
-      <div className="bg-card rounded-card max-w-2xl w-full shadow-e3 my-8" onClick={(e) => e.stopPropagation()}>
-        <div className="px-6 py-4 border-b border-paper-200 flex items-start justify-between">
-          <div>
-            <h2 className="text-section text-ink-950 flex items-center gap-2">
-              <ListChecks className="size-4 text-ink-400" />
-              Bulk decision
-            </h2>
-            <p className="text-dense text-ink-500 mt-1">
-              Apply a single decision (with optional comment) to multiple pending approvals.
-            </p>
-          </div>
-          <button onClick={onClose} className="p-1 rounded-md hover:bg-paper-100 text-ink-400">×</button>
+      <div className="bg-card rounded-card max-w-2xl w-full shadow-e3 my-8" onClick={e => e.stopPropagation()}>
+        <div className="px-6 py-4 border-b border-paper-200">
+          <h2 className="text-section text-ink-950 flex items-center gap-2"><ListChecks className="size-4 text-ink-400" />Decide several approvals</h2>
+          <p className="text-dense text-ink-500 mt-1">
+            This applies to the {targets.length} approval{targets.length === 1 ? '' : 's'} in your list{filtered ? ' as it is filtered now' : ''} — only the ones ticked below. Nothing else in your inbox changes.
+          </p>
         </div>
-
         <div className="px-6 py-5 space-y-4">
-          {/* Decision picker — a decision surface, so brand and risk are earned. */}
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setDecision('APPROVED')}
-              data-testid="bulk-decision-approve"
-              className={`flex-1 p-3 rounded-md border text-[13px] font-medium transition-colors ${
-                decision === 'APPROVED' ? 'border-brand-700 bg-brand-50 text-brand-700' : 'border-paper-200 hover:border-paper-300 text-ink-700'
-              }`}
-            >Approve all selected</button>
-            <button
-              type="button"
-              onClick={() => setDecision('REJECTED')}
-              data-testid="bulk-decision-reject"
-              className={`flex-1 p-3 rounded-md border text-[13px] font-medium transition-colors ${
-                decision === 'REJECTED' ? 'border-risk-600 bg-risk-50 text-risk-700' : 'border-paper-200 hover:border-paper-300 text-ink-700'
-              }`}
-            >Reject all selected</button>
+            <button type="button" onClick={() => setDecision('APPROVED')} data-testid="bulk-decision-approve" className={`flex-1 p-3 rounded-md border text-[13px] font-medium transition-colors ${decision === 'APPROVED' ? 'border-brand-700 bg-brand-50 text-brand-700' : 'border-paper-200 hover:border-paper-300 text-ink-700'}`}>Approve the ticked ones</button>
+            <button type="button" onClick={() => setDecision('RETURNED')} data-testid="bulk-decision-return" className={`flex-1 p-3 rounded-md border text-[13px] font-medium transition-colors ${decision === 'RETURNED' ? 'border-ink-950 bg-paper-100 text-ink-950' : 'border-paper-200 hover:border-paper-300 text-ink-700'}`}>Return the ticked ones for changes</button>
           </div>
-
-          {/* Selection list */}
           <div className="border border-paper-200 rounded-md max-h-72 overflow-y-auto">
             <div className="px-3 py-2 bg-paper-50 border-b border-paper-200 text-[11.5px] flex items-center justify-between">
-              <span className="text-ink-700 tabular-nums">{selected.size} of {items.length} selected</span>
-              <button
-                onClick={() => setSelected(new Set(selected.size === items.length ? [] : items.map(i => i.stepId)))}
-                className="font-medium text-ink-950 hover:text-ink-700"
-              >
-                {selected.size === items.length ? 'Deselect all' : 'Select all'}
-              </button>
+              <span className="text-ink-700 tabular-nums">{selected.size} of {targets.length} ticked</span>
+              <button onClick={() => setSelected(new Set(selected.size === targets.length ? [] : targets.map(t => t.action.stepId!)))} className="font-medium text-ink-950 hover:text-ink-700">{selected.size === targets.length ? 'Untick all' : 'Tick all'}</button>
             </div>
             <ul className="divide-y divide-paper-200">
-              {items.map(it => (
-                <li key={it.stepId} className="px-3 py-2 hover:bg-paper-50 flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(it.stepId)}
-                    onChange={() => toggle(it.stepId)}
-                    className="size-4 accent-ink-950"
-                  />
+              {targets.map(t => (
+                <li key={t.action.stepId} className="px-3 py-2 hover:bg-paper-50 flex items-center gap-2">
+                  <input type="checkbox" checked={selected.has(t.action.stepId!)} onChange={() => toggle(t.action.stepId!)} className="size-4 accent-ink-950" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-[13px] font-medium text-ink-950 truncate">{it.contract.title}</div>
-                    <div className="text-[11.5px] text-ink-500 truncate">
-                      {it.contract.type} · {it.stepName} · submitted by {it.instance.submittedByName ?? 'unknown'}
-                    </div>
+                    <div className="text-[13px] font-medium text-ink-950 truncate">{t.row.title}</div>
+                    <div className="text-[11.5px] text-ink-500 truncate">{t.row.type} · {t.action.detail ?? 'Approval'}</div>
                   </div>
                 </li>
               ))}
             </ul>
           </div>
-
           <div>
-            <label className="block text-dense font-semibold text-ink-700 mb-1">
-              Comment {isRejecting && <span className="text-risk-600">*</span>}
-              {!isRejecting && <span className="text-ink-400 font-normal"> (optional)</span>}
-            </label>
-            <textarea
-              value={comment}
-              onChange={e => setComment(e.target.value)}
-              placeholder={isRejecting ? 'Reason for rejection — applied to every selected item' : 'Optional note recorded against each decision'}
-              rows={2}
-              className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-3 py-2 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15 resize-y"
-            />
+            <label className="block text-dense font-semibold text-ink-700 mb-1">{returning ? 'What needs to change' : 'Note'}{returning ? <span className="text-risk-600"> *</span> : <span className="text-ink-400 font-normal"> (optional)</span>}</label>
+            <textarea value={comment} onChange={e => setComment(e.target.value)} rows={2} placeholder={returning ? 'Sent to each owner with their contract' : 'Recorded with each decision'} className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-3 py-2 placeholder:text-ink-400 focus-visible:outline-none focus-visible:border-brand-700 resize-y" />
           </div>
-
           {progress && (
-            <div
-              className={`text-[13px] border rounded-md px-3 py-2 ${
-                progress.failed > 0
-                  ? 'bg-risk-50 border-risk-200'
-                  : 'bg-info-50 border-info-200'
-              }`}
-            >
-              {progress.done + progress.failed === progress.total ? (
-                progress.failed > 0 ? (
-                  <span className="text-risk-700 tabular-nums" data-testid="bulk-partial-failure">
-                    {progress.done} of {progress.total} processed · {progress.failed} failed
-                  </span>
-                ) : (
-                  // Every decision landed — the run is binding, so brand is earned.
-                  <span className="text-brand-700 tabular-nums">
-                    ✓ {progress.done} of {progress.total} processed
-                  </span>
-                )
-              ) : (
-                <span className="text-info-700 tabular-nums">
-                  <Loader2 className="size-4 animate-spin inline mr-1" />
-                  Processing {progress.done + progress.failed} of {progress.total}…
-                </span>
-              )}
+            <div className={`text-[13px] border rounded-md px-3 py-2 ${progress.failed > 0 ? 'bg-risk-50 border-risk-200' : 'bg-info-50 border-info-200'}`}>
+              {progress.done + progress.failed === progress.total
+                ? progress.failed > 0
+                  ? <span className="text-risk-700 tabular-nums" data-testid="bulk-partial-failure">{progress.done} of {progress.total} done · {progress.failed} failed</span>
+                  : <span className="text-brand-700 tabular-nums">✓ {progress.done} of {progress.total} done</span>
+                : <span className="text-info-700 tabular-nums"><Loader2 className="size-4 animate-spin inline mr-1" />Working on {progress.done + progress.failed} of {progress.total}…</span>}
             </div>
           )}
-
-          {/* Name the items that failed, with the server's own reason. The
-              bare `catch { failed++ }` this replaces threw that detail away,
-              so the count was all anyone ever saw — in success green, for
-              600 ms, before the dialog closed itself. */}
           {failures.length > 0 && (
-            <div
-              className="text-[13px] border border-risk-200 rounded-md divide-y divide-risk-100"
-              data-testid="bulk-failure-list"
-            >
+            <div className="text-[13px] border border-risk-200 rounded-md divide-y divide-risk-100" data-testid="bulk-failure-list">
               {failures.map(f => (
-                <div key={f.stepId} className="px-3 py-2">
-                  <div className="font-medium text-ink-950 truncate">{f.title}</div>
-                  <div className="text-[11.5px] text-risk-700">{f.detail}</div>
-                </div>
+                <div key={f.stepId} className="px-3 py-2"><div className="font-medium text-ink-950 truncate">{f.title}</div><div className="text-[11.5px] text-risk-700">{f.detail}</div></div>
               ))}
-              <div className="px-3 py-2">
-                <Button size="sm" variant="outline" onClick={retryFailed}>
-                  Retry {failures.length} failed
-                </Button>
-              </div>
+              <div className="px-3 py-2"><Button size="sm" variant="outline" onClick={() => { setSelected(new Set(failures.map(f => f.stepId))); setProgress(null); setFailures([]) }}>Retry {failures.length} failed</Button></div>
             </div>
           )}
         </div>
-
         <div className="px-6 py-4 border-t border-paper-200 flex justify-end gap-2 bg-paper-50 rounded-b-card">
-          <Button variant="outline" onClick={onClose} disabled={!!progress}>Cancel</Button>
-          <Button
-            onClick={submit}
-            disabled={!valid}
-            data-testid="bulk-decision-confirm"
-            variant={isRejecting ? 'danger' : 'brand'}
-          >
-            {isRejecting ? `Reject ${selected.size}` : `Approve ${selected.size}`}
+          <Button variant="outline" onClick={onClose} disabled={!!progress && progress.done + progress.failed < progress.total}>Close</Button>
+          <Button onClick={submit} disabled={!valid} data-testid="bulk-decision-confirm" variant={returning ? 'default' : 'brand'}>
+            {returning ? `Return ${selected.size} for changes` : `Approve ${selected.size}`}
           </Button>
         </div>
       </div>

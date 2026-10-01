@@ -3,11 +3,11 @@
  *
  * Appears above the document when the current user has a PENDING approval
  * step on this contract. Its job: compress the review signal into one row
- * so the approver can Approve / Reject / Delegate without hunting.
+ * so the approver can Approve / Return / Decline / Delegate without hunting.
  *
  * Layout (left → right):
  *   [AI Confidence]  [Risk score]  [AI Recommendation]  [Top blocker → jump]
- *   + primary CTAs:  [Approve]  [Reject]  [Delegate]
+ *   + primary CTAs:  [Approve]  [Return for changes]  [Decline]  [Delegate]
  *
  * Per ChatGPT round-3: approvers don't trust AI blindly. The strip shows
  * all three inputs (confidence, risk, recommendation) side-by-side so the
@@ -15,7 +15,7 @@
  * scrolls the document to the clause that drives the recommendation, so
  * decisions reference the actual text and not just the summary.
  *
- * Reject/Delegate require extra input (comment / delegateTo user); those
+ * Return/Decline/Delegate require extra input (a reason / a user); those
  * cases expand into an inline popover. Approve is one click + optional
  * comment.
  */
@@ -29,8 +29,9 @@ import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { recommendationText } from '@/lib/recommendation'
 import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { DecisionReason, CONFIRM_LABEL, needsReason, type Decision } from '@/components/approvals/DecisionReason'
 import {
-  CheckCircle2, XCircle, ArrowRight, Loader2,
+  CheckCircle2, XCircle, ArrowRight, Loader2, Undo2,
   ShieldAlert, TrendingUp, ChevronDown,
 } from 'lucide-react'
 
@@ -84,12 +85,13 @@ export function DecisionStrip({
   onDecided?: () => void
 }) {
   const queryClient = useQueryClient()
-  const [pending, setPending] = useState<'APPROVED' | 'REJECTED' | 'DELEGATED' | null>(null)
+  const [pending, setPending] = useState<Decision | null>(null)
   const [comment, setComment] = useState('')
+  const [findingIds, setFindingIds] = useState<string[]>([])
   const [delegateTo, setDelegateTo] = useState('')
 
   const decide = useMutation({
-    mutationFn: (payload: { decision: string; comment?: string; delegateTo?: string }) =>
+    mutationFn: (payload: { decision: string; comment?: string; delegateTo?: string; findingIds?: string[] }) =>
       api.post(`/approvals/${awaitingMe.instanceId}/decide`, {
         stepId: awaitingMe.stepId,
         ...payload,
@@ -101,6 +103,7 @@ export function DecisionStrip({
       setPending(null)
       setComment('')
       setDelegateTo('')
+      setFindingIds([])
       onDecided?.()
     },
     // Shown in the strip with the server's reason; handled, so no global toast.
@@ -214,12 +217,23 @@ export function DecisionStrip({
           </Button>
           <Button
             size="sm"
-            variant="danger"
-            onClick={() => setPending('REJECTED')}
+            variant="outline"
+            onClick={() => setPending('RETURNED')}
             className="gap-1"
+            data-testid="strip-return-btn"
+          >
+            <Undo2 className="size-3.5" />
+            Return for changes
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => setPending('DECLINED')}
+            className="gap-1"
+            data-testid="strip-decline-btn"
           >
             <XCircle className="size-3.5" />
-            Return
+            Decline
           </Button>
           <Button
             size="sm"
@@ -247,13 +261,15 @@ export function DecisionStrip({
       {pending && (
         <div className="px-6 pb-3 pt-0 flex items-start gap-2 border-t border-attention-200 bg-card/50">
           <div className="flex-1 pt-3">
-            {pending === 'REJECTED' && (
-              <textarea
+            {(pending === 'RETURNED' || pending === 'DECLINED') && (
+              <DecisionReason
                 autoFocus
-                value={comment}
-                onChange={e => setComment(e.target.value)}
-                placeholder="What needs to change (required) — the owner sees this on the contract and in their notification…"
-                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/15 resize-y min-h-[52px]"
+                contractId={awaitingMe.contract.id}
+                decision={pending}
+                reason={comment}
+                onReason={setComment}
+                findingIds={findingIds}
+                onFindingIds={setFindingIds}
               />
             )}
             {pending === 'DELEGATED' && (
@@ -279,7 +295,7 @@ export function DecisionStrip({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => { setPending(null); setComment(''); setDelegateTo('') }}
+              onClick={() => { setPending(null); setComment(''); setDelegateTo(''); setFindingIds([]) }}
               disabled={decide.isPending}
               className="text-ink-500"
             >
@@ -289,21 +305,22 @@ export function DecisionStrip({
                 ink while approve/reject keep their decision colors. */}
             <Button
               size="sm"
-              variant={pending === 'APPROVED' ? 'brand' : pending === 'REJECTED' ? 'danger' : 'default'}
+              variant={pending === 'APPROVED' ? 'brand' : pending === 'DECLINED' ? 'danger' : 'default'}
               onClick={() => decide.mutate({
                 decision:   pending,
                 comment:    comment.trim() || undefined,
                 delegateTo: delegateTo.trim() || undefined,
+                ...(needsReason(pending) && findingIds.length && { findingIds }),
               })}
               disabled={
                 decide.isPending
-                || (pending === 'REJECTED' && !comment.trim())
+                || (needsReason(pending) && !comment.trim())
                 || (pending === 'DELEGATED' && !delegateTo.trim())
               }
               className="gap-1"
             >
               {decide.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Confirm {pending === 'APPROVED' ? 'Approve' : pending === 'REJECTED' ? 'Return for changes' : 'Delegate'}
+              {CONFIRM_LABEL[pending]}
             </Button>
           </div>
         </div>

@@ -33,7 +33,7 @@ const PRIMARY_LABELS: Record<string, string> = {
   templates:        'Templates',
   clauses:          'Clause Library',
   playbook:         'Playbook',
-  approvals:        'Approvals',
+  approvals:        'Inbox',
   // U.8 — URL stays /review-queue (back-compat) but the human label is
   // "Extraction Queue" so users don't conflate it with contract review.
   'review-queue':   'Extraction Queue',

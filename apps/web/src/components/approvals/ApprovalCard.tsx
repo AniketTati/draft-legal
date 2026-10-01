@@ -13,8 +13,9 @@ import { Chip, Eyebrow } from '@/components/ui/primitives'
 import { AssistMark, AssistChip } from '@/components/ui/assist'
 import { recommendationText } from '@/lib/recommendation'
 import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { DecisionReason, CONFIRM_LABEL, needsReason, type Decision } from '@/components/approvals/DecisionReason'
 import {
-  CheckCircle2, XCircle, ArrowRight, ChevronDown, ChevronUp,
+  CheckCircle2, XCircle, ArrowRight, ChevronDown, ChevronUp, Undo2,
   AlertTriangle, Building2, DollarSign, Calendar, Loader2, ExternalLink,
 } from 'lucide-react'
 
@@ -91,8 +92,9 @@ const SEVERITY_COLOR: Record<string, string> = {
 export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contract, instance, onDecided }: Props) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const [decision, setDecision] = useState<'APPROVED' | 'REJECTED' | 'DELEGATED' | null>(null)
+  const [decision, setDecision] = useState<Decision | null>(null)
   const [comment, setComment] = useState('')
+  const [findingIds, setFindingIds] = useState<string[]>([])
   const [delegateTo, setDelegateTo] = useState('')
   const [showRisks, setShowRisks] = useState(false)
 
@@ -100,7 +102,7 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
   // org-user query state here anymore.
 
   const submitDecision = useMutation({
-    mutationFn: (payload: { stepId: string; decision: string; comment?: string; delegateTo?: string }) =>
+    mutationFn: (payload: { stepId: string; decision: string; comment?: string; delegateTo?: string; findingIds?: string[] }) =>
       api.post(`/approvals/${instanceId}/decide`, payload).then(r => r.data),
     onSuccess: () => {
       // docs/41 P0.6 — every place the approval is read from (lib/approval-keys.ts).
@@ -113,9 +115,12 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
 
   function handleSubmit() {
     if (!decision) return
-    if (decision === 'REJECTED' && !comment.trim()) return
+    if (needsReason(decision) && !comment.trim()) return
     if (decision === 'DELEGATED' && !delegateTo) return
-    submitDecision.mutate({ stepId, decision, comment: comment.trim() || undefined, delegateTo: delegateTo || undefined })
+    submitDecision.mutate({
+      stepId, decision, comment: comment.trim() || undefined, delegateTo: delegateTo || undefined,
+      ...(needsReason(decision) && findingIds.length && { findingIds }),
+    })
   }
 
   const hasRisks = (instance.keyRisks?.length ?? 0) > 0 || (instance.nonStandardTerms?.length ?? 0) > 0
@@ -288,13 +293,24 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
             >
               <CheckCircle2 />Approve
             </Button>
+            {/* docs/41 Part 4 — two answers that aren't "approve", named for what
+                happens next: back to the owner to fix, or not to go ahead. */}
             <Button
               size="sm"
-              variant={decision === 'REJECTED' ? 'destructive' : 'danger'}
-              onClick={() => setDecision(d => d === 'REJECTED' ? null : 'REJECTED')}
-              data-testid="approval-reject-btn"
+              variant="outline"
+              className={decision === 'RETURNED' ? 'border-ink-950 text-ink-950' : undefined}
+              onClick={() => setDecision(d => d === 'RETURNED' ? null : 'RETURNED')}
+              data-testid="approval-return-btn"
             >
-              <XCircle />Reject
+              <Undo2 />Return for changes
+            </Button>
+            <Button
+              size="sm"
+              variant={decision === 'DECLINED' ? 'destructive' : 'danger'}
+              onClick={() => setDecision(d => d === 'DECLINED' ? null : 'DECLINED')}
+              data-testid="approval-decline-btn"
+            >
+              <XCircle />Decline
             </Button>
             {/* Delegating is a hand-off, not a verdict — it stays neutral. */}
             <Button
@@ -307,10 +323,20 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
             </Button>
           </div>
 
-          {/* Rejection comment */}
-          {(decision === 'REJECTED' || decision === 'APPROVED') && (
+          {/* The reason a return or a decline needs, and what it points at */}
+          {(decision === 'RETURNED' || decision === 'DECLINED') && (
+            <DecisionReason
+              contractId={contract.id}
+              decision={decision}
+              reason={comment}
+              onReason={setComment}
+              findingIds={findingIds}
+              onFindingIds={setFindingIds}
+            />
+          )}
+          {decision === 'APPROVED' && (
             <textarea
-              placeholder={decision === 'REJECTED' ? 'Reason for rejection (required)…' : 'Optional comment…'}
+              placeholder="Optional comment…"
               value={comment}
               onChange={e => setComment(e.target.value)}
               rows={2}
@@ -346,13 +372,13 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
                 onClick={handleSubmit}
                 disabled={
                   submitDecision.isPending ||
-                  (decision === 'REJECTED' && !comment.trim()) ||
+                  (needsReason(decision) && !comment.trim()) ||
                   (decision === 'DELEGATED' && !delegateTo)
                 }
                 data-testid="approval-confirm-btn"
               >
                 {submitDecision.isPending && <Loader2 className="animate-spin" />}
-                Confirm {decision === 'APPROVED' ? 'Approval' : decision === 'REJECTED' ? 'Rejection' : 'Delegation'}
+                {CONFIRM_LABEL[decision]}
               </Button>
               {submitDecision.isError && (
                 <span className="text-dense text-risk-700">

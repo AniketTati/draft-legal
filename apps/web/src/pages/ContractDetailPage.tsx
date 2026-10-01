@@ -15,7 +15,7 @@ import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/s
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
-  ArrowLeft, Copy, Download, FileText, Clock, Tag, User,
+  ArrowLeft, Copy, Download, FileText, Tag,
   AlertCircle, Sparkles, Loader2,
   CheckCircle2, AlertTriangle, XCircle, Shield, TrendingUp,
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
@@ -45,8 +45,6 @@ import { VariablesRailSection } from '@/components/contracts/VariablesRailSectio
 import { OriginRailSection } from '@/components/contracts/OriginRailSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
 import { RedlinePanel } from '@/components/contracts/RedlinePanel'
-import { ApprovalTimeline } from '@/components/approvals/ApprovalTimeline'
-import { ApprovalCard } from '@/components/approvals/ApprovalCard'
 import { StatusPill } from '@/components/contracts/StatusPill'
 import { RailSection } from '@/components/contracts/RailSection'
 import { DocumentCanvas, type CanvasState } from '@/components/contracts/DocumentCanvas'
@@ -60,14 +58,14 @@ import {
 import { classifyRisk } from '@/components/contracts/RiskDecorations'
 // U.4.1 — AiCommandPalette deleted. ⌘K now focuses the rail composer.
 import { DecisionStrip } from '@/components/contracts/DecisionStrip'
-import { NegotiationStatusStrip } from '@/components/contracts/NegotiationStatusStrip'
+import { StatusBanner } from '@/components/contracts/StatusBanner'
+import { HistoryDrawer } from '@/components/contracts/HistoryDrawer'
 import { CompareMode } from '@/components/contracts/CompareMode'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { CreateAmendmentDialog } from '@/components/contracts/CreateAmendmentDialog'
 import { CollabStatusBadge } from '@/components/contracts/CollabStatusBadge'
 import { SignatureStatusRailSection } from '@/components/contracts/SignatureStatusRailSection'
-import { SignatureRevertBanner } from '@/components/contracts/SignatureRevertBanner'
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
@@ -93,7 +91,6 @@ import { currentVersionOf } from '@/lib/current-version'
 import { analysisLine } from '@/lib/analysis-state'
 import { familyLine } from '@/lib/family-banner'
 import { approvalKeys, invalidateApproval } from '@/lib/approval-keys'
-import { activityText } from '@/lib/activity'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -197,27 +194,13 @@ const CLAUSE_FLAG_LABELS: Record<string, string> = {
 }
 
 // U.4.4 — 'ask' removed; the rail handles per-contract Q&A.
-type Tab = 'overview' | 'document' | 'clauses' | 'versions' | 'activity' | 'negotiate' | 'comments' | 'approval'
+// docs/41 Part 12 — Versions, Activity and Approval are in the History drawer now.
+type Tab = 'overview' | 'document' | 'clauses' | 'negotiate' | 'comments'
 
-// ─── Valid status transitions for manual user actions ─────────────────────────
-//
-// A.3 — The DRAFT → PENDING_REVIEW manual button was removed. It was a
-// workflow bypass that let users flip status without assigning a reviewer,
-// workflow, or deadline. "Send for Review" now always goes through
-// /submit-approval (the real workflow engine), producing PENDING_APPROVAL.
-// PENDING_REVIEW remains reachable via the workflow engine's rejection-to-
-// review path (wired in B.5).
-const STATUS_TRANSITIONS: Record<string, Array<{ to: string; label: string; variant?: 'default' | 'outline' }>> = {
-  // Start Negotiation is outlined, not ink: in PENDING_REVIEW the header also
-  // renders "Send for Review", and only one ink-filled primary is allowed per
-  // view. Send-for-Review is the recommended path, so it keeps the fill.
-  PENDING_REVIEW:     [{ to: 'UNDER_NEGOTIATION', label: 'Start Negotiation', variant: 'outline' },
-                       { to: 'DRAFT', label: 'Return to Draft', variant: 'outline' }],
-  UNDER_NEGOTIATION:  [{ to: 'PENDING_REVIEW', label: 'Back to Review', variant: 'outline' }],
-  APPROVED:           [{ to: 'EXECUTED', label: 'Mark as Executed' }],
-  EXECUTED:           [{ to: 'ARCHIVED', label: 'Archive', variant: 'outline' }],
-  EXPIRED:            [{ to: 'ARCHIVED', label: 'Archive', variant: 'outline' }],
-}
+// ─── Moves by hand ─────────────────────────────────────────────────────────────
+// docs/41 Part 18 — the moves a person makes by hand (start negotiating,
+// archive, mark signed outside the app, cancel) are offered by the status
+// banner (components/contracts/StatusBanner.tsx), from GET /contracts/:id/stage.
 
 // ─── Clause type → human-readable label ───────────────────────────────────────
 
@@ -606,7 +589,6 @@ export function ContractDetailPage() {
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => toast.error("Couldn't remove it", { description: err.response?.data?.detail ?? 'Try again.' }),
   })
-  const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
   const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
   const canUpload = useCanRequest('POST /contracts/upload')
 
@@ -624,6 +606,8 @@ export function ContractDetailPage() {
   // POST /contracts/:id/send-for-signature flow that was previously
   // reachable only via API.
   const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
+  // docs/41 Part 12 — the History drawer (versions, approvals, signatures, moves).
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [createAmendmentOpen, setCreateAmendmentOpen]   = useState(false)
   // P6.3 — streaming bubble AI popover
   const [aiPopoverOpen, setAiPopoverOpen] = useState(false)
@@ -879,15 +863,6 @@ export function ContractDetailPage() {
     enabled: !!id,
   })
 
-  const { data: timelineData } = useQuery({
-    queryKey: ['contract-timeline', id],
-    queryFn: () => api.get(`/contracts/${id}/timeline`).then(r => r.data),
-    // B.1.5f — rail's Activity section is collapsed-by-default, but we still
-    // want a count shown; fetch the timeline once the contract loads.
-    enabled: !!id,
-    staleTime: 30_000,
-  })
-
   const { data: clausesData } = useQuery({
     queryKey: ['contract-clauses', id],
     queryFn: () => api.get(`/contracts/${id}/clauses`).then(r => r.data),
@@ -979,25 +954,6 @@ export function ContractDetailPage() {
     staleTime: 60_000,
   })
 
-  // The latest request for approval, in the shape the timeline, the rail and
-  // the negotiation strip read.
-  const approvalInstanceData = contractApproval?.current
-    ? { ...contractApproval.current, instance: { status: contractApproval.current.status, submittedAt: contractApproval.current.submittedAt, submittedByName: contractApproval.current.submittedBy.name } }
-    : null
-  const approvalHistory = contractApproval?.history ?? []
-  // docs/41 P0.6 — returned for changes and not yet sent again: the banner says by whom and why.
-  const returned = contractApproval?.current?.outcome === 'returned' && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
-    ? contractApproval.current
-    : null
-
-  const submitForApproval = useMutation({
-    // Shown where it happened; the global error toast stays out (lib/api.ts).
-    meta: { errorHandled: true },
-    mutationFn: (workflowDefinitionId?: string) =>
-      api.post(`/contracts/${id}/submit-approval`, { workflowDefinitionId }).then(r => r.data),
-    onSuccess: () => invalidateApproval(qc, id),
-  })
-
   // docs/39 G1 — a re-analysis refreshes the values the AI owns; values a
   // person set or checked stay, and what the AI now reads shows beside them
   // in the Fields panel. `fill_blanks` only fills empty fields.
@@ -1018,16 +974,6 @@ export function ContractDetailPage() {
     mutationFn: () => api.post(`/contracts/${id}/cancel-analysis`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contract', id] })
-    },
-  })
-
-  const changeStatus = useMutation({
-    mutationFn: (newStatus: string) =>
-      api.patch(`/contracts/${id}`, { status: newStatus }).then((r) => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contracts'] })
-      qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
     },
   })
 
@@ -1388,32 +1334,16 @@ export function ContractDetailPage() {
     staleTime: 30_000,
   })
 
-  // P7.4.16 / F-31 — pull active share-links so the NegotiationStatusStrip
-  // can tell "we sent it" from "we never shared". Cheap query, only fires
-  // when we're in a phase where it matters.
-  const { data: shareLinksData } = useQuery({
-    queryKey: ['share-links', id],
-    queryFn: () => api.get(`/contracts/${id}/share`).then(r => r.data),
-    enabled: !!id && ['UNDER_NEGOTIATION', 'PENDING_APPROVAL'].includes(contract?.status ?? ''),
-    staleTime: 30_000,
-  })
-  const commentCount: number | undefined = commentsData?.data?.length != null
-    ? (commentsData.nextCursor ? '9+' : commentsData.data.length) as any
-    : undefined
+  // The threads on the contract, counted by the server: the rail said "9+"
+  // whenever there were two or more (it fetched one and saw a next page).
+  const commentCount: number | undefined = typeof commentsData?.total === 'number' ? commentsData.total : undefined
 
   const visibleTabs = useMemo(() => {
-    const tabs: Tab[] = ['overview', 'clauses', 'document', 'versions']
+    const tabs: Tab[] = ['overview', 'clauses', 'document']
     if (versions.length >= 2) tabs.push('negotiate')
     tabs.push('comments')
-    if (
-      contract?.analysisStatus === 'DONE' ||
-      ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')
-    ) {
-      tabs.push('approval')
-    }
-    tabs.push('activity')
     return tabs
-  }, [versions.length, contract?.analysisStatus, contract?.status])
+  }, [versions.length])
 
   useEffect(() => {
     if (!visibleTabs.includes(tab)) setTab('document')
@@ -1496,7 +1426,6 @@ export function ContractDetailPage() {
   // Pages past the limit — or past page 40, for a scan read before A7.
   const pagesNotRead = extractionMeta.ocrTruncated || (!extractionMeta.ocrQuality && (extractionMeta.ocrPages ?? 0) < (extractionMeta.pageCount ?? 0))
     ? Math.max(0, (extractionMeta.pageCount ?? 0) - (extractionMeta.ocrPages ?? 0)) : 0
-  const timeline = timelineData?.data ?? []
   const presentFlags = Object.entries(CLAUSE_FLAG_LABELS).filter(([k]) => clauseFlags[k] === true)
   const keyTermEntries = Object.entries(keyTerms).filter(([, v]) => v != null && v !== '' && v !== false)
   const hasAnalysis = !!(contract.summary || keyTermEntries.length > 0)
@@ -1808,37 +1737,6 @@ export function ContractDetailPage() {
               </Button>
             ) : null}
 
-            {/* Status transition buttons */}
-            {canChangeStatus && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
-              <Button
-                key={tr.to}
-                variant={tr.variant ?? 'default'}
-                size="sm"
-                onClick={() => changeStatus.mutate(tr.to)}
-                disabled={changeStatus.isPending}
-                className="gap-1.5"
-              >
-                {changeStatus.isPending && <Loader2 className="size-4 animate-spin" />}
-                {tr.label}
-              </Button>
-            ))}
-            {/*
-              A.3 — single primary CTA across pre-approval states. Always
-              routes through the workflow engine (/submit-approval); the old
-              "Send for Review" manual status-flip was removed.
-            */}
-            {canSendForReview && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
-              <Button
-                variant="default" size="sm"
-                onClick={() => setSendForReviewOpen(true)}
-                disabled={submitForApproval.isPending}
-                className="gap-1.5"
-              >
-                {submitForApproval.isPending
-                  ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
-                  : <><CheckCircle2 className="size-4" />Send for Review</>}
-              </Button>
-            )}
             {/* Phase 07 — Send-for-Signature primary CTA.
                 Visible on every non-terminal status; the dialog itself
                 handles version/perm/already-executed gating. Send-for-Review
@@ -1856,11 +1754,8 @@ export function ContractDetailPage() {
                 the single primary slot and this one steps back to outline. */}
             {canSign && !['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
               <Button
-                variant={
-                  ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
-                    ? 'outline'
-                    : 'default'
-                }
+                // The status banner owns the one primary action (docs/41 Part 18).
+                variant="outline"
                 size="sm"
                 onClick={() => setSendForSignatureOpen(true)}
                 // docs/41 P0.4/P0.8 — not with a term still to choose, nor before approval.
@@ -2286,67 +2181,24 @@ export function ContractDetailPage() {
       */}
 
       {/*
-        B.5.12 — Negotiation Status strip. State 1 addition (docs/26 §5).
-        For the OWNER / submitter's view — answers "why is my deal stuck
-        and what happens next" without opening a tab. Complements the
-        DecisionStrip: the strip surfaces to the approver when they see
-        the contract (so they decide); this surfaces to everyone ELSE.
-        Two conditions it renders under:
-          - UNDER_NEGOTIATION → waiting on counterparty
-          - PENDING_APPROVAL → waiting on an internal approver
-        We skip it when the current user IS the approver (they already
-        have the DecisionStrip telling them what to do).
+        docs/41 Parts 12, 18 — the status banner: stage progress, state and
+        whose turn in words, the one next action, approvals x/y, signatures
+        x/y, why it came back. It replaces the negotiation strip (which
+        guessed the turn in the browser), the "returned" banner, the
+        signature revert banner and the header's status buttons; everyone
+        sees it, the approver too (their decision strip follows).
       */}
-      {!isApproverMode && ['UNDER_NEGOTIATION', 'PENDING_APPROVAL'].includes(contract?.status ?? '') && (
-        <NegotiationStatusStrip
-          contract={{
-            status:           contract?.status ?? '',
-            counterpartyName: contract?.counterpartyName ?? null,
+      {id && (
+        <StatusBanner
+          contractId={id}
+          onSubmit={() => setSendForReviewOpen(true)}
+          onSendForSignature={() => setSendForSignatureOpen(true)}
+          onReviewChanges={() => {
+            const [latest, before] = versions as Array<{ id: string }>
+            if (latest && before) { setDiffV1Id(before.id); setDiffV2Id(latest.id) }
+            setTab('negotiate')
           }}
-          approvalInstance={
-            approvalInstanceData?.instance
-              ? {
-                  submittedAt:     approvalInstanceData.instance.submittedAt,
-                  submittedByName: approvalInstanceData.instance.submittedByName,
-                  currentStepName: approvalInstanceData.steps?.find((s: any) => s.status === 'PENDING')?.stepName,
-                  currentApproverName: approvalInstanceData.steps?.find((s: any) => s.status === 'PENDING')?.approverName,
-                }
-              : null
-          }
-          lastComment={
-            commentsData?.data?.[0]
-              ? {
-                  excerpt:    (commentsData.data[0].body ?? commentsData.data[0].content ?? '').toString(),
-                  createdAt:  commentsData.data[0].createdAt,
-                  authorName: commentsData.data[0].authorName,
-                }
-              : null
-          }
-          latestVersion={
-            versions[0]
-              ? {
-                  versionNumber: versions[0].versionNumber,
-                  createdAt:     versions[0].createdAt,
-                  changeNote:    versions[0].changeNote,
-                  fromCounterparty: typeof versions[0].createdById === 'string'
-                    && versions[0].createdById.startsWith('portal:'),
-                }
-              : null
-          }
-          // P7.4.16 / F-31 — real signals from share + portal upload + external comment
-          lastShareSentAt={(shareLinksData?.data ?? [])[0]?.createdAt ?? null}
-          counterpartyUploadedVersion={(() => {
-            const v = (versions as Array<any>).find(v => typeof v.createdById === 'string' && v.createdById.startsWith('portal:'))
-            return v ? { versionNumber: v.versionNumber, createdAt: v.createdAt } : null
-          })()}
-          externalCommentAt={(commentsData?.data ?? []).find((c: any) => typeof c.authorId === 'string' && c.authorId.startsWith('portal:'))?.createdAt ?? null}
-          onNudge={() => {
-            // Scrolls to the comments rail or opens a composer; stubbed
-            // for now — reminder send lands in post-V1.
-            const section = Array.from(document.querySelectorAll('section span'))
-              .find(s => /Comments/i.test((s.textContent || '').trim()))
-            section?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          }}
+          onOpenHistory={() => setHistoryOpen(true)}
         />
       )}
 
@@ -2600,17 +2452,6 @@ export function ContractDetailPage() {
           </div>
         )
       })()}
-      {/* docs/41 P0.8 — out for signature with nothing left to sign: a way back. */}
-      {contract?.status === 'PENDING_SIGNATURE' && id && <SignatureRevertBanner contractId={id} canRevert={canSign} />}
-      {/* docs/41 P0.6 — returned for changes: by whom, why, and what to do. */}
-      {returned && (
-        <div className="bg-attention-50 border-b border-attention-200 text-ink-950 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense" data-testid="returned-banner" role="status">
-          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
-          <span className="font-medium">Returned by {returned.returnedBy?.name ?? 'an approver'}{returned.reason ? ':' : ''}</span>
-          {returned.reason && <span className="text-ink-700">“{returned.reason}”</span>}
-          <span className="text-ink-500">— fix and send it for approval again.</span>
-        </div>
-      )}
       {/* P2.3 — the line a child contract shows about its parent, on every
           tab. docs/41 P0.9 — "Split from scanned file" only for a contract the
           binder split carved out of a bundle; an amendment says what it
@@ -2991,34 +2832,6 @@ export function ContractDetailPage() {
                     )}
                   </div>
                 )}
-
-                {/* Versions quick view */}
-                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-section text-ink-950">Versions</h3>
-                    <button onClick={() => setTab('versions')} className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2">View all</button>
-                  </div>
-                  {versions.length === 0 ? (
-                    <p className="text-dense text-ink-400">No versions yet</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {versions.slice(0, 3).map((v: any) => (
-                        <div key={v.id} className="flex items-center justify-between">
-                          <div>
-                            <p className="text-dense font-medium text-ink-950 font-mono">v{v.versionNumber}</p>
-                            <p className="text-[10px] text-ink-400 tabular-nums">{new Date(v.createdAt).toLocaleDateString()}</p>
-                          </div>
-                          <button
-                            onClick={() => handleDownload(v.id)}
-                            className="p-1 rounded-chip hover:bg-paper-100 text-ink-400 hover:text-ink-950"
-                          >
-                            <Download className="size-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
 
                 {/* Contract Family */}
                 <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
@@ -3413,38 +3226,6 @@ export function ContractDetailPage() {
           )
         })()}
 
-        {/* ─── Versions ──────────────────────────────────────────────────── */}
-        {tab === 'versions' && (
-          <div className="p-6 max-w-3xl mx-auto">
-            <div className="bg-card rounded-card border border-paper-200 shadow-e1 divide-y divide-paper-100">
-              {versions.length === 0 ? (
-                <p className="p-8 text-body text-ink-400 text-center">No versions yet</p>
-              ) : versions.map((v: any) => (
-                <div key={v.id} className="flex items-center justify-between p-4 hover:bg-paper-50">
-                  <div className="flex items-center gap-3">
-                    <div className="size-8 rounded-full bg-paper-100 border border-paper-200 flex items-center justify-center text-[11px] font-semibold font-mono text-ink-700">
-                      v{v.versionNumber}
-                    </div>
-                    <div>
-                      <p className="text-body font-medium text-ink-950">Version {v.versionNumber}</p>
-                      {v.changeNote && <p className="text-dense text-ink-500 mt-0.5">{v.changeNote}</p>}
-                      {v.changeSummary && <p className="text-dense text-ink-500 mt-0.5 italic">{v.changeSummary}</p>}
-                      <p className="text-dense text-ink-400 mt-0.5 flex items-center gap-1">
-                        <Clock className="size-3" />
-                        {new Date(v.createdAt).toLocaleString()}
-                        {v.fileSize && ` · ${(v.fileSize / 1024).toFixed(0)} KB`}
-                      </p>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="icon" onClick={() => handleDownload(v.id)}>
-                    <Download className="size-3.5" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* ─── Negotiate ─────────────────────────────────────────────────── */}
         {tab === 'negotiate' && (
           <div className="p-6 space-y-6">
@@ -3524,138 +3305,6 @@ export function ContractDetailPage() {
         {tab === 'comments' && (
           <div className="p-6 max-w-3xl mx-auto">
             <CommentsPanel contractId={id!} />
-          </div>
-        )}
-
-        {/* ─── Activity ──────────────────────────────────────────────────── */}
-        {tab === 'activity' && (
-          <div className="p-6 max-w-2xl mx-auto">
-            {timeline.length === 0 ? (
-              <div className="flex flex-col items-center py-16 gap-2">
-                <Clock className="size-8 text-ink-400" />
-                <p className="text-body text-ink-400">No activity recorded yet</p>
-              </div>
-            ) : (
-              <div className="relative">
-                <div className="absolute left-5 top-0 bottom-0 w-px bg-paper-200" />
-                {timeline.map((e: any) => (
-                  <div key={e.id} className="flex items-start gap-4 mb-4 relative pl-12">
-                    {/* A recorded event is history, not a live state — the node
-                        is a neutral rule marker, not an inflight dot. */}
-                    <div className="absolute left-3.5 top-1.5 size-3 rounded-full bg-card border-2 border-paper-300" />
-                    <div className="bg-card rounded-card border border-paper-200 shadow-e1 px-4 py-3 flex-1">
-                      {/* docs/41 P0.6 — in words, with who and why (a return's reason). */}
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-dense font-semibold text-ink-950">{activityText(e).title}</span>
-                        <span className="text-dense text-ink-400 tabular-nums flex-shrink-0">{new Date(e.createdAt).toLocaleString()}</span>
-                      </div>
-                      {activityText(e).detail && (
-                        <p className="text-dense text-ink-700 mt-1" data-testid="activity-detail">{activityText(e).detail}</p>
-                      )}
-                      {e.userName && (
-                        <p className="text-dense text-ink-500 mt-1 flex items-center gap-1">
-                          <User className="size-3" /> {e.userName}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ─── Approval ──────────────────────────────────────────────────── */}
-        {tab === 'approval' && (
-          <div className="p-6 max-w-3xl mx-auto space-y-6">
-            {/* Status banner */}
-            {contract?.status === 'PENDING_APPROVAL' && (
-              <div className="flex items-center gap-2 p-3 rounded-md bg-info-50 border border-info-200 text-body text-info-700">
-                <Loader2 className="size-4 animate-spin text-info-600" />
-                Contract is pending approval — waiting for approver decision.
-              </div>
-            )}
-            {contract?.status === 'APPROVED' && (
-              <div className="flex items-center gap-2 p-3 rounded-md bg-brand-50 border border-brand-200 text-body text-brand-700">
-                <CheckCircle2 className="size-4 text-brand-700" />
-                Contract approved. Ready for execution.
-              </div>
-            )}
-
-            {/* No instance yet — show submit prompt */}
-            {!approvalInstanceData && !['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '') && (
-              <div className="text-center py-10 border-2 border-dashed rounded-card border-paper-200 bg-paper-50">
-                <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
-                <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
-                <p className="text-dense text-ink-500 mb-4">
-                  {canSendForReview ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
-                </p>
-                {/* Same action the header CTA already offers, so it doesn't
-                    take a second ink fill. */}
-                {canSendForReview && <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => submitForApproval.mutate(undefined)}
-                  disabled={submitForApproval.isPending}
-                  className="gap-1.5"
-                >
-                  {submitForApproval.isPending
-                    ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
-                    : <>Send for Review</>}
-                </Button>}
-                {submitForApproval.isError && (
-                  <p className="text-dense text-risk-700 mt-2">
-                    {(submitForApproval.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to submit'}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* My pending step on this contract */}
-            {approvalData && (
-              <div>
-                <h3 className="text-section text-ink-950 mb-3">Your Pending Approval</h3>
-                <ApprovalCard
-                  stepId={approvalData.stepId}
-                  instanceId={approvalData.instanceId}
-                  stepName={approvalData.stepName}
-                  contract={approvalData.contract}
-                  instance={approvalData.instance}
-                  onDecided={() => { refetchApproval() }}
-                />
-              </div>
-            )}
-
-            {/* Timeline */}
-            {approvalInstanceData && (
-              <div>
-                <h3 className="text-section text-ink-950 mb-3">Approval Timeline</h3>
-                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                  <ApprovalTimeline
-                    instance={approvalInstanceData}
-                    steps={approvalInstanceData.steps ?? []}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* docs/41 P0.6 — earlier requests for approval stay on the record. */}
-            {approvalHistory.length > 0 && (
-              <div data-testid="approval-history">
-                <h3 className="text-section text-ink-950 mb-3">Earlier requests</h3>
-                <div className="space-y-3">
-                  {approvalHistory.map(h => (
-                    <div key={h.id} className="bg-card rounded-card border border-paper-200 p-4">
-                      <p className="text-dense text-ink-500 mb-2">
-                        Sent {new Date(h.submittedAt).toLocaleDateString()} by {h.submittedBy.name}
-                        {h.outcome === 'returned' && h.returnedBy && <> · returned by {h.returnedBy.name}{h.reason ? <>: “{h.reason}”</> : null}</>}
-                      </p>
-                      <ApprovalTimeline instance={h} steps={h.steps} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         )}
 
@@ -4407,10 +4056,12 @@ export function ContractDetailPage() {
           this contract" — users shouldn't have to tell us whether a
           counter-redline is a version, attachment, or child.
         */}
+        {/* docs/41 Part 12 — versions are in the History drawer (with the
+            rest of what happened); this section keeps the documents that go
+            with the contract: attachments, its parent and its children. */}
         <RailSection
-          title="History"
+          title="Related documents"
           count={
-            (versions.length || 0) +
             ((contract.attachments as any[] ?? []).length || 0) +
             (familyData?.children?.length ?? 0) +
             (familyData?.parent ? 1 : 0) || null
@@ -4464,22 +4115,6 @@ export function ContractDetailPage() {
               </li>
             )}
 
-            {/* Versions */}
-            {versions.map((v: any) => (
-              <li key={v.id} className="flex items-start gap-2.5">
-                <div className="size-5 rounded-full bg-paper-100 border border-paper-200 text-ink-700 text-[9.5px] font-semibold font-mono flex items-center justify-center flex-shrink-0">
-                  v{v.versionNumber}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-dense text-ink-950 font-medium truncate">
-                    {v.changeNote?.replace(/\s*\(\s*\)\s*$/, '') || `Version ${v.versionNumber}`}
-                  </div>
-                  <div className="text-[11px] text-ink-400 tabular-nums">
-                    {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </div>
-                </div>
-              </li>
-            ))}
 
             {/* Attachments */}
             {((contract.attachments as any[] ?? []) as any[]).map((att: any, i: number) => (
@@ -4527,56 +4162,6 @@ export function ContractDetailPage() {
           </ol>
         </RailSection>
 
-        {/* B.1.5f — Approval (conditional: only if instance or in-flow) */}
-        {(approvalInstanceData || ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')) && (
-          <RailSection
-            title="Approval"
-            count={approvalInstanceData?.instance?.status ?? null}
-            defaultOpen={contract?.status === 'PENDING_APPROVAL'}
-          >
-            {approvalData ? (
-              <div className="space-y-2">
-                <div className="text-dense text-ink-500">
-                  Waiting on you: <span className="font-medium text-ink-950">{approvalData.stepName}</span>
-                </div>
-                <Button
-                  /*
-                   * Outline, not the ink fill. At PENDING_APPROVAL the header
-                   * already carries an ink "Send for signature", and the real
-                   * decision lives in the DecisionStrip above the document —
-                   * this only scrolls to it. Two ink fills on one screen is two
-                   * primaries, and the design system allows one; the navigation
-                   * is the one that steps back.
-                   */
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => {
-                    // Wave 2.3 — scroll to the real DecisionStrip (Approve /
-                    // Reject / Delegate) that renders above the document when
-                    // the current user is the pending approver. Falls back to
-                    // the Approvals tab's ApprovalCard if the strip isn't
-                    // mounted. (Replaces the window.alert placeholder.)
-                    const strip = document.getElementById('approval-decision-strip')
-                    if (strip) {
-                      strip.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                    } else {
-                      setTab('approval')
-                    }
-                  }}
-                >
-                  Review & Decide
-                </Button>
-              </div>
-            ) : approvalInstanceData?.instance ? (
-              <p className="text-body text-ink-700">
-                Status: <span className="font-medium text-ink-950">{approvalInstanceData.instance.status}</span>
-              </p>
-            ) : (
-              <p className="text-body text-ink-400 italic">Not yet submitted for approval.</p>
-            )}
-          </RailSection>
-        )}
-
         {/* B.1.5f — Comments */}
         <RailSection
           title="Comments"
@@ -4598,37 +4183,22 @@ export function ContractDetailPage() {
           )}
         </RailSection>
 
-        {/* B.1.5f — Activity */}
-        <RailSection
-          title="Activity"
-          count={timeline.length || null}
-        >
-          {timeline.length ? (
-            <ol className="space-y-2">
-              {timeline.slice(0, 8).map((evt: any, i: number) => (
-                <li key={evt.id ?? i} className="flex gap-2 text-dense">
-                  <span className="text-ink-400 tabular-nums min-w-[3.5rem]">
-                    {new Date(evt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
-                  <span className="text-ink-700" title={activityText(evt).detail ?? undefined}>
-                    {activityText(evt).title}
-                  </span>
-                </li>
-              ))}
-              {timeline.length > 8 && (
-                <li className="text-dense text-ink-400">+ {timeline.length - 8} more events</li>
-              )}
-            </ol>
-          ) : (
-            <p className="text-body text-ink-400 italic">No activity yet.</p>
-          )}
-        </RailSection>
       </aside>
 
       {/* end of two-column body */}
       </div>
 
       {id && <GoogleDocsStartDialog contractId={id} open={googleDocsOpen} onClose={() => setGoogleDocsOpen(false)} />}
+
+      {id && (
+        <HistoryDrawer
+          contractId={id}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onCompare={(previousId, versionId) => { setDiffV1Id(previousId); setDiffV2Id(versionId); setTab('negotiate') }}
+          onDownload={(versionId) => handleDownload(versionId)}
+        />
+      )}
 
       {/* Share dialog */}
       {showShareDialog && id && (
