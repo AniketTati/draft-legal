@@ -74,6 +74,7 @@ import { salesforceAdminRoutes, salesforcePublicRoutes, contractIntegrationConfl
 import { hookRoutes } from './routes/hooks.js'
 import { authSsoRoutes, adminSsoRoutes } from './routes/sso.js'
 import { scimRoutes } from './routes/scim.js'
+import { draftingRoutes } from './routes/drafting.js'
 import { syncOnAuditEvent } from './lib/integrations/sync-queue.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
@@ -333,6 +334,8 @@ export async function buildApp() {
   await app.register(authSsoRoutes,          { prefix: '/api/v1/auth/sso' })
   await app.register(adminSsoRoutes,         { prefix: '/api/v1/admin/sso' })
   await app.register(scimRoutes,             { prefix: '/scim/v2' })
+  // docs/41 Part 10 — the defined terms of a version.
+  await app.register(draftingRoutes,                { prefix: '/api/v1/contracts' })
   afterAuditEvent(syncOnAuditEvent)
 
   // Wave 1.1 — fail closed at boot if JWT_SECRET / PORTAL_JWT_SECRET are

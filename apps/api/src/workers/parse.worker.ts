@@ -23,6 +23,7 @@ import { refreshVersion } from '../lib/version-refresh.js'
 import { readTrackedChanges } from '../lib/tracked-changes.js'
 import { readExhibit } from '../lib/exhibits.js'
 import { MIME } from '../lib/file-type.js'
+import { runVersionReviewSteps } from '../lib/version-review-steps.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
@@ -261,6 +262,9 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
       metadata:         contract.metadata as Record<string, unknown>,
     }).catch(err => console.warn('[parse-worker] full-text ES re-index failed contractId=%s: %s', contractId, err?.message ?? err))
   }
+
+  // docs/41 Parts 9–10 — drafting findings and compliance applicability; never fails the job.
+  void runVersionReviewSteps({ contractId, versionId }).catch(() => {})
 
   // Fetch clause segments written by the agents service
   const clauses = await prisma.contractClause.findMany({

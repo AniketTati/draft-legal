@@ -85,6 +85,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'GET /contracts/:id/compliance': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/compliance-export': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/counterparty': { action: 'view', resource: 'contract' },
+  'GET /contracts/:id/defined-terms': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/download': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/external-edit/working-copy': { action: 'edit', resource: 'contract' },
   'GET /contracts/:id/family': { action: 'view', resource: 'contract' },
