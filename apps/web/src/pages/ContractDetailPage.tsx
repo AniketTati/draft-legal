@@ -36,8 +36,7 @@ import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
 import { ComplianceRailSection } from '@/components/contracts/ComplianceRailSection'
-import { PlaybookReviewRailSection } from '@/components/contracts/PlaybookReviewRailSection'
-import { PlaybookRedlineRailSection } from '@/components/contracts/PlaybookRedlineRailSection'
+import { ReviewPanel } from '@/components/contracts/review/ReviewPanel'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
@@ -1099,7 +1098,10 @@ export function ContractDetailPage() {
     : null
   const checksStamp = contract ? `${contract.analysisStatus}|${contract.currentVersionId}` : null
   useEffect(() => {
-    if (checksStamp) qc.invalidateQueries({ queryKey: ['contract-checks', id] })
+    if (checksStamp) {
+      qc.invalidateQueries({ queryKey: ['contract-checks', id] })
+      qc.invalidateQueries({ queryKey: ['contract-review', id] })
+    }
   }, [checksStamp, id, qc])
 
   // Binder split
@@ -4138,29 +4140,22 @@ export function ContractDetailPage() {
           }}
         />
 
-        {/* Phase 3 — whole-document playbook redline. Stages a first-pass
-            markup the reviewer accepts change by change; nothing reaches the
-            document until they do. Status lives in contract.metadata, which is
-            what the 4s poll above is already watching. */}
+        {/* docs/41 P1 (Part 8) — the one Review panel: the recommendation,
+            the findings with their evidence, and the fixes, from GET
+            /contracts/:id/review. It replaces the separate playbook review
+            and playbook redline sections, which used two engines that could
+            disagree. "Fix all fixable" stages its rewrites in
+            contract.metadata, which the 4s poll above watches. */}
         {id && (
-          <PlaybookRedlineRailSection
+          <ReviewPanel
             contractId={id}
-            status={((contract?.metadata as Record<string, unknown> | undefined)
-              ?._playbookRedlineStatus as 'IDLE' | 'QUEUED' | 'RUNNING' | 'DONE' | 'APPLIED' | 'FAILED') ?? 'IDLE'}
-            staged={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedline as never}
-            error={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedlineError as string | null}
-            analysis={{
-              ready: analysis.state === 'done',
-              text: analysis.state === 'running' ? 'Analysing this version' : analysis.text,
-              onAnalyse: canChangeStatus && analysis.canAnalyse ? () => analyze.mutate() : undefined,
-              analysing: analyze.isPending,
-            }}
+            contractMetadata={contract?.metadata as Record<string, unknown> | undefined}
+            canEdit={canEdit}
+            onJumpToClause={jumpToClause}
+            onAnalyse={canChangeStatus && analysis.canAnalyse ? () => analyze.mutate() : undefined}
+            analysing={analyze.isPending}
           />
         )}
-
-        {/* V1 — the playbook review that runs after extraction; each
-            finding links to its clause. */}
-        {id && <PlaybookReviewRailSection contractId={id} onJumpToClause={jumpToClause} />}
 
         {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
             checks with per-framework status, grounded quotes, and

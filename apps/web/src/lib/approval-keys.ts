@@ -34,6 +34,7 @@ export function invalidateApproval(qc: QueryClient, contractId?: string | null, 
     // Activity: the decision, with its reason, is on the contract's timeline.
     qc.invalidateQueries({ queryKey: ['contract-timeline', contractId] })
     qc.invalidateQueries({ queryKey: ['contract-checks', contractId] })
+    qc.invalidateQueries({ queryKey: ['contract-review', contractId] })
   }
 }
 
