@@ -32,6 +32,7 @@ model Organization {
   fieldValueRuns      FieldValueRun[]
   savedViews          SavedView[]
   contractExhibits    ContractExhibit[]
+  analysisRuns        AnalysisRun[]
   clauseTypes         ClauseTypeDefinition[]
   diligenceCells      DiligenceCell[]
   templates           Template[]
@@ -234,6 +235,7 @@ model Contract {
   invoices          Invoice[]
   fieldValues       ContractFieldValue[]
   exhibits          ContractExhibit[]
+  analysisRuns      AnalysisRun[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -492,6 +494,44 @@ model ContractExhibit {
   @@unique([contractId, s3Key])
   @@index([orgId])
   @@map("contract_exhibits")
+}
+
+/// docs/41 P1 (Workstream A) — one analysis of one version: why it ran, each
+/// step it took (with timings, counts and the error of a failed one), and
+/// how it ended. `Contract.analysisStatus` said only DONE or FAILED, of
+/// whichever version, and a step that failed quietly (a review callback, a
+/// chunk with no clauses) left no trace. Every analysis step records itself
+/// here (lib/analysis-runs.ts); the admin "Analysis health" page lists the
+/// runs that failed or stopped moving.
+model AnalysisRun {
+  id         String    @id @default(cuid())
+  orgId      String
+  contractId String
+  versionId  String
+  /// generated | uploaded | added | checkpoint | backfill | retry | unknown
+  reason     String
+  /// full (read from scratch) | incremental (an edit: only what changed)
+  mode       String    @default("full")
+  /// queued | running | done | failed | superseded
+  status     String    @default("queued")
+  /// [{ name, status, startedAt, ms, error, attempt, counts }]
+  steps      Json      @default("[]")
+  /// The step a failed run stopped at.
+  failedStep String?
+  error      String?
+  /// The models the LLM steps used: [{ step, provider, model }].
+  model      Json?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([contractId, startedAt])
+  @@index([versionId])
+  @@map("analysis_runs")
 }
 
 /// docs/39 E3 — a clause type an organization teaches the AI: what it is and

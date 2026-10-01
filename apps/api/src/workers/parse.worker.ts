@@ -23,12 +23,13 @@ import { refreshVersion } from '../lib/version-refresh.js'
 import { readTrackedChanges } from '../lib/tracked-changes.js'
 import { readExhibit } from '../lib/exhibits.js'
 import { MIME } from '../lib/file-type.js'
-import { finishAnalysis } from '../lib/analysis-trigger.js'
+import { finishAnalysis, NO_CLAUSES_ERROR } from '../lib/analysis-trigger.js'
 import { afterAnalysis } from '../lib/presence-rules.js'
+import { runJobStep, type StepOutcome } from '../lib/analysis-runs.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
-async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
+async function handleParseDocument(data: ParseDocumentJob): Promise<StepOutcome | void> {
   const { contractId, versionId, s3Key, mimeType, filename, orgId } = data
 
   console.info('[parse-worker] parse-document start contractId=%s versionId=%s', contractId, versionId)
@@ -60,11 +61,12 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
   console.info('[parse-worker] extracted chars=%d htmlLen=%d', extracted.plainText.length, extracted.htmlContent.length)
 
   if (!extracted.plainText.trim()) {
+    const error = 'Could not extract text from the document. The file may be a scanned image without OCR support, or the content is empty.'
     await prisma.contract.update({
       where: { id: contractId },
-      data: { analysisStatus: 'FAILED', analysisError: 'Could not extract text from the document. The file may be a scanned image without OCR support, or the content is empty.' },
+      data: { analysisStatus: 'FAILED', analysisError: error },
     })
-    return
+    return { failed: error }
   }
 
   // Update version with extracted text + P2.1 OCR metadata. The OCR
@@ -181,6 +183,7 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
   queueDetectBinder({ contractId, versionId, orgId })
 
   console.info('[parse-worker] parse-document done, detect-binder queued for contractId=%s', contractId)
+  return { counts: { characters: extracted.plainText.length, ...(totalPages !== undefined && { pages: totalPages }) } }
 }
 
 // ─── read-exhibit (docs/39 A12) ──────────────────────────────────────────────
@@ -209,7 +212,7 @@ async function handleReadExhibit(data: ReadExhibitJob): Promise<void> {
 
 // ─── chunk-and-index ─────────────────────────────────────────────────────────
 
-async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
+async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<StepOutcome> {
   const { contractId, versionId, orgId } = data
 
   console.info('[parse-worker] chunk-and-index start contractId=%s versionId=%s', contractId, versionId)
@@ -276,11 +279,10 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
     // unread contract look clean. A short one (a cover note) can be DONE.
     const { done } = await finishAnalysis(contractId, versionId, 0)
     console.warn('[parse-worker] no clauses found for versionId=%s — %s (full-text already indexed above)', versionId, done ? 'DONE' : 'FAILED')
-    if (done) {
-      await afterAnalysis(contractId, versionId)
-      askRoomQuestions()
-    }
-    return
+    if (!done) return { failed: NO_CLAUSES_ERROR, counts: { clauses: 0 } }
+    askRoomQuestions()
+    // The findings are their own step, run once this one is recorded.
+    return { counts: { clauses: 0 }, after: () => afterAnalysis(contractId, versionId) }
   }
 
   await legalChunkAndStore(versionId, contractId, orgId, clauses, contract)
@@ -289,8 +291,8 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
   queueEmbedContract(versionId)
 
   // docs/41 P0.1 — DONE, stamped with the version this analysis describes.
-  await finishAnalysis(contractId, versionId, clauses.filter(c => !c.isSubChunk).length)
-  await afterAnalysis(contractId, versionId)
+  const primary = clauses.filter(c => !c.isSubChunk).length
+  await finishAnalysis(contractId, versionId, primary)
   askRoomQuestions()
 
   // Score the freshly-extracted clauses against the org playbook. This is the
@@ -298,9 +300,16 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
   // analysis diffs two versions, so it cannot run on a document that has just
   // arrived with a single version. Queued after DONE so the contract is
   // already usable — a failure here leaves analysisStatus untouched.
-  queuePlaybookReview({ contractId, orgId, versionId })
-
   console.info('[parse-worker] chunk-and-index done for contractId=%s', contractId)
+  // docs/41 P1 — the review is queued after the findings (the deterministic
+  // checks), which say which clauses changed: only those go to the model.
+  return {
+    counts: { clauses: primary },
+    after: async () => {
+      await afterAnalysis(contractId, versionId)
+      queuePlaybookReview({ contractId, orgId, versionId })
+    },
+  }
 }
 
 // ─── refresh-version (DD2) ───────────────────────────────────────────────────
@@ -317,11 +326,14 @@ export const parseWorker = new Worker(
   async (job) => {
     console.info('[worker:documents] → start name=%s id=%s', job.name, job.id)
     if (job.name === 'parse-document') {
-      await handleParseDocument(job.data as ParseDocumentJob)
+      // docs/41 P1 — each analysis step records itself on the version's run.
+      const data = job.data as ParseDocumentJob
+      await runJobStep(job, data, () => handleParseDocument(data))
     } else if (job.name === 'embed-contract') {
       await embedContractVersion(job.data.versionId as string)
     } else if (job.name === 'chunk-and-index') {
-      await handleChunkAndIndex(job.data as ChunkAndIndexJob)
+      const data = job.data as ChunkAndIndexJob
+      await runJobStep(job, data, () => handleChunkAndIndex(data))
     } else if (job.name === 'split-binder') {
       await splitBinder(job.data as SplitBinderJob)
     } else if (job.name === 'refresh-version') {

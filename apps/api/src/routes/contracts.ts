@@ -36,6 +36,7 @@ import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../li
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
+import { startRun, failOpenRuns } from '../lib/analysis-runs.js'
 import { recordStatusChange, statusData } from '../lib/status-change.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
@@ -1550,6 +1551,8 @@ export async function contractRoutes(app: FastifyInstance) {
     }
 
     const { full } = req.query as { full?: string }
+    // docs/41 P1 — a person asked again: a run of its own.
+    await startRun({ orgId, contractId: id, versionId: version.id, reason: 'retry' })
     // docs/39 G1 — what the new analysis may write: `replace_ai` refreshes the
     // values the AI owns, `fill_blanks` only fills empty ones. Neither touches
     // a value a person set or checked (the field store keeps those and records
@@ -1614,6 +1617,7 @@ export async function contractRoutes(app: FastifyInstance) {
       where: { id },
       data: { analysisStatus: 'FAILED', analysisError: 'Analysis cancelled by user.' },
     })
+    await failOpenRuns([id], 'Analysis cancelled by user.')
 
     return reply.send({ status: 'cancelled', contractId: id, analysisStatus: 'FAILED' })
   })

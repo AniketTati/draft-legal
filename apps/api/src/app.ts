@@ -36,6 +36,7 @@ import { contractImportRoutes } from './routes/contract-import.js'
 import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
 import { contractFamilyRoutes } from './routes/contract-family.js'
 import { contractApprovalRoutes } from './routes/contract-approval.js'
+import { analysisHealthRoutes, contractAnalysisRunRoutes } from './routes/analysis-health.js'
 import { clauseTagRoutes } from './routes/clause-tags.js'
 import { clauseTypeRoutes } from './routes/clause-types.js'
 import { contractQueryRoutes } from './routes/contract-query.js'
@@ -277,6 +278,7 @@ export async function buildApp() {
   await app.register(contractCounterpartyRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractApprovalRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractAnalysisRunRoutes, { prefix: '/api/v1/contracts' })
   await app.register(clauseTagRoutes,       { prefix: '/api/v1/contracts' })
   // docs/39 E3 — clause types the organization adds
   await app.register(clauseTypeRoutes,      { prefix: '/api/v1/clause-types' })
@@ -287,6 +289,7 @@ export async function buildApp() {
   await app.register(dashboardRoutes,      { prefix: '/api/v1/dashboard' })
   await app.register(adminUserRoutes,      { prefix: '/api/v1/admin/users' })
   await app.register(adminAuditRoutes,     { prefix: '/api/v1/admin/audit' })
+  await app.register(analysisHealthRoutes, { prefix: '/api/v1/admin/analysis' })
   await app.register(metricsRoutes,        { prefix: '/api/v1/metrics' })
   await app.register(teamRoutes,           { prefix: '/api/v1/team' })
   await app.register(organizationRoutes,   { prefix: '/api/v1/organization' })

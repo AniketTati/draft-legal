@@ -19,6 +19,7 @@ import {
   UsersRound,
   ShieldCheck,
   Sparkles,
+  Activity,
   Briefcase,
   PenSquare,
   ListTodo,
@@ -165,6 +166,7 @@ const ADMIN_SECTION: NavSection = {
     { to: '/admin/org',    icon: Building2,   label: 'Organization' },
     { to: '/admin/integrations', icon: Plug,  label: 'Integrations' },
     { to: '/admin/skills', icon: Sparkles,    label: 'Skills' },
+    { to: '/admin/analysis', icon: Activity,  label: 'Analysis health' },
     { to: '/team',         icon: UsersRound,  label: 'Team' },
   ],
 }

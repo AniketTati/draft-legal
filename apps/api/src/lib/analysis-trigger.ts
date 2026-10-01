@@ -26,6 +26,7 @@
  */
 import { NOT_ANALYSED, ANALYSIS_IN_PROGRESS, analysisStampOf, type AnalysisStamp } from '@clm/types'
 import { prisma } from './prisma.js'
+import { startRun, type RunReason } from './analysis-runs.js'
 
 export { NOT_ANALYSED, ANALYSIS_IN_PROGRESS, analysisStampOf, analysisState, type AnalysisStamp, type AnalysisState } from '@clm/types'
 
@@ -82,6 +83,10 @@ export async function onVersionCreated(
   // A checkpoint analyses what the contract stands on now; a newer save has
   // its own checkpoint.
   if (reason === 'checkpoint' && contract.currentVersionId !== versionId) return 'skipped'
+  // docs/41 P1 — the run every step of this analysis records itself on.
+  if (version.plainText.trim() || version.s3Key) {
+    await startRun({ orgId: contract.orgId, contractId, versionId, reason: reason as RunReason })
+  }
 
   // Imported here: the queue module opens a Redis connection when loaded,
   // and the pure helpers above are unit-tested.

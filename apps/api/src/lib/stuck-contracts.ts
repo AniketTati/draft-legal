@@ -23,6 +23,7 @@
  * alone: never FAILED on a guess.
  */
 import { prisma } from './prisma.js'
+import { failOpenRuns } from './analysis-runs.js'
 import { documentQueue, agentQueue } from './queue.js'
 
 export const IN_PROGRESS_STATUSES = ['PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING']
@@ -129,6 +130,8 @@ export async function recoverStuckContracts(opts: {
     }
   }
 
+  // docs/41 P1 — their runs say where they stopped.
+  if (inProgress.count > 0) await failOpenRuns(dead, 'Processing timed out — the job may have crashed mid-flight.').catch(() => 0)
   if (inProgress.count > 0) console.warn(`[recovery] reset ${inProgress.count} stuck in-progress contract(s) to FAILED`)
   if (pendingFailed > 0) console.warn(`[recovery] reset ${pendingFailed} contract(s) whose parse job was lost to FAILED`)
   return { inProgressFailed: inProgress.count, pendingFailed, pendingSkipped }

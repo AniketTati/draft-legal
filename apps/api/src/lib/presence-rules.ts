@@ -24,6 +24,7 @@
 import { analysisStampOf, clauseTypeLabel } from '@clm/types'
 import { prisma } from './prisma.js'
 import { matchCategory, type MatchedCategory } from './clause-category.js'
+import { asStep } from './analysis-runs.js'
 
 export type PresenceFindingKind = 'not_detected' | 'deleted' | 'cut' | 'not_allowed_present'
 
@@ -207,12 +208,16 @@ export async function computePresence(contractId: string, versionId: string, bas
  */
 export async function afterAnalysis(contractId: string, versionId: string): Promise<void> {
   try {
-    const row = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
-    const stamp = analysisStampOf(row?.metadata)
-    const previous = storedPresenceOf(row?.metadata)
-    const findings = await computePresence(contractId, versionId, stamp?.versionId === versionId ? stamp.baselineVersionId : null, previous?.findings ?? [])
-    const stored: StoredPresence = { versionId, baselineVersionId: stamp?.baselineVersionId ?? null, computedAt: new Date().toISOString(), findings }
-    await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_presence}', ${JSON.stringify(stored)}::jsonb) WHERE id = ${contractId}`
+    // docs/41 P1 — the last step of the version's analysis run.
+    await asStep(contractId, versionId, 'findings', async () => {
+      const row = await prisma.contract.findUnique({ where: { id: contractId }, select: { metadata: true } })
+      const stamp = analysisStampOf(row?.metadata)
+      const previous = storedPresenceOf(row?.metadata)
+      const findings = await computePresence(contractId, versionId, stamp?.versionId === versionId ? stamp.baselineVersionId : null, previous?.findings ?? [])
+      const stored: StoredPresence = { versionId, baselineVersionId: stamp?.baselineVersionId ?? null, computedAt: new Date().toISOString(), findings }
+      await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_presence}', ${JSON.stringify(stored)}::jsonb) WHERE id = ${contractId}`
+      return findings
+    }, { last: true, counts: f => ({ findings: f.length }) })
   } catch (err) {
     console.warn('[presence] findings not computed contractId=%s: %s', contractId, (err as Error).message)
   }

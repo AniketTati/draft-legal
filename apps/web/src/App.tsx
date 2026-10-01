@@ -37,6 +37,7 @@ import { AdminRolesPage } from '@/pages/AdminRolesPage'
 import { AdminOrgPage } from '@/pages/AdminOrgPage'
 import { AdminIntegrationsPage } from '@/pages/AdminIntegrationsPage'
 import { AdminSkillsPage } from '@/pages/AdminSkillsPage'
+import { AdminAnalysisHealthPage } from '@/pages/AdminAnalysisHealthPage'
 import { ReviewQueuePage } from '@/pages/ReviewQueuePage'
 import { MattersPage } from '@/pages/MattersPage'
 import { MatterDetailPage } from '@/pages/MatterDetailPage'
@@ -141,6 +142,7 @@ export default function App() {
         <Route path="admin/org" element={<AdminOrgPage />} />
         <Route path="admin/integrations" element={<AdminIntegrationsPage />} />
         <Route path="admin/skills" element={<AdminSkillsPage />} />
+        <Route path="admin/analysis" element={<AdminAnalysisHealthPage />} />
         {/* D.4.3 — convenience alias matching docs/30 §4.4 wording */}
         <Route path="settings/skills" element={<AdminSkillsPage />} />
         {/* P2.5 — HITL review queue for low-confidence extractions */}

@@ -37,6 +37,7 @@ import { runExtractionJob, recordRunUsage, type ExtractionJobData, type RunUsage
 import { callAgents } from '../lib/agents-call.js'
 import { saveDraftVersion, requestTerms, type DraftAgentResult } from '../lib/draft-save.js'
 import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
+import { runJobStep, type StepOutcome } from '../lib/analysis-runs.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
@@ -174,7 +175,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
 
 // ─── classify-document ────────────────────────────────────────────────────────
 
-async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> {
+async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<StepOutcome | void> {
   const { contractId, versionId, orgId, contractType: knownType } = data
   console.info('[agent-worker] classify-document start contractId=%s', contractId)
 
@@ -185,7 +186,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
   if (!version?.plainText) {
     // Stale job from a previous run — a fresh parse/classify job will re-queue this. Skip silently.
     console.warn('[agent-worker] classify-document: plainText not yet ready for versionId=%s, skipping stale job', versionId)
-    return
+    return { skipped: 'the document has no text yet' }
   }
 
   const res = await callAgents('/classify', {
@@ -740,11 +741,15 @@ export const agentWorker = new Worker(
   async (job) => {
     console.info('[worker:agents] → start name=%s id=%s', job.name, job.id)
     if (job.name === 'detect-binder') {
-      await handleDetectBinder(job.data as DetectBinderJob)
+      // docs/41 P1 — each analysis step records itself on the version's run.
+      const data = job.data as DetectBinderJob
+      await runJobStep(job, data, () => handleDetectBinder(data))
     } else if (job.name === 'classify-document') {
-      await handleClassifyDocument(job.data as ClassifyDocumentJob)
+      const data = job.data as ClassifyDocumentJob
+      await runJobStep(job, data, () => handleClassifyDocument(data))
     } else if (job.name === 'extract-ai') {
-      await handleExtractAi(job as Job<ExtractionJobData>)
+      const data = job.data as ExtractionJobData
+      await runJobStep(job, data, () => handleExtractAi(job as Job<ExtractionJobData>))
     } else if (job.name === 'classify-request') {
       await handleClassifyRequest(job.data as ClassifyRequestJob)
     } else if (job.name === 'redline-analysis') {
@@ -752,7 +757,10 @@ export const agentWorker = new Worker(
     } else if (job.name === 'playbook-redline') {
       await handlePlaybookRedline(job.data as PlaybookRedlineJob)
     } else if (job.name === 'playbook-review') {
-      await handlePlaybookReview(job.data as PlaybookReviewJob)
+      const data = job.data as PlaybookReviewJob
+      // A review asked for after edits takes the version the contract stands on.
+      const versionId = data.versionId ?? (await prisma.contract.findUnique({ where: { id: data.contractId }, select: { currentVersionId: true } }))?.currentVersionId
+      await runJobStep(job, { contractId: data.contractId, versionId }, () => handlePlaybookReview(data))
     } else if (job.name === 'approval-summary') {
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {
