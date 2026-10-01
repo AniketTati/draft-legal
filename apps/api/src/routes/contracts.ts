@@ -37,6 +37,7 @@ import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
+import { openChoices } from '../lib/open-choices.js'
 import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
@@ -2662,12 +2663,14 @@ export async function contractRoutes(app: FastifyInstance) {
       select: { id: true, analysisStatus: true, analysisError: true, currentVersionId: true, metadata: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    const guard = await recommendationGuard(id, orgId)
+    const [guard, choices] = await Promise.all([recommendationGuard(id, orgId), openChoices(id)])
     return reply.send({
       analysis: analysisState(contract),
       ready: guard.passes,
       reasons: guard.reasons,
       findings: guard.findings,
+      // docs/41 P0.4 — terms the draft left to choose; it can't be sent until they are.
+      openChoices: choices,
     })
   })
 

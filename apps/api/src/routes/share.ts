@@ -14,6 +14,7 @@ import { resolveSecret } from '../lib/secrets.js'
 import { sendShareLinkEmail } from '../lib/share-email.js'
 import { isEmailConfigured } from '../lib/mailer.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
+import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
 
 // Portal tokens are signed with PORTAL_JWT_SECRET, isolated from the user
 // JWT_SECRET. Resolved lazily + cached; production fails closed if missing/
@@ -77,6 +78,13 @@ export async function shareRoutes(app: FastifyInstance) {
       include: { org: { select: { name: true } } },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    // docs/41 P0.4 — the counterparty never receives a draft with a term
+    // still to choose (a governing law nobody named).
+    const open = await openChoices(contractId)
+    if (open.length) {
+      const detail = openChoicesMessage(open, 'sending it to the counterparty')
+      return reply.status(409).send({ code: 'OPEN_CHOICES', error: detail, detail, choices: open })
+    }
 
     if (!Array.isArray(permissions)) {
       return reply.status(400).send({ error: 'permissions must be an array of strings' })

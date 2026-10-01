@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { presenceFindings, applicableRules, type PresenceRule } from './presence-rules.js'
+import { presenceFindings, applicableRules, type PresenceRule, type ClauseLike } from './presence-rules.js'
 import { guardReasons, guardedLabel } from './recommendation-guard.js'
 
 const STANDALONE = ['NDA', 'MSA']
@@ -16,7 +16,7 @@ const CONF = { clauseType: 'confidentiality', content: 'The Recipient shall hold
 const TERM = { clauseType: 'termination', content: 'Either party may terminate on thirty days notice.' }
 const EXCL = { clauseType: 'confidentiality', content: Array.from({ length: 40 }, (_, i) => `exclusion${i}`).join(' ') }
 
-const run = (current: typeof GOV[], baseline: typeof GOV[] | null, contractType = 'NDA') => presenceFindings({
+const run = (current: ClauseLike[], baseline: ClauseLike[] | null, contractType = 'NDA') => presenceFindings({
   rules: RULES, contractType, current, baseline,
   versionId: 'v5', baselineVersionId: baseline ? 'v4' : null, baselineVersionNumber: baseline ? 4 : null,
 })

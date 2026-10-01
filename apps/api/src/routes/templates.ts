@@ -25,6 +25,8 @@ const VariableDefSchema = z.object({
   type: z.enum(['text', 'number', 'date', 'boolean', 'select']),
   required: z.boolean().default(false),
   defaultValue: z.string().optional(),
+  // docs/41 P0.4 — the org's own default for a legal choice (see VariableDef).
+  orgDefault: z.boolean().optional(),
   options: z.array(z.string()).optional(), // for select type
   // docs/39 H1/H2 — the contract field its value fills.
   field: z.string().max(100).nullable().optional(),

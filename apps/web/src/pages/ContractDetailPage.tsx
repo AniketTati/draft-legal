@@ -1058,6 +1058,18 @@ export function ContractDetailPage() {
 
   // docs/41 P0.3 — the deterministic checks describe the version the contract
   // stands on: read again when it moves or its analysis finishes.
+  const { data: checksData } = useQuery({
+    queryKey: ['contract-checks', id],
+    queryFn: () => api.get(`/contracts/${id}/checks`).then(r => r.data as { openChoices?: Array<{ key: string; label: string }> }),
+    enabled: !!id,
+    staleTime: 15_000,
+  })
+  // docs/41 P0.4 — terms the draft left to choose (a governing law nobody
+  // named). It can't go out until they are chosen.
+  const openChoices = checksData?.openChoices ?? []
+  const openChoicesReason = openChoices.length
+    ? `${openChoices.length === 1 ? '1 choice' : `${openChoices.length} choices`} still open in the draft (${openChoices.map(c => c.label).join(', ')}). Choose ${openChoices.length === 1 ? 'it' : 'them'} before sending.`
+    : null
   const checksStamp = contract ? `${contract.analysisStatus}|${contract.currentVersionId}` : null
   useEffect(() => {
     if (checksStamp) qc.invalidateQueries({ queryKey: ['contract-checks', id] })
@@ -1817,6 +1829,9 @@ export function ContractDetailPage() {
                 }
                 size="sm"
                 onClick={() => setSendForSignatureOpen(true)}
+                // docs/41 P0.4 — a draft with a term still to choose isn't sent.
+                disabled={!!openChoicesReason}
+                title={openChoicesReason ?? undefined}
                 className="gap-1.5"
                 data-testid="send-for-signature-btn"
               >
@@ -1899,8 +1914,15 @@ export function ContractDetailPage() {
                 {/* Y3 — offered only to those who may: sharing needs
                     configure:contract, an amendment create:contract. */}
                 <Can request="POST /contracts/:id/share">
-                  <DropdownMenuItem onSelect={() => setShowShareDialog(true)} data-testid="share-menu-item">
+                  <DropdownMenuItem
+                    onSelect={() => setShowShareDialog(true)}
+                    // docs/41 P0.4 — the counterparty never gets a draft with a term still to choose.
+                    disabled={!!openChoicesReason}
+                    title={openChoicesReason ?? undefined}
+                    data-testid="share-menu-item"
+                  >
                     <Share2 className="size-4" /> Share
+                    {openChoicesReason && <span className="ml-auto text-[10px] text-muted-foreground">choose terms first</span>}
                   </DropdownMenuItem>
                 </Can>
                 {/* P8 Step 8 — spawn an amendment / SOW / order-form / renewal
@@ -2022,6 +2044,21 @@ export function ContractDetailPage() {
         >
           {/* ── STATE ─────────────────────────────────────────────────── */}
           <StatusPill status={contract.status} />
+          {openChoices.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setFocusVariable(openChoices[0].key)
+                if (isXl) setRailCollapsed(false)
+                else setRailOpen(true)
+              }}
+              className="inline-flex items-center gap-1 rounded-chip border border-attention-200 bg-attention-50 px-1.5 py-0.5 text-[11px] font-medium text-attention-700 hover:bg-attention-100"
+              title={openChoicesReason ?? undefined}
+              data-testid="open-choices-chip"
+            >
+              {openChoices.length === 1 ? '1 choice needed' : `${openChoices.length} choices needed`}
+            </button>
+          )}
 
           {/*
             Expiry. Calendar days, not elapsed milliseconds — the header said

@@ -41,6 +41,7 @@ import { queueSigningReminder, queueSealSignedPdf } from '../lib/queue.js'
 import { extractObligationsForContract, CostCapExceededError } from '../lib/obligation-extract.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { guardOwnScopeContractRoutes, ownsContract } from '../lib/own-scope-guard.js'
+import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
 
 const SignersSchema = z.object({
   signers: z.array(z.object({
@@ -140,6 +141,12 @@ export async function signatureRoutes(app: FastifyInstance) {
       }
       if (contract.status === 'EXECUTED') {
         return reply.status(409).send({ detail: 'Contract already executed' })
+      }
+      // docs/41 P0.4 — a term left as a choice (governing law nobody named)
+      // is chosen before anyone signs.
+      const open = await openChoices(id)
+      if (open.length) {
+        return reply.status(409).send({ code: 'OPEN_CHOICES', detail: openChoicesMessage(open, 'sending it for signature'), choices: open })
       }
 
       // X21 — a signer linked to a user must be that user: an active member of

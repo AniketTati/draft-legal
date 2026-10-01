@@ -19,6 +19,7 @@
  * side's come from the user or the counterparty's record: "Initech Inc., a
  * Delaware corporation" came from a default both parties' fields carried.
  */
+import { isLegalChoiceVariable, isGoverningLawVariable } from '@clm/types'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
 
@@ -224,12 +225,18 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
   // venue chosen for a governing law the user changed: New York law with the
   // template's "Wilmington, Delaware" courts is left for the user to set; and
   // (DD3) a default describing the other party, which the org can't know.
-  const declared = Array.isArray(template.variables) ? template.variables as Array<{ key?: string; defaultValue?: unknown }> : []
+  const declared = Array.isArray(template.variables) ? template.variables as Array<{ key?: string; label?: string; defaultValue?: unknown; orgDefault?: boolean }> : []
   const lawKey = declared.find(d => d?.key && ALIASES.governingLaw.includes(norm(d.key)))
   const lawChanged = !!input.governingLaw?.trim() && lawKey?.defaultValue != null
     && norm(String(lawKey.defaultValue)) !== norm(input.governingLaw)
+  // The law asked for is the one the template's defaults were written for.
+  const lawAsDefault = !!input.governingLaw?.trim() && !lawChanged
   for (const d of declared) {
     if (lawChanged && d?.key && /venue|forum|courtlocation|courts/.test(norm(d.key))) continue
+    // docs/41 P0.4 — a legal choice is filled from a default only when the
+    // org made it its own default, or (a venue) when the user asked for the
+    // law that default goes with. Otherwise it stays a choice to make.
+    if (d?.key && isLegalChoiceVariable(d) && !d.orgDefault && !(lawAsDefault && !isGoverningLawVariable(d))) continue
     if (d?.key && partyFactOf(d.key, ourRole)?.side === 'theirs') continue
     if (d?.key && variables[d.key] === undefined && d.defaultValue != null && String(d.defaultValue).trim()) {
       variables[d.key] = String(d.defaultValue)

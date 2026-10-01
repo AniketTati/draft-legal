@@ -17,6 +17,8 @@ export interface SeedTemplateVariable {
   type: 'string' | 'number' | 'date' | 'enum'
   required: boolean
   defaultValue?: string | number
+  /** docs/41 P0.4 — the org chose this default (a legal choice is filled from it only then). */
+  orgDefault?: boolean
   options?: string[]   // for enum types
   helpText?: string
 }
@@ -52,6 +54,10 @@ const PAYMENT_VARS: SeedTemplateVariable[] = [
   { key: 'paymentTermsDays',   label: 'Payment Terms (days)',   type: 'number', required: true, defaultValue: 30 },
 ]
 
+// docs/41 P0.4 — Delaware is offered as the default, not chosen: without
+// `orgDefault` a draft whose request names no law leaves it as a choice to
+// make. An org (a demo org) that wants Delaware filled sets orgDefault
+// (scripts/set-template-org-default.ts).
 const GOVERNING_LAW_VARS: SeedTemplateVariable[] = [
   { key: 'governingLaw',       label: 'Governing Law',          type: 'enum',   required: true, defaultValue: 'Delaware', options: ['Delaware', 'New York', 'California', 'Texas', 'England and Wales'] },
   { key: 'venueLocation',      label: 'Venue Location',         type: 'string', required: true, defaultValue: 'Wilmington, Delaware' },
