@@ -1,15 +1,14 @@
 /**
- * Drafting findings (docs/41 Part 10): the defined-terms checks run on a
- * version and stored with it, so the Review panel can list them under
- * "Drafting" without reading the text again.
- *
- * Stored on `contract.metadata._drafting = { versionId, issues, checkedAt }`
- * for now. Each issue already has the shape of a review finding
- * ({ kind, clauseType: null, severity, evidence, versionId }), so moving them
- * into a findings table later is a copy, not a rewrite.
+ * Drafting findings (docs/41 Part 10): the defined-terms checks run on each
+ * analysed version and stored as its review findings (kind `drafting`), so
+ * the Review panel lists them under "Drafting" with the clause review's own
+ * actions (accept, mark resolved), and a decision carries to the next version
+ * while the words are the same. They never hold back a recommendation:
+ * a drafting slip is worth fixing, not a reason not to approve.
  */
 import { prisma } from './prisma.js'
-import { analyseDefinedTerms, type DefinedTermIssue, type GlossaryEntry } from './defined-terms.js'
+import { analyseDefinedTerms, type DefinedTermIssue, type DraftingIssueKind, type GlossaryEntry } from './defined-terms.js'
+import { storeFindings, type FindingDraft } from './review-findings.js'
 
 export interface DraftingFinding extends DefinedTermIssue {
   clauseType: null
@@ -60,18 +59,59 @@ export async function definedTermsForVersion(orgId: string, contractId: string, 
   }
 }
 
+/** What to do about each kind, in one plain sentence. */
+const ADVICE: Record<DraftingIssueKind, string> = {
+  undefined_term: 'Define it, or write it in lower case if it isn’t meant as a defined term.',
+  unused_definition: 'Remove the definition, or check whether the clause that used it was deleted.',
+  duplicate_definition: 'Keep one definition and remove the other.',
+  used_before_defined: 'Move the definition up, or say where the term is defined.',
+  capitalisation_drift: 'Write it the way it is defined, so it reads as the defined term.',
+}
+
+/** Pure: a version's defined-term problems as review findings. */
+export function draftingFindingDrafts(issues: DefinedTermIssue[]): FindingDraft[] {
+  const seen = new Set<string>()
+  const out: FindingDraft[] = []
+  for (const i of issues) {
+    // One finding per problem and term: the same key on the next version is the same finding.
+    const key = `drafting|${i.kind}|${i.term}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      kind: 'drafting', key, clauseType: null, clauseId: null, categoryId: null, positionId: null,
+      severity: i.severity,
+      title: i.message,
+      explanation: ADVICE[i.kind],
+      evidence: {
+        quote: i.evidence.quote,
+        offsets: { start: i.evidence.offset, end: i.evidence.offset + i.term.length },
+        ...(i.related && { relatedQuote: i.related.quote }),
+        ruleId: i.kind,
+      },
+      source: 'deterministic',
+    })
+  }
+  return out
+}
+
 /**
- * Run the checks on a version and store them on the contract. Called as part
- * of analysis; deterministic and cheap (no model call). Returns the findings,
- * or null when the version isn't the contract's.
+ * Run the checks on a version and store them as its drafting findings.
+ * Deterministic and cheap (no model call): a step of every analysis
+ * (lib/version-review-steps.ts). Returns the issues, or null when the version
+ * isn't the contract's.
  */
 export async function computeDraftingFindings(contractId: string, versionId: string): Promise<DraftingFinding[] | null> {
   const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { orgId: true } })
   if (!contract) return null
   const result = await definedTermsForVersion(contract.orgId, contractId, versionId)
   if (!result) return null
-  const stored = { versionId, issues: result.issues, checkedAt: new Date().toISOString() }
-  // One key, written in place: analysis steps running alongside write other keys of the same object.
-  await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_drafting}', ${JSON.stringify(stored)}::jsonb) WHERE id = ${contractId} AND "orgId" = ${contract.orgId}`
+  await storeFindings({ orgId: contract.orgId, contractId, versionId, baselineVersionId: null, drafts: draftingFindingDrafts(result.issues), kinds: ['drafting'] })
+  // Checked, even with nothing found: a version without the mark was never checked.
+  await prisma.$executeRaw`UPDATE contract_versions SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_drafting}', ${JSON.stringify({ checkedAt: new Date().toISOString(), issues: result.issues.length })}::jsonb) WHERE id = ${versionId}`
   return result.issues
+}
+
+/** Whether a version's defined terms were checked (its drafting findings are there to read). */
+export function draftingChecked(versionMetadata: unknown): boolean {
+  return typeof (versionMetadata as { _drafting?: { checkedAt?: unknown } } | null)?._drafting?.checkedAt === 'string'
 }

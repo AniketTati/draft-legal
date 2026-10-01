@@ -25,6 +25,7 @@ import {
   addComplianceFramework, answerValue, complianceApplicability, confirmComplianceFact,
   extractComplianceFacts, loadCompliancePolicy, runApplicableChecks,
 } from '../lib/compliance-facts.js'
+import { storeComplianceFindings } from '../lib/compliance-findings.js'
 
 function costCapped(reply: FastifyReply, err: unknown) {
   if (!(err instanceof CostCapExceededError)) throw err
@@ -55,6 +56,7 @@ export async function complianceApplicabilityRoutes(app: FastifyInstance) {
       if (r.skipped === 'no text') return reply.status(400).send({ detail: 'This contract has no text to read yet' })
       if (!r.ok) return reply.status(502).send({ detail: 'Could not read the facts', upstream: r.error })
       const checks = await runApplicableChecks({ orgId, contractId: id, userId: req.user.sub })
+      await storeComplianceFindings(orgId, id)
       return reply.send({ ...(await complianceApplicability(orgId, id)), checksRan: checks.ran, checkError: checks.error ?? null })
     } catch (err) {
       return costCapped(reply, err)
@@ -85,6 +87,8 @@ export async function complianceApplicabilityRoutes(app: FastifyInstance) {
       if (!(err instanceof CostCapExceededError)) throw err
       checks = { ran: [], error: 'Daily AI cost cap reached' }
     }
+    // What applies may have changed: the review's compliance findings follow it.
+    await storeComplianceFindings(orgId, id)
     return reply.send({ ...(await complianceApplicability(orgId, id)), checksRan: checks.ran, checkError: checks.error ?? null })
   })
 
@@ -97,6 +101,7 @@ export async function complianceApplicabilityRoutes(app: FastifyInstance) {
       if (!r) return reply.status(404).send({ detail: 'Contract not found' })
       if (r.skippedReason) return reply.status(400).send({ detail: 'This contract has no text to check yet' })
       if (!r.ok) return reply.status(502).send({ detail: 'compliance agent failed', upstream: r.error })
+      await storeComplianceFindings(orgId, id)
       return reply.send(await complianceApplicability(orgId, id))
     } catch (err) {
       if (err instanceof CostCapExceededError) return costCapped(reply, err)

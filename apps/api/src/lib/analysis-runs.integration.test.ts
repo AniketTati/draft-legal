@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 
-const queued = vi.hoisted(() => ({ review: [] as unknown[], extract: [] as unknown[] }))
+const queued = vi.hoisted(() => ({ review: [] as unknown[], extract: [] as unknown[], compliance: [] as unknown[] }))
 vi.mock('./queue.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./queue.js')>()),
   queueEmbedContract: vi.fn(),
@@ -13,12 +13,14 @@ vi.mock('./queue.js', async (importOriginal) => ({
   queuePlaybookReview: vi.fn((p: unknown) => { queued.review.push(p) }),
   queueExtractAi: vi.fn((p: unknown) => { queued.extract.push(p) }),
   queueClassifyDocument: vi.fn(),
+  queueComplianceReview: vi.fn((p: unknown, o?: unknown) => { queued.compliance.push(o ? { ...(p as object), ...(o as object) } : p) }),
 }))
 
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 import { onVersionCreated, finishAnalysis } from './analysis-trigger.js'
 import { afterAnalysis } from './presence-rules.js'
-import { runJobStep, latestRun } from './analysis-runs.js'
+import { runJobStep, latestRun, stepFailed } from './analysis-runs.js'
+import { complianceStep } from './version-review-steps.js'
 
 let app: TestApp
 let org: string, other: string, owner: string
@@ -63,7 +65,7 @@ describe('a run, step by step', () => {
     expect(run.status).toBe('done')
     expect(run.finishedAt).not.toBeNull()
     const steps = run.steps as Array<{ name: string; status: string; counts?: Record<string, number> }>
-    expect(steps.map(s => `${s.name}:${s.status}`)).toEqual(['extract:done', 'index:done', 'findings:done'])
+    expect(steps.map(s => `${s.name}:${s.status}`)).toEqual(['extract:done', 'index:done', 'findings:done', 'drafting:done'])
     expect(steps.find(s => s.name === 'index')?.counts).toEqual({ clauses: 1 })
 
     // The model's position check, after: reopens the run while it runs, closes it after.
@@ -151,5 +153,47 @@ describe('Analysis health', () => {
     const retried = await app.inject({ method: 'POST', url: `/api/v1/admin/analysis/runs/${run.id}/retry`, headers: auth(org, ['ADMIN'], owner) })
     expect(retried.json().retried).toBe('position_check')
     expect(queued.review).toEqual([{ contractId: id, orgId: org, versionId: v.id }])
+  })
+
+  it('the compliance step follows the findings as a job, and says why when it could not read the facts (docs/41 Part 9)', async () => {
+    const { id, v } = await contractWithVersion('Compliance NDA')
+    await prisma.contract.update({ where: { id }, data: { currentVersionId: v.id } })
+    await onVersionCreated(id, v.id, 'generated')
+    queued.compliance.length = 0
+    await runJobStep(job('chunk-and-index'), { contractId: id, versionId: v.id }, async () => ({ counts: { clauses: 3 }, after: () => afterAnalysis(id, v.id) }))
+    expect(queued.compliance).toEqual([{ contractId: id, orgId: org, versionId: v.id }])
+    // The agents service is down: the step is skipped with its reason, and the run still ends done.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new TypeError('fetch failed'))
+    try {
+      await runJobStep(job('compliance-review', 0, 1), { contractId: id, versionId: v.id }, () => complianceStep(id, v.id))
+    } finally {
+      fetchSpy.mockRestore()
+    }
+    const run = await prisma.analysisRun.findFirstOrThrow({ where: { contractId: id } })
+    expect(run.status).toBe('done')
+    const steps = run.steps as Array<{ name: string; status: string; error?: string }>
+    expect(steps.map(s => s.name)).toEqual(['index', 'findings', 'drafting', 'compliance'])
+    expect(steps.find(s => s.name === 'compliance')).toMatchObject({ status: 'skipped', error: 'the facts could not be read' })
+    expect((await latestRun(id))?.steps.find(s => s.name === 'compliance')?.label).toBe('checking the compliance rules that apply')
+  })
+
+  it('a failed defined-terms or compliance step is retried alone', async () => {
+    const { id, v } = await contractWithVersion('Drafting NDA')
+    await prisma.contract.update({ where: { id }, data: { currentVersionId: v.id } })
+    await onVersionCreated(id, v.id, 'generated')
+    await runJobStep(job('chunk-and-index'), { contractId: id, versionId: v.id }, async () => ({ counts: { clauses: 3 }, after: () => afterAnalysis(id, v.id) }))
+    await stepFailed(id, v.id, 'drafting', 'the checks stopped')
+    let run = await prisma.analysisRun.findFirstOrThrow({ where: { contractId: id } })
+    expect(run).toMatchObject({ status: 'failed', failedStep: 'drafting' })
+    const retried = await app.inject({ method: 'POST', url: `/api/v1/admin/analysis/runs/${run.id}/retry`, headers: auth(org, ['ADMIN'], owner) })
+    expect(retried.json().retried).toBe('drafting')
+    run = await prisma.analysisRun.findFirstOrThrow({ where: { contractId: id } })
+    expect(run).toMatchObject({ status: 'done', failedStep: null })
+
+    await stepFailed(id, v.id, 'compliance', 'the job was lost')
+    queued.compliance.length = 0
+    const again = await app.inject({ method: 'POST', url: `/api/v1/admin/analysis/runs/${run.id}/retry`, headers: auth(org, ['ADMIN'], owner) })
+    expect(again.json().retried).toBe('compliance')
+    expect(queued.compliance).toEqual([{ contractId: id, orgId: org, versionId: v.id, again: true }])
   })
 })

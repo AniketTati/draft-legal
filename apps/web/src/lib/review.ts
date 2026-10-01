@@ -14,7 +14,8 @@ export interface ReviewFindingView {
   source: 'deterministic' | 'llm'
   title: string
   explanation: string
-  evidence: { quote?: string; baselineQuote?: string; sectionRef?: string | null }
+  /** relatedQuote: other words it is about (a term's definition, why a compliance framework applies). */
+  evidence: { quote?: string; baselineQuote?: string; relatedQuote?: string; sectionRef?: string | null }
   clauseId: string | null
   clauseType: string | null
   reviewStatus: string
@@ -56,9 +57,10 @@ export interface ContractReview {
   playbook: { id: string | null; name: string | null; why: 'explicit' | 'default_for_type' | 'only_one' | 'ambiguous' | 'none'; explanation: string; candidates: Array<{ id: string; name: string }> }
   baseline: { versionId: string; versionNumber: number | null; reason: string | null; words: string | null } | null
   recommendation: { label: string; text: string; definition: string; reasons: Array<{ code: string; text: string; findingIds: string[] }> } | null
-  groups: { needsAttention: ReviewFindingView[]; notDetected: ReviewFindingView[]; accepted: ReviewFindingView[] }
+  /** compliance, drafting: docs/41 Parts 9, 10 — gaps of the frameworks that apply, and defined-term problems. */
+  groups: { needsAttention: ReviewFindingView[]; notDetected: ReviewFindingView[]; compliance: ReviewFindingView[]; drafting: ReviewFindingView[]; accepted: ReviewFindingView[] }
   clauses: ReviewClauseView[]
-  counts: { needsAttention: number; notDetected: number; accepted: number; standard: number; clauses: number; fixable: number }
+  counts: { needsAttention: number; notDetected: number; compliance: number; drafting: number; accepted: number; standard: number; clauses: number; fixable: number }
 }
 
 /** How a recommendation reads at a glance. */
@@ -73,7 +75,7 @@ export const RECOMMENDATION_MEANING: Record<string, Meaning> = {
 /** How a status chip reads: risk for what blocks, attention for what needs a look, calm for the rest. */
 export function statusMeaning(reviewStatus: string): Meaning {
   if (['deleted', 'not_allowed', 'unreadable', 'not_met'].includes(reviewStatus)) return 'risk'
-  if (['changed', 'added', 'not_detected', 'needs_approval', 'fallback'].includes(reviewStatus)) return 'turn'
+  if (['changed', 'added', 'not_detected', 'needs_approval', 'fallback', 'compliance_gap'].includes(reviewStatus)) return 'turn'
   if (['standard', 'matches_preferred', 'accepted', 'resolved', 'unchanged'].includes(reviewStatus)) return 'binding'
   return 'neutral'
 }

@@ -11,6 +11,7 @@
  */
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import type { IntegrationConnection } from '@prisma/client'
+import { AuditAction } from '@clm/types'
 import { prisma } from '../prisma.js'
 import { s3, S3_BUCKET } from '../storage.js'
 import { connectionTokens, storeTokens } from '../integrations/connection.js'
@@ -63,22 +64,51 @@ const CONTRACT_SELECT = {
   owner: { select: { name: true } },
 } as const
 
+/**
+ * What the core records about each contract's status (docs/41 P0.6, P0.10):
+ * its latest approval round (steps approved, who the current step waits on,
+ * by name) and when the status last changed.
+ */
+export async function statusFacts(orgId: string, contractIds: string[]): Promise<Map<string, Pick<SyncContract, 'approvals' | 'statusSince'>>> {
+  const out = new Map<string, Pick<SyncContract, 'approvals' | 'statusSince'>>()
+  if (!contractIds.length) return out
+  const [instances, changes] = await Promise.all([
+    prisma.approvalInstance.findMany({
+      where: { orgId, contractId: { in: contractIds } },
+      orderBy: { submittedAt: 'desc' },
+      select: { contractId: true, status: true, currentStepOrder: true, steps: { select: { status: true, stepOrder: true, approverId: true } } },
+    }),
+    prisma.auditEvent.findMany({
+      where: { orgId, resourceType: 'contract', resourceId: { in: contractIds }, action: AuditAction.CONTRACT_STATUS_CHANGED },
+      orderBy: { createdAt: 'desc' },
+      distinct: ['resourceId'],
+      select: { resourceId: true, createdAt: true },
+    }),
+  ])
+  const waiting = instances.flatMap(i => i.steps.filter(st => st.status === 'PENDING' && st.stepOrder === i.currentStepOrder).map(st => st.approverId))
+  const users = waiting.length
+    ? await prisma.user.findMany({ where: { orgId, id: { in: [...new Set(waiting)] } }, select: { id: true, name: true, email: true } })
+    : []
+  const nameOf = (id: string) => { const u = users.find(x => x.id === id); return u?.name || u?.email || 'someone' }
+  for (const id of contractIds) {
+    const latest = instances.find(i => i.contractId === id)
+    const open = latest && (latest.status === 'PENDING' || latest.status === 'ESCALATED')
+    out.set(id, {
+      approvals: latest && latest.steps.length ? {
+        approved: latest.steps.filter(st => st.status === 'APPROVED').length,
+        total: latest.steps.length,
+        ...(open && { waitingOn: latest.steps.filter(st => st.status === 'PENDING' && st.stepOrder === latest.currentStepOrder).map(st => nameOf(st.approverId)) }),
+      } : null,
+      statusSince: changes.find(c => c.resourceId === id)?.createdAt ?? null,
+    })
+  }
+  return out
+}
+
 async function loadContracts(orgId: string, ids: string[]): Promise<SyncContract[]> {
   const rows = await prisma.contract.findMany({ where: { orgId, id: { in: ids }, deletedAt: null }, select: CONTRACT_SELECT })
-  const instances = rows.length
-    ? await prisma.approvalInstance.findMany({
-        where: { orgId, contractId: { in: rows.map(r => r.id) } },
-        orderBy: { submittedAt: 'desc' },
-        select: { contractId: true, status: true, steps: { select: { status: true } } },
-      })
-    : []
-  return rows.map(r => {
-    const latest = instances.find(i => i.contractId === r.id)
-    return {
-      ...r,
-      approvals: latest && latest.steps.length ? { approved: latest.steps.filter(s => s.status === 'APPROVED').length, total: latest.steps.length } : null,
-    }
-  })
+  const facts = await statusFacts(orgId, rows.map(r => r.id))
+  return rows.map(r => ({ ...r, ...facts.get(r.id) }))
 }
 
 /** The contract's values by draftLegal field, for outbound mappings. */

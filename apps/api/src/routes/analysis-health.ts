@@ -99,9 +99,16 @@ export async function analysisHealthRoutes(app: FastifyInstance): Promise<void> 
     let retried: string
     // Only the model's position check failed: the rest of the analysis
     // stands, so only that is asked for again.
-    if (run.failedStep === 'position_check' && run.contract.currentVersionId === run.versionId) {
+    const onCurrent = run.contract.currentVersionId === run.versionId
+    if (run.failedStep === 'position_check' && onCurrent) {
       queuePlaybookReview({ contractId: run.contractId, orgId, versionId: run.versionId })
       retried = 'position_check'
+    } else if ((run.failedStep === 'drafting' || run.failedStep === 'compliance') && onCurrent) {
+      // So did the defined-terms checks and the compliance step (docs/41 Parts 9, 10).
+      const { draftingStep, queueComplianceStep } = await import('../lib/version-review-steps.js')
+      if (run.failedStep === 'drafting') await draftingStep(run.contractId, run.versionId)
+      else await queueComplianceStep(run.contractId, run.versionId, { again: true })
+      retried = run.failedStep
     } else {
       const versionId = run.contract.currentVersionId ?? run.versionId
       retried = await onVersionCreated(run.contractId, versionId, 'retry')

@@ -11,10 +11,13 @@
  *     with, and where the analysis stands;
  *   - the findings, grouped: needs attention, not detected, and what is
  *     standard or accepted — each with its evidence (the clause's words, and
- *     the words before a change) and what can be done about it, in place.
+ *     the words before a change) and what can be done about it, in place;
+ *   - docs/41 Parts 9, 10 — the gaps of the compliance frameworks that apply
+ *     (a high one holds the recommendation at Review), and the drafting
+ *     problems (defined terms), which never hold it back, with the glossary.
  * Every status label explains itself on hover.
  */
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { serverMessage } from '@/lib/approval-keys'
@@ -52,6 +55,8 @@ export function ReviewPanel({
   onJumpToClause,
   onAnalyse,
   analysing,
+  onShowText,
+  definedTerms,
 }: {
   contractId: string
   contractMetadata: Record<string, unknown> | null | undefined
@@ -59,6 +64,10 @@ export function ReviewPanel({
   onJumpToClause: (clauseId: string) => void
   onAnalyse?: () => void
   analysing?: boolean
+  /** Show words in the document: a finding not about one clause (a defined term). */
+  onShowText?: (text: string) => void
+  /** The defined-terms glossary, shown under Drafting. */
+  definedTerms?: ReactNode
 }) {
   const qc = useQueryClient()
   const q = useQuery({
@@ -90,7 +99,10 @@ export function ReviewPanel({
   const r = q.data
   const needs = r?.groups.needsAttention ?? []
   const missing = r?.groups.notDetected ?? []
-  const open = needs.length + missing.length
+  const compliance = r?.groups.compliance ?? []
+  const drafting = r?.groups.drafting ?? []
+  // Drafting problems are listed, not counted: they never hold approval back.
+  const open = needs.length + missing.length + compliance.length
   const meta = contractMetadata ?? {}
   const fixStatus = meta._playbookRedlineStatus as string | undefined
   const staged = meta._playbookRedline as StagedFixes | undefined
@@ -168,6 +180,15 @@ export function ReviewPanel({
           {missing.length > 0 && (
             <Group title="Not detected" findings={missing} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onChanged={refresh} />
           )}
+          {compliance.length > 0 && (
+            <Group title="Compliance" findings={compliance} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} />
+          )}
+          {(drafting.length > 0 || definedTerms) && (
+            <div data-testid="review-drafting">
+              <Group title="Drafting" findings={drafting} empty={r.analysis.kind === 'done' ? 'No problems with defined terms.' : null} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} />
+              {definedTerms && <div className={drafting.length ? 'mt-1.5' : ''}>{definedTerms}</div>}
+            </div>
+          )}
 
           {(r.counts.standard > 0 || r.groups.accepted.length > 0) && (
             <div>
@@ -212,9 +233,9 @@ function ClauseRow({ c, onJump }: { c: ReviewClauseView; onJump: (id: string) =>
   )
 }
 
-function Group({ title, findings, empty, contractId, canEdit, onJump, onChanged }: {
+function Group({ title, findings, empty, contractId, canEdit, onJump, onShowText, onChanged }: {
   title: string; findings: ReviewFindingView[]; empty?: string | null
-  contractId: string; canEdit: boolean; onJump: (id: string) => void; onChanged: () => void
+  contractId: string; canEdit: boolean; onJump: (id: string) => void; onShowText?: (text: string) => void; onChanged: () => void
 }) {
   if (!findings.length && !empty) return null
   return (
@@ -222,14 +243,17 @@ function Group({ title, findings, empty, contractId, canEdit, onJump, onChanged 
       <div className="text-[11px] font-medium text-ink-950 mb-1">{title} {findings.length > 0 && <span className="text-ink-500 tabular-nums">({findings.length})</span>}</div>
       {findings.length === 0 ? <p className="text-[11px] text-muted-foreground">{empty}</p> : (
         <ol className="space-y-1.5" data-testid={`review-group-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-          {findings.map(f => <FindingCard key={f.id} f={f} contractId={contractId} canEdit={canEdit} onJump={onJump} onChanged={onChanged} />)}
+          {findings.map(f => <FindingCard key={f.id} f={f} contractId={contractId} canEdit={canEdit} onJump={onJump} onShowText={onShowText} onChanged={onChanged} />)}
         </ol>
       )}
     </div>
   )
 }
 
-function FindingCard({ f, contractId, canEdit, onJump, onChanged }: { f: ReviewFindingView; contractId: string; canEdit: boolean; onJump: (id: string) => void; onChanged: () => void }) {
+/** What the second quote of a finding is, by kind. */
+const RELATED_LABEL: Record<string, string> = { drafting: 'Its definition', compliance: 'Why it applies' }
+
+function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged }: { f: ReviewFindingView; contractId: string; canEdit: boolean; onJump: (id: string) => void; onShowText?: (text: string) => void; onChanged: () => void }) {
   const qc = useQueryClient()
   const [mode, setMode] = useState<null | 'accept' | 'tag'>(null)
   const [text, setText] = useState('')
@@ -266,10 +290,12 @@ function FindingCard({ f, contractId, canEdit, onJump, onChanged }: { f: ReviewF
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className={`text-[9px] uppercase tracking-wider border rounded-chip px-1 ${SEVERITY_CLS[f.severity] ?? SEVERITY_CLS.low}`}>{f.severity}</span>
         <StatusChip reviewStatus={f.reviewStatus} label={f.label} definition={f.definition} />
-        {f.source === 'llm' && <span className="inline-flex items-center gap-1 text-[9.5px] text-assist-700" title="Judged by AI against your playbook's positions, with the words it relied on."><AssistMark className="size-[5px]" />AI</span>}
+        {f.source === 'llm' && <span className="inline-flex items-center gap-1 text-[9.5px] text-assist-700" title={f.kind === 'compliance' ? 'Checked by AI against the framework’s requirements, with the words it relied on.' : "Judged by AI against your playbook's positions, with the words it relied on."}><AssistMark className="size-[5px]" />AI</span>}
       </div>
       <div className="font-medium text-ink-950 mt-0.5">
-        {f.clauseId ? <button type="button" className="text-left hover:underline" onClick={() => onJump(f.clauseId!)} title="Go to this clause">{f.title}</button> : f.title}
+        {f.clauseId ? <button type="button" className="text-left hover:underline" onClick={() => onJump(f.clauseId!)} title="Go to this clause">{f.title}</button>
+          : f.evidence.quote && onShowText ? <button type="button" className="text-left hover:underline" onClick={() => onShowText(f.evidence.quote!)} title="Show in the document">{f.title}</button>
+          : f.title}
       </div>
       <div className="text-ink-700 mt-0.5">{f.explanation}</div>
       {f.evidence.quote && (
@@ -279,6 +305,9 @@ function FindingCard({ f, contractId, canEdit, onJump, onChanged }: { f: ReviewF
         f.kind === 'deleted'
           ? <details className="mt-1" open><summary className="cursor-pointer text-ink-500">Deleted text</summary><blockquote className="mt-1 border-l-2 border-risk-200 pl-2 text-ink-700 whitespace-pre-wrap line-through decoration-risk-600/40">{f.evidence.baselineQuote}</blockquote></details>
           : <details className="mt-1"><summary className="cursor-pointer text-ink-500">Before</summary><blockquote className="mt-1 border-l-2 border-paper-300 pl-2 text-ink-700 whitespace-pre-wrap">{f.evidence.baselineQuote}</blockquote></details>
+      )}
+      {f.evidence.relatedQuote && (
+        <details className="mt-1"><summary className="cursor-pointer text-ink-500">{RELATED_LABEL[f.kind] ?? 'See also'}</summary><blockquote className="mt-1 border-l-2 border-paper-300 pl-2 text-ink-700 whitespace-pre-wrap">{f.evidence.relatedQuote}</blockquote></details>
       )}
 
       {proposal && (

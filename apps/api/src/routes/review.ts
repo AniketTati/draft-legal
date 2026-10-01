@@ -29,6 +29,7 @@ import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { findingsFor, computeAndStoreFindings, reviewStampOf, baselineWords, type BaselineReason, type PositionVerdict } from '../lib/review-findings.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
+import { computeDraftingFindings, draftingChecked } from '../lib/drafting-findings.js'
 import { latestRun } from '../lib/analysis-runs.js'
 import { contractPlaybook } from '../lib/playbooks.js'
 import { matchCategory } from '../lib/clause-category.js'
@@ -50,7 +51,7 @@ const INSERTABLE = new Set(['missing_required', 'deleted', 'position_not_met', '
 const STATUS_OF_KIND: Record<string, ReviewStatus> = {
   missing_required: 'not_detected', deleted: 'deleted', not_allowed_present: 'not_allowed', modified: 'changed', material_cut: 'changed',
   added: 'added', position_not_met: 'not_met', position_fallback: 'fallback', needs_approval_position: 'needs_approval', unreadable_text: 'unreadable',
-  drafting: 'not_met', compliance: 'not_met',
+  drafting: 'drafting', compliance: 'compliance_gap',
 }
 const STATUS_OF_VERDICT: Record<string, ReviewStatus> = {
   meets_preferred: 'matches_preferred', meets_fallback: 'fallback', needs_approval: 'needs_approval', not_met: 'not_met', not_covered: 'not_covered',
@@ -106,6 +107,8 @@ export async function reviewRoutes(app: FastifyInstance) {
       version ? latestRun(id, version.id) : Promise.resolve(null),
       contract.currentVersionId && contract.currentVersionId !== version?.id ? latestRun(id, contract.currentVersionId) : Promise.resolve(null),
     ])
+    // A version analysed before its defined terms were checked (docs/41 Part 10): checked now, it is quick.
+    if (version && analysis.kind !== 'not_analysed' && !draftingChecked(version.metadata)) await computeDraftingFindings(id, version.id)
     // Nothing read yet: no findings to make up.
     const rows: ReviewFinding[] = version && analysis.kind !== 'not_analysed' ? await findingsFor(id, version.id) : []
     const guard = isCurrent ? await recommendationGuard(id, orgId) : null
@@ -166,8 +169,12 @@ export async function reviewRoutes(app: FastifyInstance) {
     const open = rows.filter(f => OPEN.has(f.status))
     const severity: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
     const bySeverity = (a: ReviewFinding, b: ReviewFinding) => (severity[a.severity] ?? 4) - (severity[b.severity] ?? 4)
-    const needsAttention = open.filter(f => f.kind !== 'missing_required').sort(bySeverity).map(viewFinding)
+    // docs/41 Parts 9, 10 — drafting and compliance findings in groups of their own.
+    const own = (f: ReviewFinding) => f.kind === 'drafting' || f.kind === 'compliance'
+    const needsAttention = open.filter(f => f.kind !== 'missing_required' && !own(f)).sort(bySeverity).map(viewFinding)
     const notDetected = open.filter(f => f.kind === 'missing_required').map(viewFinding)
+    const compliance = open.filter(f => f.kind === 'compliance').sort(bySeverity).map(viewFinding)
+    const drafting = open.filter(f => f.kind === 'drafting').sort(bySeverity).map(viewFinding)
     const accepted = rows.filter(f => !OPEN.has(f.status)).map(viewFinding)
 
     // Each clause's status: what the findings say of it, else where it came
@@ -218,10 +225,11 @@ export async function reviewRoutes(app: FastifyInstance) {
         definition: RECOMMENDATION_TEXT[recommendation.label].definition,
         reasons: recommendation.reasons,
       } : null,
-      groups: { needsAttention, notDetected, accepted },
+      groups: { needsAttention, notDetected, compliance, drafting, accepted },
       clauses: clauseViews,
       counts: {
         needsAttention: needsAttention.length, notDetected: notDetected.length, accepted: accepted.length,
+        compliance: compliance.length, drafting: drafting.length,
         standard: standard.length, clauses: clauseViews.length,
         // What "Fix all fixable" rewrites in one batch: the findings about a clause.
         fixable: [...needsAttention, ...notDetected].filter(f => f.actions.includes('redline')).length,

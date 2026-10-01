@@ -124,6 +124,14 @@ describe('applicability from facts (Part 9)', () => {
     expect(body.checksRan).toEqual(['GDPR'])
     expect(body.report).toMatchObject({ versionId: dpaVersion, frameworksRequested: ['GDPR'] })
     expect(body.report.textHash).toMatch(/^[0-9a-f]{32}$/)
+    // The gap is a review finding of the version, with why GDPR applies.
+    const findings = await prisma.reviewFinding.findMany({ where: { contractId: dpa, kind: 'compliance' } })
+    expect(findings).toHaveLength(1)
+    expect(findings[0]).toMatchObject({
+      orgId: orgA, versionId: dpaVersion, key: 'compliance|GDPR|x_breach', severity: 'high', source: 'llm', status: 'open',
+      title: 'GDPR: Breach notice — missing',
+      evidence: { relatedQuote: 'Supplier will process Customer’s employee personal data' },
+    })
   })
 
   it('makes no model call when the text has not changed', async () => {
@@ -149,6 +157,7 @@ describe('applicability from facts (Part 9)', () => {
     const fact = await prisma.contractFact.findUniqueOrThrow({ where: { contractId_key: { contractId: nda, key: 'personal_data' } } })
     expect(fact).toMatchObject({ value: false, source: 'user', confirmedById: ownerA })
     expect(await prisma.auditEvent.count({ where: { orgId: orgA, action: 'COMPLIANCE_FACT_CONFIRMED', resourceId: nda } })).toBe(1)
+    expect(await prisma.reviewFinding.count({ where: { contractId: nda, kind: 'compliance' } })).toBe(0)
   })
 
   it('keeps a person\'s answer when the facts are read again', async () => {
@@ -198,6 +207,8 @@ describe('applicability from facts (Part 9)', () => {
     const body = res.json()
     expect(body.frameworks.find((f: { framework: string }) => f.framework === 'PCI_DSS')).toMatchObject({ applies: 'yes', addedByUser: true })
     expect(body.report.frameworks.map((f: { framework: string }) => f.framework).sort()).toEqual(['GDPR', 'PCI_DSS'])
+    const keys = (await prisma.reviewFinding.findMany({ where: { contractId: dpa, kind: 'compliance' }, orderBy: { key: 'asc' } })).map(f => f.key)
+    expect(keys).toEqual(['compliance|GDPR|x_breach', 'compliance|PCI_DSS|x_breach'])
   })
 })
 
@@ -288,16 +299,24 @@ describe('defined terms of a version (Part 10)', () => {
     expect(other.statusCode).toBe(404)
   })
 
-  it('stores the findings on the contract as part of analysis', async () => {
-    const findings = await computeDraftingFindings(dpa, dpaVersion)
-    expect(findings?.length).toBeGreaterThan(0)
-    const md = (await prisma.contract.findUniqueOrThrow({ where: { id: dpa }, select: { metadata: true } })).metadata as Record<string, any>
-    expect(md._drafting.versionId).toBe(dpaVersion)
-    expect(md._drafting.issues.find((i: { term: string }) => i.term === 'Exclusions')).toMatchObject({
-      kind: 'unused_definition', clauseType: null, severity: 'low', versionId: dpaVersion,
-      evidence: { quote: expect.stringContaining('“Exclusions” means'), offset: DPA.indexOf('Exclusions') },
+  it('stores them as review findings of the version, as part of analysis', async () => {
+    const issues = await computeDraftingFindings(dpa, dpaVersion)
+    expect(issues?.length).toBeGreaterThan(0)
+    const rows = await prisma.reviewFinding.findMany({ where: { contractId: dpa, kind: 'drafting' } })
+    expect(rows).toHaveLength(issues!.length)
+    expect(rows.find(f => f.key === 'drafting|unused_definition|Exclusions')).toMatchObject({
+      orgId: orgA, versionId: dpaVersion, severity: 'low', source: 'deterministic', status: 'open',
+      title: '“Exclusions” is defined but not used.',
+      evidence: { quote: expect.stringContaining('“Exclusions” means'), offsets: { start: DPA.indexOf('Exclusions') } },
     })
-    // The compliance results written before are still there: one key was written.
-    expect(md._compliance.frameworks.length).toBe(2)
+    const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: dpaVersion }, select: { metadata: true } })
+    expect((v.metadata as Record<string, any>)._drafting.checkedAt).toEqual(expect.any(String))
+    // The compliance findings stored before are untouched: each kind is its own step's.
+    expect(await prisma.reviewFinding.count({ where: { contractId: dpa, kind: 'compliance' } })).toBeGreaterThan(0)
+    // A decision carries when the checks run again on the same words.
+    const unused = rows.find(f => f.key === 'drafting|unused_definition|Exclusions')!
+    await prisma.reviewFinding.update({ where: { id: unused.id }, data: { status: 'accepted', resolvedById: ownerA, resolvedAt: new Date() } })
+    await computeDraftingFindings(dpa, dpaVersion)
+    expect(await prisma.reviewFinding.findUniqueOrThrow({ where: { id: unused.id } })).toMatchObject({ status: 'accepted' })
   })
 })

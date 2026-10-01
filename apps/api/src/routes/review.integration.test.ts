@@ -17,6 +17,7 @@ vi.mock('../lib/queue.js', async (importOriginal) => {
     queueNotification: vi.fn(),
     queueRefreshVersion: rec('refresh-version'),
     queuePlaybookReview: rec('playbook-review'),
+    queueComplianceReview: rec('compliance-review'),
     queuePlaybookRedline: rec('playbook-redline'),
     queueExtractAi: rec('extract-ai'),
     queueClassifyDocument: rec('classify-document'),
@@ -45,6 +46,7 @@ import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, grantRole, cle
 import { finishAnalysis, runCheckpointAnalysis } from '../lib/analysis-trigger.js'
 import { afterAnalysis } from '../lib/presence-rules.js'
 import { generateDocument } from '../lib/template-engine.js'
+import { storeFindings } from '../lib/review-findings.js'
 import { htmlToText } from '../lib/html-text.js'
 
 let app: TestApp
@@ -200,7 +202,7 @@ describe('golden: junk typed into a clause, analysed incrementally', () => {
     expect(await runCheckpointAnalysis({ contractId: id, orgId: org })).toBe('incremental')
     const run = await prisma.analysisRun.findFirstOrThrow({ where: { contractId: id, versionId: v2.id } })
     expect(run).toMatchObject({ mode: 'incremental', reason: 'checkpoint', status: 'done' })
-    expect((run.steps as Array<{ name: string }>).map(s => s.name)).toEqual(['carry', 'index', 'findings'])
+    expect((run.steps as Array<{ name: string }>).map(s => s.name)).toEqual(['carry', 'index', 'findings', 'drafting'])
     expect(queued).toContainEqual({ name: 'playbook-review', data: { contractId: id, orgId: org, versionId: v2.id } })
     expect(queued.find(q => q.name === 'extract-ai')).toBeUndefined()
 
@@ -299,5 +301,52 @@ describe('tenant isolation', () => {
     }
     expect((await post(`/contracts/${id}/review/fix-all`, {}, theirs)).statusCode).toBe(404)
     expect((await prisma.reviewFinding.findUniqueOrThrow({ where: { id: f.id } })).status).toBe('open')
+  })
+})
+
+describe('drafting and compliance findings (docs/41 Parts 9, 10)', () => {
+  it('are steps of the analysis, groups of the review, and only a high compliance gap holds the recommendation', async () => {
+    const id = await makeContract(org, owner, { title: 'NDA with a loose definition', type: 'NDA' })
+    const clauses: Array<[string, string]> = [['confidentiality', CONF], ['termination', TERM], ['governing_law', GOV], ['general', '“Exclusions” means the matters in Schedule 2.']]
+    const v1 = await version(id, 1, html(clauses), clauses)
+    queued.length = 0
+    await analysed(id, v1, 4)
+
+    // The defined-terms checks ran as a step of the run; the compliance step was queued.
+    const run = await prisma.analysisRun.findFirstOrThrow({ where: { contractId: id, versionId: v1.id }, orderBy: { startedAt: 'desc' } })
+    const steps = run.steps as Array<{ name: string; status: string; counts?: Record<string, number> }>
+    const drafting = steps.find(s => s.name === 'drafting')
+    expect(drafting).toMatchObject({ status: 'done' })
+    expect(run.status).toBe('done')
+    expect(queued.filter(q => q.name === 'compliance-review')).toEqual([{ name: 'compliance-review', data: { contractId: id, orgId: org, versionId: v1.id } }])
+
+    let r = (await getReview(id)).json()
+    expect(r.groups.drafting).toHaveLength(drafting!.counts!.findings)
+    expect(r.groups.drafting.find((f: { title: string }) => f.title === '“Exclusions” is defined but not used.'))
+      .toMatchObject({ kind: 'drafting', reviewStatus: 'drafting', label: 'Drafting', actions: ['accept', 'resolve'] })
+    expect(r.groups.needsAttention).toEqual([])
+    expect(r.counts).toMatchObject({ drafting: r.groups.drafting.length, compliance: 0 })
+    const nDrafting = r.groups.drafting.length
+    // A drafting problem never holds approval back.
+    expect(r.recommendation.label).toBe('ready_to_approve')
+
+    // A medium compliance gap is listed, not weighed; a high one holds it at Review.
+    const gap = (key: string, severity: 'medium' | 'high') => ({
+      kind: 'compliance' as const, key, clauseType: null, clauseId: null, categoryId: null, positionId: null, severity,
+      title: `GDPR: ${key} — missing`, explanation: 'No breach notice.', evidence: {}, source: 'llm' as const,
+    })
+    await storeFindings({ orgId: org, contractId: id, versionId: v1.id, baselineVersionId: null, drafts: [gap('compliance|GDPR|a', 'medium')], kinds: ['compliance'] })
+    r = (await getReview(id)).json()
+    expect(r.groups.compliance.map((f: { reviewStatus: string }) => f.reviewStatus)).toEqual(['compliance_gap'])
+    expect(r.recommendation.label).toBe('ready_to_approve')
+    await storeFindings({ orgId: org, contractId: id, versionId: v1.id, baselineVersionId: null, drafts: [gap('compliance|GDPR|a', 'medium'), gap('compliance|GDPR|b', 'high')], kinds: ['compliance'] })
+    r = (await getReview(id)).json()
+    expect(r.counts).toMatchObject({ compliance: 2, drafting: nDrafting })
+    expect(r.recommendation).toMatchObject({ label: 'review', reasons: [{ text: 'GDPR: compliance|GDPR|b — missing' }] })
+
+    // Storing one kind leaves the others: the clause review again keeps both.
+    await afterAnalysis(id, v1.id)
+    expect(await prisma.reviewFinding.groupBy({ by: ['kind'], where: { contractId: id }, _count: true, orderBy: { kind: 'asc' } }))
+      .toEqual([{ kind: 'compliance', _count: 2 }, { kind: 'drafting', _count: nDrafting }])
   })
 })

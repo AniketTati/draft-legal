@@ -6,7 +6,7 @@ import { setTypeFieldsMark, typeFieldsMark } from './type-fields-read.js'
  * theirs alone: the document is extracted and usable, so it must not mark the
  * contract's analysis FAILED.
  */
-const FOLLOW_ON_JOBS = new Set(['playbook-review', 'playbook-redline', 'redline-analysis', 'approval-summary'])
+const FOLLOW_ON_JOBS = new Set(['playbook-review', 'compliance-review', 'playbook-redline', 'redline-analysis', 'approval-summary'])
 
 interface FailedJob {
   name?: string

@@ -33,6 +33,11 @@
  *     covers, a required clause not detected, text that doesn't read — and
  *     every guard reason above;
  *   - Ready to approve: none of these.
+ *
+ * docs/41 Parts 9, 10 — drafting findings (a term not defined, defined
+ * twice…) never hold the label back: they are listed, not counted. A
+ * compliance finding holds it at Review when it is high (a requirement of a
+ * framework that applies, missing or at risk); a lesser one is listed only.
  */
 import { analysisState, type AnalysisState, type RecommendationLabel } from '@clm/types'
 import { prisma } from './prisma.js'
@@ -77,6 +82,9 @@ export interface GuardInput {
 /** Statuses that still need something from someone. */
 const OPEN = new Set(['open', 'exception_requested', 'exception_declined'])
 export const isOpen = (f: Pick<PolicyFinding, 'status'>) => OPEN.has(f.status)
+/** Findings the recommendation weighs: not drafting, and compliance only when high. */
+export const weighs = (f: Pick<PolicyFinding, 'kind' | 'severity'>) =>
+  f.kind !== 'drafting' && (f.kind !== 'compliance' || f.severity === 'high' || f.severity === 'critical')
 const lower = (t: string) => t.replace(/\.$/, '')
 
 /** Pure: the hard guards — the reasons the label can never be "Ready to approve". */
@@ -112,7 +120,7 @@ const CANT: GuardCode[] = ['analysis_missing', 'analysis_failed', 'analysis_runn
 /** Pure: the recommendation, from the guards and the open findings. Never a model's. */
 export function policy(input: GuardInput): Recommendation {
   const guards = guardReasons(input)
-  const open = input.findings.filter(isOpen)
+  const open = input.findings.filter(f => isOpen(f) && weighs(f))
   const ids = (fs: PolicyFinding[]) => fs.map(f => f.id)
   const byTitle = (fs: PolicyFinding[], code: string): RecommendationReason[] => fs.map(f => ({ code, text: lower(f.title), findingIds: [f.id] }))
 

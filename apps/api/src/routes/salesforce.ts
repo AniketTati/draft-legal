@@ -53,7 +53,7 @@ import {
   authorizeUrl, exchangeCode, revokeToken, orgIdFromIdentityUrl, normaliseLoginUrl, salesforceAppConfig,
   sameSalesforceId, DEFAULT_LOGIN_URL, SANDBOX_LOGIN_URL,
 } from '../lib/salesforce/oauth.js'
-import { clientFor } from '../lib/salesforce/sync.js'
+import { clientFor, statusFacts } from '../lib/salesforce/sync.js'
 import { contractSyncPayload, STAGES, contractLink } from '../lib/salesforce/payload.js'
 import {
   InboundRequestSchema, InboundChangeSchema, createRequestFromSalesforce, applySalesforceChange, resolveConflict,
@@ -487,8 +487,10 @@ export async function salesforcePublicRoutes(app: FastifyInstance) {
       where: { orgId, contractId: id }, orderBy: { submittedAt: 'desc' },
       select: { status: true, steps: { select: { stepName: true, status: true } } },
     })
-    const approvals = instance?.steps.length ? { approved: instance.steps.filter(s => s.status === 'APPROVED').length, total: instance.steps.length } : null
-    const payload = contractSyncPayload({ ...c, approvals })
+    // Who an approval waits on, and since when the status stands: as the sync sends them.
+    const facts = (await statusFacts(orgId, [id])).get(id)
+    const approvals = facts?.approvals ?? null
+    const payload = contractSyncPayload({ ...c, ...facts })
     const terms = await prisma.contractFieldValue.findMany({
       where: { orgId, contractId: id, rejectedAt: null },
       select: { fieldKey: true, value: true, label: true }, take: 60,

@@ -246,23 +246,35 @@ export async function addComplianceFramework({ orgId, contractId, userId, framew
   return runComplianceCheck({ orgId, contractId, userId, frameworks: [framework], merge: true, applicabilityDecided: true })
 }
 
+/** What the analysis step did: why it did nothing, or what it ran. */
+export interface ComplianceStepOutcome { skipped?: string; frameworks?: number; checked?: number }
+
 /**
  * The analysis step: read the facts when the version's text changed, then
- * check the frameworks that apply. Never throws (analysis must not fail on it).
+ * check the frameworks that apply. Never throws (analysis must not fail on
+ * it): a step that could not run says why, and is offered again by the
+ * contract's Compliance section.
  */
-export async function runComplianceApplicability(contractId: string, versionId: string): Promise<void> {
+export async function runComplianceApplicability(contractId: string, versionId: string): Promise<ComplianceStepOutcome> {
   try {
     const contract = await prisma.contract.findUnique({ where: { id: contractId }, select: { orgId: true, currentVersionId: true } })
+    if (!contract) return { skipped: 'the contract is gone' }
     // Only the version people are looking at: an older one being re-read isn't worth a call.
-    if (!contract || (contract.currentVersionId && contract.currentVersionId !== versionId)) return
+    if (contract.currentVersionId && contract.currentVersionId !== versionId) return { skipped: 'not the version the contract stands on' }
     const facts = await extractComplianceFacts({ orgId: contract.orgId, contractId, versionId, userId: 'system' })
     if (!facts.ok) {
       if (facts.error) console.warn('[compliance-facts] facts not read contractId=%s: %s', contractId, facts.error)
-      return
+      return { skipped: facts.skipped === 'no text' ? 'no text to read' : 'the facts could not be read' }
     }
     const checks = await runApplicableChecks({ orgId: contract.orgId, contractId, userId: 'system' })
-    if (checks.error) console.warn('[compliance-facts] checks failed contractId=%s: %s', contractId, checks.error)
+    if (checks.error) {
+      console.warn('[compliance-facts] checks failed contractId=%s: %s', contractId, checks.error)
+      return { skipped: 'the checks could not run' }
+    }
+    const a = await complianceApplicability(contract.orgId, contractId)
+    return { frameworks: a ? applyingFrameworks(a).length : 0, checked: checks.ran.length }
   } catch (err) {
     console.warn('[compliance-facts] step failed contractId=%s: %s', contractId, (err as Error)?.message ?? err)
+    return { skipped: err instanceof CostCapExceededError ? 'the daily AI cost cap is reached' : 'it could not run' }
   }
 }

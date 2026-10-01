@@ -33,20 +33,37 @@ const REVIEW: ContractReview = {
       resolutionNote: null, actions: ['redline', 'accept', 'resolve'],
     }],
     notDetected: [],
+    compliance: [],
+    drafting: [],
     accepted: [],
   },
   clauses: [{ id: 'c2', clauseType: 'termination', clauseLabel: 'Termination', sectionRef: '4', excerpt: 'x', reviewStatus: 'standard', label: 'Standard', definition: 'From template Mutual NDA v3, unchanged.' }],
-  counts: { needsAttention: 2, notDetected: 0, accepted: 0, standard: 1, clauses: 3, fixable: 1 },
+  counts: { needsAttention: 2, notDetected: 0, compliance: 0, drafting: 0, accepted: 0, standard: 1, clauses: 3, fixable: 1 },
 }
 
-function render(review: ContractReview, canEdit = true) {
+function render(review: ContractReview, canEdit = true, definedTerms?: React.ReactNode) {
   const qc = new QueryClient()
   qc.setQueryData(['contract-review', 'k1'], review)
   return renderToString(
     <QueryClientProvider client={qc}>
-      <ReviewPanel contractId="k1" contractMetadata={{}} canEdit={canEdit} onJumpToClause={() => {}} />
+      <ReviewPanel contractId="k1" contractMetadata={{}} canEdit={canEdit} onJumpToClause={() => {}} onShowText={() => {}} definedTerms={definedTerms} />
     </QueryClientProvider>,
   ).replace(/<!-- -->/g, '')
+}
+
+const COMPLIANCE_GAP = {
+  id: 'f3', kind: 'compliance', severity: 'high' as const, status: 'open', source: 'llm' as const,
+  title: 'GDPR: Breach notice — missing', explanation: 'No breach notice. Add one. GDPR applies to this contract: personal data.',
+  evidence: { relatedQuote: 'Supplier will process employee personal data' },
+  clauseId: null, clauseType: null, reviewStatus: 'compliance_gap', label: 'Compliance gap', definition: 'A requirement of a compliance framework that applies.',
+  resolutionNote: null, actions: ['accept' as const, 'resolve' as const],
+}
+const DRAFTING = {
+  id: 'f4', kind: 'drafting', severity: 'low' as const, status: 'open', source: 'deterministic' as const,
+  title: '“Exclusions” is defined but not used.', explanation: 'Remove the definition, or check whether the clause that used it was deleted.',
+  evidence: { quote: '“Exclusions” means the matters in Schedule 2.' },
+  clauseId: null, clauseType: null, reviewStatus: 'drafting', label: 'Drafting', definition: 'How the contract is written.',
+  resolutionNote: null, actions: ['accept' as const, 'resolve' as const],
 }
 
 describe('ReviewPanel', () => {
@@ -68,6 +85,28 @@ describe('ReviewPanel', () => {
     const html = render(REVIEW, false)
     expect(html).not.toContain('Accept as is')
     expect(html).not.toContain('Fix all fixable')
+  })
+
+  it('lists compliance gaps and drafting problems in groups of their own, with the glossary under Drafting', () => {
+    const html = render({
+      ...REVIEW,
+      groups: { ...REVIEW.groups, compliance: [COMPLIANCE_GAP], drafting: [DRAFTING] },
+      counts: { ...REVIEW.counts, compliance: 1, drafting: 1 },
+    }, true, <div data-testid="glossary-slot">Defined terms (4)</div>)
+    expect(html).toContain('data-testid="review-group-compliance"')
+    expect(html).toContain('GDPR: Breach notice — missing')
+    expect(html).toContain('Why it applies')
+    expect(html).toContain('data-testid="review-group-drafting"')
+    expect(html).toContain('“Exclusions” is defined but not used.')
+    expect(html).toContain('title="Show in the document"')
+    expect(html).toContain('data-testid="glossary-slot"')
+    // Drafting problems aren't counted in the panel's header; compliance gaps are.
+    expect(html).toMatch(/data-testid="rail-section-count-review"[^>]*>3</)
+  })
+
+  it('says so when no defined-term problems were found', () => {
+    const html = render(REVIEW, true, <div>glossary</div>)
+    expect(html).toContain('No problems with defined terms.')
   })
 
   it("says when the analysis is for an older version", () => {

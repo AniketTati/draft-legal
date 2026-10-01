@@ -2745,7 +2745,8 @@ export async function contractRoutes(app: FastifyInstance) {
       analysis: analysisState(contract),
       ready: guard.passes,
       reasons: guard.reasons,
-      findings: guard.findings,
+      // The clause review's findings: drafting and compliance ones are the Review panel's groups.
+      findings: guard.findings.filter(f => f.kind !== 'drafting' && f.kind !== 'compliance'),
       // docs/41 P0.4 — terms the draft left to choose; it can't be sent until they are.
       openChoices: choices,
     })
@@ -3103,6 +3104,9 @@ export async function contractRoutes(app: FastifyInstance) {
       if (!result.ok || !result.report) {
         return reply.status(502).send({ detail: 'compliance agent failed', upstream: result.error })
       }
+      // docs/41 Part 9 — the review's compliance findings, from the new results.
+      const { storeComplianceFindings } = await import('../lib/compliance-findings.js')
+      await storeComplianceFindings(orgId, id)
       return reply.send({ ok: true, report: result.report })
     } catch (err) {
       if (err instanceof CostCapExceededError) {

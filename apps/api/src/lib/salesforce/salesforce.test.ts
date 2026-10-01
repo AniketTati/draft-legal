@@ -43,6 +43,16 @@ describe('contractSyncPayload', () => {
     expect(stageFor({ status: 'EXECUTED' })).toBe('Signed')
   })
 
+  it('names who an approval waits on, and sends since when the status stands (docs/41 P0.6, P0.10)', () => {
+    const waiting = { ...contract, approvals: { approved: 1, total: 3, waitingOn: ['Sam', 'Lee'] }, statusSince: new Date('2026-09-30T10:00:00Z') }
+    const p = contractSyncPayload(waiting)
+    expect(p.DL_Waiting_On__c).toBe('Approvers: Sam, Lee (1 of 3)')
+    expect(p.DL_Waiting_Since__c).toBe('2026-09-30T10:00:00.000Z')
+    // A stored waitingSince (Part 18) wins.
+    expect(contractSyncPayload({ ...waiting, waitingSince: '2026-09-01T00:00:00Z' }).DL_Waiting_Since__c).toBe('2026-09-01T00:00:00.000Z')
+    expect(contractSyncPayload(contract).DL_Waiting_Since__c).toBeNull()
+  })
+
   it('cuts a long title to Salesforce\'s 80-character Name', () => {
     expect((contractSyncPayload({ ...contract, title: 'x'.repeat(120) }).Name as string).length).toBe(80)
   })

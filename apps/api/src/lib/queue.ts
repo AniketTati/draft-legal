@@ -268,6 +268,28 @@ export function queuePlaybookReview(payload: PlaybookReviewJob): void {
 }
 
 /**
+ * docs/41 Part 9 — which compliance frameworks apply to an analysed version,
+ * and the checks of those that do (lib/version-review-steps.ts). A job of its
+ * own: it may call a model, which the analysis it follows must not wait on.
+ */
+export interface ComplianceReviewJob {
+  contractId: string
+  orgId:      string
+  versionId:  string
+}
+export function queueComplianceReview(payload: ComplianceReviewJob, opts: { again?: boolean } = {}): void {
+  agentQueue.add('compliance-review', payload, {
+    // It never throws (a failed read is recorded as skipped): no retries.
+    attempts: 1,
+    // One per version, like the playbook review (see the jobId note there);
+    // a person asking again gets a job of their own.
+    jobId: `compliance-review-${payload.contractId}-${payload.versionId}${opts.again ? `-${Date.now()}` : ''}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue compliance-review:', err.message))
+}
+
+/**
  * DD2 — a review after edits: of the version the contract stands on two
  * minutes from now, one per contract per two minutes. The editor saves a
  * version five seconds after typing stops; a review per save would be a

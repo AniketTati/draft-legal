@@ -159,10 +159,16 @@ export function presenceFindings(input: {
  * finishAnalysis): its review findings (lib/review-findings.ts), worked out
  * and stored, as the last step of its analysis run. They used to be stored
  * here as `metadata._presence`; ReviewFinding rows replace that.
+ *
+ * docs/41 Parts 9, 10 — then the review steps that follow on every analysed
+ * version (lib/version-review-steps.ts): the defined-terms checks, in place,
+ * and the compliance step, queued. Not after a findings step that failed:
+ * reopening its run would hide the failure.
  */
 export async function afterAnalysis(contractId: string, versionId: string): Promise<ComputedReview | null> {
+  let review: ComputedReview | null
   try {
-    return await asStep(contractId, versionId, 'findings', () => computeAndStoreFindings(contractId, versionId), {
+    review = await asStep(contractId, versionId, 'findings', () => computeAndStoreFindings(contractId, versionId), {
       last: true,
       counts: r => ({ findings: r?.findings.filter(f => f.status !== 'resolved').length ?? 0, standardClauses: r?.standardClauseIds.length ?? 0, changedClauses: r?.changedClauseIds.length ?? 0 }),
     })
@@ -170,4 +176,8 @@ export async function afterAnalysis(contractId: string, versionId: string): Prom
     console.warn('[presence] findings not computed contractId=%s: %s', contractId, (err as Error).message)
     return null
   }
+  const { draftingStep, queueComplianceStep } = await import('./version-review-steps.js')
+  await draftingStep(contractId, versionId)
+  await queueComplianceStep(contractId, versionId).catch(err => console.warn('[presence] compliance step not queued contractId=%s: %s', contractId, (err as Error).message))
+  return review
 }

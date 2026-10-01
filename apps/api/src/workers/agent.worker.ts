@@ -15,8 +15,9 @@ import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
+import { complianceStep } from '../lib/version-review-steps.js'
 import { redlineTargets, uncheckedClauses, redlineClearNote, type ReviewFinding } from '../lib/playbook-redline-targets.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, ComplianceReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { readTypeFields, clearTypeFieldsMark } from '../lib/type-fields-read.js'
@@ -841,6 +842,10 @@ export const agentWorker = new Worker(
       // A review asked for after edits takes the version the contract stands on.
       const versionId = data.versionId ?? (await prisma.contract.findUnique({ where: { id: data.contractId }, select: { currentVersionId: true } }))?.currentVersionId
       await runJobStep(job, { contractId: data.contractId, versionId }, () => handlePlaybookReview(data))
+    } else if (job.name === 'compliance-review') {
+      // docs/41 Part 9 — which compliance frameworks apply, their checks and findings.
+      const data = job.data as ComplianceReviewJob
+      await runJobStep(job, data, () => complianceStep(data.contractId, data.versionId))
     } else if (job.name === 'approval-summary') {
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {

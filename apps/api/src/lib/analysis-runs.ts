@@ -26,7 +26,7 @@ import { moduleLogger } from './logger.js'
 const log = moduleLogger('analysis')
 
 /** The steps of an analysis, in the order they run. */
-export const RUN_STEPS = ['parse', 'classify', 'extract', 'carry', 'index', 'findings', 'position_check'] as const
+export const RUN_STEPS = ['parse', 'classify', 'extract', 'carry', 'index', 'findings', 'drafting', 'compliance', 'position_check'] as const
 export type RunStepName = typeof RUN_STEPS[number]
 
 /** What each step is called on screen. */
@@ -37,16 +37,18 @@ export const STEP_LABEL: Record<RunStepName, string> = {
   carry: 'following its clauses into the edit',
   index: 'finding and indexing its clauses',
   findings: 'checking it against the playbook and the last version',
+  drafting: 'checking its defined terms',
+  compliance: 'checking the compliance rules that apply',
   position_check: 'checking changed clauses against your positions',
 }
 
 /**
  * The steps after which a run's analysis is usable: a failure in a later one
- * (the model's position check) is the run's, but leaves the contract
- * analysed (lib/agent-job-failure.ts keeps follow-on failures off the
- * contract's status).
+ * (the defined-terms checks, compliance, the model's position check) is the
+ * run's, but leaves the contract analysed (lib/agent-job-failure.ts keeps
+ * follow-on failures off the contract's status).
  */
-export const FOLLOW_ON_STEPS = new Set<RunStepName>(['position_check'])
+export const FOLLOW_ON_STEPS = new Set<RunStepName>(['drafting', 'compliance', 'position_check'])
 
 export type RunStatus = 'queued' | 'running' | 'done' | 'failed' | 'superseded'
 export type StepStatus = 'running' | 'done' | 'retrying' | 'failed' | 'skipped'
@@ -185,8 +187,10 @@ export async function stepDone(contractId: string, versionId: string, name: RunS
       ...(opts.model && { model: opts.model }),
       ...(opts.skipped && { error: opts.skipped }),
     }
-    // A follow-on step that ends closes the run it reopened, unless a step failed.
-    const close = opts.last || (FOLLOW_ON_STEPS.has(name) && !run.failedStep)
+    // A follow-on step that ends closes the run it reopened, unless a step
+    // failed or another follow-on step (they run side by side) is still going.
+    const othersRunning = stepsOf(run).some(s => s.name !== name && (s.status === 'running' || s.status === 'retrying'))
+    const close = opts.last || (FOLLOW_ON_STEPS.has(name) && !run.failedStep && !othersRunning)
     await writeStep(run.id, step, close ? { status: 'done', finishedAt: new Date() } : { status: 'running' })
     if (opts.model) {
       const models = (Array.isArray(run.model) ? run.model : []) as Array<{ step: string; model: string }>
@@ -253,6 +257,7 @@ export const JOB_STEP: Record<string, RunStepName> = {
   'extract-ai': 'extract',
   'chunk-and-index': 'index',
   'playbook-review': 'position_check',
+  'compliance-review': 'compliance',
 }
 
 /**
@@ -323,8 +328,8 @@ export function orderedSteps(steps: RunStep[]): RunStep[] {
 /** The steps a run of this mode takes, for "step n of m". */
 function plannedSteps(mode: string, steps: RunStep[]): RunStepName[] {
   const planned: RunStepName[] = mode === 'incremental'
-    ? ['carry', 'index', 'findings', 'position_check']
-    : ['extract', 'index', 'findings', 'position_check']
+    ? ['carry', 'index', 'findings', 'drafting', 'compliance', 'position_check']
+    : ['extract', 'index', 'findings', 'drafting', 'compliance', 'position_check']
   // A step it took that wasn't planned (a parse, a classify) is counted too.
   for (const s of steps) if (!planned.includes(s.name)) planned.push(s.name)
   return planned.sort((a, b) => RUN_STEPS.indexOf(a) - RUN_STEPS.indexOf(b))

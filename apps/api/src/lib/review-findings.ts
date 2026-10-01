@@ -40,12 +40,26 @@ import { contractPlaybook } from './playbooks.js'
 export type FindingKind =
   | 'missing_required' | 'deleted' | 'not_allowed_present' | 'modified' | 'added' | 'material_cut'
   | 'position_not_met' | 'position_fallback' | 'needs_approval_position' | 'unreadable_text' | 'drafting' | 'compliance'
+const ALL_KINDS: FindingKind[] = [
+  'missing_required', 'deleted', 'not_allowed_present', 'modified', 'added', 'material_cut',
+  'position_not_met', 'position_fallback', 'needs_approval_position', 'unreadable_text', 'drafting', 'compliance',
+]
 export type Severity = 'low' | 'medium' | 'high' | 'critical'
 export type FindingStatus = 'open' | 'resolved' | 'accepted' | 'exception_requested' | 'exception_approved' | 'exception_declined'
+
+/**
+ * Kinds stored by their own steps (lib/drafting-findings.ts,
+ * lib/compliance-findings.ts), not by the clause review: storing one source's
+ * findings leaves the others' alone.
+ */
+export const OWN_STEP_KINDS: FindingKind[] = ['drafting', 'compliance']
+const REVIEW_KINDS = (k: string) => !OWN_STEP_KINDS.includes(k as FindingKind)
 
 export interface Evidence {
   /** The words in this version that show it. */
   quote?: string
+  /** Other words in this version it is about: a term's definition. */
+  relatedQuote?: string
   /** The words in the baseline (what was deleted, what a change replaced). */
   baselineQuote?: string
   /** Where the quote is in this version's text. */
@@ -615,11 +629,16 @@ export async function computeAndStoreFindings(contractId: string, versionId: str
   }
 }
 
-/** Replace a version's findings with `drafts`, keeping each one's decision; a decision on an earlier version carries while the words are the same. */
-export async function storeFindings(opts: { orgId: string; contractId: string; versionId: string; baselineVersionId: string | null; drafts: FindingDraft[] }): Promise<void> {
+/**
+ * Replace a version's findings of `kinds` with `drafts` (the clause review's
+ * kinds by default), keeping each one's decision; a decision on an earlier
+ * version carries while the words are the same.
+ */
+export async function storeFindings(opts: { orgId: string; contractId: string; versionId: string; baselineVersionId: string | null; drafts: FindingDraft[]; kinds?: FindingKind[] }): Promise<void> {
   const { orgId, contractId, versionId, baselineVersionId, drafts } = opts
+  const kinds = opts.kinds ?? ALL_KINDS.filter(REVIEW_KINDS)
   const [existing, earlier] = await Promise.all([
-    prisma.reviewFinding.findMany({ where: { versionId } }),
+    prisma.reviewFinding.findMany({ where: { versionId, kind: { in: kinds } } }),
     prisma.reviewFinding.findMany({
       where: { contractId, versionId: { not: versionId }, key: { in: drafts.map(d => d.key) }, status: { in: DECIDED }, resolvedById: { not: null } },
       orderBy: { updatedAt: 'desc' },
@@ -629,7 +648,7 @@ export async function storeFindings(opts: { orgId: string; contractId: string; v
   const quoteOf = (e: unknown) => normaliseText(((e as Evidence | null)?.quote ?? (e as Evidence | null)?.baselineQuote ?? ''))
   const keep = new Set(drafts.map(d => d.key))
   await prisma.$transaction(async tx => {
-    await tx.reviewFinding.deleteMany({ where: { versionId, key: { notIn: [...keep] } } })
+    await tx.reviewFinding.deleteMany({ where: { versionId, kind: { in: kinds }, key: { notIn: [...keep] } } })
     for (const d of drafts) {
       const data = {
         baselineVersionId, kind: d.kind, clauseType: d.clauseType, clauseId: d.clauseId, categoryId: d.categoryId, positionId: d.positionId,

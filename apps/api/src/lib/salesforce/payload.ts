@@ -4,9 +4,12 @@
  * value, counterparty, the deal it belongs to and a link back.
  *
  * `contractSyncPayload` is the one function that decides it. Stage and turn
- * come from the contract's status today. docs/41 Part 18 adds a stored stage
- * and turn to the contract; when a contract carries them (`stage`, `turn`,
- * `waitingSince`), they win, and nothing else here needs to change.
+ * come from the contract's status today, with what the core records about
+ * it (docs/41 P0.6, P0.10): who an approval waits on, by name, and since when
+ * the status stands (its last CONTRACT_STATUS_CHANGED event). docs/41 Part 18
+ * adds a stored stage and turn to the contract; when a contract carries them
+ * (`stage`, `turn`, `waitingSince`), they win, and nothing else here needs to
+ * change.
  */
 import { CONTRACT_EXTERNAL_ID } from './client.js'
 
@@ -25,8 +28,10 @@ export interface SyncContract {
   updatedAt?: Date | string | null
   counterparty?: { crmId: string | null } | null
   owner?: { name: string | null } | null
-  /** Approvals on the current round: decided-for and total steps. */
-  approvals?: { approved: number; total: number } | null
+  /** Approvals on the current round: decided-for and total steps, and who the current step waits on. */
+  approvals?: { approved: number; total: number; waitingOn?: string[] } | null
+  /** docs/41 P0.10 — when the status last changed (the latest status-change event). */
+  statusSince?: Date | string | null
   /** docs/41 Part 18 — a stored stage and turn, once the core branch adds them. */
   stage?: string | null
   turn?: string | null
@@ -69,7 +74,12 @@ export function turnFor(contract: SyncContract): string | null {
     case 'PENDING_REVIEW':
     case 'REJECTED':          return `Legal${owner}`
     case 'UNDER_NEGOTIATION': return `Legal or counterparty${owner}`
-    case 'PENDING_APPROVAL':  return contract.approvals ? `Approvers (${contract.approvals.approved} of ${contract.approvals.total})` : 'Approvers'
+    case 'PENDING_APPROVAL': {
+      const a = contract.approvals
+      if (!a) return 'Approvers'
+      const who = a.waitingOn?.length ? `: ${a.waitingOn.slice(0, 3).join(', ')}${a.waitingOn.length > 3 ? ` and ${a.waitingOn.length - 3} more` : ''}` : ''
+      return `Approvers${who} (${a.approved} of ${a.total})`
+    }
     case 'APPROVED':          return `Legal${owner}: send for signature`
     case 'PENDING_SIGNATURE': return 'Signers'
     default:                  return null
@@ -80,6 +90,12 @@ const day = (d: Date | string | null | undefined): string | null => {
   if (!d) return null
   const date = d instanceof Date ? d : new Date(d)
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10)
+}
+
+const isoOrNull = (d: Date | string | null | undefined): string | null => {
+  if (!d) return null
+  const date = d instanceof Date ? d : new Date(d)
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
 const num = (v: SyncContract['value']): number | null => {
@@ -115,7 +131,7 @@ export function contractSyncPayload(contract: SyncContract, now: Date = new Date
     DL_Status__c:           contract.status,
     DL_Stage__c:            stageFor(contract),
     DL_Waiting_On__c:       turnFor(contract),
-    DL_Waiting_Since__c:    contract.waitingSince ? new Date(contract.waitingSince).toISOString() : null,
+    DL_Waiting_Since__c:    isoOrNull(contract.waitingSince ?? contract.statusSince),
     DL_Approvals__c:        contract.approvals ? `${contract.approvals.approved} of ${contract.approvals.total}` : null,
     DL_Effective_Date__c:   day(contract.effectiveDate),
     DL_Expiry_Date__c:      day(contract.expiryDate),

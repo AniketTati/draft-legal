@@ -40,7 +40,7 @@ import { ReviewPanel } from '@/components/contracts/review/ReviewPanel'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
-import { DefinedTermsRailSection } from '@/components/contracts/DefinedTermsRailSection'
+import { DefinedTermsGlossary, useDefinedTerms } from '@/components/contracts/DefinedTermsGlossary'
 import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
 import { RedlinePanel } from '@/components/contracts/RedlinePanel'
@@ -730,7 +730,7 @@ export function ContractDetailPage() {
   }, [highlightSection])
   const canvasEditorRef = useRef<import('@tiptap/react').Editor | null>(null)
   // Mirror the ref into state so rail sections that need the editor
-  // (P6.4 DefinedTermsRailSection, P6.3 BubbleAiPopover) re-render
+  // (the defined-terms glossary, P6.3 BubbleAiPopover) re-render
   // when the editor remounts on Edit-mode toggle.
   const [canvasEditor, setCanvasEditor] = useState<import('@tiptap/react').Editor | null>(null)
   const dirtyHtmlRef = useRef<string | null>(null)
@@ -939,6 +939,10 @@ export function ContractDetailPage() {
     const moved = place && list.find(c => c.sortOrder === place.sortOrder && c.clauseType === place.clauseType)
     if (moved) setFocusedClauseId(moved.id)
   }, [focusedClauseId, clausesData])
+
+  // docs/41 Part 10 — the canvas shows a defined term's definition on hover,
+  // whether or not the Review panel's glossary is open.
+  useDefinedTerms(id, contract?.currentVersionId, canvasEditor)
 
   // Phase 06 — this contract's approval. docs/41 P0.6 — one read, from the
   // contract (GET /contracts/:id/approval): the latest request with its steps,
@@ -4145,7 +4149,10 @@ export function ContractDetailPage() {
             /contracts/:id/review. It replaces the separate playbook review
             and playbook redline sections, which used two engines that could
             disagree. "Fix all fixable" stages its rewrites in
-            contract.metadata, which the 4s poll above watches. */}
+            contract.metadata, which the 4s poll above watches. docs/41
+            Parts 9, 10 — compliance gaps and drafting problems are groups
+            of it too, with the defined-terms glossary under Drafting (it
+            replaces the separate Drafting section). */}
         {id && (
           <ReviewPanel
             contractId={id}
@@ -4154,25 +4161,26 @@ export function ContractDetailPage() {
             onJumpToClause={jumpToClause}
             onAnalyse={canChangeStatus && analysis.canAnalyse ? () => analyze.mutate() : undefined}
             analysing={analyze.isPending}
+            onShowText={text => { revealInCanvas(canvasEditorRef.current, text) }}
+            definedTerms={<DefinedTermsGlossary contractId={id} versionId={contract.currentVersionId} editor={canvasEditor} canEdit={canEdit} />}
           />
         )}
 
-        {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
-            checks with per-framework status, grounded quotes, and
-            remediation suggestions. Empty state offers a run button. */}
+        {/* Phase 10 — Compliance Agent; docs/41 Part 9 — which frameworks
+            apply and why (facts with quotes, the one question), and each
+            framework's checks. The gaps are also findings in the Review
+            panel's Compliance group, where the recommendation weighs them. */}
         {id && (
           <ComplianceRailSection
             contractId={id}
             canEdit={canEdit}
-            onAfterCheck={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
+            onAfterCheck={() => {
+              qc.invalidateQueries({ queryKey: ['contract', id] })
+              // Its gaps are review findings too.
+              qc.invalidateQueries({ queryKey: ['contract-review', id] })
+            }}
           />
         )}
-
-        {/* P6.4 — Defined-term guard. Surfaces canonical defined
-            terms + any inconsistent author-typed variants + an
-            "Apply defined term everywhere" action. Only renders when
-            the doc has ≥1 defined term pattern. */}
-        <DefinedTermsRailSection contractId={id} versionId={contract.currentVersionId} editor={canvasEditor} canEdit={canEdit} />
 
         {/* P5.3 — Renewal advisor. Shows inside the 180-day expiry
             window; offers an LLM-backed recommendation + decision

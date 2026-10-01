@@ -23,6 +23,7 @@ export const RECOMMENDATION_TEXT: Record<RecommendationLabel, { label: string; d
 export type ReviewStatus =
   | 'standard' | 'matches_preferred' | 'fallback' | 'needs_approval' | 'not_met'
   | 'changed' | 'added' | 'deleted' | 'unchanged' | 'not_detected' | 'not_covered' | 'not_allowed' | 'unreadable' | 'accepted' | 'resolved'
+  | 'drafting' | 'compliance_gap'
 
 /**
  * Each status's label and definition. `{v}` is the baseline version
@@ -44,6 +45,8 @@ export const REVIEW_STATUS_TEXT: Record<ReviewStatus, { label: string; definitio
   unreadable: { label: "Doesn't read as text", definition: 'Text added since {v} is not made of words (a check on the letters, not AI). It may be typing by mistake.' },
   accepted: { label: 'Accepted as is', definition: 'A person looked at this and accepted it as it is.' },
   resolved: { label: 'Resolved', definition: 'This was dealt with.' },
+  drafting: { label: 'Drafting', definition: 'How the contract is written: a term used but never defined, defined twice or not used, used before its definition, or written in another case. Found by a check on the words, not AI. It does not hold back approval.' },
+  compliance_gap: { label: 'Compliance gap', definition: 'A requirement of a compliance framework that applies to this contract (see Compliance), which AI found missing, partly met or at risk in the words it read. A high one needs a person to look before approval.' },
 }
 
 /** A label or definition with its placeholders filled. */

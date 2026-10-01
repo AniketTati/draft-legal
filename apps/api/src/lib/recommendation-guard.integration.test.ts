@@ -84,7 +84,8 @@ describe('deleted governing law', () => {
     res = (await checks(id)).json()
     expect(res.reasons.map((r: { code: string }) => r.code)).toEqual(['required_deleted'])
     // docs/41 P1 — stored as review findings of v2, measured against v1.
-    const stored = await prisma.reviewFinding.findMany({ where: { versionId: v2.id } })
+    // (Its defined-term problems are stored beside them, as drafting findings.)
+    const stored = await prisma.reviewFinding.findMany({ where: { versionId: v2.id, kind: { not: 'drafting' } } })
     expect(stored.map(f => ({ kind: f.kind, baselineVersionId: f.baselineVersionId }))).toEqual([{ kind: 'deleted', baselineVersionId: v1.id }])
 
     // And the next analysis still remembers it while the clause stays gone.
