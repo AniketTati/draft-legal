@@ -69,9 +69,11 @@ import { inboundEmailRoutes } from './routes/inbound-email.js'
 import { marketingRoutes } from './routes/marketing.js'
 import { telemetryRoutes } from './routes/telemetry.js'
 import { slackRoutes } from './routes/slack.js'
-// docs/41 Parts 17 and 20 — Salesforce, REST hooks
+// docs/41 Parts 17 and 20 — Salesforce, REST hooks, SSO and SCIM
 import { salesforceAdminRoutes, salesforcePublicRoutes, contractIntegrationConflictRoutes, embedRoutes } from './routes/salesforce.js'
 import { hookRoutes } from './routes/hooks.js'
+import { authSsoRoutes, adminSsoRoutes } from './routes/sso.js'
+import { scimRoutes } from './routes/scim.js'
 import { syncOnAuditEvent } from './lib/integrations/sync-queue.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
@@ -320,13 +322,17 @@ export async function buildApp() {
   // by the org's Slack signing secret rather than a user JWT).
   await app.register(slackRoutes,          { prefix: '/api/v1/slack' })
 
-  // docs/41 Parts 17 and 20 — the integration layer: Salesforce (admin, its
-  // own API-key calls, the embedded preview) and Zapier REST hooks.
+  // docs/41 Parts 17 and 20 — the integration layer. Salesforce (admin, its
+  // own API-key calls, the embedded preview), Zapier REST hooks, OIDC sign-in
+  // and SCIM provisioning (authorised by the org's SCIM token).
   await app.register(salesforceAdminRoutes,  { prefix: '/api/v1/admin/integrations/salesforce' })
   await app.register(contractIntegrationConflictRoutes, { prefix: '/api/v1/contracts' })
   await app.register(salesforcePublicRoutes, { prefix: '/api/v1/integrations/salesforce' })
   await app.register(embedRoutes,            { prefix: '/api/v1/embed' })
   await app.register(hookRoutes,             { prefix: '/api/v1/hooks' })
+  await app.register(authSsoRoutes,          { prefix: '/api/v1/auth/sso' })
+  await app.register(adminSsoRoutes,         { prefix: '/api/v1/admin/sso' })
+  await app.register(scimRoutes,             { prefix: '/scim/v2' })
   afterAuditEvent(syncOnAuditEvent)
 
   // Wave 1.1 — fail closed at boot if JWT_SECRET / PORTAL_JWT_SECRET are
