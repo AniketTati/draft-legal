@@ -69,8 +69,9 @@ import { inboundEmailRoutes } from './routes/inbound-email.js'
 import { marketingRoutes } from './routes/marketing.js'
 import { telemetryRoutes } from './routes/telemetry.js'
 import { slackRoutes } from './routes/slack.js'
-// docs/41 Part 17 — Salesforce
+// docs/41 Parts 17 and 20 — Salesforce, REST hooks
 import { salesforceAdminRoutes, salesforcePublicRoutes, contractIntegrationConflictRoutes, embedRoutes } from './routes/salesforce.js'
+import { hookRoutes } from './routes/hooks.js'
 import { syncOnAuditEvent } from './lib/integrations/sync-queue.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
@@ -320,11 +321,12 @@ export async function buildApp() {
   await app.register(slackRoutes,          { prefix: '/api/v1/slack' })
 
   // docs/41 Parts 17 and 20 — the integration layer: Salesforce (admin, its
-  // own API-key calls, the embedded preview).
+  // own API-key calls, the embedded preview) and Zapier REST hooks.
   await app.register(salesforceAdminRoutes,  { prefix: '/api/v1/admin/integrations/salesforce' })
   await app.register(contractIntegrationConflictRoutes, { prefix: '/api/v1/contracts' })
   await app.register(salesforcePublicRoutes, { prefix: '/api/v1/integrations/salesforce' })
   await app.register(embedRoutes,            { prefix: '/api/v1/embed' })
+  await app.register(hookRoutes,             { prefix: '/api/v1/hooks' })
   afterAuditEvent(syncOnAuditEvent)
 
   // Wave 1.1 — fail closed at boot if JWT_SECRET / PORTAL_JWT_SECRET are
