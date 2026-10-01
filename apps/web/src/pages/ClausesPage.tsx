@@ -18,6 +18,8 @@ import { StatusPill } from '@/components/ui/status-pill'
 import type { ClauseLibraryItem, ClauseCategory } from '@clm/types'
 import { cn } from '@/lib/utils'
 import { ClauseFamiliesView } from '@/components/clauses/ClauseFamiliesView'
+import { CategoryApproverField } from '@/components/clauses/CategoryApproverField'
+import { flattenCategories, type ApproverCategory } from '@/lib/clause-approver'
 
 /**
  * A clause row carries its category when the list isn't already filtered to
@@ -450,6 +452,9 @@ export function ClausesPage() {
   }
 
   const flatCategories = categories.flatMap(c => [c, ...(c.children ?? [])]).map(c => ({ id: c.id, name: c.name }))
+  // docs/41 Part 7 — the selected category, with who decides its exceptions.
+  const allCategories = flattenCategories(categories as unknown as ApproverCategory[])
+  const selectedCategory = selectedCategoryId ? allCategories.find(c => c.id === selectedCategoryId) ?? null : null
 
   return (
     <div className="flex h-full">
@@ -497,6 +502,7 @@ export function ClausesPage() {
             />
           ))}
         </div>
+        {selectedCategory && <CategoryApproverField category={selectedCategory} all={allCategories} />}
         </>)}
       </div>
 

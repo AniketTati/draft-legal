@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { reviewQueue, nextPending, isReviewState, type ReviewState } from './review-queue'
+import { reviewQueue, nextPending, isReviewState, DECISION_LABEL, type ReviewState } from './review-queue'
 
 const flagged = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]
 const states = (s: Record<string, ReviewState>) => (id: string) => s[id]
@@ -46,6 +46,14 @@ describe('after a decision the drawer moves to', () => {
   it('nowhere once the queue is done, so the drawer closes', () => {
     expect(nextPending(flagged, states({ a: 'resolved', b: 'rejected', c: 'reviewed' }), 'd')).toBeNull()
   })
+})
+
+it('calls a clause verdict "Not acceptable", never the approver\'s "Reject" (docs/41 Part 4)', () => {
+  expect(DECISION_LABEL.rejected).toBe('Not acceptable')
+  const drawer = readFileSync(join(__dirname, '..', 'components', 'contracts', 'FocusedReviewDrawer.tsx'), 'utf8')
+  expect(drawer).toContain("'Not acceptable'")
+  expect(drawer).not.toMatch(/>\s*Reject\s*</)
+  expect(drawer).not.toMatch(/\/>\s*Reject\b/)
 })
 
 it('knows the four states', () => {

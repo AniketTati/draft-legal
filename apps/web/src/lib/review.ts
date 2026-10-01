@@ -4,7 +4,7 @@
  */
 import type { Meaning } from '@/lib/status'
 
-export type FindingAction = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline'
+export type FindingAction = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline' | 'request_exception'
 
 export interface ReviewFindingView {
   id: string
@@ -18,6 +18,8 @@ export interface ReviewFindingView {
   evidence: { quote?: string; baselineQuote?: string; relatedQuote?: string; sectionRef?: string | null }
   clauseId: string | null
   clauseType: string | null
+  /** The clause category: whose clause approver decides an exception. */
+  categoryId?: string | null
   reviewStatus: string
   label: string
   definition: string
@@ -103,3 +105,43 @@ export function runLine(r: Pick<ContractReview, 'analysis' | 'run' | 'stale' | '
 
 /** The findings a batch rewrite can fix. */
 export const fixable = (fs: ReviewFindingView[]) => fs.filter(f => f.actions.includes('redline'))
+
+// ─── Clause exceptions (docs/41 Part 7) ───────────────────────────────────────
+
+/** One of GET /contracts/:id/approval's `exceptions` (newest first). */
+export interface ExceptionView {
+  id: string
+  findingId: string | null
+  clauseType: string | null
+  title: string
+  status: 'PENDING' | 'APPROVED' | 'DECLINED' | 'RESET' | 'SKIPPED'
+  requestedBy: string | null
+  reason: string | null
+  decidedBy: string | null
+  comment: string | null
+  decidedAt: string | null
+  createdAt: string
+  /** Who a pending exception waits on (a person, or "anyone with the … role"). */
+  waitingFor?: string | null
+}
+
+/** The finding statuses an exception gives it. */
+export const EXCEPTION_STATUSES = ['exception_requested', 'exception_approved', 'exception_declined'] as const
+export const hasException = (f: Pick<ReviewFindingView, 'status'>) => (EXCEPTION_STATUSES as readonly string[]).includes(f.status)
+
+/**
+ * Where a finding's exception stands, in a line, or null when none was asked
+ * for. `waitingFor` is the approver's name when it is known.
+ */
+export function exceptionLine(status: string, ex?: Pick<ExceptionView, 'decidedBy' | 'comment'> | null, waitingFor?: string | null): string | null {
+  const said = (word: string) => `${word}${ex?.decidedBy ? ` by ${ex.decidedBy}` : ''}${ex?.comment ? `: “${ex.comment}”` : ''}`
+  if (status === 'exception_requested') return `Exception requested — waiting for ${waitingFor ?? 'the clause approver'}`
+  if (status === 'exception_approved') return said('Exception approved')
+  if (status === 'exception_declined') return said('Exception declined')
+  return null
+}
+
+/** How an exception's line reads at a glance. */
+export function exceptionMeaning(status: string): Meaning {
+  return status === 'exception_approved' ? 'binding' : status === 'exception_declined' ? 'risk' : 'turn'
+}

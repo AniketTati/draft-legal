@@ -12,7 +12,7 @@
  * Open from: the header [Compare ▾] button, or the History rail
  * section. Esc closes.
  *
- * Wave 2.1 (2026-07): per-change Accept/Reject is now real. Changes are parsed
+ * Wave 2.1 (2026-07): per-change accept / keep original is now real. Changes are parsed
  * from the diff blob (lib/redline.ts), reviewed in the side list or bulk-set,
  * and "Apply as new version" resolves the decisions into merged HTML saved via
  * POST /contracts/:id/html-version. Undecided changes keep the older version.
@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button'
 import { DiffViewer } from './DiffViewer'
 import { extractChanges, resolveDiff, type RedlineDecision, type RedlineChange } from '@/lib/redline'
 import { sanitizeHtml } from '@/lib/sanitize'
-import { X, ChevronDown, Loader2, User, Clock, Check, XCircle, Download } from 'lucide-react'
+import { X, ChevronDown, Loader2, User, Clock, Check, Undo2, Download } from 'lucide-react'
 
 interface VersionMini {
   id:            string
@@ -111,7 +111,9 @@ export function CompareMode({
     meta: { errorHandled: true },
     mutationFn: async () => {
       const mergedHtml = sanitizeHtml(resolveDiff(diff!.diffHtml, decisions, 'reject'))
-      const note = `Redline merge: ${acceptedCount} accepted, ${rejectedCount} rejected vs v${newer?.versionNumber ?? '?'}`
+      // docs/41 Part 4: this note is what people saw and read as an approval
+      // "Reject". Say what happened to the changes, in the words of the buttons.
+      const note = `Merged changes from v${newer?.versionNumber ?? '?'}: ${acceptedCount} accepted, ${rejectedCount} kept original`
       const r = await api.post(`/contracts/${contractId}/html-version`, { htmlContent: mergedHtml, changeNote: note })
       return r.data
     },
@@ -237,28 +239,28 @@ export function CompareMode({
               <div className="h-3 w-px bg-paper-300" aria-hidden />
               <span className="text-ink-500">
                 <span className="text-brand-700 font-medium">{acceptedCount}</span> accepted ·{' '}
-                <span className="text-risk-700 font-medium">{rejectedCount}</span> rejected ·{' '}
+                <span className="text-ink-700 font-medium">{rejectedCount}</span> kept original ·{' '}
                 <span className="text-ink-500 font-medium">{pendingCount}</span> pending
               </span>
             </>
           )}
           <div className="ml-auto flex items-center gap-2">
-            {/* Accept/reject a redline IS the approval surface, so brand and
-                risk are earned here — but they stay outlined so the ink
-                "Apply as new version" remains the one primary. */}
+            {/* docs/41 Part 4: choosing between their text and ours is not an
+                approval decision, so neither choice is green or red, and
+                neither is called "Reject" (that word belongs to approvers).
+                Both stay outlined so the ink "Apply as new version" remains
+                the one primary. */}
             <Button
-              size="sm" variant="outline"
-              className="gap-1 text-brand-700 border-brand-200 hover:bg-brand-50"
+              size="sm" variant="outline" className="gap-1"
               onClick={() => setAll('accept')} disabled={changes.length === 0}
             >
-              <Check className="size-3.5" /> Accept all
+              <Check className="size-3.5" /> Accept all changes
             </Button>
             <Button
-              size="sm" variant="danger"
-              className="gap-1"
+              size="sm" variant="outline" className="gap-1"
               onClick={() => setAll('reject')} disabled={changes.length === 0}
             >
-              <XCircle className="size-3.5" /> Reject all
+              <Undo2 className="size-3.5" /> Keep all originals
             </Button>
             {/* Phase 4 — the same two versions, as a Word file with native
                 tracked changes. This is the handoff to the counterparty:
@@ -415,7 +417,7 @@ function Attribution({
   )
 }
 
-function ChangesList({
+export function ChangesList({
   changes,
   totalChanges,
   decisions,
@@ -454,27 +456,33 @@ function ChangesList({
                   </p>
                 </div>
                 <div className="mt-1.5 flex items-center gap-1.5">
+                  {/* Neutral on purpose (docs/41 Part 4): the chosen one is
+                      filled ink, the other outlined; no green/red verdict. */}
                   <button
+                    type="button"
                     onClick={() => onDecide(c.id, 'accept')}
+                    aria-pressed={decision === 'accept'}
                     className={cn(
                       'inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[11px] font-medium border',
                       decision === 'accept'
-                        ? 'bg-brand-700 text-white border-brand-700'
-                        : 'text-brand-700 border-brand-200 hover:bg-brand-50',
+                        ? 'bg-ink-950 text-white border-ink-950'
+                        : 'text-ink-700 border-paper-300 hover:bg-paper-100',
                     )}
                   >
-                    <Check className="size-3" /> Accept
+                    <Check className="size-3" /> Accept change
                   </button>
                   <button
+                    type="button"
                     onClick={() => onDecide(c.id, 'reject')}
+                    aria-pressed={decision === 'reject'}
                     className={cn(
                       'inline-flex items-center gap-1 rounded-chip px-2 py-0.5 text-[11px] font-medium border',
                       decision === 'reject'
-                        ? 'bg-risk-600 text-white border-risk-600'
-                        : 'text-risk-700 border-risk-200 hover:bg-risk-50',
+                        ? 'bg-ink-950 text-white border-ink-950'
+                        : 'text-ink-700 border-paper-300 hover:bg-paper-100',
                     )}
                   >
-                    <XCircle className="size-3" /> Reject
+                    <Undo2 className="size-3" /> Keep original
                   </button>
                   {!decision && <span className="text-[10px] text-ink-400">pending</span>}
                 </div>

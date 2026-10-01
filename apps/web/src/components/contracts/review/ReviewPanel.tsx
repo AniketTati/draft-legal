@@ -14,19 +14,27 @@
  *     the words before a change) and what can be done about it, in place;
  *   - docs/41 Parts 9, 10 — the gaps of the compliance frameworks that apply
  *     (a high one holds the recommendation at Review), and the drafting
- *     problems (defined terms), which never hold it back, with the glossary.
+ *     problems (defined terms), which never hold it back, with the glossary;
+ *   - docs/41 Part 7 — a finding outside the playbook can be sent to the
+ *     category's clause approver as an exception, with a reason; the finding
+ *     then says who it is waiting for, and later what they decided.
  * Every status label explains itself on hover.
  */
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
-import { serverMessage } from '@/lib/approval-keys'
+import { approvalKeys, serverMessage } from '@/lib/approval-keys'
+import { ReasonDialog } from '@/components/common/ReasonDialog'
+import { toast } from '@/components/common/Toaster'
 import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { AssistMark } from '@/components/ui/assist'
 import { MEANING_CLASS } from '@/lib/status'
 import { cn } from '@/lib/utils'
-import { RECOMMENDATION_MEANING, statusMeaning, runLine, fixable, type ContractReview, type ReviewFindingView, type ReviewClauseView } from '@/lib/review'
+import {
+  RECOMMENDATION_MEANING, statusMeaning, runLine, fixable, hasException, exceptionLine, exceptionMeaning,
+  type ContractReview, type ReviewFindingView, type ReviewClauseView, type ExceptionView,
+} from '@/lib/review'
 import { FixPreview, type StagedFixes } from './FixPreview'
 import { BookOpen, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 
@@ -35,6 +43,45 @@ const SEVERITY_CLS: Record<string, string> = {
   high: 'text-risk-700 bg-risk-50 border-risk-200',
   medium: 'text-attention-700 bg-attention-50 border-attention-200',
   low: 'text-ink-500 bg-paper-50 border-paper-200',
+}
+
+/** Where a finding's exception stands: the same chip, with the reason asked on hover. */
+function ExceptionChip({ status, line, reason }: { status: string; line: string; reason?: string | null }) {
+  const m = MEANING_CLASS[exceptionMeaning(status)]
+  return (
+    <span title={reason ? `Reason given: ${reason}` : undefined} className="inline-flex items-center gap-1 text-[10px] border border-paper-200 bg-paper-100 text-ink-700 rounded-chip px-1.5 py-px" data-exception={status}>
+      <span className={cn('size-1.5 rounded-full shrink-0', m.dot)} />
+      {line}
+    </span>
+  )
+}
+
+/**
+ * docs/41 Part 7 — what each finding's exception line says: who a pending one
+ * waits for, and later what they decided (who, and their comment), from the
+ * contract's approval. A finding of a later version carries its exception
+ * while the words are the same, so it is matched by its clause too.
+ */
+function useExceptionLines(contractId: string, findings: ReviewFindingView[]): Map<string, { line: string; reason: string | null }> {
+  const any = findings.some(hasException)
+  const approval = useQuery<{ exceptions?: ExceptionView[] }>({
+    queryKey: approvalKeys.contract(contractId),
+    queryFn: () => api.get(`/contracts/${contractId}/approval`).then(r => r.data),
+    enabled: any,
+    staleTime: 10_000,
+  })
+  const out = new Map<string, { line: string; reason: string | null }>()
+  if (!any) return out
+  for (const f of findings) {
+    if (!hasException(f)) continue
+    // Newest first, so the first is the one that set this status.
+    const ex = approval.data?.exceptions?.find(e => e.findingId === f.id)
+      ?? approval.data?.exceptions?.find(e => e.status !== 'RESET' && e.clauseType === f.clauseType && e.title === f.title)
+      ?? null
+    const line = exceptionLine(f.status, ex, ex?.waitingFor ?? null)
+    if (line) out.set(f.id, { line, reason: ex?.reason ?? null })
+  }
+  return out
 }
 
 /** A status chip whose definition is its tooltip. */
@@ -109,6 +156,7 @@ export function ReviewPanel({
   const stagedHere = staged && staged.versionId === r?.versionId && fixStatus === 'DONE' ? staged : null
   const line = r ? runLine(r) : null
   const batch = r ? fixable(needs) : []
+  const exceptions = useExceptionLines(contractId, r ? [...needs, ...missing, ...compliance, ...r.groups.accepted] : [])
 
   return (
     <RailSection title="Review" defaultOpen count={open || null}>
@@ -176,16 +224,16 @@ export function ReviewPanel({
           {stagedHere && <FixPreview contractId={contractId} staged={stagedHere} onApplied={refresh} />}
 
           <Group title="Needs attention" findings={needs} empty={r.analysis.kind === 'done' ? 'Nothing needs attention.' : null}
-            contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onChanged={refresh} />
+            contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onChanged={refresh} exceptions={exceptions} />
           {missing.length > 0 && (
-            <Group title="Not detected" findings={missing} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onChanged={refresh} />
+            <Group title="Not detected" findings={missing} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onChanged={refresh} exceptions={exceptions} />
           )}
           {compliance.length > 0 && (
-            <Group title="Compliance" findings={compliance} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} />
+            <Group title="Compliance" findings={compliance} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} exceptions={exceptions} />
           )}
           {(drafting.length > 0 || definedTerms) && (
             <div data-testid="review-drafting">
-              <Group title="Drafting" findings={drafting} empty={r.analysis.kind === 'done' ? 'No problems with defined terms.' : null} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} />
+              <Group title="Drafting" findings={drafting} empty={r.analysis.kind === 'done' ? 'No problems with defined terms.' : null} contractId={contractId} canEdit={canEdit && r.isCurrent} onJump={onJumpToClause} onShowText={onShowText} onChanged={refresh} exceptions={exceptions} />
               {definedTerms && <div className={drafting.length ? 'mt-1.5' : ''}>{definedTerms}</div>}
             </div>
           )}
@@ -203,7 +251,10 @@ export function ReviewPanel({
                     <li key={f.id} className="text-[10.5px] text-ink-700 flex items-center gap-1.5 flex-wrap">
                       <StatusChip reviewStatus={f.reviewStatus} label={f.label} definition={f.definition} />
                       <span>{f.title}</span>
-                      {f.resolutionNote && <span className="text-ink-500">— {f.resolutionNote}</span>}
+                      {/* An exception's decision says it all; its note repeats the comment. */}
+                      {exceptions.get(f.id)
+                        ? <ExceptionChip status={f.status} line={exceptions.get(f.id)!.line} reason={exceptions.get(f.id)!.reason} />
+                        : f.resolutionNote && <span className="text-ink-500">— {f.resolutionNote}</span>}
                       {canEdit && r.isCurrent && f.actions.includes('reopen') && <ReopenButton contractId={contractId} findingId={f.id} onChanged={refresh} />}
                     </li>
                   ))}
@@ -233,9 +284,12 @@ function ClauseRow({ c, onJump }: { c: ReviewClauseView; onJump: (id: string) =>
   )
 }
 
-function Group({ title, findings, empty, contractId, canEdit, onJump, onShowText, onChanged }: {
+type ExceptionLines = Map<string, { line: string; reason: string | null }>
+
+function Group({ title, findings, empty, contractId, canEdit, onJump, onShowText, onChanged, exceptions }: {
   title: string; findings: ReviewFindingView[]; empty?: string | null
   contractId: string; canEdit: boolean; onJump: (id: string) => void; onShowText?: (text: string) => void; onChanged: () => void
+  exceptions?: ExceptionLines
 }) {
   if (!findings.length && !empty) return null
   return (
@@ -243,7 +297,7 @@ function Group({ title, findings, empty, contractId, canEdit, onJump, onShowText
       <div className="text-[11px] font-medium text-ink-950 mb-1">{title} {findings.length > 0 && <span className="text-ink-500 tabular-nums">({findings.length})</span>}</div>
       {findings.length === 0 ? <p className="text-[11px] text-muted-foreground">{empty}</p> : (
         <ol className="space-y-1.5" data-testid={`review-group-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-          {findings.map(f => <FindingCard key={f.id} f={f} contractId={contractId} canEdit={canEdit} onJump={onJump} onShowText={onShowText} onChanged={onChanged} />)}
+          {findings.map(f => <FindingCard key={f.id} f={f} contractId={contractId} canEdit={canEdit} onJump={onJump} onShowText={onShowText} onChanged={onChanged} exception={exceptions?.get(f.id) ?? null} />)}
         </ol>
       )}
     </div>
@@ -253,9 +307,12 @@ function Group({ title, findings, empty, contractId, canEdit, onJump, onShowText
 /** What the second quote of a finding is, by kind. */
 const RELATED_LABEL: Record<string, string> = { drafting: 'Its definition', compliance: 'Why it applies' }
 
-function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged }: { f: ReviewFindingView; contractId: string; canEdit: boolean; onJump: (id: string) => void; onShowText?: (text: string) => void; onChanged: () => void }) {
+function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, exception }: {
+  f: ReviewFindingView; contractId: string; canEdit: boolean; onJump: (id: string) => void; onShowText?: (text: string) => void; onChanged: () => void
+  exception?: { line: string; reason: string | null } | null
+}) {
   const qc = useQueryClient()
-  const [mode, setMode] = useState<null | 'accept' | 'tag'>(null)
+  const [mode, setMode] = useState<null | 'accept' | 'tag' | 'exception'>(null)
   const [text, setText] = useState('')
   const [proposal, setProposal] = useState<{ originalText: string; proposedText: string; rationale: string } | null>(null)
   const afterVersion = () => {
@@ -282,14 +339,35 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged }: 
       else onChanged()
     },
   })
+  // docs/41 Part 7 — an exception goes to the category's clause approver as
+  // an approval step. Its refusals (no approver named yet, already asked,
+  // an older version) are the server's words, shown in the dialog.
+  const askException = useMutation({
+    meta: { errorHandled: true },
+    mutationFn: (reason: string) =>
+      api.post<{ stepId: string; approverIds: string[] }>(`/contracts/${contractId}/findings/${f.id}/exception`, { reason }).then(r => r.data),
+    onSuccess: () => {
+      setMode(null)
+      qc.invalidateQueries({ queryKey: ['contract-review', contractId] })
+      qc.invalidateQueries({ queryKey: approvalKeys.contract(contractId) })
+      qc.invalidateQueries({ queryKey: approvalKeys.inbox })
+      qc.invalidateQueries({ queryKey: approvalKeys.stage(contractId) })
+      toast.success('Exception requested')
+    },
+    onError: (e: unknown) => {
+      // Asked already, or the version moved on: what the panel shows is stale.
+      if ((e as { response?: { status?: number } })?.response?.status === 409) onChanged()
+    },
+  })
   const has = (x: string) => canEdit && f.actions.includes(x as never)
-  const busy = act.isPending
+  const busy = act.isPending || askException.isPending
 
   return (
     <li className="text-[10.5px] border border-border rounded-md bg-card/60 px-2 py-1.5" data-kind={f.kind} data-testid={`finding-${f.id}`}>
       <div className="flex items-center gap-1.5 flex-wrap">
         <span className={`text-[9px] uppercase tracking-wider border rounded-chip px-1 ${SEVERITY_CLS[f.severity] ?? SEVERITY_CLS.low}`}>{f.severity}</span>
         <StatusChip reviewStatus={f.reviewStatus} label={f.label} definition={f.definition} />
+        {exception && <ExceptionChip status={f.status} line={exception.line} reason={exception.reason} />}
         {f.source === 'llm' && <span className="inline-flex items-center gap-1 text-[9.5px] text-assist-700" title={f.kind === 'compliance' ? 'Checked by AI against the framework’s requirements, with the words it relied on.' : "Judged by AI against your playbook's positions, with the words it relied on."}><AssistMark className="size-[5px]" />AI</span>}
       </div>
       <div className="font-medium text-ink-950 mt-0.5">
@@ -347,11 +425,30 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged }: 
           {has('insert_standard') && <button type="button" className="underline text-ink-950" disabled={busy} onClick={() => act.mutate('insert')}>Insert standard language</button>}
           {has('redline') && <button type="button" className="underline text-assist-700 inline-flex items-center gap-1" disabled={busy} onClick={() => act.mutate('redline')}><AssistMark className="size-[5px]" />Redline to your position</button>}
           {has('accept') && <button type="button" className="underline text-ink-700" onClick={() => setMode('accept')}>Accept as is</button>}
+          {has('request_exception') && (
+            <button type="button" className="underline text-ink-700" disabled={busy} onClick={() => { askException.reset(); setMode('exception') }} data-testid={`finding-request-exception-${f.id}`}>
+              {f.status === 'exception_declined' ? 'Request exception again' : 'Request exception'}
+            </button>
+          )}
           {has('resolve') && <button type="button" className="underline text-ink-700" disabled={busy} onClick={() => act.mutate('resolve')}>Mark resolved</button>}
           {busy && <Loader2 className="size-3 animate-spin text-ink-500" />}
         </div>
       )}
       {act.isError && <p className="mt-1 text-[11px] text-risk-700">{serverMessage(act.error)}</p>}
+      <ReasonDialog
+        open={mode === 'exception'}
+        title="Request exception"
+        intro={<>“{f.title}” goes to the person who decides exceptions for this kind of clause. They see your reason.</>}
+        label="Why should this be allowed?"
+        placeholder="For example: the customer is a public body and can't accept a cap above fees."
+        confirmLabel="Request exception"
+        pendingLabel="Requesting…"
+        pending={askException.isPending}
+        error={askException.isError ? serverMessage(askException.error) : null}
+        onConfirm={reason => askException.mutate(reason)}
+        onClose={() => setMode(null)}
+        testId={`finding-exception-${f.id}`}
+      />
     </li>
   )
 }

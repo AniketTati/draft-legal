@@ -34,7 +34,7 @@ const BASE_TABS = [
   { value: 'MORE_INFO_NEEDED', label: 'Needs info' },
   { value: 'ACCEPTED',         label: 'Accepted' },
   { value: 'COMPLETED',        label: 'Completed' },
-  { value: 'REJECTED',         label: 'Rejected' },
+  { value: 'REJECTED',         label: 'Declined' },
 ]
 
 /** Colour comes from lib/status; the wording stays as this list has spelled it. */
@@ -42,7 +42,8 @@ const STATUS_LABEL: Record<string, string> = {
   SUBMITTED:        'Submitted',
   IN_REVIEW:        'In Review',
   ACCEPTED:         'Accepted',
-  REJECTED:         'Rejected',
+  // docs/41 Part 4: requests are declined, with a reason.
+  REJECTED:         'Declined',
   MORE_INFO_NEEDED: 'More Info',
   COMPLETED:        'Completed',
 }
@@ -323,6 +324,12 @@ export function RequestsPage() {
                         {pri.label} priority
                       </span>
                     </div>
+                    {/* The requester's first question about a declined request is why. */}
+                    {req.status === 'REJECTED' && req.rejectionReason && (
+                      <p className="text-[11px] text-ink-500 mt-0.5 truncate" data-testid={`request-declined-${req.id}`}>
+                        Declined: {req.rejectionReason}
+                      </p>
+                    )}
                   </div>
 
                   {/* Badges — one colour on the row, and it is the status. */}

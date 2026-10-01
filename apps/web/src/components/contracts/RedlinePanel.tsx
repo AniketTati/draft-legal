@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
-  CheckCircle2, XCircle, RefreshCw, AlertTriangle, Loader2,
+  CheckCircle2, Undo2, RefreshCw, AlertTriangle, Loader2,
   ChevronDown, ChevronRight, Copy, Check, Sparkles, Shield,
 } from 'lucide-react'
 
@@ -85,9 +85,12 @@ const ALIGNMENT_LABEL: Record<string, string> = {
   not_covered: 'not covered by your playbook',
 }
 
+// docs/41 Part 4: `reject` here means "keep our text instead of theirs", a
+// choice about one change, not a verdict. "Reject" is the approver's word, so
+// it reads as the Compare buttons do and is not red.
 const RECOMMENDATION_CONFIG = {
-  accept:  { icon: CheckCircle2, color: 'text-brand-700',     label: 'Accept',  bg: 'bg-brand-50'     },
-  reject:  { icon: XCircle,      color: 'text-risk-600',      label: 'Reject',  bg: 'bg-risk-50'      },
+  accept:  { icon: CheckCircle2, color: 'text-brand-700',     label: 'Accept change', bg: 'bg-brand-50'     },
+  reject:  { icon: Undo2,        color: 'text-ink-700',       label: 'Keep original', bg: 'bg-paper-100'    },
   counter: { icon: RefreshCw,    color: 'text-attention-700', label: 'Counter', bg: 'bg-attention-50' },
 }
 
@@ -304,11 +307,11 @@ export function RedlinePanel({
             <div className="text-right flex-shrink-0">
               <span className={`text-dense font-semibold px-2 py-1 rounded-md ${
                 analysis.recommendedAction === 'accept_all' ? 'bg-brand-50 text-brand-700' :
-                analysis.recommendedAction === 'reject'    ? 'bg-risk-50 text-risk-700' :
+                analysis.recommendedAction === 'reject'    ? 'bg-paper-100 text-ink-700' :
                 'bg-attention-50 text-attention-700'
               }`}>
-                {analysis.recommendedAction === 'accept_all' ? 'Accept all'
-                  : analysis.recommendedAction === 'reject'   ? 'Reject'
+                {analysis.recommendedAction === 'accept_all' ? 'Accept all changes'
+                  : analysis.recommendedAction === 'reject'   ? 'Keep all originals'
                   : 'Counter required'}
               </span>
               <p className="text-dense text-ink-400 mt-1 tabular-nums">{Math.round(analysis.confidence * 100)}% confidence</p>
@@ -317,7 +320,7 @@ export function RedlinePanel({
           <div className="flex items-center gap-4 text-dense tabular-nums">
             <span className="text-brand-700 font-medium">{acceptN} accept</span>
             <span className="text-attention-700 font-medium">{counterN} counter</span>
-            <span className="text-risk-700 font-medium">{rejectN} reject</span>
+            <span className="text-ink-700 font-medium">{rejectN} keep original</span>
           </div>
         </div>
       )}

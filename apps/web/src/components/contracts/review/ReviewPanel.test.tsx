@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ReviewPanel } from './ReviewPanel'
-import type { ContractReview } from '@/lib/review'
+import type { ContractReview, ReviewFindingView } from '@/lib/review'
 
 const REVIEW: ContractReview = {
   versionId: 'v2', versionNumber: 2, isCurrent: true,
@@ -107,6 +107,29 @@ describe('ReviewPanel', () => {
   it('says so when no defined-term problems were found', () => {
     const html = render(REVIEW, true, <div>glossary</div>)
     expect(html).toContain('No problems with defined terms.')
+  })
+
+  it('offers "Request exception" where the API does, and says who a requested one waits for (docs/41 Part 7)', () => {
+    const asking = { ...REVIEW.groups.needsAttention[1], actions: ['redline', 'accept', 'request_exception', 'resolve'] as ReviewFindingView['actions'] }
+    const waiting = { ...REVIEW.groups.needsAttention[1], id: 'f5', status: 'exception_requested', categoryId: 'cat-child', actions: ['accept', 'resolve'] as ReviewFindingView['actions'] }
+    const declined = { ...REVIEW.groups.needsAttention[1], id: 'f6', status: 'exception_declined', actions: ['request_exception', 'resolve'] as ReviewFindingView['actions'] }
+    const qc = new QueryClient()
+    qc.setQueryData(['contract-review', 'k1'], { ...REVIEW, groups: { ...REVIEW.groups, needsAttention: [asking, waiting, declined] } })
+    // Who a pending one waits for comes with it from the API (the clause approver when it was asked).
+    qc.setQueryData(['contract-approval', 'k1'], { current: null, history: [], exceptions: [
+      { id: 's5', findingId: 'f5', clauseType: 'confidentiality', title: 'x', status: 'PENDING', requestedBy: 'Sam', reason: 'Needed', decidedBy: null, comment: null, decidedAt: null, createdAt: '', waitingFor: 'anyone with the Legal role' },
+      { id: 's6', findingId: 'f6', clauseType: 'confidentiality', title: 'x', status: 'DECLINED', requestedBy: 'Sam', reason: 'Needed', decidedBy: 'Priya Shah', comment: 'Keep five years', decidedAt: null, createdAt: '' },
+    ] })
+    const html = renderToString(
+      <QueryClientProvider client={qc}>
+        <ReviewPanel contractId="k1" contractMetadata={{}} canEdit onJumpToClause={() => {}} />
+      </QueryClientProvider>,
+    ).replace(/<!-- -->/g, '')
+    expect(html).toContain('data-testid="finding-request-exception-f2"')
+    expect(html).toContain('>Request exception<')
+    expect(html).toContain('Exception requested — waiting for anyone with the Legal role')
+    expect(html).toContain('Exception declined by Priya Shah: “Keep five years”')
+    expect(html).toContain('Request exception again')
   })
 
   it("says when the analysis is for an older version", () => {
