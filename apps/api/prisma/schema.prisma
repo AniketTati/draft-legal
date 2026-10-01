@@ -32,6 +32,8 @@ model Organization {
   fieldValueRuns      FieldValueRun[]
   savedViews          SavedView[]
   contractExhibits    ContractExhibit[]
+  contractFacts       ContractFact[]
+  compliancePolicy    CompliancePolicy?
   clauseTypes         ClauseTypeDefinition[]
   diligenceCells      DiligenceCell[]
   templates           Template[]
@@ -232,6 +234,7 @@ model Contract {
   invoices          Invoice[]
   fieldValues       ContractFieldValue[]
   exhibits          ContractExhibit[]
+  facts             ContractFact[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -490,6 +493,54 @@ model ContractExhibit {
   @@unique([contractId, s3Key])
   @@index([orgId])
   @@map("contract_exhibits")
+}
+
+/// docs/41 Part 9 — a fact about a contract that decides which compliance
+/// frameworks apply: does it involve personal data, whose, health data, card
+/// data… The AI reads each with a quote and a confidence; a person's answer
+/// (confirmedAt set) stands until they change it, through every re-analysis.
+/// One row per fact; versionId is the version the AI read it from.
+model ContractFact {
+  id            String    @id @default(cuid())
+  orgId         String
+  contractId    String
+  versionId     String?
+  /// One of COMPLIANCE_FACT_KEYS (@clm/types).
+  key           String
+  /// true/false, a list of codes ("EU", "US-CA"), or one value ("processor"); null: not known.
+  value         Json?
+  quote         String?
+  confidence    Float     @default(0)
+  /// 'ai' or 'user'.
+  source        String    @default("ai")
+  confirmedById String?
+  confirmedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, key])
+  @@index([orgId])
+  @@map("contract_facts")
+}
+
+/// docs/41 Part 9 — the org's rules from facts to compliance frameworks
+/// ("personal data of EU data subjects → GDPR"). Absent: the default rules
+/// (lib/compliance-policy.ts). Set by an admin; lawyers never pick frameworks.
+model CompliancePolicy {
+  id          String   @id @default(cuid())
+  orgId       String   @unique
+  /// PolicyRule[] (@clm/types).
+  rules       Json
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@map("compliance_policies")
 }
 
 /// docs/39 E3 — a clause type an organization teaches the AI: what it is and

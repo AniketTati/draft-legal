@@ -75,6 +75,7 @@ import { hookRoutes } from './routes/hooks.js'
 import { authSsoRoutes, adminSsoRoutes } from './routes/sso.js'
 import { scimRoutes } from './routes/scim.js'
 import { draftingRoutes } from './routes/drafting.js'
+import { complianceApplicabilityRoutes, compliancePolicyRoutes } from './routes/compliance-applicability.js'
 import { syncOnAuditEvent } from './lib/integrations/sync-queue.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
@@ -334,8 +335,11 @@ export async function buildApp() {
   await app.register(authSsoRoutes,          { prefix: '/api/v1/auth/sso' })
   await app.register(adminSsoRoutes,         { prefix: '/api/v1/admin/sso' })
   await app.register(scimRoutes,             { prefix: '/scim/v2' })
-  // docs/41 Part 10 — the defined terms of a version.
+  // docs/41 Parts 9 and 10 — defined terms of a version; which compliance
+  // frameworks apply, from facts and the org's policy.
   await app.register(draftingRoutes,                { prefix: '/api/v1/contracts' })
+  await app.register(complianceApplicabilityRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(compliancePolicyRoutes,        { prefix: '/api/v1/compliance-policy' })
   afterAuditEvent(syncOnAuditEvent)
 
   // Wave 1.1 — fail closed at boot if JWT_SECRET / PORTAL_JWT_SECRET are

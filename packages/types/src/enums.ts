@@ -168,6 +168,9 @@ export enum AuditAction {
   OBLIGATION_OVERDUE = 'OBLIGATION_OVERDUE',
   // Compliance (Phase 10)
   COMPLIANCE_CHECKED = 'COMPLIANCE_CHECKED',
+  // docs/41 Part 9 — a person answered a compliance fact; an admin changed the policy
+  COMPLIANCE_FACT_CONFIRMED = 'COMPLIANCE_FACT_CONFIRMED',
+  COMPLIANCE_POLICY_UPDATED = 'COMPLIANCE_POLICY_UPDATED',
   // Agent
   AGENT_ACTION = 'AGENT_ACTION',
   // Negotiation (Phase 05)

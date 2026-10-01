@@ -157,6 +157,9 @@ export async function cleanupOrg(orgId: string): Promise<void> {
   await del(() => prisma.savedView.deleteMany({ where: { orgId } }))
   await del(() => prisma.counterparty.deleteMany({ where: { orgId } }))
   await del(() => prisma.workflowDefinition.deleteMany({ where: { orgId } }))
+  // docs/41 Part 9 — facts go with their contract; the policy with its org.
+  await del(() => prisma.contractFact.deleteMany({ where: { orgId } }))
+  await del(() => prisma.compliancePolicy.deleteMany({ where: { orgId } }))
   // Agent threads hold a userId FK, so they have to go before the users do.
   // Tool calls and messages cascade from the thread.
   await del(() => prisma.agentThread.deleteMany({ where: { orgId } }))
