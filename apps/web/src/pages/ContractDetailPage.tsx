@@ -43,6 +43,7 @@ import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contr
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
 import { DefinedTermsRailSection } from '@/components/contracts/DefinedTermsRailSection'
 import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
+import { OriginRailSection } from '@/components/contracts/OriginRailSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
 import { RedlinePanel } from '@/components/contracts/RedlinePanel'
 import { ApprovalTimeline } from '@/components/approvals/ApprovalTimeline'
@@ -4112,6 +4113,8 @@ export function ContractDetailPage() {
             saveDocument={note => saveDocumentNow(note)}
           />
         )}
+        {/* docs/41 Part 1 — the template and clause choices the draft was made with. */}
+        {id && <OriginRailSection contractId={id} canEdit={canEdit} beforeChange={() => saveDocumentNow()} />}
 
         {/* P5.1 — Obligations rail section. When metadata.obligations
             exists, show the list with a due-date indicator + an

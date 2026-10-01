@@ -42,6 +42,8 @@ export interface TemplateSection {
   content: string
   conditionalLogic: ConditionalLogic | null
   clauseRefs: string[]
+  /** docs/41 Part 1 — a clause slot: the words are the option of this family drafting picks. */
+  slotFamilyId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -56,6 +58,11 @@ export interface Template {
   isPublished: boolean
   version: number
   usageCount: number
+  /** docs/41 Part 1 — the template drafting uses for its type when nobody picks one. */
+  isDefaultForType?: boolean
+  /** The published snapshot drafts use, and whether edits since are waiting to be published. */
+  publishedVersionId?: string | null
+  hasUnpublishedChanges?: boolean
   createdById: string
   createdAt: string
   updatedAt: string

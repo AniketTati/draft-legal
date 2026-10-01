@@ -17,6 +17,7 @@ import { Chip, EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
 import type { ClauseLibraryItem, ClauseCategory } from '@clm/types'
 import { cn } from '@/lib/utils'
+import { ClauseFamiliesView } from '@/components/clauses/ClauseFamiliesView'
 
 /**
  * A clause row carries its category when the list isn't already filtered to
@@ -349,6 +350,8 @@ export function ClausesPage() {
     return () => { live = false }
   }, [linked])
   const [showNewClause, setShowNewClause] = useState(false)
+  // docs/41 Part 1 — the library's clauses, or its families of alternatives.
+  const [view, setView] = useState<'clauses' | 'families'>(params.get('view') === 'families' ? 'families' : 'clauses')
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
   // The two questions this library is actually searched with. Both are server
@@ -446,10 +449,28 @@ export function ClausesPage() {
     addCategory.mutate({ name, parentCategoryId: parentId ?? null })
   }
 
+  const flatCategories = categories.flatMap(c => [c, ...(c.children ?? [])]).map(c => ({ id: c.id, name: c.name }))
+
   return (
     <div className="flex h-full">
       {/* ── Category Tree (Left) ── */}
       <div className="w-56 shrink-0 border-r border-paper-200 bg-paper-50 flex flex-col">
+        {/* docs/41 Part 1 — clauses, or families of approved alternatives. */}
+        <div className="flex gap-1 p-2 border-b border-paper-200" role="tablist" aria-label="Library view">
+          {(['clauses', 'families'] as const).map(v => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              data-testid={`clauses-view-${v}`}
+              className={cn('flex-1 rounded-md px-2 py-1 text-[12px]', view === v ? 'bg-ink-950 text-white font-medium' : 'text-ink-700 hover:bg-paper-100')}
+            >
+              {v === 'clauses' ? 'Clauses' : 'Families'}
+            </button>
+          ))}
+        </div>
+        {view === 'clauses' && (<>
         <div className="flex items-center justify-between px-3 py-3 border-b border-paper-200">
           <p className="text-eyebrow uppercase text-ink-700">Categories</p>
           <button onClick={() => handleAddCategory()} className="text-ink-400 hover:text-ink-950">
@@ -476,8 +497,10 @@ export function ClausesPage() {
             />
           ))}
         </div>
+        </>)}
       </div>
 
+      {view === 'families' ? <ClauseFamiliesView categories={flatCategories} /> : (<>
       {/* ── Clause List (Center) ── */}
       <div className="w-80 shrink-0 border-r border-paper-200 flex flex-col">
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
@@ -629,6 +652,7 @@ export function ClausesPage() {
           </div>
         )}
       </div>
+      </>)}
 
       {/*
         Deleting used to be one unconfirmed click on a 14px icon, next to the
