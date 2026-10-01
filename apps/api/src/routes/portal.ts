@@ -23,6 +23,7 @@ import { queueParseDocument, queueNotification } from '../lib/queue.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { standingVersion } from '../lib/standing-version.js'
+import { recordStatusChange } from '../lib/status-change.js'
 
 async function resolvePortalToken(portalToken: string) {
   let payload
@@ -339,6 +340,8 @@ export async function portalRoutes(app: FastifyInstance) {
         updatedAt:        new Date(),
       },
     })
+    // docs/41 P0.10 — on the record as a status change, from the counterparty.
+    await recordStatusChange({ orgId: payload.orgId, contractId: payload.contractId, from: target.status, to: 'UNDER_NEGOTIATION', source: 'counterparty', versionId: version.id, extra: { via: 'portal' } })
 
     // Extract text/HTML from the uploaded file so the owner can actually
     // diff the counterparty's turn against the previous version.

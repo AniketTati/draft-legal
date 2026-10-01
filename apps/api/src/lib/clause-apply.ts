@@ -17,6 +17,7 @@ import { lockOf, lockedBody } from './external-edit.js'
 import { statusAfterTermsChange } from './contract-status.js'
 import { restorePii, piiRestorer, unresolvedPiiTokens } from './pii-policy.js'
 import { afterEdit } from './version-refresh.js'
+import { recordStatusChange } from './status-change.js'
 
 /**
  * Minimal HTML escape for splicing text into contract HTML.
@@ -620,6 +621,8 @@ export async function applyClauseProposal(args: ApplyClauseArgs): Promise<ApplyC
   // number is now decided inside the transaction, so this is the only value
   // that is certainly the one on disk.
   const nextVersionNumber = newVersion.versionNumber
+  const resetTo = statusAfterTermsChange(contract.status)
+  if (resetTo) await recordStatusChange({ orgId: args.orgId, contractId: contract.id, from: contract.status, to: resetTo, userId: args.userId, source: 'edit', reason: 'a clause was rewritten', versionId: newVersion.id })
   // DD2 — the new version keeps the clauses, the revised one with its new words.
   await afterEdit({ contractId: contract.id, orgId: args.orgId, versionId: newVersion.id, fromVersionId: currentVersion.id })
 
@@ -917,6 +920,8 @@ export async function applyClauseBatch(args: {
     await tx.contract.update({ where: { id: contract.id }, data: { currentVersionId: v.id, status: statusAfterTermsChange(contract.status) } })
     return v
   })
+  const resetTo = statusAfterTermsChange(contract.status)
+  if (resetTo) await recordStatusChange({ orgId, contractId: contract.id, from: contract.status, to: resetTo, userId, source: 'edit', reason: 'clauses were rewritten', versionId: newVersion.id })
   // DD2 — the new version keeps the clauses, the revised ones with their new words.
   await afterEdit({ contractId: contract.id, orgId, versionId: newVersion.id, fromVersionId: currentVersion.id })
 

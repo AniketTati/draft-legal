@@ -32,6 +32,7 @@ import { prisma } from './prisma.js'
 import { createAuditEvent } from './audit.js'
 import { reindexContract } from './elasticsearch.js'
 import { statusAfterTermsChange } from './contract-status.js'
+import { recordStatusChange } from './status-change.js'
 import { fireWebhook } from './webhook-events.js'
 import { normalizeForSearch, findQuote, findSpan, type NormalizedText, type Span } from './text-span.js'
 import { orgDateOrder } from './org-date-order.js'
@@ -865,6 +866,8 @@ function afterPersonWrite(
     reindexContract(c.id).catch(err => console.warn('[field-store] re-index failed contractId=%s: %s', c.id, (err as Error).message))
   }
   fireWebhook(c.orgId, 'contract.updated', { contractId: c.id, changes: [field], source: 'user' })
+  // docs/41 P0.10 — an approval undone by a changed term is a status change, on the record as one.
+  if (statusChange) void recordStatusChange({ orgId: c.orgId, contractId: c.id, from: statusChange.from, to: statusChange.to, userId, source: 'edit', reason: `${field} changed` })
   // Like the Review Queue always did: the field is named, its value isn't.
   return createAuditEvent({
     orgId: c.orgId, userId,

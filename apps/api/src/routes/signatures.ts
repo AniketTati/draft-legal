@@ -42,6 +42,7 @@ import { extractObligationsForContract, CostCapExceededError } from '../lib/obli
 import { fireWebhook } from '../lib/webhook-events.js'
 import { guardOwnScopeContractRoutes, ownsContract } from '../lib/own-scope-guard.js'
 import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
+import { recordStatusChange, statusData } from '../lib/status-change.js'
 
 const SignersSchema = z.object({
   signers: z.array(z.object({
@@ -209,6 +210,10 @@ export async function signatureRoutes(app: FastifyInstance) {
           data: { status: 'PENDING_SIGNATURE' },
         })
         return sr
+      })
+      await recordStatusChange({
+        orgId, contractId: id, from: contract.status, to: 'PENDING_SIGNATURE', userId,
+        source: 'signature', versionId: contract.currentVersionId, extra: { signatureRequestId: created.id },
       })
 
       const fresh = await prisma.signatureRequest.findUnique({
@@ -551,6 +556,7 @@ export async function signatureRoutes(app: FastifyInstance) {
       })
       const allSigned = fresh!.signers.every(s => s.status === 'SIGNED')
       const completedAt = new Date()
+      let executedFrom = 'PENDING_SIGNATURE'
       // Completed once: the request flips only from PENDING, so of two final
       // signatures at once, or a void racing the last one, exactly one wins,
       // and only it executes the contract and fires the events.
@@ -560,7 +566,10 @@ export async function signatureRoutes(app: FastifyInstance) {
           data: { status: 'COMPLETED', completedAt },
         })
         if (flipped.count === 0) return false
-        await tx.contract.update({ where: { id: sr.contractId }, data: { status: 'EXECUTED' } })
+        const before = await tx.contract.findUnique({ where: { id: sr.contractId }, select: { status: true } })
+        executedFrom = before?.status ?? 'PENDING_SIGNATURE'
+        // docs/41 P0.10 — executed now, and when.
+        await tx.contract.update({ where: { id: sr.contractId }, data: statusData('EXECUTED', completedAt) })
         await tx.signatureEvent.create({
           data: { signatureRequestId: sr.id, kind: 'COMPLETED', metadata: { signerCount: fresh!.signers.length } },
         })
@@ -577,6 +586,10 @@ export async function signatureRoutes(app: FastifyInstance) {
         }
       }
       if (completed) {
+        await recordStatusChange({
+          orgId: sr.orgId, contractId: sr.contractId, from: executedFrom, to: 'EXECUTED',
+          source: 'signature', versionId: sr.versionId, extra: { signatureRequestId: sr.id },
+        })
         await createAuditEvent({
           orgId: sr.orgId,
           userId: sr.createdById,

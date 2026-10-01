@@ -8,6 +8,7 @@
 import type { PrismaClient } from '@prisma/client'
 import { notificationQueue, queueEscalation, queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
+import { recordStatusChange } from './status-change.js'
 import { AuditAction, autoApproves } from '@clm/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -163,7 +164,7 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
     // Cancel all pending escalation jobs at this step
     await Promise.all(currentSteps.filter(s => s.status === 'PENDING').map(s => cancelEscalation(s.id)))
 
-    await prisma.$transaction([
+    const [, , reverted] = await prisma.$transaction([
       // Reject all still-pending steps
       prisma.approvalStep.updateMany({
         where: { approvalInstanceId: instanceId, status: 'PENDING' },
@@ -191,6 +192,14 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
       resourceId:   instanceId,
       metadata:     { decision: 'REJECTED', contractId: instance.contractId },
     }).catch(() => {})
+    const rejectedBy = instance.steps.find(s => s.decision === 'REJECTED')
+    if (reverted.count) {
+      await recordStatusChange({
+        orgId: instance.orgId, contractId: instance.contractId, from: 'PENDING_APPROVAL', to: 'DRAFT',
+        userId: rejectedBy?.approverId, source: 'approval', reason: rejectedBy?.comment ?? null,
+        extra: { instanceId, outcome: 'returned' },
+      })
+    }
 
     // Notify submitter
     const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
@@ -226,7 +235,7 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
 
   if (!nextStepDef) {
     // All steps complete — approve the contract
-    await prisma.$transaction([
+    const [, approved] = await prisma.$transaction([
       prisma.approvalInstance.update({
         where: { id: instanceId },
         data:  { status: 'APPROVED', decidedAt: new Date() },
@@ -245,6 +254,13 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
       resourceId:   instanceId,
       metadata:     { decision: 'APPROVED', contractId: instance.contractId },
     }).catch(() => {})
+    if (approved.count) {
+      const last = [...instance.steps].filter(s => s.decision === 'APPROVED').sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0))[0]
+      await recordStatusChange({
+        orgId: instance.orgId, contractId: instance.contractId, from: 'PENDING_APPROVAL', to: 'APPROVED',
+        userId: last?.approverId, source: 'approval', extra: { instanceId },
+      })
+    }
 
     const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
     queueNotification({

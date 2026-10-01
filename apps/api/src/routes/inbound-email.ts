@@ -44,6 +44,7 @@ import { bareAddress, extractContractTag } from '../lib/email-address.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { devFlag, isStrict } from '../lib/runtime-mode.js'
+import { recordStatusChange } from '../lib/status-change.js'
 
 const InboundEmailSchema = z.object({
   to: z.string().min(1),
@@ -367,6 +368,8 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
         updatedAt:        new Date(),
       },
     })
+    // docs/41 P0.10 — on the record as a status change, from the counterparty.
+    await recordStatusChange({ orgId: contract.orgId, contractId, from: contract.status, to: 'UNDER_NEGOTIATION', source: 'counterparty', versionId: version.id, extra: { via: 'email' } })
 
     // Without this the emailed redline stays blank text forever and cannot
     // be diffed against the previous version.

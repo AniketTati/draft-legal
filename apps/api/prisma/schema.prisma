@@ -192,6 +192,8 @@ model Contract {
   currency          String?   @default("USD")
   effectiveDate     DateTime?
   expiryDate        DateTime?
+  // docs/41 P0.10 — when it became EXECUTED (lib/status-change.ts statusData).
+  executedAt        DateTime?
   jurisdiction      String? // Governing law jurisdiction (dedicated column for ES filtering)
   ownerId           String
   createdBy         String? // User who created (may differ from owner)

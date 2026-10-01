@@ -24,6 +24,7 @@ import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
 import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
 import { onVersionCreated } from '../lib/analysis-trigger.js'
+import { recordStatusChange, statusData } from '../lib/status-change.js'
 import { setValuesFromTemplate, setFieldValue, snapshotOf, undoPersonValue, type FieldSnapshot } from '../lib/field-store.js'
 import { orgDateOrder } from '../lib/org-date-order.js'
 import { createFieldDefinition, CreateFieldSchema, FIELD_TYPES } from './field-definitions.js'
@@ -2992,8 +2993,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
       }
       await prisma.contract.update({
         where: { id: existing.id },
-        data:  { status: nextStatus },
+        data:  statusData(nextStatus),
       })
+      await recordStatusChange({ orgId: body.orgId, contractId: existing.id, from: existing.status, to: nextStatus, userId: body.userId, source: 'agent', versionId: existing.currentVersionId })
       return reply.send({
         ok: true,
         reversible: true,
@@ -3088,6 +3090,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       const retyped = nextType !== existing.type
       const status = retyped ? statusAfterTermsChange(existing.status) : undefined
       await prisma.contract.update({ where: { id: existing.id }, data: { type: nextType, ...(status && { status }) } })
+      if (status) await recordStatusChange({ orgId: body.orgId, contractId: existing.id, from: existing.status, to: status, userId: body.userId, source: 'agent', reason: 'its type changed', versionId: existing.currentVersionId })
       if (retyped) {
         await createAuditEvent({
           orgId: body.orgId, userId: body.userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: existing.id,
@@ -3171,8 +3174,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
 
     await prisma.contract.update({
       where: { id: existing.id },
-      data,
+      // An undone EXECUTED is no longer executed.
+      data: data.status && existing.status === 'EXECUTED' ? { ...data, executedAt: null } : data,
     })
+    if (typeof data.status === 'string') {
+      await recordStatusChange({ orgId: body.data.orgId, contractId: existing.id, from: existing.status, to: data.status, source: 'agent', reason: 'an assistant change was undone' })
+    }
     return reply.send({ ok: true, undone: true, contractId: existing.id })
   })
 
@@ -3428,6 +3435,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         where: { id: contract.id },
         data:  { status: 'APPROVED' },
       })
+      await recordStatusChange({ orgId: body.orgId, contractId: contract.id, from: contract.status, to: 'APPROVED', userId: body.userId, source: 'approval', reason: "approved automatically by the org's rules", extra: { instanceId: instance.id } })
       return reply.send({
         ok: true,
         reversible: true,
@@ -3479,6 +3487,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       })
       return { inst, steps }
     })
+    await recordStatusChange({ orgId: body.orgId, contractId: contract.id, from: contract.status, to: 'PENDING_APPROVAL', userId: body.userId, source: 'approval', extra: { instanceId: inst.id } })
 
     return reply.send({
       ok: true,
@@ -3551,6 +3560,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         data:  { status: body.data.previousStatus },
       })
     })
+    await recordStatusChange({ orgId: body.data.orgId, contractId: body.data.contractId, from: instance.status === 'AUTO_APPROVED' ? 'APPROVED' : 'PENDING_APPROVAL', to: body.data.previousStatus, source: 'agent', reason: 'the request for approval was undone', extra: { instanceId: instance.id } })
     return reply.send({ ok: true, undone: true, instanceId: instance.id })
   })
 

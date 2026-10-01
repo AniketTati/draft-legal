@@ -36,6 +36,7 @@ import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../li
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
 import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
+import { recordStatusChange, statusData } from '../lib/status-change.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
 import { htmlToText } from '../lib/html-text.js'
@@ -850,11 +851,13 @@ export async function contractRoutes(app: FastifyInstance) {
       },
     })
 
+    const uploadStatus = statusAfterTermsChange(contract.status)
     await prisma.contract.update({
       where: { id },
       // X42 — a new document on an approved contract needs approving again.
-      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
+      data: { currentVersionId: version.id, updatedAt: new Date(), status: uploadStatus },
     })
+    if (uploadStatus) await recordStatusChange({ orgId, contractId: id, from: contract.status, to: uploadStatus, userId, source: 'edit', reason: 'a new document was uploaded', versionId: version.id })
 
     // Reset analysis state and queue the full pipeline (parse → classify → extract → embed)
     // docs/39 G1 — a new document refreshes the values the AI owns (people's
@@ -962,6 +965,7 @@ export async function contractRoutes(app: FastifyInstance) {
       // X42 — an edited document on an approved contract needs approving again.
       data: { currentVersionId: version.id, updatedAt: new Date(), status },
     })
+    if (status) await recordStatusChange({ orgId, contractId: id, from: contract.status, to: status, userId, source: 'edit', reason: 'the document was edited', versionId: version.id })
     // DD2 — the edit keeps the clauses of the version it was made on, and the
     // search index follows the new text.
     await afterEdit({ contractId: id, orgId, versionId: version.id, fromVersionId: standing?.id })
@@ -1419,6 +1423,8 @@ export async function contractRoutes(app: FastifyInstance) {
     // A null value deletes its key (JSON merge patch, top level).
     const data: Record<string, unknown> = { ...body }
     if (termsChanged) data.status = statusAfterTermsChange(existing.status)
+    // docs/41 P0.10 — the day it became EXECUTED is kept.
+    if (typeof data.status === 'string' && data.status !== existing.status) Object.assign(data, statusData(data.status))
     if (body.metadata) {
       // The field store may just have rewritten metadata: merge onto what is stored now.
       const base = storeWrote
@@ -1472,18 +1478,27 @@ export async function contractRoutes(app: FastifyInstance) {
       changes: requestedKeys, source: userId === 'system' ? 'system' : 'user',
     })
 
-    await createAuditEvent({
-      orgId: effectiveOrgId,
-      userId: userId === 'system' ? undefined : userId,
-      action: body.status && body.status !== existing.status
-        ? AuditAction.CONTRACT_STATUS_CHANGED
-        : AuditAction.CONTRACT_UPDATED,
-      resourceType: 'contract',
-      resourceId: id,
-      metadata: body.status && body.status !== existing.status
-        ? { from: existing.status, to: body.status }
-        : { changes: requestedKeys },
-    })
+    // docs/41 P0.10 — a status change is recorded as one, in the shape every
+    // status change is; anything else as an update.
+    if (updated.status !== existing.status) {
+      await recordStatusChange({
+        orgId: effectiveOrgId, contractId: id, from: existing.status, to: updated.status,
+        userId: userId === 'system' ? null : userId,
+        source: termsChanged ? 'edit' : 'manual',
+        ...(termsChanged && { reason: 'its type, value or currency changed' }),
+        versionId: existing.currentVersionId,
+      })
+    }
+    if (!(body.status && body.status !== existing.status)) {
+      await createAuditEvent({
+        orgId: effectiveOrgId,
+        userId: userId === 'system' ? undefined : userId,
+        action: AuditAction.CONTRACT_UPDATED,
+        resourceType: 'contract',
+        resourceId: id,
+        metadata: { changes: requestedKeys },
+      })
+    }
 
     return reply.send(withNormalizedRisk(updated))
   })
@@ -1640,6 +1655,7 @@ export async function contractRoutes(app: FastifyInstance) {
         orgId, userId: req.user.sub, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: id,
         metadata: { action: 'retype', typeFrom: contract.type, typeTo: contractType, ...(status && { statusFrom: contract.status, statusTo: status }) },
       })
+      if (status) await recordStatusChange({ orgId, contractId: id, from: contract.status, to: status, userId: req.user.sub, source: 'edit', reason: 'its type changed', versionId: contract.currentVersionId })
     }
     if (toRead) queueExtractTypeFields({ contractId: id, orgId, contractType })
 
@@ -2774,6 +2790,7 @@ export async function contractRoutes(app: FastifyInstance) {
       })
 
       await prisma.contract.update({ where: { id: contractId }, data: { status: 'APPROVED' } })
+      await recordStatusChange({ orgId, contractId, from: contract.status, to: 'APPROVED', userId, source: 'approval', reason: "approved automatically by the org's rules", versionId: contract.currentVersionId, extra: { instanceId: instance.id } })
 
       createAuditEvent({
         orgId, userId,
@@ -2837,6 +2854,8 @@ export async function contractRoutes(app: FastifyInstance) {
 
       return { inst, steps }
     })
+
+    await recordStatusChange({ orgId, contractId, from: contract.status, to: 'PENDING_APPROVAL', userId, source: 'approval', versionId: contract.currentVersionId, extra: { instanceId: instance.inst.id } })
 
     // Queue an escalation timer per concurrent approver step.
     const delayMs = (firstStepDef.dueSoonHours ?? 48) * 60 * 60 * 1000

@@ -22,6 +22,7 @@ import { generatePlainDocx } from '../lib/docx-export.js'
 import { checkUpload, MIME } from '../lib/file-type.js'
 import { extractDocument } from '../lib/document.js'
 import { statusAfterTermsChange } from '../lib/contract-status.js'
+import { recordStatusChange } from '../lib/status-change.js'
 import { queueParseDocument } from '../lib/queue.js'
 import { DocxError, readDocxReview, type RedlineStats } from '../lib/ooxml/docx-redline.js'
 import { likeness, wordBag } from '../lib/ooxml/sequence-diff.js'
@@ -292,6 +293,8 @@ export async function externalEditRoutes(app: FastifyInstance) {
       throw err
     }
 
+    const resetTo = statusAfterTermsChange(contract.status)
+    if (resetTo) await recordStatusChange({ orgId, contractId: id, from: contract.status, to: resetTo, userId, source: 'edit', reason: 'an edited copy came back from Google Docs', versionId: created.id })
     // The same pipeline as any new file: text, clauses, review.
     queueParseDocument({ contractId: id, versionId: created.id, s3Key, mimeType: MIME.DOCX, orgId, filename })
     await createAuditEvent({
