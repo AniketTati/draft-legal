@@ -7,6 +7,7 @@
  *   approval-summary : Phase 06 — AI executive summary for approvers (LangGraph 3-step pipeline)
  *   draft-contract   : a draft from a converted request, saved and analysed (lib/draft-save.ts)
  *   analysis-checkpoint: docs/41 P0.1 — an edited contract, analysed again once left alone (lib/analysis-trigger.ts)
+ *   working-copy-idle: docs/41 Part 16 — draft changes left alone become a version (lib/working-copy.ts)
  */
 import { Worker, type Job } from 'bullmq'
 import { redis } from '../lib/redis.js'
@@ -822,6 +823,11 @@ export const agentWorker = new Worker(
       // docs/41 P0.1 — an edited contract, left alone long enough: analysed again.
       const outcome = await runCheckpointAnalysis(job.data as { contractId: string; orgId: string })
       console.info('[agent-worker] analysis-checkpoint contractId=%s %s', (job.data as { contractId: string }).contractId, outcome)
+    } else if (job.name === 'working-copy-idle') {
+      // docs/41 Part 16 (C1) — draft changes nobody touched for a while: saved as a version.
+      const { runIdleCheckpoint } = await import('../lib/working-copy.js')
+      const outcome = await runIdleCheckpoint(job.data as { orgId: string; contractId: string; revision: number })
+      console.info('[agent-worker] working-copy-idle contractId=%s %s', (job.data as { contractId: string }).contractId, outcome)
     } else if (job.name === 'backfill-custom-field') {
       await handleBackfillCustomField(job.data as BackfillCustomFieldJob)
     } else if (job.name === 'extract-obligations') {

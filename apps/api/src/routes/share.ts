@@ -8,6 +8,7 @@ import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { prisma } from '../lib/prisma.js'
 import { onSentToCounterparty } from '../lib/lifecycle.js'
+import { saveDraftChangesBefore } from '../lib/working-copy.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -79,6 +80,11 @@ export async function shareRoutes(app: FastifyInstance) {
       include: { org: { select: { name: true } } },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    // docs/41 Part 16 (C1) — the counterparty gets what the editor shows:
+    // draft changes still unsaved become a version first.
+    const saved = await saveDraftChangesBefore({ orgId, contractId, userId, reason: 'send', ipAddress: req.ip })
+    if (!saved.ok) return reply.status(saved.status).send({ ...saved.body, error: saved.body.detail })
+    if (saved.version) contract.currentVersionId = saved.version.id
     // docs/41 P0.4 — the counterparty never receives a draft with a term
     // still to choose (a governing law nobody named).
     const open = await openChoices(contractId)

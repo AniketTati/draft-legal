@@ -6,7 +6,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { computeVersionDiff, htmlDiff, DiffTooLargeError } from '../lib/diff.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { renderHtmlToPdf, renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { renderHtmlToPdf } from '../lib/gotenberg.js'
 import { RenderRefusedError } from '../lib/render-html.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -26,7 +26,7 @@ import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-app
 import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms, sliceOutsideTokens } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { clauseVersionId } from '../lib/clause-version.js'
-import { afterEdit } from '../lib/version-refresh.js'
+import { createHtmlVersion } from '../lib/version-create.js'
 import { standingVersion } from '../lib/standing-version.js'
 import { queueParseDocument, queueClassifyDocument, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline, queueExtractTypeFields, queueReadExhibit } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
@@ -43,7 +43,6 @@ import { onApprovalChange } from '../lib/approval-reset.js'
 import { submitForApproval } from '../lib/approval-flow.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
-import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   applyExtraction, extractedFieldsFromPatch, personFieldsFromPatch, setFieldValues,
@@ -85,16 +84,6 @@ function versionForms(v: { plainText: string; htmlContent: string }): string[] {
 
 /** X33 — how much of each version's text the agents service's version list carries (the approval prompt reads 8,000). */
 const AGENT_TEXT_EXCERPT = 20_000
-
-/**
- * X47 — whether a saved HTML body is the document already stored. Line
- * breaks between tags don't count: the extractor writes them and the editor
- * never does. Any other difference is an edit, a single space included.
- */
-function sameDocumentHtml(stored: string, saved: string): boolean {
-  const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
-  return norm(stored) === norm(saved)
-}
 
 export async function contractRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
@@ -896,96 +885,18 @@ export async function contractRoutes(app: FastifyInstance) {
   })
 
   // ── Save editor HTML as a new text version (no file upload) ─────────────
+  // docs/41 Part 16 (C1) — the web editor no longer calls this on every
+  // pause in typing: typing goes to the working copy (routes/working-copy.ts)
+  // and a version is made with a note. This stays for the callers that make
+  // one deliberate change (an applied redline, standard language inserted,
+  // an origin choice, Compare's merge).
   app.post('/:id/html-version', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { sub: userId, orgId } = req.user
     const { htmlContent, changeNote = 'Edited in browser' } = req.body as { htmlContent: string; changeNote?: string }
-
-    if (!htmlContent?.trim()) return reply.status(400).send({ detail: 'htmlContent is required' })
-
-    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    // BB3 — read-only while a Google Docs copy is out.
-    const lock = lockOf(contract.externalEdit)
-    if (lock) return reply.status(409).send(lockedBody(lock))
-
-    const lastVersion = await prisma.contractVersion.findFirst({
-      where: { contractId: id },
-      orderBy: { versionNumber: 'desc' },
-    })
-    // X47 — a save that changes nothing makes nothing. Opening a contract made
-    // the web editor report a change, and the page saves every change: each
-    // view added a version, moved the current version off the uploaded PDF,
-    // rendered a PDF and, since X42, sent an approved contract back to DRAFT.
-    // "Nothing" is judged against the version the contract stands on — the
-    // latest, unless an undo moved it back, when saving the latest again is
-    // a real change.
-    const standing = contract.currentVersionId && contract.currentVersionId !== lastVersion?.id
-      ? await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: id } })
-      : lastVersion
-    if (standing && sameDocumentHtml(standing.htmlContent, htmlContent)) {
-      return reply.status(200).send(standing)
-    }
-
-    const plainText = htmlToText(htmlContent)
-
-    const version = await prisma.contractVersion.create({
-      data: {
-        contractId: id,
-        versionNumber: (lastVersion?.versionNumber ?? 0) + 1,
-        htmlContent,
-        plainText,
-        s3Key: null,
-        mimeType: 'text/html',
-        fileSize: Buffer.byteLength(htmlContent),
-        changeNote,
-        createdById: userId,
-      },
-    })
-
-    // A.5 — render a canonical PDF from this HTML and attach it to the
-    // version so approvers, signers, and counterparties see the latest
-    // edits. Fire-and-forget: a slow Gotenberg call must not block the save.
-    // The version exists without renderedPdfKey until Gotenberg finishes.
-    void (async () => {
-      try {
-        const { s3Key: pdfKey } = await renderHtmlToPdfAndStore({
-          html: htmlContent,
-          keyPrefix: `${orgId}/contracts/${id}/rendered`,
-          filename: `v${version.versionNumber}.pdf`,
-        })
-        await prisma.contractVersion.update({
-          where: { id: version.id },
-          data:  { renderedPdfKey: pdfKey, renderedAt: new Date() },
-        })
-        app.log.info({ contractId: id, versionId: version.id, pdfKey }, 'A.5: rendered canonical PDF')
-      } catch (err) {
-        app.log.warn({ err, contractId: id, versionId: version.id }, 'A.5: Gotenberg render failed — canonical will fall back to source')
-      }
-    })()
-
-    await prisma.contract.update({
-      where: { id },
-      data: { currentVersionId: version.id, updatedAt: new Date() },
-    })
-    // DD2 — the edit keeps the clauses of the version it was made on, and the
-    // search index follows the new text.
-    await afterEdit({ contractId: id, orgId, versionId: version.id, fromVersionId: standing?.id })
-    // X42, docs/41 Part 18 — approvals given are asked again as their reset rules say.
-    await onApprovalChange({ orgId, contractId: id, versionId: version.id, fromVersionId: standing?.id, source: 'edit', userId })
-    const status = (await prisma.contract.findUnique({ where: { id }, select: { status: true } }))?.status
-    // X47 follow-up — the document changed, and perhaps its approval with it:
-    // on the record, as any other change to the contract is.
-    await createAuditEvent({
-      orgId, userId,
-      action: AuditAction.CONTRACT_UPDATED,
-      resourceType: 'contract',
-      resourceId: id,
-      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status && status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
-      ipAddress: req.ip,
-    })
-
-    return reply.status(201).send(version)
+    const r = await createHtmlVersion({ orgId, userId, contractId: id, htmlContent, changeNote, ipAddress: req.ip, via: 'editor', log: app.log })
+    if (!r.ok) return reply.status(r.status).send(r.body)
+    return reply.status(r.created ? 201 : 200).send(r.version)
   })
 
   // ── Store clause segments (called by Review Agent) ───────────────────────

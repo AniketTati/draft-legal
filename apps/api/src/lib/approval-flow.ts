@@ -30,6 +30,7 @@ import { queueApprovalSummary, queueNotification } from './queue.js'
 import { fireWebhook } from './webhook-events.js'
 import { standingVersion } from './standing-version.js'
 import { positionOf, transition } from './lifecycle.js'
+import { saveDraftChangesBefore } from './working-copy.js'
 import {
   advanceWorkflow, cancelEscalation, checkAutoApprove, createStepsForDef, deciderIdsOf, hasAssignees,
   holdersOf, resolveAssignees, roleIdsOf, type WorkflowStepDef,
@@ -90,6 +91,13 @@ export async function submitForApproval(a: SubmitArgs): Promise<SubmitResult> {
 
   const stepDefs: WorkflowStepDef[] = Array.isArray(workflow.steps) ? (workflow.steps as unknown as WorkflowStepDef[]) : []
   if (!stepDefs.length) return { ok: false, status: 422, error: 'Workflow has no steps configured' }
+
+  // docs/41 Part 16 (C1) — draft changes still unsaved in the editor are
+  // what the person means to submit: they become a version first, and that
+  // version is the one approved.
+  const saved = await saveDraftChangesBefore({ orgId: a.orgId, contractId: a.contractId, userId: a.userId, reason: 'submit' })
+  if (!saved.ok) return { ok: false, status: saved.status, error: String(saved.body.detail ?? 'The draft changes could not be saved'), ...(typeof saved.body.code === 'string' && { code: saved.body.code }) }
+  if (saved.version) contract.currentVersionId = saved.version.id
   const firstStepDef = [...stepDefs].sort((x, y) => x.order - y.order)[0]
   const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
 

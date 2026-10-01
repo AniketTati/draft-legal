@@ -33,6 +33,7 @@ model Organization {
   savedViews          SavedView[]
   contractExhibits    ContractExhibit[]
   analysisRuns        AnalysisRun[]
+  contractWorkingCopies ContractWorkingCopy[]
   reviewFindings      ReviewFinding[]
   contractFacts       ContractFact[]
   compliancePolicy    CompliancePolicy?
@@ -259,6 +260,7 @@ model Contract {
   fieldValues       ContractFieldValue[]
   exhibits          ContractExhibit[]
   analysisRuns      AnalysisRun[]
+  workingCopy       ContractWorkingCopy?
   reviewFindings    ReviewFinding[]
   facts             ContractFact[]
 
@@ -591,6 +593,30 @@ model ReviewFinding {
 /// chunk with no clauses) left no trace. Every analysis step records itself
 /// here (lib/analysis-runs.ts); the admin "Analysis health" page lists the
 /// runs that failed or stopped moving.
+// docs/41 Part 16 (C1) — the edits typed in the editor since the last
+// version: autosaved here, not as a version. A version is made only when
+// someone saves one with a note (or sends, submits, or leaves it idle):
+// see lib/working-copy.ts. One per contract; `revision` goes up on every
+// save, and a save naming an older revision is refused (two editors).
+model ContractWorkingCopy {
+  id            String   @id @default(cuid())
+  orgId         String
+  contractId    String   @unique
+  /// The version the edits were made on.
+  baseVersionId String?
+  html          String
+  revision      Int      @default(1)
+  updatedById   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("contract_working_copies")
+}
+
 model AnalysisRun {
   id         String    @id @default(cuid())
   orgId      String

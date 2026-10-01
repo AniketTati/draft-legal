@@ -42,6 +42,7 @@ import { contractLifecycleRoutes } from './routes/contract-lifecycle.js'
 import { inboxRoutes } from './routes/inbox.js'
 import { analysisHealthRoutes, contractAnalysisRunRoutes } from './routes/analysis-health.js'
 import { reviewRoutes } from './routes/review.js'
+import { workingCopyRoutes } from './routes/working-copy.js'
 import { clauseTagRoutes } from './routes/clause-tags.js'
 import { clauseTypeRoutes } from './routes/clause-types.js'
 import { contractQueryRoutes } from './routes/contract-query.js'
@@ -298,6 +299,7 @@ export async function buildApp() {
   await app.register(inboxRoutes,           { prefix: '/api/v1/inbox' })
   await app.register(contractAnalysisRunRoutes, { prefix: '/api/v1/contracts' })
   await app.register(reviewRoutes,          { prefix: '/api/v1/contracts' })
+  await app.register(workingCopyRoutes,     { prefix: '/api/v1/contracts' })
   await app.register(clauseTagRoutes,       { prefix: '/api/v1/contracts' })
   // docs/39 E3 — clause types the organization adds
   await app.register(clauseTypeRoutes,      { prefix: '/api/v1/clause-types' })

@@ -14,7 +14,7 @@ import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { resolveRevisionAuthors } from '../lib/revision-author.js'
@@ -23,6 +23,7 @@ import { checkUpload, MIME } from '../lib/file-type.js'
 import { extractDocument } from '../lib/document.js'
 import { onApprovalChange } from '../lib/approval-reset.js'
 import { onSentToCounterparty } from '../lib/lifecycle.js'
+import { saveDraftChangesBefore } from '../lib/working-copy.js'
 import { queueParseDocument } from '../lib/queue.js'
 import { DocxError, readDocxReview, type RedlineStats } from '../lib/ooxml/docx-redline.js'
 import { likeness, wordBag } from '../lib/ooxml/sequence-diff.js'
@@ -323,6 +324,13 @@ export async function externalEditRoutes(app: FastifyInstance) {
         ...lockedBody(lock),
         detail: `${lock.startedByName} has this contract open in Google Docs. Publish that copy back first, so the counterparty gets your latest changes.`,
       })
+    }
+    // docs/41 Part 16 (C1) — draft changes still unsaved in the editor are
+    // part of what is sent: a version first, made by someone who may edit.
+    if ((await permissionScopeFor(req, 'edit', 'contract')) !== null) {
+      const saved = await saveDraftChangesBefore({ orgId, contractId: id, userId, reason: 'send', ipAddress: req.ip })
+      if (!saved.ok) return reply.status(saved.status).send(saved.body)
+      if (saved.version) contract.currentVersionId = saved.version.id
     }
     const version = await standing(contract)
     if (!version) return reply.status(409).send({ code: 'VERSION_NOT_READY', detail: 'The document is still being prepared. Try again in a moment.' })

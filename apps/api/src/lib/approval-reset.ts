@@ -45,7 +45,18 @@ export interface ChangeArgs {
   userId?: string | null
   /** For a counterparty's version: how it came. */
   via?: 'portal' | 'email'
+  /**
+   * docs/41 Part 16 — "Reset approvals" in the Save as version dialog, for
+   * someone allowed to configure workflows: `reset_all` asks every approval
+   * given again, `keep` carries them all to the new version. Omitted, the
+   * steps' reset rules decide. Only the approval steps follow it: a clause
+   * exception still resets when its own clause changes, and an automatic
+   * approval is still withdrawn (its rules were judged on the old terms).
+   */
+  override?: ApprovalOverride
 }
+
+export type ApprovalOverride = 'reset_all' | 'keep'
 
 export interface ChangeOutcome {
   withdrawn: boolean
@@ -232,7 +243,9 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
   const ruleAt = (order: number) => readResetRule(defs.find(d => d.order === order)?.resetOn)
 
   const approved = instance.steps.filter(s => s.kind === 'approval' && s.status === 'APPROVED')
-  const toReset = approved.filter(s => resets(ruleAt(s.stepOrder), change))
+  const toReset = a.override === 'keep' ? []
+    : a.override === 'reset_all' ? approved
+    : approved.filter(s => resets(ruleAt(s.stepOrder), change))
   const what = changeWords({ clauses, fields, document })
 
   if (!toReset.length) {
@@ -242,7 +255,7 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
       out.carried = true
       await createAuditEvent({
         orgId: a.orgId, ...(a.userId && { userId: a.userId }), action: AuditAction.APPROVALS_RESET, resourceType: 'contract', resourceId: a.contractId,
-        metadata: { instanceId: instance.id, resetStepIds: [], carried: true, changed: what, versionId: version!.id, versionNumber: version!.versionNumber, fromVersionId: instance.versionId },
+        metadata: { instanceId: instance.id, resetStepIds: [], carried: true, changed: what, versionId: version!.id, versionNumber: version!.versionNumber, fromVersionId: instance.versionId, ...(a.override && { override: a.override }) },
       }).catch(() => {})
     }
     return out
@@ -284,6 +297,7 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
       instanceId: instance.id, resetStepIds: out.resetStepIds, changed: what,
       clauseTypes: change.clauseTypes, fields, versionId: version?.id ?? null, versionNumber: version?.versionNumber ?? null,
       approvers: toReset.map(s => s.approverId),
+      ...(a.override && { override: a.override }),
     },
   }).catch(() => {})
   if (!open) {
