@@ -273,6 +273,14 @@ describe('reset rules (docs/41 Part 18)', () => {
     expect((await prisma.approvalInstance.findUniqueOrThrow({ where: { id: neverInstance } })).status).toBe('APPROVED')
   })
 
+  it('fields: a date the step lists asks again when a person changes it', async () => {
+    const id = await contract()
+    await prisma.contract.update({ where: { id }, data: { expiryDate: new Date('2027-01-01') } })
+    await approved(id, await workflow([{ order: 0, approverId: approver, resetOn: { mode: 'fields', fields: ['expiryDate'] } }]))
+    expect((await patch(id, { expiryDate: '2028-01-01T00:00:00.000Z' })).statusCode).toBe(200)
+    expect((await contractOf(id)).stageState).toBe('pending')
+  })
+
   it('a later step whose approval still stands isn\'t asked again', async () => {
     const id = await contract()
     const instanceId = await approved(id, await workflow([

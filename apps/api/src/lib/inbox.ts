@@ -218,7 +218,12 @@ async function waitingOn(contracts: ContractRow[]): Promise<Map<string, InboxRow
     let who = ''
     let names: string[] = []
     let stuck: string | null = null
-    if (c.turn === 'approvers' && inst) {
+    if (c.turn === 'approvers' && !(inst && (inst.status === 'PENDING' || inst.status === 'ESCALATED'))) {
+      // Waiting for approval with no request open (set by hand before
+      // approvals were kept, or a request withdrawn): no one can approve it.
+      who = 'Approvers'
+      stuck = 'Waiting for approval, but no request for approval is open. Submit it again.'
+    } else if (c.turn === 'approvers' && inst) {
       const pending = inst.steps.filter(s => s.kind === 'approval' && s.status === 'PENDING' && s.stepOrder === inst.currentStepOrder)
       names = pending.map(s => s.approverId ? nameOf(s.approverId) : `anyone with the ${roles.find(r => r.id === s.approverRoleId)?.name ?? 'approver'} role`)
       who = 'Approvers'

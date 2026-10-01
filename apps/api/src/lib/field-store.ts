@@ -762,7 +762,13 @@ export type FieldWriteResult =
   | { ok: false; status: 400 | 404; detail: string }
 
 /** X42 — a change to what an approval judged sends the contract back to DRAFT. */
-const JUDGED_KEYS = new Set(['value', 'currency'])
+/**
+ * docs/41 Part 18 — a value a person changes is a change an approval may
+ * have judged: the approval's reset rules decide (`always` asks again after
+ * any change; `fields` only for the fields it lists). X42 limited this to
+ * value and currency, which the auto-approval rule reads.
+ */
+const judges = (_key: string) => true
 
 /**
  * docs/39 F2 — an expiry date nobody stated, worked out from the effective
@@ -984,7 +990,7 @@ export async function setFieldValues(input: {
         create: { orgId: c.orgId, contractId: c.id, fieldKey: def.key, kind: def.kind, label: def.kind === 'type' ? def.label : null, ...data },
         update: data,
       })
-      if (!judged && !input.skipApprovalReset && JUDGED_KEYS.has(def.key) && !sameValue(before?.value ?? null, value)) judged = def.key
+      if (!judged && !input.skipApprovalReset && judges(def.key) && !sameValue(before?.value ?? null, value)) judged = def.key
     }
     const after = await commit(tx, c, defs)
     const fields = planned.map(p => viewOf(p.def, after.find(r => r.fieldKey === p.def.key)))
@@ -1151,7 +1157,7 @@ export async function rejectFieldValue(input: { orgId: string; contractId: strin
       create: { orgId: c.orgId, contractId: c.id, fieldKey: def.key, kind: def.kind, valueType: def.type, label: def.kind === 'type' ? def.label : null, source: 'ai', ...data },
       update: data,
     })
-    const judged = JUDGED_KEYS.has(def.key) && before?.value != null
+    const judged = judges(def.key) && before?.value != null
     const after = await commit(tx, c, defs)
     return { ok: true as const, field: viewOf(def, after.find(r => r.fieldKey === def.key)), judged, c, def }
   })
@@ -1188,7 +1194,7 @@ export async function resolveSuggestion(input: { orgId: string; contractId: stri
           suggestion: Prisma.JsonNull, candidates: Prisma.JsonNull, updatedById: input.userId,
         },
       })
-      judged = JUDGED_KEYS.has(def.key) && !sameValue(row.value, suggestion.value)
+      judged = judges(def.key) && !sameValue(row.value, suggestion.value)
     } else {
       await tx.contractFieldValue.update({ where: { id: row.id }, data: { suggestion: Prisma.JsonNull, updatedById: input.userId } })
     }

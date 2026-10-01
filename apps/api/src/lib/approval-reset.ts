@@ -29,6 +29,9 @@ import { onCounterpartyVersion, positionOf, transition, workingStageBefore } fro
 import { cancelEscalation, deciderIdsOf, type WorkflowStepDef } from './workflow-engine.js'
 import { normaliseText } from './fingerprint.js'
 
+/** What an approval was always taken to cover (X42): what the auto-approval rule reads. */
+const X42_FIELDS = ['type', 'value', 'currency']
+
 export interface ChangeArgs {
   orgId: string
   contractId: string
@@ -153,9 +156,10 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
   })
   if (!instance) {
     // Approved with no approval on record (set before approvals were kept by
-    // version, or imported): nothing says what the approval covered, so any
-    // change sends it back to be submitted again (X42).
-    if (pos.stageState === 'approved' && a.source === 'edit' && (document || fields.length)) {
+    // version, or imported): there are no rules to read, so X42's stands — a
+    // new document, or a change to what the auto-approval rule judges (type,
+    // value, currency), sends it back to be submitted again.
+    if (pos.stageState === 'approved' && a.source === 'edit' && (document || fields.some(f => X42_FIELDS.includes(f)))) {
       out.withdrawn = true
       await transition({
         orgId: a.orgId, contractId: a.contractId, source: 'edit', userId: a.userId,

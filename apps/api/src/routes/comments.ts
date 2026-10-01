@@ -51,7 +51,11 @@ export async function commentRoutes(app: FastifyInstance) {
     })
 
     const nextCursor = comments.length === parseInt(limit, 10) ? comments[comments.length - 1].id : null
-    return reply.send({ data: comments, nextCursor })
+    // docs/41 Part 12 — how many threads there are, for counts that don't
+    // fetch them all (the rail said "9+" for any two).
+    const { id: _page, ...every } = where
+    const total = await prisma.contractComment.count({ where: every })
+    return reply.send({ data: comments, nextCursor, total })
   })
 
 

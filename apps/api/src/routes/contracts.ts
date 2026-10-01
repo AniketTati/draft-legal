@@ -1351,10 +1351,15 @@ export async function contractRoutes(app: FastifyInstance) {
     // these from the document, whose own changes reset approval where a
     // version is saved.)
     const num = (v: unknown) => (v == null ? null : Number(v))
+    const day = (v: unknown) => (v == null || v === '' ? null : new Date(v as string).toISOString().slice(0, 10))
     const changedTerms = req.user.sub === 'system' ? [] : [
       ...(body.type !== undefined && body.type !== existing.type ? ['type'] : []),
       ...(body.value !== undefined && num(body.value) !== num(existing.value) ? ['value'] : []),
       ...(body.currency !== undefined && body.currency !== existing.currency ? ['currency'] : []),
+      ...(body.effectiveDate !== undefined && day(body.effectiveDate) !== day(existing.effectiveDate) ? ['effectiveDate'] : []),
+      ...(body.expiryDate !== undefined && day(body.expiryDate) !== day(existing.expiryDate) ? ['expiryDate'] : []),
+      ...(body.counterpartyName !== undefined && (body.counterpartyName ?? null) !== existing.counterpartyName ? ['counterpartyName'] : []),
+      ...(body.jurisdiction !== undefined && (body.jurisdiction ?? null) !== existing.jurisdiction ? ['jurisdiction'] : []),
     ]
     const termsChanged = changedTerms.length > 0 && from.stage === 'approve'
     if (termsChanged && target) {

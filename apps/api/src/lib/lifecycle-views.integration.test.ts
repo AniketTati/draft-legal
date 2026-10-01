@@ -140,9 +140,12 @@ describe('the inbox (docs/41 Part 6)', () => {
 
     const team = (q: string) => app.inject({ method: 'GET', url: `/api/v1/inbox?view=team${q}`, headers: H(owner, ['LEGAL_OPS']) }).then(r => r.json())
     const ids = (r: { data: Array<{ contractId: string }> }) => r.data.map(d => d.contractId)
+    // Waiting for approval with no request open (set by hand long ago): stuck too.
+    const orphan = await withVersion('PENDING_APPROVAL')
     const stuckOnly = await team('&stuck=1')
     expect(ids(stuckOnly)).toContain(stuck.id)
     expect(ids(stuckOnly)).not.toContain(fine.id)
+    expect(stuckOnly.data.find((d: { contractId: string }) => d.contractId === orphan.id)?.stuck).toMatch(/no request for approval is open/)
     expect(stuckOnly.data.find((d: { contractId: string }) => d.contractId === stuck.id).stuck).toMatch(/can’t act/)
     const all = await team('')
     expect(ids(all)).toEqual(expect.arrayContaining([stuck.id, fine.id]))

@@ -50,11 +50,15 @@ export async function contractApprovalRoutes(app: FastifyInstance) {
       where: { orgId, contractId: id, kind: 'clause_exception' }, orderBy: { createdAt: 'desc' }, take: 50,
     })
     const exceptionPeople = [...new Set(exceptionSteps.flatMap(s => [s.approverId, s.requestedById]).filter((x): x is string => !!x))]
+    const exceptionRoles = [...new Set(exceptionSteps.map(s => s.approverRoleId).filter((x): x is string => !!x))]
+    const exRoles = exceptionRoles.length ? await prisma.role.findMany({ where: { id: { in: exceptionRoles } }, select: { id: true, name: true } }) : []
     const exUsers = exceptionPeople.length ? await prisma.user.findMany({ where: { id: { in: exceptionPeople }, orgId }, select: { id: true, name: true, email: true } }) : []
     const exName = (uid: string | null) => { const u = uid ? exUsers.find(x => x.id === uid) : null; return u ? u.name || u.email : null }
     const exceptions = exceptionSteps.map(s => ({
       id: s.id, findingId: s.findingId, clauseType: s.clauseType, title: s.stepName.replace(/^Exception: /, ''), status: s.status,
       requestedBy: exName(s.requestedById), reason: s.requestNote, decidedBy: s.decidedAt ? exName(s.approverId) : null, comment: s.comment,
+      // Who it waits on while pending: the clause approver named when it was asked for.
+      waitingFor: s.status !== 'PENDING' ? null : s.approverId ? exName(s.approverId) : `anyone with the ${exRoles.find(r => r.id === s.approverRoleId)?.name ?? 'approver'} role`,
       decidedAt: s.decidedAt, createdAt: s.createdAt,
     }))
     if (!instances.length) return reply.send({ current: null, history: [], awaitingMe: null, exceptions })
