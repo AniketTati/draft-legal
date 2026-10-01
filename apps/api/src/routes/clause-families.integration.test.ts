@@ -183,6 +183,23 @@ describe('publishing a template', () => {
   })
 })
 
+describe('saving a seeded template from the builder', () => {
+  it('takes its camelCase keys, \'string\'/\'enum\' types and numeric defaults (they were refused, so it could never be republished)', async () => {
+    const t = (await call('POST', '/templates', { name: 'Seed-shaped', sections: [] })).json()
+    const res = await call('PATCH', `/templates/${t.id}`, { variables: [
+      { key: 'confidentialityYears', label: 'Years', type: 'number', required: true, defaultValue: 5 },
+      { key: 'governingLaw', label: 'Governing Law', type: 'enum', required: true, options: ['Delaware'], helpText: 'Which law' },
+      { key: 'customerName', label: 'Customer', type: 'string', required: true },
+    ] })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().variables).toEqual([
+      expect.objectContaining({ key: 'confidentialityYears', defaultValue: '5' }),
+      expect.objectContaining({ key: 'governingLaw', type: 'select', helpText: 'Which law' }),
+      expect.objectContaining({ key: 'customerName', type: 'text' }),
+    ])
+  })
+})
+
 describe('the default template for a contract type', () => {
   it('is one per org and type, and drafting picks it over the others', async () => {
     const f = await family()

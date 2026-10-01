@@ -32,7 +32,7 @@ export function normaliseForFingerprint(text: string, variables: FingerprintVari
     .sort((a, b) => b[1].length - a[1].length)
   for (const [key, value] of values) s = s.split(value).join(`{{${key}}}`)
   // A tag stands for a space; one around a value's mark isn't a word break.
-  return s.replace(/\s+/g, ' ').replace(/\s+([.,;:!?)\]])/g, '$1').replace(/([(\[])\s+/g, '$1').trim().toLowerCase()
+  return s.replace(/\s+/g, ' ').replace(/\s+([.,;:!?)\]])/g, '$1').replace(/([([])\s+/g, '$1').trim().toLowerCase()
 }
 
 /** sha256 (hex) of the normalised text. */

@@ -24,15 +24,21 @@ import { publishTemplate, setDefaultForType } from '../lib/template-publish.js'
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
+// docs/41 Part 1 — the seeded templates' variables are camelCase, typed
+// 'string'/'enum' and default to numbers, so saving one from the builder was
+// refused outright (and publishing it never happened). Their shape is read as
+// the builder's: the engine fills any {{key}} the template uses.
+const SEED_TYPES: Record<string, string> = { string: 'text', enum: 'select' }
 const VariableDefSchema = z.object({
-  key: z.string().min(1).regex(/^[a-z][a-z0-9_]*$/, 'Variable key must be snake_case'),
+  key: z.string().min(1).regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'A variable key is letters, digits and underscores'),
   label: z.string().min(1),
-  type: z.enum(['text', 'number', 'date', 'boolean', 'select']),
+  type: z.preprocess(t => (typeof t === 'string' ? SEED_TYPES[t] ?? t : t), z.enum(['text', 'number', 'date', 'boolean', 'select'])),
   required: z.boolean().default(false),
-  defaultValue: z.string().optional(),
+  defaultValue: z.preprocess(v => (typeof v === 'number' || typeof v === 'boolean' ? String(v) : v), z.string().optional()),
   // docs/41 P0.4 — the org's own default for a legal choice (see VariableDef).
   orgDefault: z.boolean().optional(),
   options: z.array(z.string()).optional(), // for select type
+  helpText: z.string().max(1000).optional(),
   // docs/39 H1/H2 — the contract field its value fills.
   field: z.string().max(100).nullable().optional(),
 })
