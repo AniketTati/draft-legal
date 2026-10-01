@@ -1,0 +1,11 @@
+<template>
+    <lightning-card title="Document" icon-name="standard:document">
+        <lightning-button-icon slot="actions" icon-name="utility:refresh" alternative-text="Refresh" onclick={load}></lightning-button-icon>
+        <template lwc:if={url}>
+            <iframe src={url} style={frameStyle} title="Contract document (read-only)" sandbox="allow-scripts allow-same-origin"></iframe>
+        </template>
+        <template lwc:elseif={error}>
+            <div class="slds-p-horizontal_medium slds-text-color_error" role="alert">{error}</div>
+        </template>
+    </lightning-card>
+</template>

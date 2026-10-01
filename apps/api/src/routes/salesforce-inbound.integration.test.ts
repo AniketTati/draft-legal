@@ -207,6 +207,9 @@ describe('a launch from an Opportunity', () => {
     expect(body.selfServe).toBe(true)
     expect(body.fields.map((f: { dlField: string }) => f.dlField).sort()).toEqual(['effectiveDate', 'value', 'var:purpose'])
     expect(body.fields.find((f: { dlField: string }) => f.dlField === 'value').locked).toBe(true)
+    // The change Flow asks for every mapped field, once each.
+    const all = await app.inject({ method: 'GET', url: '/api/v1/integrations/salesforce/launch-form?all=1', headers: sf(keyA) })
+    expect(all.json().fields.map((f: { externalField: string }) => f.externalField).sort()).toEqual(['Amount', 'CloseDate', 'Name'])
   })
 
   it('refuses a mapping to something that is not a draftLegal field', async () => {

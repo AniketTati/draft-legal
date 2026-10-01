@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DL_Stage__c</fullName>
+    <description>Request, Draft, Review, Negotiate, Approve, Sign, Signed or Closed.</description>
+    <label>Stage</label>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+</CustomField>

@@ -22,7 +22,7 @@
  * Salesforce (an API key with the `salesforce` scope, plus the header
  * `X-Salesforce-Org-Id` matching the connected org), at /api/v1/integrations/salesforce:
  *   GET    /oauth/callback           — public: Salesforce's redirect back (signed state)
- *   GET    /launch-form              — the field map for the native "New contract" form
+ *   GET    /launch-form              — the field map for the native "New contract" form (?all=1: every mapped field)
  *   POST   /requests                 — create a request from an Opportunity / Quote / Account
  *   POST   /changes                  — a mapped record changed (record-triggered Flow)
  *   GET    /contracts/:id/status     — what the status component shows
@@ -387,14 +387,18 @@ export async function salesforcePublicRoutes(app: FastifyInstance) {
 
   // ── The launch form: the field map for a contract type ──
   app.get('/launch-form', { preHandler: sf('create', 'request') }, async (req, reply) => {
-    const { contractType } = req.query as { contractType?: string }
+    // `all=1`: every field Salesforce sends, whatever the type (for the
+    // record-change Flow, which must send each mapped field it has).
+    const { contractType, all: everyType } = req.query as { contractType?: string; all?: string }
     const { orgId } = req.user
     const conn = await getConnection(orgId, 'salesforce')
     const all = await prisma.integrationFieldMapping.findMany({ where: { orgId, provider: 'salesforce' } })
     // The types this org has templates for, and the self-serve ones.
     const templated = await prisma.template.findMany({ where: { orgId, deletedAt: null, contractType: { not: null } }, select: { contractType: true }, distinct: ['contractType'] })
     const types = [...new Set([...templated.map(t => t.contractType!), ...selfServeTypes(conn?.config)])].sort()
-    const mappings = contractType ? mappingsForType(all, contractType) : all.filter(m => !m.contractType)
+    const mappings = everyType === '1'
+      ? all.filter((m, i) => all.findIndex(o => o.externalObject === m.externalObject && o.externalField === m.externalField) === i)
+      : contractType ? mappingsForType(all, contractType) : all.filter(m => !m.contractType)
     const fields = mappings.filter(m => m.direction !== 'outbound').map(m => {
       const def = coreField(m.dlField)
       return {

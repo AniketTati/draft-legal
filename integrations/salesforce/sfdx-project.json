@@ -1,0 +1,15 @@
+{
+  "packageDirectories": [
+    {
+      "path": "force-app",
+      "default": true,
+      "package": "draftLegal",
+      "versionName": "S1-S3",
+      "versionNumber": "0.1.0.NEXT"
+    }
+  ],
+  "name": "draftlegal-salesforce",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "61.0"
+}

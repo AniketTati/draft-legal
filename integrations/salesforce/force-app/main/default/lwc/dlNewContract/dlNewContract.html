@@ -1,0 +1,61 @@
+<template>
+    <lightning-card title="New contract" icon-name="standard:contract">
+        <div class="slds-p-horizontal_medium">
+            <template lwc:if={result}>
+                <div class="slds-text-body_regular slds-m-bottom_small">{result.text}</div>
+                <template lwc:if={result.note}>
+                    <div class="slds-text-color_weak slds-m-bottom_small">{result.note}</div>
+                </template>
+                <lightning-button variant="brand" label="Open in draftLegal" onclick={openResult} data-href={result.link}></lightning-button>
+            </template>
+            <template lwc:else>
+                <lightning-combobox
+                    name="contractType"
+                    label="Contract type"
+                    placeholder="Choose a type"
+                    value={contractType}
+                    options={contractTypes}
+                    onchange={handleType}
+                    disabled={submitting}
+                ></lightning-combobox>
+
+                <template lwc:if={loading}>
+                    <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+                </template>
+
+                <template lwc:if={hasFields}>
+                    <div class="slds-m-top_small">
+                        <template for:each={fields} for:item="f">
+                            <div key={f.key} class="slds-m-bottom_x-small">
+                                <template lwc:if={f.isSelect}>
+                                    <lightning-combobox label={f.label} value={f.value} options={f.options} disabled={f.locked} data-key={f.key} onchange={handleChange} field-level-help={f.source}></lightning-combobox>
+                                </template>
+                                <template lwc:elseif={f.isTextarea}>
+                                    <lightning-textarea label={f.label} value={f.value} disabled={f.locked} data-key={f.key} onchange={handleChange} field-level-help={f.source}></lightning-textarea>
+                                </template>
+                                <template lwc:elseif={f.isCheckbox}>
+                                    <lightning-input type="checkbox" label={f.label} checked={f.value} disabled={f.locked} data-key={f.key} onchange={handleChange} field-level-help={f.source}></lightning-input>
+                                </template>
+                                <template lwc:else>
+                                    <lightning-input type={f.inputType} label={f.label} value={f.value} disabled={f.locked} data-key={f.key} onchange={handleChange} field-level-help={f.source}></lightning-input>
+                                </template>
+                            </div>
+                        </template>
+                    </div>
+                </template>
+
+                <template lwc:if={error}>
+                    <div class="slds-text-color_error slds-m-top_small" role="alert">{error}</div>
+                </template>
+            </template>
+        </div>
+        <div slot="footer">
+            <template lwc:if={result}>
+                <lightning-button label="Done" onclick={close}></lightning-button>
+            </template>
+            <template lwc:else>
+                <lightning-button variant="brand" label={submitLabel} onclick={submit} disabled={submitDisabled}></lightning-button>
+            </template>
+        </div>
+    </lightning-card>
+</template>
