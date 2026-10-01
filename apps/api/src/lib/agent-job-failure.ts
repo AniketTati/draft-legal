@@ -1,4 +1,5 @@
 import { prisma } from './prisma.js'
+import { setTypeFieldsMark, typeFieldsMark } from './type-fields-read.js'
 
 /**
  * Jobs that run after a contract's analysis has succeeded. Their failure is
@@ -37,6 +38,14 @@ export async function onAgentJobFailed(job: FailedJob | undefined, err: Error): 
         } as never,
       },
     }).catch(() => {})
+    return
+  }
+  // docs/39 A13 — a retype's read of the new type's own fields: the rest of
+  // the analysis stands. The page says the read failed and offers it again.
+  if (job.name === 'extract-type-fields') {
+    const { contractType } = job.data as { contractType: string }
+    await prisma.contract.updateMany({ where: { id: contractId, type: contractType, analysisStatus: 'ANALYZING' }, data: { analysisStatus: 'DONE' } }).catch(() => {})
+    await setTypeFieldsMark(contractId, typeFieldsMark(contractType, err.message)).catch(() => {})
     return
   }
   if (job.name && FOLLOW_ON_JOBS.has(job.name)) return

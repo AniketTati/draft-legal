@@ -20,6 +20,7 @@ from app.routes import obligations
 from app.routes import renewals
 from app.routes import compliance
 from app.routes import extract_fields
+from app.routes import find_clause
 from app import tracing
 
 logging.basicConfig(
@@ -135,6 +136,7 @@ app.include_router(obligations.router)
 app.include_router(renewals.router)
 app.include_router(compliance.router)
 app.include_router(extract_fields.router)
+app.include_router(find_clause.router)  # docs/39 E3
 
 
 @app.get("/health")

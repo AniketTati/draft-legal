@@ -94,8 +94,36 @@ export function toObligationRows(
 }
 
 /**
- * Run extraction end-to-end. Replaces existing OPEN obligations on the
- * contract; COMPLETED rows are preserved across re-runs.
+ * docs/39 G4 — after its analysis, a signed contract is read for its
+ * obligations: executed in the app or uploaded as signed, or its document
+ * gives a signing date (a draft's signature block is left blank). Once only;
+ * what's found is suggested. True when queued.
+ */
+export async function queueObligationsIfSigned(orgId: string, contractId: string): Promise<boolean> {
+  const c = await prisma.contract.findFirst({
+    where: { id: contractId, orgId, deletedAt: null, diligenceRoomId: null },
+    select: { status: true, metadata: true },
+  })
+  if (!c || ((c.metadata ?? {}) as Record<string, unknown>).obligationsExtractedAt) return false
+  let signed = c.status === 'EXECUTED'
+  if (!signed) {
+    const signedOn = await prisma.contractFieldValue.findUnique({ where: { contractId_fieldKey: { contractId, fieldKey: 'executionDate' } }, select: { value: true } })
+    signed = typeof signedOn?.value === 'string' && signedOn.value !== ''
+  }
+  if (!signed) return false
+  // Loaded here: the queue connects to Redis as it loads, which this module's pure helpers don't need.
+  const { queueExtractObligations } = await import('./queue.js')
+  return queueExtractObligations({ orgId, contractId })
+}
+
+/** Two obligations the same one: their words, case, spacing and punctuation aside. */
+export function sameObligation(text: string | null | undefined): string {
+  return (text ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160)
+}
+
+/**
+ * Run extraction end-to-end. Replaces the AI's own suggestions still open;
+ * what a person confirmed, dismissed or completed is preserved (G4).
  *
  * Throws CostCapExceededError when the daily cap is hit so callers can
  * decide whether to surface 429 or skip silently. All other failures
@@ -173,17 +201,22 @@ export async function extractObligationsForContract({
     inputChars: text.length,
   }).catch(() => {})
 
-  // Replace OPEN/OVERDUE rows; preserve COMPLETED.
+  // docs/39 G4 — what the AI finds is a suggestion until a person confirms
+  // it. A re-read replaces only its own suggestions still open: what a person
+  // confirmed, dismissed or completed stays, and isn't suggested again. (It
+  // used to delete every open obligation, a confirmed one included.)
   const incoming = (parsed.obligations ?? []) as Array<Record<string, unknown>>
   await prisma.obligation.deleteMany({
-    where: { contractId, status: { in: ['OPEN', 'OVERDUE'] } },
+    where: { contractId, reviewState: 'SUGGESTED', status: { in: ['OPEN', 'OVERDUE'] } },
   })
-  if (incoming.length > 0) {
-    await prisma.obligation.createMany({
-      data: toObligationRows(incoming, { orgId, contractId }),
-    })
+  const kept = await prisma.obligation.findMany({ where: { contractId }, select: { description: true, quote: true } })
+  const known = new Set(kept.flatMap(k => [sameObligation(k.quote), sameObligation(k.description)]).filter(Boolean))
+  const fresh = toObligationRows(incoming, { orgId, contractId })
+    .filter(r => !known.has(sameObligation(r.quote)) && !known.has(sameObligation(r.description)))
+  if (fresh.length > 0) {
+    await prisma.obligation.createMany({ data: fresh.map(r => ({ ...r, reviewState: 'SUGGESTED' })) })
     // H2 — advertised to webhook subscribers, never emitted until now.
-    fireWebhook(orgId, 'obligation.extracted', { contractId, count: Math.min(incoming.length, 100) })
+    fireWebhook(orgId, 'obligation.extracted', { contractId, count: fresh.length })
   }
 
   // Update metadata with summary + extraction timestamp.
@@ -203,12 +236,12 @@ export async function extractObligationsForContract({
     orgId, userId,
     action: AuditAction.OBLIGATION_EXTRACTED,
     resourceType: 'contract', resourceId: contractId,
-    metadata: { count: incoming.length, trigger: userId === 'system' ? 'auto' : 'manual' },
+    metadata: { count: fresh.length, found: incoming.length, trigger: userId === 'system' ? 'auto' : 'manual' },
   })
 
   return {
     ok:      !parsed.error,
-    count:   incoming.length,
+    count:   fresh.length,
     summary: parsed.summary ?? '',
     error:   parsed.error ?? null,
   }

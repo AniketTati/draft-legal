@@ -26,8 +26,9 @@ describe('tokenize pseudonyms are keyed', () => {
 
 describe('background jobs apply the policy on the way out, and restore on the way back', () => {
   it('callAgents redacts the request body before fetching, and restores the reply after', () => {
-    const src = readFileSync(join(process.cwd(), 'src', 'workers', 'agent.worker.ts'), 'utf8')
-    const start = src.indexOf('async function callAgents(')
+    // docs/39 D1 — moved out of the worker so a route calls the agents service the same way.
+    const src = readFileSync(join(process.cwd(), 'src', 'lib', 'agents-call.ts'), 'utf8')
+    const start = src.indexOf('export async function callAgents(')
     const fn = src.slice(start, src.indexOf('\n}\n', start))
     const fetchAt = fn.indexOf('modelFetch(')   // Y2 — the call to the agents service
     expect(fetchAt).toBeGreaterThan(-1)
@@ -46,7 +47,8 @@ describe('the agents service keeps round-trip tokens intact (source tripwires)',
     expect(review).toContain('_EXTRACT_PROMPT + extra_prompt + PII_TOKEN_RULE')
     // …and the recall, validate and score passes, whose output is stored too.
     expect(review).toContain('second_prompt + PII_TOKEN_RULE')
-    expect(review).toContain('_VALIDATE_PROMPT + payload + PII_TOKEN_RULE')
+    // docs/39 A11 — the reading note (language, date order) goes before the rule, which still ends the prompt.
+    expect(review).toMatch(/_VALIDATE_PROMPT \+ payload \+ .*PII_TOKEN_RULE\)/)
     expect(review).toContain('_SCORE_PROMPT + payload + PII_TOKEN_RULE')
     expect(py('routes', 'assist.py')).toContain('_REDLINE_SYSTEM + PII_TOKEN_RULE')
     expect(py('routes', 'assist.py')).toContain('_BATCH_REDLINE_SYSTEM + PII_TOKEN_RULE')

@@ -4,9 +4,17 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { portfolioWhere } from '../lib/own-scope-guard.js'
+import { totalsByCurrency } from '@clm/types'
+import { linkContractsTo, newAliases, namesOf, relinkDropped, unlinkedGroups } from '../lib/counterparty-directory.js'
+import { compactKey } from '../lib/company-names.js'
+
+const Alias = z.string().trim().min(1).max(255)
 
 const CreateCounterpartySchema = z.object({
-  name:    z.string().min(1).max(255),
+  name:    z.string().trim().min(1).max(255),
+  legalName: z.string().trim().max(255).optional(),
+  // docs/39 A14 — other names contracts give it; contracts naming any of them link here.
+  aliases: z.array(Alias).max(50).optional(),
   email:   z.string().email().optional(),
   phone:   z.string().optional(),
   address: z.string().optional(),
@@ -155,16 +163,57 @@ export async function counterpartyRoutes(app: FastifyInstance) {
     return reply.send({ data })
   })
 
+  // GET /api/v1/counterparties/unlinked — docs/39 A14: counterparty names on
+  // contracts that no directory entry has, one group per company (spellings
+  // together), most contracts first, each with the entry it might be.
+  app.get('/unlinked', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { groups, contracts } = await unlinkedGroups(req.user.orgId, portfolioWhere(req))
+    return reply.send({ groups: groups.slice(0, 100), total: groups.length, contracts })
+  })
+
   // POST /api/v1/counterparties
+  //
+  // docs/39 A14 — every contract naming the new company (by any of its names)
+  // and linked to nothing is linked to it. A name deleted before is restored
+  // rather than refused: the name is unique in the org.
   app.post('/', { preHandler: requirePermission('create', 'contract') }, async (req, reply) => {
     const body = CreateCounterpartySchema.parse(req.body)
     const { orgId } = req.user
+    const aliases = newAliases({ name: body.name, legalName: body.legalName ?? null, aliases: [] }, body.aliases ?? [])
 
-    const counterparty = await prisma.counterparty.create({
-      data: { ...body, orgId } as Prisma.CounterpartyUncheckedCreateInput,
+    const deleted = await prisma.counterparty.findFirst({ where: { orgId, name: body.name, deletedAt: { not: null } }, select: { id: true, aliases: true } })
+    const { counterparty, linked } = await prisma.$transaction(async tx => {
+      const counterparty = deleted
+        ? await tx.counterparty.update({
+            where: { id: deleted.id },
+            data: { ...body, aliases: [...new Set([...deleted.aliases, ...aliases])], deletedAt: null } as Prisma.CounterpartyUncheckedUpdateInput,
+          })
+        : await tx.counterparty.create({
+            data: { ...body, aliases, orgId } as Prisma.CounterpartyUncheckedCreateInput,
+          })
+      return { counterparty, linked: await linkContractsTo(tx, orgId, counterparty) }
     })
 
-    return reply.status(201).send(counterparty)
+    return reply.status(201).send({ ...counterparty, linkedContracts: linked })
+  })
+
+  // POST /api/v1/counterparties/:id/aliases — docs/39 A14: other names for
+  // this company (from Counterparties › names not in the directory); the
+  // contracts naming them are linked here.
+  app.post('/:id/aliases', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { names } = z.object({ names: z.array(Alias).min(1).max(50) }).parse(req.body ?? {})
+    const { orgId } = req.user
+    const existing = await prisma.counterparty.findFirst({ where: { id, orgId, deletedAt: null } })
+    if (!existing) return reply.status(404).send({ detail: 'Counterparty not found' })
+    const add = newAliases(existing, names)
+    const { counterparty, linked } = await prisma.$transaction(async tx => {
+      const counterparty = add.length
+        ? await tx.counterparty.update({ where: { id }, data: { aliases: [...existing.aliases, ...add] } })
+        : existing
+      return { counterparty, linked: await linkContractsTo(tx, orgId, counterparty) }
+    })
+    return reply.send({ ...counterparty, linkedContracts: linked, added: add })
   })
 
   // GET /api/v1/counterparties/:id
@@ -226,17 +275,16 @@ export async function counterpartyRoutes(app: FastifyInstance) {
     const ACTIVE = ['UNDER_NEGOTIATION', 'PENDING_REVIEW', 'PENDING_APPROVAL', 'PENDING_SIGNATURE', 'APPROVED']
     const EXECUTED = ['EXECUTED', 'PARTIALLY_EXECUTED']
 
-    let totalValue = 0
     let activeCount = 0
     let executedCount = 0
     let draftCount = 0
     let highRiskCount = 0
     const statusBreakdown: Record<string, number> = {}
+    // docs/39 D4 — per currency: the total added every currency together
+    // under the first contract's.
+    const totals = totalsByCurrency(contracts.map(c => ({ value: c.value?.toString(), currency: c.currency })))
 
     for (const c of contracts) {
-      // Decimal to number — value is "5000000" string in JSON, sum it as float
-      const v = c.value ? Number(c.value.toString()) : 0
-      totalValue += v
       statusBreakdown[c.status] = (statusBreakdown[c.status] ?? 0) + 1
       if (ACTIVE.includes(c.status)) activeCount++
       else if (EXECUTED.includes(c.status)) executedCount++
@@ -286,8 +334,10 @@ export async function counterpartyRoutes(app: FastifyInstance) {
       contracts,
       stats: {
         contractCount: contracts.length,
-        totalValue,
-        currency: contracts[0]?.currency ?? 'USD',
+        totals,
+        // The most common currency's own total, for older readers.
+        totalValue: totals[0]?.amount ?? 0,
+        currency: totals[0]?.currency ?? 'USD',
         activeCount,
         executedCount,
         draftCount,
@@ -309,8 +359,28 @@ export async function counterpartyRoutes(app: FastifyInstance) {
     const existing = await prisma.counterparty.findFirst({ where: { id, orgId, deletedAt: null } })
     if (!existing) return reply.status(404).send({ detail: 'Counterparty not found' })
 
-    const updated = await prisma.counterparty.update({ where: { id, orgId }, data: body as Prisma.CounterpartyUncheckedUpdateInput })
-    return reply.send(updated)
+    const data = { ...body } as Prisma.CounterpartyUncheckedUpdateInput
+    const name = body.name ?? existing.name
+    const legalName = body.legalName ?? existing.legalName
+    // Renamed, it keeps the old name among its names: its contracts still say it.
+    const kept = [...(body.aliases ?? existing.aliases), ...(body.name && body.name !== existing.name ? [existing.name] : [])]
+    // Aliases are kept one per company, never repeating the entry's own names.
+    if (body.aliases || body.name) data.aliases = newAliases({ name, legalName, aliases: [] }, kept)
+    const { updated, linked, unlinked } = await prisma.$transaction(async tx => {
+      const updated = await tx.counterparty.update({ where: { id, orgId }, data })
+      // A14 — a new name, legal name or alias links the contracts that use it;
+      // one taken off moves its contracts to the entry that has it, or none.
+      const before = new Set(namesOf(existing).map(n => compactKey(n)))
+      const after = new Set(namesOf(updated).map(n => compactKey(n)))
+      const grew = [...after].some(k => !before.has(k))
+      const removed = new Set([...before].filter(k => !after.has(k)))
+      return {
+        updated,
+        linked: grew ? await linkContractsTo(tx, orgId, updated) : 0,
+        unlinked: removed.size ? await relinkDropped(tx, orgId, updated, removed) : 0,
+      }
+    })
+    return reply.send({ ...updated, linkedContracts: linked, unlinkedContracts: unlinked })
   })
 
   // DELETE /api/v1/counterparties/:id

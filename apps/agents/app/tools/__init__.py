@@ -62,6 +62,8 @@ from .compliance_get     import build_compliance_get
 from .user_search       import build_user_search
 from .template_list     import build_template_list
 from .approval_decide   import build_approval_decide
+from .contract_field_set import build_contract_field_set
+from .field_create      import build_field_create
 
 
 def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTool]:
@@ -119,6 +121,9 @@ def get_read_tools(org_id: str, user_id: str | None = None) -> list[StructuredTo
         build_approval_route(org_id, user_id),
         build_redline_apply(org_id, user_id),
         build_approval_decide(org_id, user_id),
+        # docs/39 C5 — a field's value on a contract, and a new field, each on an Apply card.
+        build_contract_field_set(org_id, user_id),
+        build_field_create(org_id, user_id),
     ]
 
 

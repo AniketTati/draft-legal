@@ -14,6 +14,7 @@
  *   - Audit-log every resolution call
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { resolveLlm, NoProviderAvailable, type Tier } from '../lib/aiRouter.js'
 import { prisma } from '../lib/prisma.js'
@@ -21,7 +22,10 @@ import { resolveApprovers, checkAutoApprove, advanceWorkflow, type WorkflowStepD
 import { generateDocument } from '../lib/template-engine.js'
 import { searchClauses, effectiveClauseVersionIds } from '../lib/embeddings.js'
 import { advancedSearch, indexContract, deleteContractFromIndex } from '../lib/elasticsearch.js'
-import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue } from '../lib/queue.js'
+import { queueClassifyDocument, queueParseDocument, queueNotification, notificationQueue, queueExtractAi } from '../lib/queue.js'
+import { setValuesFromTemplate, setFieldValue, snapshotOf, undoPersonValue, type FieldSnapshot } from '../lib/field-store.js'
+import { orgDateOrder } from '../lib/org-date-order.js'
+import { createFieldDefinition, CreateFieldSchema, FIELD_TYPES } from './field-definitions.js'
 import { applyPiiPolicy, applyPiiPolicyBatch, redactJson, redactJsonAgainst, redactCuts, type CutText } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { setTenant } from '../lib/tenant-context.js'
@@ -30,7 +34,8 @@ import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { CostCapExceededError } from '../lib/costCap.js'
-import { AuditAction, pickWorkflow } from '@clm/types'
+import { AuditAction, pickWorkflow, totalsByCurrency, validateFieldFilter, parseFieldValue, formatFieldValue, fieldKeyFromLabel, type CatalogField, type FieldFilter } from '@clm/types'
+import { catalogField, coerceFilterValue, fieldCatalog, fieldCells, parseFieldCondition, queryContractIds, resolveFieldRef, similarFields } from '../lib/field-query.js'
 import { applyClauseProposal, applyClauseBatch } from '../lib/clause-apply.js'
 import { rrfScore } from '../lib/rrf.js'
 import { normalisedKey, matchCategory } from '../lib/clause-category.js'
@@ -180,6 +185,21 @@ const ContractSearchSchema = z.object({
   effectiveDateTo:   z.string().refine(v => !Number.isNaN(Date.parse(v)), 'effectiveDateTo must be a date').optional(),
   valueMin:          z.number().optional(),
   valueMax:          z.number().optional(),
+  // docs/39 D3 — any captured field, named by key or as people say it:
+  // filters in its own terms, a sort by it, and its values on each result.
+  fieldFilters: z.array(z.object({
+    field:    z.string().min(1).max(128),
+    op:       z.enum(['is', 'is_not', 'contains', 'gte', 'gt', 'lte', 'lt', 'between', 'any_of', 'present', 'empty']),
+    value:    z.unknown().optional(),
+    to:       z.unknown().optional(),
+    currency: z.string().regex(/^[A-Za-z]{3}$/).optional(),
+  })).max(10).optional(),
+  // The same, written as the assistant says them: "confidentiality period >= 3 years" (lib/field-query.ts parseFieldCondition).
+  fieldConditions: z.array(z.string().min(1).max(300)).max(10).optional(),
+  fields:      z.array(z.string().min(1).max(128)).max(12).optional(),
+  sortByField: z.string().min(1).max(128).optional(),
+  // docs/39 B3 — how much of each contract a person has checked.
+  checked:     z.enum(['verified', 'partly', 'unverified']).optional(),
 })
 
 const ContractSummarizeSchema = z.object({
@@ -1069,26 +1089,78 @@ export async function internalAiRoutes(app: FastifyInstance) {
       orderBy[body.sortBy] = body.sortOrder
     }
 
+    // docs/39 D3 — fields named as the user said them, resolved and checked
+    // here so a wrong name or value is said back, not silently dropped.
+    const fieldQuery = !!(body.fieldFilters?.length || body.fieldConditions?.length || body.sortByField || body.checked)
+    const catalog = fieldQuery || body.fields?.length ? await fieldCatalog(body.orgId) : []
+    const refused = (error: string, note: string) => reply.send({ error, total: 0, pageSize: 0, totalMatching: 0, results: [], note })
+    const noField = (ref: string) => {
+      const near = similarFields(catalog, ref)
+      return refused('unknown_field', `No field called "${ref}".${near.length ? ` Fields with a similar name: ${near.map(f => `${f.label} (${f.key})`).join(', ')}.` : ''} Search again with one of those, or without it.`)
+    }
+    const fieldFilters: FieldFilter[] = []
+    for (const ff of body.fieldFilters ?? []) {
+      const field = resolveFieldRef(catalog, ff.field)
+      if (!field) return noField(ff.field)
+      const filter: FieldFilter = {
+        key: field.key, op: ff.op,
+        ...(ff.value !== undefined && { value: coerceFilterValue(field, ff.op, ff.value) }),
+        ...(ff.to !== undefined && { to: coerceFilterValue(field, ff.op, ff.to) }),
+        ...(ff.currency && { currency: ff.currency.toUpperCase() }),
+      }
+      const why = validateFieldFilter(field.type, filter)
+      if (why) return refused('invalid_field_filter', `The ${field.label} filter ${why}: it is a ${field.type} field${field.options?.length ? ` with the choices ${field.options.join(', ')}` : ''}.`)
+      fieldFilters.push(filter)
+    }
+    for (const text of body.fieldConditions ?? []) {
+      const r = parseFieldCondition(catalog, text)
+      if (!r.ok) return refused('unknown_field', r.detail)
+      const field = catalogField(catalog, r.filter.key)!
+      const why = validateFieldFilter(field.type, r.filter)
+      if (why) return refused('invalid_field_filter', `"${text}": the ${field.label} filter ${why}. It is a ${field.type} field${field.options?.length ? ` with the choices ${field.options.join(', ')}` : ''}.`)
+      fieldFilters.push(r.filter)
+    }
+    const sortField = body.sortByField ? resolveFieldRef(catalog, body.sortByField) : undefined
+    if (body.sortByField && !sortField) return noField(body.sortByField)
+
+    const SEARCH_SELECT = {
+      id: true, title: true, type: true, status: true,
+      counterpartyName: true, riskScore: true,
+      effectiveDate: true, expiryDate: true,
+      value: true, currency: true, updatedAt: true,
+      // GG2 — its place in a family, and the terms a benchmark reads (benchmarkTerms).
+      parentContractId: true, relationshipType: true, keyTerms: true,
+    } as const
     // P63 audit (2026-05-02). Run findMany + count in parallel so
     // we can return BOTH the page (`results`) and the true total
     // (`totalMatching`). The agent was treating `total === results.length`
     // as the org's contract count, which made "how many MSAs do I
     // have" answers wrong (50 = page size ≠ 154 = real total).
-    const [contracts, totalMatching] = await Promise.all([
-      prisma.contract.findMany({
-        where: where as never,
-        select: {
-          id: true, title: true, type: true, status: true,
-          counterpartyName: true, riskScore: true,
-          effectiveDate: true, expiryDate: true,
-          value: true, currency: true, updatedAt: true,
-          parentContractId: true, relationshipType: true, keyTerms: true,
-        },
-        orderBy: orderBy as never,
-        take: body.limit,
-      }),
-      prisma.contract.count({ where: where as never }),
-    ])
+    let contracts: Array<Prisma.ContractGetPayload<{ select: typeof SEARCH_SELECT }>>
+    let totalMatching: number
+    if (fieldQuery) {
+      // The same query the contracts list runs (lib/field-query.ts), over what the filters above let through.
+      const candidates = await prisma.contract.findMany({ where: where as never, select: { id: true }, take: 20_000 })
+      const r = await queryContractIds({
+        orgId: body.orgId, ids: candidates.map(c => c.id), where: fieldFilters, checked: body.checked,
+        sort: { key: sortField?.key ?? body.sortBy, dir: body.sortOrder }, offset: 0, limit: body.limit,
+      }, catalog)
+      if (!r.ok) return refused('invalid_field_filter', r.detail)
+      const rows = await prisma.contract.findMany({ where: { id: { in: r.ids } }, select: SEARCH_SELECT })
+      const byId = new Map(rows.map(c => [c.id, c]))
+      contracts = r.ids.map(id => byId.get(id)).filter((c): c is NonNullable<typeof c> => !!c)
+      totalMatching = r.total
+    } else {
+      ;[contracts, totalMatching] = await Promise.all([
+        prisma.contract.findMany({
+          where: where as never,
+          select: SEARCH_SELECT,
+          orderBy: orderBy as never,
+          take: body.limit,
+        }),
+        prisma.contract.count({ where: where as never }),
+      ])
+    }
 
     // A1 — semantic fallback. If a query was provided AND keyword search
     // returned 0 hits, try pgvector clause-similarity to surface contracts
@@ -1105,7 +1177,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // nobody asked. A name that matches nothing is reported as a miss.
     const looksLikeAName = /\b(?:inc|llc|ltd|limited|corp|corporation|co|company|gmbh|plc|llp|lp|sa|ag|bv|pty)\b\.?$/i.test(rawQuery)
       || /^[A-Z][\w&'.-]*(?:\s+[A-Z][\w&'.-]*){1,3}$/.test(rawQuery)
-    if (contracts.length === 0 && rawQuery && !isWildcard && !looksLikeAName) {
+    // Not under field filters: a clause that reads like the words isn't a contract holding the value.
+    if (contracts.length === 0 && rawQuery && !isWildcard && !looksLikeAName && !fieldQuery) {
       try {
         const clauseHits = await searchClauses(rawQuery, body.orgId, body.limit * 4, undefined, scopeOwnerId(scope))
         const seen = new Set<string>()
@@ -1132,13 +1205,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
           if (body.counterpartyName) semanticWhere.counterpartyName = { contains: body.counterpartyName, mode: 'insensitive' }
           const fallbackHits = await prisma.contract.findMany({
             where: semanticWhere as never,
-            select: {
-              id: true, title: true, type: true, status: true,
-              counterpartyName: true, riskScore: true,
-              effectiveDate: true, expiryDate: true,
-              value: true, currency: true, updatedAt: true,
-              parentContractId: true, relationshipType: true, keyTerms: true,
-            },
+            select: SEARCH_SELECT,
           })
           // Preserve semantic-rank order
           const byId = new Map(fallbackHits.map(c => [c.id, c]))
@@ -1154,7 +1221,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     // CC7 — a type filter the assistant added on a guess can hide the one
     // contract asked for: say how many match without it.
     let typeNote: string | undefined
-    if (finalResults.length === 0 && body.type) {
+    if (finalResults.length === 0 && body.type && !fieldQuery) {
       const withoutType = await prisma.contract.count({ where: { ...(where as Record<string, unknown>), type: undefined } as never })
       if (withoutType > 0) {
         typeNote = `No ${body.type} matched, but ${withoutType === 1 ? '1 contract matches' : `${withoutType} contracts match`} without the type filter. `
@@ -1164,6 +1231,27 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const nameNote = contracts.length === 0 && looksLikeAName && !usedFallback
       ? `No contract has a title or counterparty matching "${rawQuery}". Say so; do not offer other counterparties' contracts as if they were it.`
       : undefined
+
+    // docs/39 D3 — the fields asked for, and those filtered or sorted on, as
+    // people read them, keyed by the field's name; the PII policy applies as
+    // it does to contract_get's key terms.
+    const shownFields = [...new Set([
+      ...(body.fields ?? []).map(ref => resolveFieldRef(catalog, ref)).filter((f): f is CatalogField => !!f),
+      ...fieldFilters.map(f => catalogField(catalog, f.key)!),
+      ...(sortField ? [sortField] : []),
+    ])]
+    const unknownShown = (body.fields ?? []).filter(ref => !resolveFieldRef(catalog, ref))
+    let fieldsById: Record<string, Record<string, string | null>> = {}
+    if (shownFields.length && finalResults.length) {
+      const cellRows = await prisma.contract.findMany({
+        where: { id: { in: finalResults.map(c => c.id) } },
+        select: { id: true, value: true, currency: true, effectiveDate: true, expiryDate: true, jurisdiction: true, counterpartyName: true, keyTerms: true, metadata: true },
+      })
+      const cells = await fieldCells(cellRows, shownFields.map(f => f.key), catalog)
+      fieldsById = Object.fromEntries([...cells].map(([id, row]) => [id, Object.fromEntries(shownFields.map(f => [f.label, row[f.key]?.display || null]))]))
+      fieldsById = await redactJson(body.orgId, fieldsById, { surface: 'contract_search.fields' })
+    }
+    const fieldNote = unknownShown.length ? `No field called ${unknownShown.map(r => `"${r}"`).join(', ')}; its values are not shown.` : undefined
 
     return reply.send({
       // P63 — keep `total` as the page size for back-compat, but
@@ -1188,11 +1276,12 @@ export async function internalAiRoutes(app: FastifyInstance) {
         ...c,
         value: c.value != null ? Number(c.value) : null,
         terms: benchmarkTerms(keyTerms),
+        ...(fieldsById[c.id] && { fields: fieldsById[c.id] }),
       })),
       // Surface the fallback to the agent so it can mention "I broadened the
       // search" in its prose synthesis if it wants to be transparent.
       ...(usedFallback ? { searchMode: 'semantic-fallback', note: 'No keyword matches; expanded to clause-content semantic search.' } : {}),
-      ...((typeNote || nameNote) && { note: [typeNote, nameNote].filter(Boolean).join(' ') }),
+      ...((typeNote || nameNote || fieldNote) && { note: [typeNote, nameNote, fieldNote].filter(Boolean).join(' ') }),
     })
   })
 
@@ -1711,8 +1800,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
       })
     }
 
-    // Aggregate signals.
-    const totalValue = contracts.reduce((acc, c) => acc + (c.value != null ? Number(c.value) : 0), 0)
+    // Aggregate signals. docs/39 D4 — value per currency; `totalValue` is the
+    // most common currency's own total (it summed every currency together).
+    const totals = totalsByCurrency(contracts.map(c => ({ value: c.value?.toString(), currency: c.currency })))
+    const totalValue = totals[0]?.amount ?? 0
     const currencies = [...new Set(contracts.map(c => c.currency).filter(Boolean) as string[])]
     const types = [...new Set(contracts.map(c => c.type).filter(Boolean))]
     const signedDates = contracts
@@ -1730,6 +1821,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       dealCount:        contracts.length,
       deals,
       aggregate: {
+        totals,
         totalValue,
         currencies,
         types,
@@ -3116,6 +3208,145 @@ export async function internalAiRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, undone: true, commentId: existing.id })
   })
 
+  // ── docs/39 C5 — the assistant sets a field, or adds one, on a confirm card ──
+  // The value is never written silently: the card (agents contract_field_set)
+  // is built from contract_field_preview — the field found by the name the
+  // user said, the value read in its own terms, and the value it would
+  // replace with who set it. Only Apply writes, as that person, undoably.
+  const placeholder = (v: unknown) => /\[(?:REDACTED|PII):[^\]]+\]/.test(typeof v === 'string' ? v : JSON.stringify(v ?? ''))
+
+  /** The field a name means on a contract, its value read in the field's terms, and what it would replace. */
+  async function fieldChange(orgId: string, scope: CallerScope, contractId: string, fieldRef: string, raw: unknown) {
+    const contract = await prisma.contract.findFirst({
+      where: { id: contractId, orgId, deletedAt: null, ...contractScopeWhere(scope) },
+      select: { id: true, title: true, type: true },
+    })
+    if (!contract) return { error: 'not_found', note: 'No such contract, or not one this user can change.' } as const
+    const catalog = await fieldCatalog(orgId)
+    const field = resolveFieldRef(catalog, fieldRef)
+    if (!field) {
+      const near = similarFields(catalog, fieldRef)
+      return { error: 'unknown_field', note: `No field called "${fieldRef}".${near.length ? ` Fields with a similar name: ${near.map(f => `${f.label} (${f.key})`).join(', ')}.` : ''} To track a new term, use field_create first.` } as const
+    }
+    if (field.contractTypes && !field.contractTypes.includes(contract.type)) {
+      return { error: 'not_for_type', note: `${field.label} is kept on ${field.contractTypes.join(', ')} contracts; this one is ${contract.type}.` } as const
+    }
+    // A value the model copied from a redacted answer isn't the value.
+    if (placeholder(raw)) return { error: 'placeholder', note: 'The value holds a redacted placeholder, not the real value: ask the user for it.' } as const
+    const parsed = parseFieldValue(field.type, raw, { options: field.options, dateOrder: await orgDateOrder(orgId) })
+    if (!parsed.ok) return { error: 'invalid_value', note: `${field.label}: ${parsed.error}` } as const
+    const current = await prisma.contractFieldValue.findUnique({
+      where: { contractId_fieldKey: { contractId, fieldKey: field.key } },
+      select: { value: true, source: true, verifiedAt: true, verifiedById: true, updatedById: true },
+    })
+    const byId = current?.verifiedById ?? (current && current.source !== 'ai' && current.source !== 'calculated' ? current.updatedById : null)
+    const by = byId ? (await prisma.user.findFirst({ where: { id: byId, orgId }, select: { name: true, email: true } })) : null
+    const has = current && current.value !== null
+    // As the Fields panel shows them: a number with its unit ("30 days").
+    const show = (v: unknown) => `${formatFieldValue(field.type, v)}${field.unit ? ` ${field.unit}` : ''}`
+    return {
+      contract, field, value: parsed.value,
+      display: parsed.value === null ? '—' : show(parsed.value),
+      before: has ? {
+        display: show(current!.value), source: current!.source,
+        checked: !!current!.verifiedAt, by: by ? by.name || by.email : null,
+      } : null,
+    } as const
+  }
+
+  // Read-only: what the card shows (the agents' contract_field_set calls it before offering one).
+  app.post('/tools/contract_field_preview', async (req, reply) => {
+    const body = z.object({
+      orgId: z.string().min(1), userId: z.string().nullable().optional(),
+      contractId: z.string().min(1), field: z.string().min(1).max(128), value: z.unknown(),
+    }).safeParse(req.body)
+    if (!body.success) return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
+    const scope = await scopeOr403(reply, body.data.orgId, body.data.userId, 'contract', 'edit')
+    if (!scope) return
+    const r = await fieldChange(body.data.orgId, scope, body.data.contractId, body.data.field, body.data.value)
+    if ('error' in r) return reply.send(r)
+    return reply.send({
+      ok: true, contractId: r.contract.id, contractTitle: r.contract.title,
+      field: { key: r.field.key, label: r.field.label, type: r.field.type },
+      display: r.display, before: r.before,
+    })
+  })
+
+  app.post('/tools/contract_field_set', async (req, reply) => {
+    const body = z.object({
+      orgId: z.string().min(1), userId: z.string().min(1),
+      contractId: z.string().min(1), field: z.string().min(1).max(128), value: z.unknown(),
+    }).safeParse(req.body)
+    if (!body.success) return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
+    const { orgId, userId, contractId } = body.data
+    const r = await fieldChange(orgId, { kind: 'org' }, contractId, body.data.field, body.data.value)
+    if ('error' in r) return reply.status(r.error === 'not_found' ? 404 : 400).send({ detail: r.note })
+    const beforeRow = await prisma.contractFieldValue.findUnique({ where: { contractId_fieldKey: { contractId, fieldKey: r.field.key } } })
+    const written = await setFieldValue({
+      orgId, contractId, key: r.field.key, raw: body.data.value, userId, source: 'user',
+      audit: { source: 'assistant' },
+    })
+    if (!written.ok) return reply.status(written.status).send({ detail: written.detail })
+    return reply.send({
+      ok: true, reversible: true, contractId,
+      field: { key: r.field.key, label: r.field.label, display: written.field.display },
+      // For the undo: what it was, and what this set.
+      snapshot: { key: r.field.key, before: snapshotOf(beforeRow ?? undefined), after: written.field.value },
+      diff: [{ field: r.field.label, before: r.before?.display ?? '—', after: written.field.display }],
+    })
+  })
+
+  app.post('/tools/contract_field_set/undo', async (req, reply) => {
+    const body = z.object({
+      orgId: z.string().min(1), userId: z.string().min(1), contractId: z.string().min(1),
+      snapshot: z.object({ key: z.string().min(1), before: z.unknown().nullable(), after: z.unknown() }),
+    }).safeParse(req.body)
+    if (!body.success) return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
+    const { orgId, userId, contractId, snapshot } = body.data
+    if (!await prisma.contract.count({ where: { id: contractId, orgId, deletedAt: null } })) return reply.status(404).send({ detail: 'Contract not found' })
+    const r = await undoPersonValue({ contractId, key: snapshot.key, userId, before: (snapshot.before ?? null) as FieldSnapshot | null, after: snapshot.after })
+    if (r === 'changed') return reply.status(409).send({ detail: 'The value has changed since, so it was left as it is.' })
+    return reply.send({ ok: true, undone: true })
+  })
+
+  app.post('/tools/field_create', async (req, reply) => {
+    const body = z.object({
+      orgId: z.string().min(1), userId: z.string().min(1),
+      label: z.string().trim().min(1).max(128),
+      fieldType: z.enum(FIELD_TYPES),
+      contractType: z.string().max(64).nullable().optional(),
+      options: z.array(z.string().min(1).max(120)).max(50).optional(),
+      helpText: z.string().max(512).optional(),
+    }).safeParse(req.body)
+    if (!body.success) return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
+    const d = body.data
+    const r = await createFieldDefinition(d.orgId, CreateFieldSchema.parse({
+      fieldKey: fieldKeyFromLabel(d.label), fieldLabel: d.label, fieldType: d.fieldType,
+      contractType: d.contractType ?? null, options: d.options ?? [], ...(d.helpText && { helpText: d.helpText }),
+    }))
+    if (!r.ok) return reply.status(r.status).send({ detail: r.detail })
+    await createAuditEvent({
+      orgId: d.orgId, userId: d.userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'field_definition', resourceId: r.def.id,
+      metadata: { source: 'assistant', action: 'field_created', fieldKey: r.def.fieldKey, fieldType: r.def.fieldType },
+    }).catch(() => {})
+    return reply.send({
+      ok: true, reversible: true,
+      fieldDefinition: { id: r.def.id, fieldKey: r.def.fieldKey, fieldLabel: r.def.fieldLabel, fieldType: r.def.fieldType, contractType: r.def.contractType },
+    })
+  })
+
+  app.post('/tools/field_create/undo', async (req, reply) => {
+    const body = z.object({ orgId: z.string().min(1), fieldDefinitionId: z.string().min(1) }).safeParse(req.body)
+    if (!body.success) return reply.status(400).send({ detail: 'Invalid request', issues: body.error.issues })
+    const def = await prisma.contractFieldDefinition.findFirst({ where: { id: body.data.fieldDefinitionId, orgId: body.data.orgId } })
+    if (!def) return reply.status(404).send({ detail: 'Field not found or already removed' })
+    // Removed only while it holds nothing: a value someone set since is theirs.
+    const held = await prisma.contractFieldValue.count({ where: { orgId: body.data.orgId, fieldKey: def.fieldKey, NOT: { value: { equals: Prisma.AnyNull } } } })
+    if (held) return reply.status(409).send({ detail: `${def.fieldLabel} already holds values on ${held} contract${held === 1 ? '' : 's'}; remove it in Settings if you mean to.` })
+    await prisma.contractFieldDefinition.delete({ where: { id: def.id } })
+    return reply.send({ ok: true, undone: true })
+  })
+
   // ── POST /internal/ai/tools/approval_route (D.5.6) ─────────────────────────
   // Route a contract into its approval workflow. Inline happy path — the
   // REST /submit-approval endpoint has the full behaviour (escalation
@@ -3557,10 +3788,13 @@ export async function internalAiRoutes(app: FastifyInstance) {
           // Contract uses `createdBy` (not `createdById`) and has no
           // `updatedById` column — mirrors what POST /contracts does.
           createdBy: body.userId,
-          // analysisStatus stays null — user will kick off analyze when
-          // they're ready (a fresh template-generated draft doesn't need
-          // AI risk-scoring on minute one).
+          // docs/39 H3 — read like any other contract (below): the fields the
+          // template didn't fill, its clauses, its summary.
+          analysisStatus: plainText.trim() ? 'EXTRACTING' : 'DONE',
           tags: ['template-draft'],
+          // docs/39 H2 — the template's variables, kept with the draft: its
+          // Variables panel names them and knows which field each one fills.
+          metadata: { _template: { id: template.id, name: template.name, version: template.version, variables: template.variables } } as never,
         },
       })
       const version = await tx.contractVersion.create({
@@ -3598,6 +3832,19 @@ export async function internalAiRoutes(app: FastifyInstance) {
       tags:             created.contract.tags,
       createdAt:        created.contract.createdAt.toISOString(),
     }).catch(() => { /* swallow */ })
+
+    // docs/39 H3 — what the drafter filled in is known: the template's
+    // variables become the contract's field values (set from the template,
+    // which an extraction leaves alone), and the extraction reads the rest.
+    await setValuesFromTemplate({
+      orgId: body.orgId, contractId: created.contract.id, userId: body.userId,
+      variables: { ...(body.variables as Record<string, unknown>), ...(body.counterpartyName ? { counterparty_name: body.counterpartyName } : {}) },
+      audit: { source: 'template' },
+      templateVariables: template.variables as Array<{ key: string; field?: string | null }>,
+    }).catch(err => req.log.warn({ err }, '[contract_create_from_template] template values not saved as fields'))
+    if (plainText.trim()) {
+      queueExtractAi({ contractId: created.contract.id, versionId: created.version.id, orgId: body.orgId, contractType, triggeredBy: 'template' })
+    }
 
     // An agent-created contract is a real contract: record who caused it,
     // as the manual REST create does. (Moved here from /tools/contract_draft,
@@ -3675,7 +3922,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
     if (!scope) return
 
     // P8 Step 1 — read from the Obligation table, not contract.metadata.
-    const where: Record<string, unknown> = { orgId: body.orgId }
+    // docs/39 G4 — a dismissed suggestion is no obligation.
+    const where: Record<string, unknown> = { orgId: body.orgId, reviewState: { not: 'DISMISSED' } }
     if (scope.kind === 'own') where.contract = { ownerId: scope.userId }
     if (body.contractId) where.contractId = body.contractId
     if (body.type)       where.type = body.type
@@ -3734,6 +3982,8 @@ export async function internalAiRoutes(app: FastifyInstance) {
         severity:         o.severity,
         sectionRef:       o.sectionRef,
         status:           o.status,
+        // G4 — found by the AI and not yet confirmed: say so when citing it.
+        suggested:        o.reviewState === 'SUGGESTED',
         completedAt:      o.completedAt?.toISOString() ?? null,
         notifiedAt:       o.notifiedAt?.toISOString() ?? null,
         contractId:       c.id,
@@ -3968,6 +4218,10 @@ export async function internalAiRoutes(app: FastifyInstance) {
         noticeDays:       notice.noticeDays,
         // The amendment that set the notice period, when one did.
         ...(notice.noticeSetBy && { noticePeriodSetBy: notice.noticeSetBy }),
+        // docs/39 F1 — as written, and whether it is known to be the notice
+        // that stops renewal (not the notice to end early): say so if not.
+        notice:           notice.noticeLabel,
+        noticeConfirmed:  notice.noticeConfirmed,
         noticeDeadline:   notice.deadline ? notice.deadline.toISOString().slice(0, 10) : null,
         noticeDeadlinePassed: notice.deadline ? notice.deadline.getTime() < Date.now() : null,
       }

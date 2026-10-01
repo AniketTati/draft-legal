@@ -54,12 +54,15 @@ const WRITE_TOOLS = new Map<string, [action: string, resource: string]>([
   ['contract_create_from_template', ['create', 'contract']], // contracts.ts:306
   ['redline_apply',                 ['edit',   'contract']], // contracts.ts:625
   ['approval_decide',               ['approve', 'workflow']], // approvals.ts:277
+  // docs/39 C5 — a field's value on a contract, and a new field.
+  ['contract_field_set',            ['edit',   'contract']], // contract-fields.ts PUT /:id/fields/:key
+  ['field_create',                  ['configure', 'contract']], // field-definitions.ts POST /
 ])
 
 // Write tools that act on an existing contract, named by `args.contractId`.
 // (contract_create_from_template and request_create create the caller's own
 // records; approval_decide acts only on the caller's own step.)
-const CONTRACT_TARGET_TOOLS = new Set(['comment_add', 'contract_update', 'approval_route', 'redline_apply'])
+const CONTRACT_TARGET_TOOLS = new Set(['comment_add', 'contract_update', 'approval_route', 'redline_apply', 'contract_field_set'])
 
 /**
  * Evaluate the permission a write tool requires for the calling user.
@@ -421,6 +424,9 @@ export async function agentThreadRoutes(app: FastifyInstance) {
       // matches the step's approverId against it, so this is what stops the
       // agent approving on someone else's behalf.
       : body.toolName === 'approval_decide'            ? 'userId'
+      // docs/39 C5 — the value (or the field) is the person's, written as them.
+      : body.toolName === 'contract_field_set'         ? 'userId'
+      : body.toolName === 'field_create'               ? 'userId'
       : 'authorId'
     const enforcedArgs: Record<string, unknown> = {
       ...(body.args ?? {}),
@@ -461,6 +467,11 @@ export async function agentThreadRoutes(app: FastifyInstance) {
             if (body.toolName === 'approval_route')  return true
             if (body.toolName === 'contract_create_from_template') return true
             if (body.toolName === 'redline_apply')   return true
+            // C5 — as the server says (a field set, or one just added, can be put back).
+            if (body.toolName === 'contract_field_set' || body.toolName === 'field_create') {
+              const serverSaid = parsed as { reversible?: boolean } | string | null
+              return typeof serverSaid === 'object' && serverSaid !== null && serverSaid.reversible === true
+            }
             if (body.toolName === 'contract_update') {
               // Per-action — read the action off the args since the
               // handler's response carries a server-computed flag too.
@@ -646,6 +657,22 @@ export async function agentThreadRoutes(app: FastifyInstance) {
         previousVersionId: out.previousVersionId,
         newVersionId:      out.newVersionId,
       }
+    } else if (toolCall.toolName === 'contract_field_set') {
+      // docs/39 C5 — back to the value before, while it's still the one this call set.
+      const out = (toolCall.output ?? {}) as { contractId?: string; snapshot?: { key?: string } }
+      const appliedBy = ((toolCall.input ?? {}) as { userId?: string }).userId
+      if (!out.contractId || !out.snapshot?.key || !appliedBy) {
+        return reply.status(400).send({ detail: 'Original tool call result missing contractId or snapshot — cannot undo' })
+      }
+      undoUrl = `${AGENTS_INTERNAL_URL}/api/internal/ai/tools/contract_field_set/undo`
+      undoBody = { orgId, userId: appliedBy, contractId: out.contractId, snapshot: out.snapshot }
+    } else if (toolCall.toolName === 'field_create') {
+      const out = (toolCall.output ?? {}) as { fieldDefinition?: { id?: string } }
+      if (!out.fieldDefinition?.id) {
+        return reply.status(400).send({ detail: 'Original tool call result missing the field — cannot undo' })
+      }
+      undoUrl = `${AGENTS_INTERNAL_URL}/api/internal/ai/tools/field_create/undo`
+      undoBody = { orgId, fieldDefinitionId: out.fieldDefinition.id }
     } else {
       return reply.status(400).send({ detail: `No undo adapter for tool "${toolCall.toolName}"` })
     }

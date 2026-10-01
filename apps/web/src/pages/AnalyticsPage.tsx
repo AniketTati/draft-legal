@@ -10,13 +10,15 @@
  * the filter params on /contracts).
  */
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
   Cell, LineChart, Line, CartesianGrid, Legend, LabelList,
 } from 'recharts'
 import { api } from '@/lib/api'
+import { ContractType, encodeFieldFilters, formatCurrencyTotals, type CurrencyTotal, type FieldFilter } from '@clm/types'
+import { catalogSections, typesOf, useFieldCatalog } from '@/lib/field-catalog'
 import { MEANING_CLASS, statusMeaning, statusMeta, type Meaning } from '@/lib/status'
 import { Eyebrow } from '@/components/ui/primitives'
 import {
@@ -30,6 +32,8 @@ interface ApiSummary {
   pendingApprovals:  number
   expiringSoon:      number
   highRiskOpen:      number
+  /** docs/39 D4 — per currency, most common first (older APIs send only the two below). */
+  executedTotals?: CurrencyTotal[]
   executedTotalValue: number
   executedTotalCurrency: string
   cycleTimeAvgDays:    number | null
@@ -51,13 +55,31 @@ interface ApiTimeseries {
 }
 
 interface ApiTopCps {
-  data: { counterparty: string; counterpartyId: string | null; count: number; value: number; currency: string }[]
+  data: {
+    counterparty: string
+    counterpartyId: string | null
+    /** How its contracts spell it (docs/39 A14): one row per company. */
+    names?: string[]
+    count: number
+    /** D4 — per currency; value/currency are the largest one's. */
+    totals?: CurrencyTotal[]
+    value: number
+    currency: string
+  }[]
 }
 
 function formatMoney(n: number, currency = 'USD'): string {
   if (n >= 1_000_000) return `${currency} ${(n / 1_000_000).toFixed(2)}M`
   if (n >= 1_000)     return `${currency} ${(n / 1_000).toFixed(0)}K`
   return `${currency} ${n.toFixed(0)}`
+}
+/**
+ * docs/39 D4 — the executed total, one per currency: "USD 4.2M · EUR 1.1M total".
+ * It used to add every currency together under the most common one's label.
+ */
+function executedSubtitle(s: Pick<ApiSummary, 'executedTotals' | 'executedTotalValue' | 'executedTotalCurrency'>): string {
+  const totals = s.executedTotals ?? [{ currency: s.executedTotalCurrency, amount: s.executedTotalValue, count: 1 }]
+  return totals.length ? `${formatCurrencyTotals(totals, { max: 2 })} total` : ''
 }
 function formatPct(p: number | null): string {
   if (p == null) return '—'
@@ -293,7 +315,7 @@ export function AnalyticsPage() {
           value={summary?.executedContracts ?? 0}
           icon={CheckCircle2}
           tone="binding"
-          subtitle={summary ? formatMoney(summary.executedTotalValue, summary.executedTotalCurrency) + ' total' : ''}
+          subtitle={summary ? executedSubtitle(summary) : ''}
           to="/contracts?status=EXECUTED"
           loading={summaryLoading}
           data-testid="kpi-executed"
@@ -570,6 +592,11 @@ export function AnalyticsPage() {
         </ChartCard>
       </div>
 
+      {/* docs/39 D3 — any captured field, across the portfolio. */}
+      <div className="mb-6">
+        <FieldChart />
+      </div>
+
       {/* Top counterparties */}
       <div className="bg-card border border-paper-200 rounded-card overflow-hidden mb-6">
         <header className="flex items-center justify-between px-5 py-3 border-b border-paper-200 bg-paper-50">
@@ -586,7 +613,7 @@ export function AnalyticsPage() {
               <tr>
                 <th className="text-left px-5 py-2 font-semibold">Counterparty</th>
                 <th className="text-right px-5 py-2 font-semibold">Contracts</th>
-                <th className="text-right px-5 py-2 font-semibold">Total ACV</th>
+                <th className="text-right px-5 py-2 font-semibold">Value</th>
                 <th className="text-right px-5 py-2 font-semibold"></th>
               </tr>
             </thead>
@@ -600,21 +627,21 @@ export function AnalyticsPage() {
                       exact number is one hover away. */}
                   <td
                     className="px-5 py-2 text-right font-medium text-ink-950 tabular-nums"
-                    title={formatMoneyExact(cp.value, cp.currency)}
+                    title={(cp.totals ?? [{ currency: cp.currency, amount: cp.value, count: cp.count }]).map(t => formatMoneyExact(t.amount, t.currency)).join(' · ')}
                   >
-                    {formatMoney(cp.value, cp.currency)}
+                    {/* D4 — one figure per currency: dollars and euros don't add up. */}
+                    {cp.totals?.length ? formatCurrencyTotals(cp.totals, { max: 2 }) : formatMoney(cp.value, cp.currency)}
                   </td>
                   <td className="px-5 py-2 text-right">
-                    {cp.counterpartyId ? (
-                      <Link
-                        to={`/contracts?counterpartyId=${encodeURIComponent(cp.counterpartyId)}&filterLabel=${encodeURIComponent(cp.counterparty)}`}
-                        className="inline-flex items-center gap-0.5 text-[11.5px] font-medium text-ink-950 hover:text-brand-700"
-                      >
-                        View <ArrowRight className="size-3" />
-                      </Link>
-                    ) : (
-                      <span className="text-[11.5px] text-ink-400">—</span>
-                    )}
+                    {/* A14 — a company not in the directory opens the contracts that name it. */}
+                    <Link
+                      to={cp.counterpartyId
+                        ? `/contracts?counterpartyId=${encodeURIComponent(cp.counterpartyId)}&filterLabel=${encodeURIComponent(cp.counterparty)}`
+                        : `/contracts?ff=${encodeURIComponent(encodeFieldFilters([{ key: 'counterpartyName', op: 'any_of', value: cp.names?.length ? cp.names : [cp.counterparty] }]))}`}
+                      className="inline-flex items-center gap-0.5 text-[11.5px] font-medium text-ink-950 hover:text-brand-700"
+                    >
+                      View <ArrowRight className="size-3" />
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -676,6 +703,124 @@ function MetricBar({ label, value, subtitle, icon: Icon, tone }: {
             "Approved ÷ (Approved + Rej…" defines nothing. */}
         <div className="text-[10.5px] text-ink-500 leading-snug line-clamp-2">{subtitle}</div>
       </div>
+    </div>
+  )
+}
+
+interface FieldBucket { label: string; count: number; filters: FieldFilter[] }
+interface FieldDistribution {
+  key: string; label: string; type: string; kind: 'category' | 'range' | 'time'
+  buckets: FieldBucket[]; empty: FieldBucket; total: number; other: number
+  currency: string | null; currencies: Array<{ code: string; count: number }>; contractType: string | null
+}
+
+const CHARTABLE = new Set(['text', 'select', 'multiselect', 'boolean', 'number', 'percentage', 'currency', 'duration', 'date'])
+const FIELD_CHART_KEY = 'clm.analytics.field'
+
+/**
+ * FieldChart (docs/39 D3) — how one captured field's values spread across the
+ * portfolio: yes/no, each choice, the commonest words, ranges of amounts or
+ * lengths of time, dates by month or year. Each bar opens its contracts in
+ * the list; contracts the field was never found on are a bar of their own.
+ */
+function FieldChart() {
+  const navigate = useNavigate()
+  const { data: catalog = [] } = useFieldCatalog()
+  const chartable = catalog.filter(f => CHARTABLE.has(f.type))
+  const [picked, setPicked] = useState<string | null>(() => { try { return window.localStorage.getItem(FIELD_CHART_KEY) } catch { return null } })
+  // First visit: governing law, the portfolio question every legal team asks first.
+  const key = picked && chartable.some(f => f.key === picked) ? picked
+    : chartable.some(f => f.key === 'governingLaw') ? 'governingLaw' : chartable[0]?.key
+  const field = chartable.find(f => f.key === key)
+  const [contractType, setContractType] = useState('')
+  const [currency, setCurrency] = useState('')
+  const { data, isLoading, isError } = useQuery<FieldDistribution>({
+    queryKey: ['analytics-by-field', key, contractType, currency],
+    queryFn: () => api.get('/analytics/by-field', { params: { key, contractType: contractType || undefined, currency: currency || undefined } }).then(r => r.data),
+    enabled: !!key,
+  })
+  const pick = (k: string) => {
+    setPicked(k); setContractType(''); setCurrency('')
+    try { window.localStorage.setItem(FIELD_CHART_KEY, k) } catch { /* storage unavailable */ }
+  }
+  const open = (b: FieldBucket) => {
+    const params = new URLSearchParams({ ff: encodeFieldFilters(b.filters) })
+    if (data?.contractType) params.set('type', data.contractType)
+    navigate(`/contracts?${params}`)
+  }
+  // "No value" is said under the chart, not drawn in it: on a field few
+  // contracts hold it would dwarf the bars that answer the question.
+  const rows = data?.buckets ?? []
+  const types = field?.contractTypes ?? null
+  const SELECT = 'h-8 rounded-md border border-input bg-card px-2 text-[12.5px] text-ink-950'
+
+  return (
+    <div className="bg-card border border-paper-200 rounded-card p-5" data-testid="chart-by-field">
+      <div className="mb-4 flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-section text-ink-950">By field</h3>
+          <p className="text-[11px] tabular-nums text-ink-500 mt-0.5">
+            {data ? `${data.total.toLocaleString()} ${data.contractType ? `${data.contractType.replace(/_/g, ' ')} ` : ''}contract${data.total === 1 ? '' : 's'} · click a bar to see them` : 'Any field your contracts hold'}
+          </p>
+        </div>
+        <select value={key ?? ''} onChange={e => pick(e.target.value)} aria-label="Field to chart" className={`${SELECT} max-w-[16rem]`} data-testid="chart-field">
+          {catalogSections(chartable).map(s => (
+            <optgroup key={s.title} label={s.title}>
+              {s.fields.map(f => <option key={f.key} value={f.key}>{f.label}{typesOf(f) ? ` (${typesOf(f)})` : ''}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        {!types || types.length > 1 ? (
+          <select value={contractType} onChange={e => setContractType(e.target.value)} aria-label="Contract type" className={SELECT}>
+            <option value="">{types ? 'Its contract types' : 'Every contract type'}</option>
+            {(types ?? Object.values(ContractType)).map(t => <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>)}
+          </select>
+        ) : null}
+        {data && data.currencies.length > 1 && (
+          <select value={data.currency ?? ''} onChange={e => setCurrency(e.target.value)} aria-label="Currency" className={SELECT}>
+            {data.currencies.map(c => <option key={c.code} value={c.code}>{c.code} ({c.count})</option>)}
+          </select>
+        )}
+      </div>
+      {isLoading ? (
+        <div className="flex items-center justify-center h-[200px] text-dense text-ink-500 gap-2"><Loader2 className="size-4 animate-spin" /> Counting…</div>
+      ) : isError || !data ? (
+        <div className="flex items-center justify-center h-[200px] text-dense text-ink-500">Couldn&apos;t chart this field.</div>
+      ) : !data.buckets.some(b => b.count) ? (
+        <div className="flex items-center justify-center h-[200px] text-dense text-ink-500 text-center px-6">
+          {data.total ? `No contract has a ${data.label.toLowerCase()} yet${data.empty.count ? ` — ${data.empty.count.toLocaleString()} could have one.` : '.'}` : 'No contracts this field applies to yet.'}
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={Math.max(160, rows.length * 28 + 40)}>
+          <BarChart data={rows} layout="vertical" margin={{ left: 8, right: 44, top: 4 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke={PAINT.grid} horizontal={false} />
+            <XAxis type="number" tick={AXIS_TICK} stroke={PAINT.grid} allowDecimals={false} />
+            <YAxis type="category" dataKey="label" tick={AXIS_TICK} stroke={PAINT.grid} width={170} interval={0} />
+            <Tooltip contentStyle={TOOLTIP_CONTENT} labelStyle={TOOLTIP_LABEL} itemStyle={TOOLTIP_ITEM} cursor={{ fill: 'rgba(23,22,26,0.04)' }} />
+            {/* A field's values are categories, not meanings: the series stays neutral. */}
+            <Bar dataKey="count" name="Contracts" fill={PAINT.neutral} isAnimationActive={false} cursor="pointer" onClick={(d: unknown) => open((d as { payload: FieldBucket }).payload)}>
+              <LabelList dataKey="count" position="right" fontSize={11} fill={PAINT.inkMuted} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+      {data && (data.empty.count > 0 || data.other > 0) && (
+        <div className="text-[11px] text-ink-500 mt-3 pt-3 border-t border-paper-100 space-y-1">
+          {data.empty.count > 0 && (
+            <p>
+              No value on {data.empty.count.toLocaleString()} of {data.total.toLocaleString()} ({Math.round((data.empty.count / Math.max(data.total, 1)) * 100)}%) —{' '}
+              <button type="button" className="text-ink-950 hover:underline underline-offset-2" onClick={() => open(data.empty)} data-testid="chart-empty">see them</button>
+            </p>
+          )}
+          {data.other > 0 && (
+            <p>
+              {data.kind === 'range'
+                ? `${data.other.toLocaleString()} contract${data.other === 1 ? '' : 's'} in other currencies — pick one above.`
+                : `${data.other.toLocaleString()} contract${data.other === 1 ? '' : 's'} with less common values not shown.`}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

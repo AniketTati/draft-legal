@@ -6,18 +6,24 @@ export default defineConfig({
   root: path.resolve(__dirname),
   plugins: [react()],
   resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
+    alias: [
+      { find: '@', replacement: path.resolve(__dirname, './src') },
+      // docs/39 C1 — @react-pdf-viewer draws its text layer with a pdf.js 3
+      // call that pdf.js 4+ dropped (the version is pinned up for CVE-2024-4367):
+      // it gets pdf.js with that call put back (src/lib/pdfjs-compat.ts).
+      { find: /^pdfjs-dist$/, replacement: path.resolve(__dirname, './src/lib/pdfjs-compat.ts') },
+    ],
   },
   optimizeDeps: {
     include: ['react', 'react-dom', 'react-router-dom', '@tanstack/react-query'],
   },
   server: {
-    port: 5173,
+    // WEB_PORT / API_PROXY_TARGET let a second local stack run beside the
+    // default one (e.g. from a worktree). Unset, they keep 5173 → 3001.
+    port: Number(process.env.WEB_PORT ?? 5173),
     proxy: {
       '/api': {
-        target: 'http://localhost:3001',
+        target: process.env.API_PROXY_TARGET ?? 'http://localhost:3001',
         changeOrigin: true,
       },
     },

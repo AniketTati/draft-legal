@@ -6,20 +6,23 @@
  *                     of the CONTRACT_INDEX doc (Wave 3.1) → queue embed-contract
  */
 import { Worker } from 'bullmq'
-import { GetObjectCommand } from '@aws-sdk/client-s3'
+import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { extractDocument } from '../lib/document.js'
 import { embedContractVersion } from '../lib/embeddings.js'
 import { legalChunkAndStore } from '../lib/legal-chunker.js'
-import { indexContract } from '../lib/elasticsearch.js'
+import { indexContract, reindexContract } from '../lib/elasticsearch.js'
 import { getPdfPageCount } from '../lib/pdf-splitter.js'
 import { splitBinder } from '../lib/binder-split.js'
-import { queueDetectBinder, queueEmbedContract, queuePlaybookReview } from '../lib/queue.js'
-import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob, RefreshVersionJob } from '../lib/queue.js'
+import { queueDetectBinder, queueEmbedContract, queuePlaybookReview, queueExtractAi, queueAnswerDiligenceDocument } from '../lib/queue.js'
+import type { ParseDocumentJob, ChunkAndIndexJob, SplitBinderJob, RefreshVersionJob, ReadExhibitJob } from '../lib/queue.js'
 import { carryClauses } from '../lib/clause-carry.js'
 import { refreshVersion } from '../lib/version-refresh.js'
+import { readTrackedChanges } from '../lib/tracked-changes.js'
+import { readExhibit } from '../lib/exhibits.js'
+import { MIME } from '../lib/file-type.js'
 
 // ─── parse-document ──────────────────────────────────────────────────────────
 
@@ -36,8 +39,21 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
   }
   const buffer = Buffer.concat(chunks)
 
+  // docs/39 A7 — the page says the document is being read from the start: a
+  // long scan takes minutes, a batch of pages at a time, and says how far it's got.
+  await prisma.contract.updateMany({ where: { id: contractId, analysisStatus: 'PENDING' }, data: { analysisStatus: 'PARSING' } })
+  const markOcr = (mark: { done: number; of: number } | null) => (mark
+    ? prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_ocr}', ${JSON.stringify(mark)}::jsonb) WHERE id = ${contractId}`
+    : prisma.$executeRaw`UPDATE contracts SET metadata = COALESCE(metadata, '{}'::jsonb) - '_ocr' WHERE id = ${contractId}`
+  ).catch(err => console.warn('[parse-worker] OCR progress not marked: %s', (err as Error).message))
+
   // Full text extraction — no char limit
-  const extracted = await extractDocument(buffer, mimeType, filename)
+  let extracted: Awaited<ReturnType<typeof extractDocument>>
+  try {
+    extracted = await extractDocument(buffer, mimeType, filename, { onOcrProgress: async (done, of) => { await markOcr({ done, of }) } })
+  } finally {
+    await markOcr(null)
+  }
 
   console.info('[parse-worker] extracted chars=%d htmlLen=%d', extracted.plainText.length, extracted.htmlContent.length)
 
@@ -67,6 +83,14 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
       pageCount:   extracted.pageCount ?? 0,
       extractedAt: new Date().toISOString(),
       note:        'Text came from OCR, not digital extraction — treat confidence accordingly.',
+      // A7 — a scan read in batches: how sure the engine was of each page,
+      // where each starts in the text (scan-quality.ts), what it couldn't read.
+      ...(extracted.ocr && {
+        ocrQuality:   extracted.ocr.quality,
+        pageStarts:   extracted.ocr.pageStarts,
+        unreadPages:  extracted.ocr.unread,
+        ocrTruncated: extracted.ocr.truncated,
+      }),
     }
   } else if (extracted.pageCount !== undefined) {
     // Still record pageCount even on digital path, for analytics +
@@ -83,12 +107,31 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
   if (extracted.structure) {
     nextMd.structure = extracted.structure
   }
+  // docs/39 A9 — a Word file's tracked changes nobody has accepted: the text
+  // reads them made (as mammoth reads it), so the page says so and the values
+  // keep what the file says without them (lib/tracked-changes.ts).
+  delete nextMd.trackedChanges
+  if (extracted.mimeType === MIME.DOCX) {
+    try {
+      nextMd.trackedChanges = await readTrackedChanges(buffer)
+    } catch (err) {
+      console.warn('[parse-worker] tracked changes of versionId=%s not read: %s', versionId, (err as Error).message)
+    }
+  }
+  // docs/39 A12 — a legacy .doc or a scan kept as an image was read as the PDF
+  // it was made into: that PDF is kept, to be shown as the Original and downloaded.
+  let renderedPdfKey: string | undefined
+  if (extracted.convertedPdf) {
+    renderedPdfKey = `${s3Key}.pdf`
+    await s3.send(new PutObjectCommand({ Bucket: S3_BUCKET, Key: renderedPdfKey, Body: extracted.convertedPdf, ContentType: 'application/pdf' }))
+  }
   await prisma.contractVersion.update({
     where: { id: versionId },
     data: {
       plainText:   extracted.plainText,
       htmlContent: extracted.htmlContent,
       metadata:    nextMd as never,
+      ...(renderedPdfKey && { renderedPdfKey }),
     },
   })
 
@@ -113,8 +156,8 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
 
   // Get page count (needed later by detect-binder for auto-split range computation)
   let totalPages: number | undefined
-  if (mimeType === 'application/pdf') {
-    totalPages = await getPdfPageCount(buffer)
+  if (mimeType === 'application/pdf' || extracted.convertedPdf) {
+    totalPages = await getPdfPageCount(extracted.convertedPdf ?? buffer)
     console.info('[parse-worker] pdf page count contractId=%s pages=%d', contractId, totalPages)
   }
 
@@ -136,6 +179,30 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<void> {
   queueDetectBinder({ contractId, versionId, orgId })
 
   console.info('[parse-worker] parse-document done, detect-binder queued for contractId=%s', contractId)
+}
+
+// ─── read-exhibit (docs/39 A12) ──────────────────────────────────────────────
+
+/** How long after an exhibit is read the contract is read again: exhibits attached together, read together. */
+export const EXHIBIT_REREAD_DELAY_MS = 15_000
+
+async function handleReadExhibit(data: ReadExhibitJob): Promise<void> {
+  if (!await readExhibit(data)) return
+  // Its words are found in search with the contract's.
+  await reindexContract(data.contractId).catch(err => console.warn('[parse-worker] re-index after exhibit failed contractId=%s: %s', data.contractId, (err as Error).message))
+  // An analysed contract is read again with it, its type as it stands (an
+  // exhibit's own kind — an SLA attached to an MSA — isn't the contract's).
+  // Not analysed yet: its analysis reads it.
+  const c = await prisma.contract.findFirst({ where: { id: data.contractId, orgId: data.orgId, deletedAt: null }, select: { analysisStatus: true, currentVersionId: true, type: true } })
+  if (!c?.currentVersionId || c.analysisStatus !== 'DONE') return
+  await prisma.contract.updateMany({ where: { id: data.contractId, analysisStatus: 'DONE' }, data: { analysisStatus: 'EXTRACTING' } })
+  // The page says why it's being read again (cleared when that read is saved).
+  await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_exhibitReread}', to_jsonb(${new Date().toISOString()}::text)) WHERE id = ${data.contractId}`
+  queueExtractAi(
+    { contractId: data.contractId, versionId: c.currentVersionId, orgId: data.orgId, contractType: c.type, triggeredBy: 'exhibit', typeLocked: true },
+    { jobId: `exhibits-${data.contractId}`, delay: EXHIBIT_REREAD_DELAY_MS },
+  )
+  console.info('[parse-worker] exhibit read contractId=%s — the contract is read again with it', data.contractId)
 }
 
 // ─── chunk-and-index ─────────────────────────────────────────────────────────
@@ -165,13 +232,16 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
       title: true, type: true, status: true, counterpartyName: true,
       jurisdiction: true, summary: true, tags: true, riskScore: true,
       effectiveDate: true, expiryDate: true, keyTerms: true, metadata: true,
-      createdAt: true,
+      createdAt: true, diligenceRoomId: true,
     },
   })
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
     select: { plainText: true },
   })
+  // docs/39 D6 — a diligence room's document, read: the room's questions are asked of it
+  // (the extraction's save asks too; one job per version).
+  const askRoomQuestions = () => { if (contract?.diligenceRoomId) queueAnswerDiligenceDocument({ orgId, contractId, versionId }) }
   if (contract) {
     indexContract(contractId, {
       orgId,
@@ -204,6 +274,7 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
       where: { id: contractId },
       data: { analysisStatus: 'DONE', analysisError: null },
     })
+    askRoomQuestions()
     return
   }
 
@@ -216,6 +287,7 @@ async function handleChunkAndIndex(data: ChunkAndIndexJob): Promise<void> {
     where: { id: contractId },
     data: { analysisStatus: 'DONE', analysisError: null },
   })
+  askRoomQuestions()
 
   // Score the freshly-extracted clauses against the org playbook. This is the
   // only automatic playbook pass a received contract ever gets: redline
@@ -250,6 +322,8 @@ export const parseWorker = new Worker(
       await splitBinder(job.data as SplitBinderJob)
     } else if (job.name === 'refresh-version') {
       await refreshVersion(job.data as RefreshVersionJob)
+    } else if (job.name === 'read-exhibit') {
+      await handleReadExhibit(job.data as ReadExhibitJob)
     }
   },
   { connection: redis, concurrency: 3 }

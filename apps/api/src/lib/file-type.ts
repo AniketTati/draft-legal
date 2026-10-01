@@ -26,12 +26,16 @@ export const MIME = {
 } as const
 
 // Allowlists per upload path, matching what each path (or its UI) accepts.
-/** Documents the parse pipeline can extract (lib/document.ts: PDF/DOCX/TXT). */
-export const CONTRACT_DOCUMENT_TYPES = [MIME.PDF, MIME.DOCX, MIME.TXT] as const
+/**
+ * Documents the parse pipeline can extract (lib/document.ts): PDF, DOCX, TXT —
+ * and, docs/39 A12, a legacy .doc and a scan kept as an image, each made a PDF
+ * to be read (Gotenberg's LibreOffice; pdf-lib for PNG and JPEG).
+ */
+export const CONTRACT_DOCUMENT_TYPES = [MIME.PDF, MIME.DOCX, MIME.TXT, MIME.DOC, MIME.PNG, MIME.JPEG, MIME.TIFF] as const
 /** Counterparty-facing paths that only take a signed/redlined document. */
 export const PDF_OR_DOCX = [MIME.PDF, MIME.DOCX] as const
-/** Contract attachments (exhibits, schedules) — stored, never parsed. */
-export const ATTACHMENT_TYPES = [MIME.PDF, MIME.DOCX, MIME.DOC, MIME.XLSX, MIME.TXT, MIME.CSV] as const
+/** Contract attachments (exhibits, schedules) — docs/39 A12: read as part of the contract (a scanned exhibit too), all but a spreadsheet. */
+export const ATTACHMENT_TYPES = [MIME.PDF, MIME.DOCX, MIME.DOC, MIME.XLSX, MIME.TXT, MIME.CSV, MIME.PNG, MIME.JPEG, MIME.TIFF] as const
 /** Obligation completion evidence (invoices, receipts, screenshots). */
 export const EVIDENCE_TYPES = [...ATTACHMENT_TYPES, MIME.PNG, MIME.JPEG, MIME.GIF, MIME.WEBP, MIME.TIFF, MIME.HEIC] as const
 
@@ -170,8 +174,8 @@ export function checkUpload(buf: Buffer, declared: string | undefined, allowed: 
       }
     }
     if (allowed.includes(detected)) return { ok: true, mimeType: detected }
-    // Legacy .doc is detectable, but the extraction pipeline has no OLE reader.
-    // Refuse with the fix rather than failing analysis opaquely later.
+    // Legacy .doc where this path can't take it (a counterparty's signed or
+    // redlined file must be PDF or DOCX): refuse with the fix.
     if (detected === MIME.DOC) {
       return {
         ok: false, status: 415,

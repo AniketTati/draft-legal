@@ -146,7 +146,15 @@ export async function cleanupOrg(orgId: string): Promise<void> {
   await del(() => prisma.contractComment.deleteMany({ where: { orgId } }))
   await del(() => prisma.notification.deleteMany({ where: { orgId } }))
   await del(() => prisma.auditEvent.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contractFieldValue.deleteMany({ where: { orgId } }))
+  // docs/39 D6 — a diligence room's answers go with it.
+  await del(() => prisma.diligenceCell.deleteMany({ where: { orgId } }))
+  await del(() => prisma.diligenceRoom.deleteMany({ where: { orgId } }))
   await del(() => prisma.contract.deleteMany({ where: { orgId } }))
+  await del(() => prisma.contractFieldDefinition.deleteMany({ where: { orgId } }))
+  await del(() => prisma.fieldSuggestion.deleteMany({ where: { orgId } }))
+  await del(() => prisma.fieldValueRun.deleteMany({ where: { orgId } }))
+  await del(() => prisma.savedView.deleteMany({ where: { orgId } }))
   await del(() => prisma.counterparty.deleteMany({ where: { orgId } }))
   await del(() => prisma.workflowDefinition.deleteMany({ where: { orgId } }))
   // Agent threads hold a userId FK, so they have to go before the users do.

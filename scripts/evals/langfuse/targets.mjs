@@ -133,6 +133,32 @@ export const TARGETS = {
   },
 
   /**
+   * Field and clause extraction — POST /review/preview on the agents service:
+   * the pipeline an upload runs (/review), returned instead of saved (docs/39
+   * I1). Scored field by field with `fields_match`.
+   */
+  async review(item, ctx) {
+    const started = Date.now()
+    const body = await agentsPost('/review/preview', {
+      plainText: item.input.plainText,
+      contractType: item.input.contractType ?? null,
+      customFields: item.input.customFields ?? [],
+      // Our own name, so the counterparty picker skips our side.
+      orgName: item.input.orgName ?? null,
+      // docs/39 A11 — the contract's language and the org's date order, as the upload job sends them.
+      language: item.input.language ?? null,
+      dateOrder: item.input.dateOrder ?? null,
+      orgId: ctx.orgId ?? null,
+      __sessionId: ctx.sessionId,
+    }, { timeoutMs: 240_000 })
+    return {
+      output: body,
+      sessionId: ctx.sessionId,
+      meta: { target: 'review', latencyMs: Date.now() - started },
+    }
+  },
+
+  /**
    * Conversational chat, through the public API exactly as the web app calls
    * it. sessionId is the thread id, which apps/agents passes to Langfuse as
    * session_id — so this target correlates to the product's own trace with no

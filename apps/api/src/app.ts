@@ -23,12 +23,22 @@ import { requestRoutes } from './routes/requests.js'
 import { userRoutes } from './routes/users.js'
 import { agentRoutes } from './routes/agents.js'
 import { fieldDefinitionRoutes } from './routes/field-definitions.js'
+import { fieldSuggestionRoutes } from './routes/field-suggestions.js'
+import { fieldRunRoutes } from './routes/field-runs.js'
 import { templateRoutes } from './routes/templates.js'
 import { clauseRoutes } from './routes/clauses.js'
 import { playbookRoutes } from './routes/playbook.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
 import { externalEditRoutes } from './routes/external-edit.js'
+import { contractFieldRoutes } from './routes/contract-fields.js'
+import { contractImportRoutes } from './routes/contract-import.js'
+import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
+import { contractFamilyRoutes } from './routes/contract-family.js'
+import { clauseTagRoutes } from './routes/clause-tags.js'
+import { clauseTypeRoutes } from './routes/clause-types.js'
+import { contractQueryRoutes } from './routes/contract-query.js'
+import { savedViewRoutes } from './routes/saved-views.js'
 import { portalRoutes } from './routes/portal.js'
 import { approvalRoutes } from './routes/approvals.js'
 import { dashboardRoutes } from './routes/dashboard.js'
@@ -252,12 +262,24 @@ export async function buildApp() {
   await app.register(userRoutes,         { prefix: '/api/v1/users' })
   await app.register(agentRoutes,        { prefix: '/api/v1/agent' })
   await app.register(fieldDefinitionRoutes, { prefix: '/api/v1/field-definitions' })
+  await app.register(fieldSuggestionRoutes, { prefix: '/api/v1/field-suggestions' })
+  await app.register(fieldRunRoutes, { prefix: '/api/v1/field-runs' })
   await app.register(templateRoutes,        { prefix: '/api/v1/templates' })
   await app.register(clauseRoutes,          { prefix: '/api/v1/clauses' })
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })
   await app.register(externalEditRoutes,    { prefix: '/api/v1/contracts' })
+  await app.register(contractFieldRoutes,   { prefix: '/api/v1/contracts' })
+  // docs/39 A16 — contracts from a spreadsheet, with their documents.
+  await app.register(contractImportRoutes,  { prefix: '/api/v1/contracts' })
+  await app.register(contractCounterpartyRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(clauseTagRoutes,       { prefix: '/api/v1/contracts' })
+  // docs/39 E3 — clause types the organization adds
+  await app.register(clauseTypeRoutes,      { prefix: '/api/v1/clause-types' })
+  await app.register(contractQueryRoutes,   { prefix: '/api/v1/contracts' })
+  await app.register(savedViewRoutes,       { prefix: '/api/v1/saved-views' })
   await app.register(portalRoutes,          { prefix: '/api/v1/portal' })
   await app.register(approvalRoutes,        { prefix: '/api/v1/approvals' })
   await app.register(dashboardRoutes,      { prefix: '/api/v1/dashboard' })

@@ -73,6 +73,27 @@ export async function renderHtmlToPdf(html: string): Promise<Buffer> {
 }
 
 /**
+ * docs/39 A12 — a file LibreOffice can open (a legacy .doc, a TIFF scan) as a
+ * PDF, to be read the way a PDF is. `filename`'s extension tells LibreOffice
+ * what the file is.
+ */
+export async function convertToPdf(file: Buffer, filename: string): Promise<Buffer> {
+  const formData = new FormData()
+  formData.append('files', new Blob([new Uint8Array(file)]), filename)
+  const upstream = await fetch(`${GOTENBERG_URL}/forms/libreoffice/convert`, {
+    method:  'POST',
+    headers: await gotenbergAuthHeaders(),
+    body:    formData,
+    signal:  AbortSignal.timeout(120_000),
+  })
+  if (!upstream.ok) {
+    const errText = await upstream.text().catch(() => '')
+    throw new Error(`Gotenberg ${filename.split('.').pop()}→PDF failed (${upstream.status}): ${errText.slice(0, 200)}`)
+  }
+  return Buffer.from(await upstream.arrayBuffer())
+}
+
+/**
  * Render HTML to PDF and store in S3. Returns the S3 key.
  *
  * Throws on Gotenberg failure — callers should treat rendering as

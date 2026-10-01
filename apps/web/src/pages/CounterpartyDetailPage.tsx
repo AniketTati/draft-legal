@@ -31,6 +31,8 @@ import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { toast } from '@/components/common/Toaster'
+import { formatCurrencyTotals, type CurrencyTotal } from '@clm/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
@@ -65,6 +67,8 @@ interface CpDetail {
   id: string
   name: string
   legalName: string | null
+  /** docs/39 A14 — other names contracts give it; contracts naming them link here. */
+  aliases?: string[]
   email: string | null
   phone: string | null
   address: string | null
@@ -73,6 +77,8 @@ interface CpDetail {
   contracts: ContractRow[]
   stats: {
     contractCount: number
+    /** docs/39 D4 — per currency (older APIs send only totalValue + currency). */
+    totals?: CurrencyTotal[]
     totalValue: number
     currency: string
     activeCount: number
@@ -202,6 +208,11 @@ export function CounterpartyDetailPage() {
               {cp.legalName}
             </p>
           )}
+          {!!cp.aliases?.length && (
+            <p className="text-[12px] text-ink-500 mt-1 ml-12" data-testid="cp-aliases" title="Contracts that give it one of these names link here">
+              Also written {cp.aliases.slice(0, 4).map(a => `“${a}”`).join(', ')}{cp.aliases.length > 4 ? ` and ${cp.aliases.length - 4} more` : ''}
+            </p>
+          )}
 
           {/* Contact row */}
           <div className="ml-12 mt-2.5 flex items-center gap-4 flex-wrap text-[12.5px]">
@@ -279,9 +290,10 @@ export function CounterpartyDetailPage() {
           icon={FileText}
           tone="neutral"
         />
+        {/* docs/39 D4 — one total per currency: they were added together. */}
         <StatCard
-          label={`Total value (${cp.stats.currency})`}
-          value={formatMoney(cp.stats.totalValue, cp.stats.currency)}
+          label={(cp.stats.totals?.length ?? 1) > 1 ? 'Total value (by currency)' : `Total value (${cp.stats.currency})`}
+          value={cp.stats.totals?.length ? formatCurrencyTotals(cp.stats.totals, { max: 2 }) : formatMoney(cp.stats.totalValue, cp.stats.currency)}
           icon={TrendingUp}
           tone="neutral"
         />
@@ -516,6 +528,7 @@ function EditModal({
   const [form, setForm] = useState({
     name: cp.name,
     legalName: cp.legalName ?? '',
+    aliases: (cp.aliases ?? []).join('\n'),
     email: cp.email ?? '',
     phone: cp.phone ?? '',
     website: cp.website ?? '',
@@ -523,20 +536,29 @@ function EditModal({
   })
 
   const save = useMutation({
-    mutationFn: () => api.patch(`/counterparties/${cp.id}`, {
+    mutationFn: () => api.patch<{ linkedContracts?: number; unlinkedContracts?: number }>(`/counterparties/${cp.id}`, {
       name:      form.name,
       // We send empty strings as undefined so we don't accidentally
       // null out a field by leaving it blank.
       legalName: form.legalName || undefined,
+      // One per line: a company's name can have a comma in it.
+      aliases:   form.aliases.split('\n').map(a => a.trim()).filter(Boolean),
       email:     form.email || undefined,
       phone:     form.phone || undefined,
       website:   form.website || undefined,
       address:   form.address || undefined,
     }).then(r => r.data),
-    onSuccess: onSaved,
+    onSuccess: r => {
+      const moved = [
+        r.linkedContracts ? `${r.linkedContracts} more contract${r.linkedContracts === 1 ? '' : 's'} linked` : '',
+        r.unlinkedContracts ? `${r.unlinkedContracts} no longer linked` : '',
+      ].filter(Boolean).join(' · ')
+      if (moved) toast.success('Saved', { description: moved })
+      onSaved()
+    },
   })
 
-  const set = (f: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+  const set = (f: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm(v => ({ ...v, [f]: e.target.value }))
 
   return (
@@ -554,6 +576,15 @@ function EditModal({
           </Field>
           <Field label="Legal name">
             <Input value={form.legalName} onChange={set('legalName')} />
+          </Field>
+          <Field label="Also written as">
+            <textarea
+              value={form.aliases} onChange={set('aliases')} rows={2}
+              placeholder={'Acme Corp.\nACME CORPORATION, INC.'}
+              className="w-full rounded-md border border-input bg-card px-3 py-2 text-[13px] text-ink-950 placeholder:text-ink-400 focus:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15"
+              data-testid="cp-edit-aliases"
+            />
+            <p className="text-[11px] text-ink-500 mt-1">One per line. Contracts that give it one of these names link here.</p>
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Email">

@@ -6,8 +6,9 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { clauseTypeLabel } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 
 // ─── Schemas ────────────────────────────────────────────────────────────────
 
@@ -30,6 +31,41 @@ const CreateClauseSchema = z.object({
 })
 
 const UpdateClauseSchema = CreateClauseSchema.partial().omit({ categoryId: true })
+
+// docs/39 E4 — wording a reader saves from a contract.
+const FromContractSchema = z.object({
+  contractId: z.string().min(1).max(64),
+  text: z.string().trim().min(1).max(20_000),
+  title: z.string().trim().min(1).max(256),
+  categoryId: z.string().min(1).max(64).optional(),
+  /** The clause type the words read as, to file it under (when no category is picked). */
+  clauseType: z.string().max(64).optional(),
+  section: z.string().trim().max(64).optional(),
+})
+
+/** Where saved wording goes when nothing better fits. */
+const SAVED_CATEGORY = 'Saved from contracts'
+
+const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/** Plain text as the library's HTML: a paragraph per blank-line-separated block. */
+function asHtml(text: string): string {
+  return text.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
+    .map(p => `<p>${escapeHtml(p).replace(/\n/g, '<br>')}</p>`).join('')
+}
+
+/** Text compared as wording: case, spacing and punctuation aside. */
+const wording = (s: string) => s.replace(/<[^>]+>/g, ' ').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+/** Each item with the contract its wording came from, when there is one (E4). */
+async function withSources<T extends { sourceContractId: string | null }>(orgId: string, items: T[]): Promise<Array<T & { sourceContract: { id: string; title: string } | null }>> {
+  const ids = [...new Set(items.map(i => i.sourceContractId).filter((id): id is string => !!id))]
+  const contracts = ids.length
+    ? await prisma.contract.findMany({ where: { id: { in: ids }, orgId, deletedAt: null }, select: { id: true, title: true } })
+    : []
+  const byId = new Map(contracts.map(c => [c.id, c]))
+  return items.map(i => ({ ...i, sourceContract: i.sourceContractId ? byId.get(i.sourceContractId) ?? null : null }))
+}
 
 // ─── Route Handlers ─────────────────────────────────────────────────────────
 
@@ -153,7 +189,7 @@ export async function clauseRoutes(app: FastifyInstance) {
       prisma.clauseLibraryItem.count({ where }),
     ])
 
-    return reply.send({ data: clauses, total })
+    return reply.send({ data: await withSources(orgId, clauses), total })
   })
 
   // ── Get single clause ─────────────────────────────────────────────────────
@@ -167,7 +203,57 @@ export async function clauseRoutes(app: FastifyInstance) {
     })
 
     if (!clause) return reply.status(404).send({ detail: 'Clause not found' })
-    return reply.send(clause)
+    return reply.send((await withSources(orgId, [clause]))[0])
+  })
+
+  // ── docs/39 E4 — save wording from a contract ─────────────────────────────
+  // Unapproved until someone who approves clauses does; it keeps the contract
+  // (and section) it came from. The same wording already in the library is
+  // returned instead of a copy.
+  app.post('/from-contract', { preHandler: requirePermission('create', 'clause') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const body = FromContractSchema.parse(req.body ?? {})
+    // The reader must be able to see the contract (an own-scope reader, only theirs).
+    const scope = await permissionScopeFor(req, 'view', 'contract')
+    if (!scope) return reply.status(403).send({ detail: 'You can’t see this contract' })
+    const contract = await prisma.contract.findFirst({
+      where: { id: body.contractId, orgId, deletedAt: null, ...(scope === 'own' ? { ownerId: userId } : {}) },
+      select: { id: true, title: true, currentVersionId: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+
+    const same = await prisma.clauseLibraryItem.findMany({
+      where: { orgId, deletedAt: null, content: { contains: body.text.slice(0, 40).replace(/\s+/g, ' ').split(' ').slice(0, 3).join(' '), mode: 'insensitive' } },
+      include: { category: { select: { id: true, name: true } } },
+      take: 50,
+    })
+    const existing = same.find(c => wording(c.content) === wording(body.text))
+    if (existing) return reply.send({ clause: (await withSources(orgId, [existing]))[0], duplicate: true })
+
+    let categoryId = body.categoryId
+    if (categoryId) {
+      if (!await prisma.clauseCategory.findFirst({ where: { id: categoryId, orgId }, select: { id: true } })) {
+        return reply.status(404).send({ detail: 'Category not found' })
+      }
+    } else {
+      const wanted = body.clauseType ? clauseTypeLabel(body.clauseType) : null
+      const cats = await prisma.clauseCategory.findMany({ where: { orgId }, select: { id: true, name: true } })
+      const match = wanted ? cats.find(c => c.name.toLowerCase() === wanted.toLowerCase()) : undefined
+      categoryId = match?.id ?? cats.find(c => c.name === SAVED_CATEGORY)?.id
+        ?? (await prisma.clauseCategory.create({ data: { orgId, name: SAVED_CATEGORY, description: 'Wording saved from contracts, to sort and approve.' } })).id
+    }
+
+    const content = asHtml(body.text)
+    const note = `Saved from “${contract.title}”${body.section ? ` §${body.section}` : ''}`
+    const clause = await prisma.clauseLibraryItem.create({
+      data: {
+        orgId, createdById: userId, categoryId, title: body.title, content, isApproved: false,
+        sourceContractId: contract.id, sourceVersionId: contract.currentVersionId, sourceSection: body.section ?? null,
+        versions: [{ version: 1, content, changedById: userId, changedAt: new Date().toISOString(), note }],
+      },
+      include: { category: { select: { id: true, name: true } } },
+    })
+    return reply.status(201).send({ clause: { ...clause, sourceContract: { id: contract.id, title: contract.title } }, duplicate: false })
   })
 
   // ── Create clause ─────────────────────────────────────────────────────────

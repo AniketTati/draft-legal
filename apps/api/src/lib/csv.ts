@@ -24,11 +24,32 @@ export function buildCsv(headers: string[], rows: unknown[][]): string {
 }
 
 /**
+ * docs/39 D3 — one cell of a CSV meant for a spreadsheet. Text that would
+ * start a formula (=, +, -, @, tab, CR) gets a leading quote, so opening an
+ * export can't run one (CSV injection: a counterparty named "=HYPERLINK(…)"
+ * came straight from an uploaded document). Numbers stay numbers.
+ */
+export function spreadsheetCell(v: unknown): string {
+  if (v == null) return ''
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : ''
+  let s = String(v)
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/** A CSV a spreadsheet opens as expected: a UTF-8 byte order mark (so Excel reads "€" and "é") and CRLF line ends. */
+export function buildSpreadsheetCsv(headers: string[], rows: unknown[][]): string {
+  return '﻿' + [headers, ...rows].map(r => r.map(spreadsheetCell).join(',')).join('\r\n') + '\r\n'
+}
+
+/**
  * Tiny CSV parser — handles quoted fields, embedded commas, doubled
  * quotes, and CRLF line endings. Sufficient for "Excel save as CSV"
  * exports; not fully RFC-4180 compliant (no per-row error reporting).
+ * docs/39 A16 — any single-character separator (a semicolon from a
+ * European Excel, a tab); lib/spreadsheet.ts picks it.
  */
-export function parseCsv(input: string): string[][] {
+export function parseCsv(input: string, delimiter = ','): string[][] {
   const rows: string[][] = []
   let current: string[] = []
   let cell = ''
@@ -44,7 +65,7 @@ export function parseCsv(input: string): string[][] {
       cell += ch; i++; continue
     }
     if (ch === '"' && cell === '') { inQuotes = true; i++; continue }
-    if (ch === ',') { current.push(cell); cell = ''; i++; continue }
+    if (ch === delimiter) { current.push(cell); cell = ''; i++; continue }
     if (ch === '\n' || ch === '\r') {
       current.push(cell); rows.push(current)
       current = []; cell = ''

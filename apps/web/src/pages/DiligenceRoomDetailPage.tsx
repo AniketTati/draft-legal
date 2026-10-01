@@ -4,6 +4,10 @@
  * Shows progress + a results table comparing extracted fields across
  * every document in the room. Drag-and-drop bulk upload zone for
  * adding more contracts. CSV export button on the header.
+ *
+ * docs/39 D6 — the table's columns are no longer only the fixed ones: the
+ * room's people add their own (a question asked of every document, or any
+ * field), each cell with the words its answer came from (RoomColumns).
  */
 import { useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
@@ -14,6 +18,9 @@ import { AssistMark } from '@/components/ui/assist'
 import { RiskMeter } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
 import { statusMeta, type Meaning } from '@/lib/status'
+import { useCanRequest } from '@/lib/permissions'
+import { AddColumnButton, ColumnHeader, RoomCellView } from '@/components/diligence/RoomColumns'
+import { runUnderWay, type RoomCell, type RoomColumnView } from '@/lib/room-columns'
 import {
   FolderOpen, Upload, Loader2, AlertCircle, ArrowLeft, ArrowRight,
   Download, CheckCircle2, AlertTriangle, FileText, RefreshCw,
@@ -50,6 +57,8 @@ interface ApiResultRow {
   terminationNotice: unknown
   governingLaw:     unknown
   paymentTerms:     unknown
+  /** docs/39 D6 — the room's own columns' cells, by column id. */
+  cells:            Record<string, RoomCell>
 }
 
 function formatMoney(n: number | null, currency = 'USD'): string {
@@ -68,6 +77,18 @@ const IN_PROGRESS = ['ANALYZING', 'PARSING', 'EXTRACTING', 'INDEXING', 'CLASSIFY
 
 /** Below this the extraction is a suggestion, not a reading. */
 const LOW_CONFIDENCE = 0.7
+
+/** A document still being read, or a column still being asked: the table is changing. */
+function roomBusy(r: { data: ApiResultRow[]; columns: RoomColumnView[] } | undefined): boolean {
+  if (!r) return false
+  return r.data.some(d => IN_PROGRESS.includes(d.analysisStatus) || d.analysisStatus === 'PENDING')
+    || r.columns.some(c => runUnderWay(c.run))
+    // A document just read is asked on its own, outside any column's run.
+    || r.data.some(d => Object.values(d.cells ?? {}).some(c => c.state === 'asking'))
+}
+
+/** The kept title column's edge, so what scrolls under it reads as behind it. */
+const STICKY_EDGE = 'shadow-[inset_-1px_0_0_theme(colors.paper.200)]'
 
 /**
  * The term as one fact with two ends, stacked.
@@ -95,18 +116,21 @@ export function DiligenceRoomDetailPage() {
   const [showFailedOnly, setShowFailedOnly] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Tight refresh while something is under way — documents being read, a
+  // column being asked — and none once the room is still: the table (with every
+  // answer's source) was downloaded again every five seconds for good.
   const { data: room, isLoading: roomLoading } = useQuery<ApiRoom>({
     queryKey: ['diligence-room', id],
     queryFn:  () => api.get(`/diligence/${id}`).then(r => r.data),
     enabled:  !!id,
-    refetchInterval: 5_000,    // tight refresh while docs are processing
+    refetchInterval: q => ((q.state.data?.progress.processing ?? 0) > 0 ? 5_000 : false),
   })
 
-  const { data: results } = useQuery<{ data: ApiResultRow[]; total: number }>({
+  const { data: results } = useQuery<{ data: ApiResultRow[]; total: number; columns: RoomColumnView[] }>({
     queryKey: ['diligence-results', id],
     queryFn:  () => api.get(`/diligence/${id}/results`).then(r => r.data),
     enabled:  !!id,
-    refetchInterval: 5_000,
+    refetchInterval: q => (roomBusy(q.state.data) ? 5_000 : false),
   })
 
   const upload = useMutation({
@@ -145,6 +169,8 @@ export function DiligenceRoomDetailPage() {
   }
 
   const [exportError, setExportError] = useState<string | null>(null)
+  // docs/39 D6 — adding, asking and answering a column's questions.
+  const canEditColumns = useCanRequest('POST /diligence/:id/columns')
 
   const handleExport = async () => {
     // window.open cannot carry the Bearer token -- middleware/auth.ts accepts
@@ -185,6 +211,9 @@ export function DiligenceRoomDetailPage() {
   }
 
   const allItems = results?.data ?? []
+  const columns = results?.columns ?? []
+  // With columns of its own the table scrolls sideways: the title stays put so each row still says what it is.
+  const stickyTitle = columns.length > 0
   const failedCount = allItems.filter(d => d.analysisStatus === 'FAILED').length
   const items = showFailedOnly ? allItems.filter(d => d.analysisStatus === 'FAILED') : allItems
   const hasAnyDone = (room.progress?.done ?? 0) > 0
@@ -291,7 +320,7 @@ export function DiligenceRoomDetailPage() {
           <div className="flex items-center justify-center gap-3 flex-wrap">
             <span className="text-[11.5px] text-ink-500 inline-flex items-center gap-1.5">
               <Upload className={`size-3.5 ${dragActive ? 'text-ink-950' : 'text-ink-400'}`} />
-              {upload.isPending ? 'Uploading…' : 'Drop more contracts here — PDF or DOCX, up to 50 per upload'}
+              {upload.isPending ? 'Uploading…' : 'Drop more contracts here — PDF, Word or a scan, up to 50 per upload'}
             </span>
             <Button
               onClick={() => fileInputRef.current?.click()}
@@ -313,7 +342,7 @@ export function DiligenceRoomDetailPage() {
             <div className="text-body font-medium text-ink-950 mb-1">
               {upload.isPending ? 'Uploading…' : 'Drop contracts here or click to browse'}
             </div>
-            <div className="text-[11.5px] text-ink-500 mb-3">PDF or DOCX · up to 50 files per upload</div>
+            <div className="text-[11.5px] text-ink-500 mb-3">PDF, Word or a scanned image · up to 50 files per upload</div>
             <Button
               onClick={() => fileInputRef.current?.click()}
               disabled={upload.isPending}
@@ -334,7 +363,7 @@ export function DiligenceRoomDetailPage() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".pdf,.docx,.doc"
+          accept=".pdf,.docx,.doc,.png,.jpg,.jpeg,.tif,.tiff"
           hidden
           onChange={e => handleFiles(e.target.files)}
         />
@@ -364,9 +393,12 @@ export function DiligenceRoomDetailPage() {
               <AssistMark />
               Cross-document extraction
             </h3>
-            <span className="text-[11.5px] tabular-nums text-ink-500">
-              {showFailedOnly ? `${items.length} failed of ${allItems.length}` : `${items.length} ${items.length === 1 ? 'doc' : 'docs'}`}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-[11.5px] tabular-nums text-ink-500">
+                {showFailedOnly ? `${items.length} failed of ${allItems.length}` : `${items.length} ${items.length === 1 ? 'doc' : 'docs'}`}
+              </span>
+              {canEditColumns && id && <AddColumnButton roomId={id} columns={columns} />}
+            </div>
           </header>
           {/*
             Effective and Expiry were two columns, which pushed Risk, Status and
@@ -379,12 +411,17 @@ export function DiligenceRoomDetailPage() {
             <table className="w-full text-dense" data-testid="results-table">
               <thead className="bg-paper-50 text-[10px] uppercase tracking-[0.09em] text-ink-400 border-b border-paper-200">
                 <tr>
-                  <th className="text-left px-3 py-2 font-semibold">Title</th>
-                  <th className="text-left px-3 py-2 font-semibold">Counterparty</th>
-                  <th className="text-right px-3 py-2 font-semibold">Value</th>
-                  <th className="text-left px-3 py-2 font-semibold">Term</th>
-                  <th className="text-left px-3 py-2 font-semibold">Risk</th>
-                  <th className="text-right px-3 py-2 font-semibold"><span className="sr-only">Open</span></th>
+                  <th className={`text-left px-3 py-2 font-semibold align-top ${stickyTitle ? `sticky left-0 z-10 bg-paper-50 ${STICKY_EDGE}` : ''}`}>Title</th>
+                  <th className="text-left px-3 py-2 font-semibold align-top">Counterparty</th>
+                  <th className="text-right px-3 py-2 font-semibold align-top">Value</th>
+                  <th className="text-left px-3 py-2 font-semibold align-top">Term</th>
+                  <th className="text-left px-3 py-2 font-semibold align-top">Risk</th>
+                  {columns.map(c => (
+                    <th key={c.id} className="text-left px-3 py-2 font-semibold align-top" data-testid={`room-column-${c.id}`}>
+                      <ColumnHeader roomId={id!} column={c} canEdit={canEditColumns} />
+                    </th>
+                  ))}
+                  <th className="text-right px-3 py-2 font-semibold align-top"><span className="sr-only">Open</span></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-paper-100">
@@ -395,12 +432,14 @@ export function DiligenceRoomDetailPage() {
                   return (
                     <tr
                       key={d.id}
-                      className={`hover:bg-paper-50 ${failed ? 'bg-risk-50/60' : ''}`}
+                      className={`group hover:bg-paper-50 ${failed ? 'bg-risk-50/60' : ''}`}
                       data-testid={`result-row-${d.id}`}
                       data-analysis-status={d.analysisStatus}
                     >
-                      <td className={`px-3 py-2 max-w-[220px] ${failed ? 'border-l-2 border-l-risk-600' : ''}`}>
-                        <div className="text-[13px] font-medium text-ink-950 truncate" title={d.title}>{d.title}</div>
+                      <td className={`px-3 py-2 max-w-[220px] align-top ${failed ? 'border-l-2 border-l-risk-600' : ''} ${
+                        stickyTitle ? `sticky left-0 z-[1] ${STICKY_EDGE} ${failed ? 'bg-risk-50' : 'bg-card group-hover:bg-paper-50'}` : ''
+                      }`}>
+                        <Link to={`/contracts/${d.id}`} className="block text-[13px] font-medium text-ink-950 truncate hover:underline underline-offset-2" title={d.title}>{d.title}</Link>
                         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                           {d.type && d.type !== 'OTHER' && (
                             <span className="text-[10px] uppercase tracking-[0.09em] font-mono text-ink-400">
@@ -438,23 +477,28 @@ export function DiligenceRoomDetailPage() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-ink-700">
+                      <td className="px-3 py-2 text-ink-700 align-top">
                         {d.counterpartyName ?? <span className="text-ink-400">—</span>}
                       </td>
-                      <td className="px-3 py-2 whitespace-nowrap text-right font-medium text-ink-950 tabular-nums">
+                      <td className="px-3 py-2 whitespace-nowrap text-right font-medium text-ink-950 tabular-nums align-top">
                         {formatMoney(d.value, d.currency ?? 'USD')}
                       </td>
-                      <td className="px-3 py-2 text-ink-700 whitespace-nowrap text-[11.5px]">
+                      <td className="px-3 py-2 text-ink-700 whitespace-nowrap text-[11.5px] align-top">
                         {formatTerm(d.effectiveDate, d.expiryDate)}
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-2 align-top">
                         {d.riskScore != null ? (
                           <RiskMeter score={d.riskScore} className="w-[72px]" />
                         ) : (
                           <span className="text-ink-400" title={failed ? 'Extraction failed — never scored' : 'Not scored'}>—</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-right">
+                      {columns.map(c => (
+                        <td key={c.id} className="px-3 py-2 align-top min-w-[150px] max-w-[260px]">
+                          <RoomCellView roomId={id!} column={c} cell={d.cells?.[c.id]} doc={d} canEdit={canEditColumns} />
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-right align-top">
                         <Link
                           to={`/contracts/${d.id}`}
                           aria-label={`Open ${d.title}`}

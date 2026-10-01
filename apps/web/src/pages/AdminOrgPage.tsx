@@ -18,6 +18,8 @@ import {
 } from 'lucide-react'
 import { AiConfigTab } from '@/components/admin/AiConfigTab'
 import { OrgAuditLog } from '@/components/admin/OrgAuditLog'
+import { DateOrderSection } from '@/components/admin/DateOrderSection'
+import { OurEntitiesSection } from '@/components/admin/OurEntitiesSection'
 import { Card, EmptyState, Eyebrow } from '@/components/ui/primitives'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -245,6 +247,11 @@ export function AdminOrgPage() {
                 </Button>
               </div>
             </Card>
+
+            {/* docs/39 A11 — saved on choosing, like the other org-wide reading settings. */}
+            <DateOrderSection />
+            {/* docs/39 A8 — the names the org signs as: never the counterparty. */}
+            <OurEntitiesSection />
           </div>
         )}
 

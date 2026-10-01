@@ -29,6 +29,8 @@ interface FileEntry {
   counterpartyName: string
   parentContractId: string
   relationshipType: string
+  /** docs/39 G4 — a signed copy: filed as executed, read for its obligations once analysed. */
+  signed: boolean
   status: 'pending' | 'uploading' | 'done' | 'error'
   error?: string
 }
@@ -68,6 +70,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
       counterpartyName: '',
       parentContractId: defaultParentContractId,
       relationshipType: defaultParentContractId ? 'amendment' : '',
+      signed: false,
       status: 'pending',
     }))
     setEntries(prev => {
@@ -82,6 +85,11 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
     accept: {
       'application/pdf': ['.pdf'],
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+      // docs/39 A12 — a legacy .doc, and a scan kept as an image: read as the PDF they're made into.
+      'application/msword': ['.doc'],
+      'image/png': ['.png'],
+      'image/jpeg': ['.jpg', '.jpeg'],
+      'image/tiff': ['.tif', '.tiff'],
       'text/plain': ['.txt'],
     },
     multiple: true,
@@ -113,6 +121,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
           form.append('counterpartyName', e.counterpartyName)
           if (e.parentContractId) form.append('parentContractId', e.parentContractId)
           if (e.relationshipType) form.append('relationshipType', e.relationshipType)
+          if (e.signed) form.append('signed', 'true')
           const res = await api.post('/contracts/upload', form, {
             headers: { 'Content-Type': 'multipart/form-data' },
           })
@@ -214,7 +223,7 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                   <p className="text-body font-medium text-ink-700">
                     {isDragActive ? 'Drop files here' : 'Drag & drop or click to browse'}
                   </p>
-                  <p className="text-dense text-ink-400 mt-1">PDF, DOCX, or TXT · up to 50 MB each · multiple files supported</p>
+                  <p className="text-dense text-ink-400 mt-1">PDF, Word (.docx or .doc), a scan (JPG, PNG or TIFF), or TXT · up to 50 MB each · multiple files supported</p>
                 </div>
               </div>
             ) : activeEntry ? (
@@ -275,6 +284,24 @@ export function UploadModal({ onClose, onSuccess, defaultParentContractId = '' }
                     disabled={activeEntry.status !== 'pending'}
                   />
                 </div>
+
+                {/* docs/39 G4 — a signed copy is in force: filed as executed, its obligations found. */}
+                <label className="flex items-start gap-2 text-dense text-ink-950 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={activeEntry.signed}
+                    onChange={e => update(activeIdx, { signed: e.target.checked })}
+                    disabled={activeEntry.status !== 'pending'}
+                    className="mt-0.5"
+                    data-testid="upload-signed"
+                  />
+                  <span>
+                    This is a signed copy
+                    <span className="block text-[11.5px] text-ink-500">
+                      Filed as executed, and read for its obligations once analysed — suggested for you to confirm.
+                    </span>
+                  </span>
+                </label>
 
                 {/* ── Link to parent contract ─────────────────────────────── */}
                 <div className="border border-paper-200 rounded-md p-3 bg-paper-50 space-y-3">

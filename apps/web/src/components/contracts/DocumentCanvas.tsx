@@ -25,7 +25,7 @@ import TableCell from '@tiptap/extension-table-cell'
 import TextAlign from '@tiptap/extension-text-align'
 import {
   AlertTriangle, Loader2, FileWarning,
-  Bold, Italic, Underline as UnderlineIcon, Heading2, Sparkles,
+  Bold, Italic, Underline as UnderlineIcon, Heading2, Sparkles, TextCursorInput,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { editedHtml } from '@/lib/canvas-update'
@@ -39,6 +39,9 @@ import {
 import GhostCompletion from '../editor/GhostCompletion'
 import ClauseClassifier from '../editor/ClauseClassifier'
 import DefinedTermGuard from '../editor/DefinedTermGuard'
+import { SourceHighlight } from './SourceHighlight'
+import { Variable } from '../editor/VariableMark'
+import { selectionOf, type TextSelection } from './SelectionMenu'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -74,6 +77,8 @@ export function DocumentCanvas({
   riskTone,
   onRiskClick,
   onAiAction,
+  onSetField,
+  onVariableClick,
   className,
 }: {
   state: CanvasState
@@ -95,6 +100,11 @@ export function DocumentCanvas({
   /** Called when the user clicks the ✨ AI button in the bubble menu.
    *  B.5.8 stubs this; B.5.9 wires it to the ⌘K command palette. */
   onAiAction?: (selectedText: string) => void
+  /** docs/39 C1 — "Set as field value" for the selection; absent for someone
+   *  who can't edit fields. View mode has the same action in SelectionMenu. */
+  onSetField?: (selection: TextSelection) => void
+  /** docs/39 H2 — a draft's variable clicked while reading: the Variables panel shows it. */
+  onVariableClick?: (key: string) => void
   className?: string
 }) {
   const html = state.kind === 'ready' ? normalizeHtml(state.html) : ''
@@ -117,6 +127,8 @@ export function DocumentCanvas({
           emptyEditorClass: 'is-editor-empty',
         }),
         RiskHighlights, // B.5.5 — renders red/blue decorations per riskClauses
+        SourceHighlight, // docs/39 B2 — "show in document" for a field's value
+        Variable, // docs/39 H2 — a draft's terms stay marked with their variable
         // P6.1 — Ghost-text completion. Only fires when editable=true.
         GhostCompletion.configure({
           contractType: 'general commercial',
@@ -143,8 +155,12 @@ export function DocumentCanvas({
         if (edited !== null) onChange?.(edited)
       },
     },
-    // Re-init if the underlying contract changes; cheap enough for now.
-    [state.kind === 'ready' ? html : state.kind, editable],
+    // Re-created when the document changes while it's read, and when editing
+    // starts or stops. Not while editing: the editor holds the document then,
+    // and every version it saves comes back from the server. Re-creating it
+    // for that dropped the caret five seconds after typing stopped, and the
+    // words typed next went nowhere.
+    [editable ? 'editing' : state.kind === 'ready' ? html : state.kind, editable],
   )
 
   // Push risk data into the plugin whenever it changes. Uses the meta
@@ -224,16 +240,20 @@ export function DocumentCanvas({
   // READY — the TipTap render. The document-canvas wrapper scopes paper CSS.
   // Click handler on the wrapper catches risk-marker clicks (event delegation).
   const onClickDocument = (e: React.MouseEvent) => {
-    if (!onRiskClick) return
     const target = e.target as HTMLElement
-    const marker = target.closest('.risk-marker') as HTMLElement | null
-    if (!marker) return
-    const clauseId = marker.dataset.clauseId
-    const kind = marker.dataset.riskKind as 'risk' | 'deviation' | undefined
-    if (clauseId && kind) {
-      e.stopPropagation()
-      onRiskClick(clauseId, kind)
+    const marker = onRiskClick ? target.closest('.risk-marker') as HTMLElement | null : null
+    if (marker) {
+      const clauseId = marker.dataset.clauseId
+      const kind = marker.dataset.riskKind as 'risk' | 'deviation' | undefined
+      if (clauseId && kind) {
+        e.stopPropagation()
+        onRiskClick!(clauseId, kind)
+      }
+      return
     }
+    // docs/39 H2 — a click on a variable, not the end of a selection made across it.
+    const variable = !editable && onVariableClick ? target.closest('[data-variable]') as HTMLElement | null : null
+    if (variable?.dataset.variable && (window.getSelection()?.isCollapsed ?? true)) onVariableClick!(variable.dataset.variable)
   }
 
   // B.5.17 a11y — Enter/Space on a focused risk marker fires the same
@@ -264,6 +284,7 @@ export function DocumentCanvas({
         className={cn(
           'document-canvas',
           riskTone === 'amber' && 'document-canvas--tone-amber',
+          !editable && 'document-canvas--reading',
           // The page is the one surface allowed a drop shadow on paper.
           'mx-auto my-8 bg-card',
           'shadow-page',
@@ -318,6 +339,19 @@ export function DocumentCanvas({
           >
             <Heading2 className="size-3.5" />
           </MenuButton>
+          {onSetField && (
+            <>
+              <MenuSeparator />
+              <MenuButton
+                onClick={() => { const sel = selectionOf(editor); if (sel) onSetField(sel) }}
+                title="Set as field value"
+                aria-label="Set as field value"
+                data-testid="bubble-menu-set-field"
+              >
+                <TextCursorInput className="size-3.5" />
+              </MenuButton>
+            </>
+          )}
           <MenuSeparator />
           <MenuButton
             onClick={() => {

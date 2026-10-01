@@ -26,6 +26,8 @@ const VariableDefSchema = z.object({
   required: z.boolean().default(false),
   defaultValue: z.string().optional(),
   options: z.array(z.string()).optional(), // for select type
+  // docs/39 H1/H2 — the contract field its value fills.
+  field: z.string().max(100).nullable().optional(),
 })
 
 const SectionSchema = z.object({

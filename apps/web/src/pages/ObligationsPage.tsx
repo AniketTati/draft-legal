@@ -10,12 +10,14 @@
  */
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useCanRequest } from '@/lib/permissions'
+import { toast } from '@/components/common/Toaster'
 import {
   CalendarClock, DollarSign, Shield, RefreshCw, FileSearch, Bell,
   Check, AlertTriangle, Loader2, AlertCircle, ListTodo,
-  Search, CheckCircle2, Download,
+  Search, CheckCircle2, Download, Sparkles, X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -25,7 +27,8 @@ import type { Meaning } from '@/lib/status'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
 import { ObligationDrawer, sectionLabel } from '@/components/obligations/ObligationDrawer'
 
-type Bucket = 'all' | 'open' | 'due_soon' | 'overdue' | 'completed'
+// docs/39 G4 — 'suggested': what the AI found, waiting for a person to confirm it.
+type Bucket = 'suggested' | 'all' | 'open' | 'due_soon' | 'overdue' | 'completed'
 
 interface ApiObligation {
   id:               string
@@ -41,6 +44,7 @@ interface ApiObligation {
   status:           'OPEN' | 'COMPLETED' | 'OVERDUE' | 'WAIVED'
   completedAt:      string | null
   notifiedAt:       string | null
+  reviewState:      'SUGGESTED' | 'CONFIRMED' | 'DISMISSED'
   contract: {
     id: string
     title: string
@@ -55,6 +59,10 @@ interface ApiStats {
   dueSoon: number
   overdue: number
   completedRecent: number
+  /** G4 — found by the AI, not yet confirmed. */
+  suggested: number
+  /** G4 — signed contracts never read for obligations. */
+  unreadSigned: number
 }
 
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -69,6 +77,7 @@ const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
 }
 
 const BUCKETS: { key: Bucket; label: string; statKey?: keyof ApiStats }[] = [
+  { key: 'suggested', label: 'To confirm',   statKey: 'suggested' },
   { key: 'all',       label: 'All' },
   { key: 'open',      label: 'Open',         statKey: 'open' },
   { key: 'due_soon',  label: 'Due soon',     statKey: 'dueSoon' },
@@ -144,17 +153,54 @@ export function ObligationsPage() {
   }
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
   const qc = useQueryClient()
+  // G4 — while signed contracts are being read, follow them: suggestions arrive as each is done.
+  const [readingUntil, setReadingUntil] = useState(0)
+  const reading = readingUntil > Date.now()
+  const every = () => (readingUntil > Date.now() ? 4_000 : 60_000)
 
   const { data: stats } = useQuery<ApiStats>({
     queryKey: ['obligations-stats'],
     queryFn:  () => api.get('/obligations/stats').then(r => r.data),
-    refetchInterval: 60_000,
+    refetchInterval: every,
   })
 
   const { data, isLoading, isError } = useQuery<{ data: ApiObligation[]; total: number }>({
     queryKey: ['obligations-list', bucket, q],
-    queryFn:  () => api.get(`/obligations?bucket=${bucket}${q ? `&q=${encodeURIComponent(q)}` : ''}&limit=100`).then(r => r.data),
-    refetchInterval: 60_000,
+    queryFn:  () => api.get(bucket === 'suggested'
+      ? `/obligations?review=suggested${q ? `&q=${encodeURIComponent(q)}` : ''}&limit=100`
+      : `/obligations?bucket=${bucket}${q ? `&q=${encodeURIComponent(q)}` : ''}&limit=100`).then(r => r.data),
+    refetchInterval: every,
+  })
+
+  // docs/39 G4 — a suggestion becomes an obligation, or goes; signed contracts never read get read.
+  const canReview = useCanRequest('POST /obligations/:id/confirm')
+  const canFind = useCanRequest('POST /obligations/find')
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['obligations-list'] })
+    qc.invalidateQueries({ queryKey: ['obligations-stats'] })
+    qc.invalidateQueries({ queryKey: ['contract-obligations'] })
+  }
+  const review = useMutation({
+    mutationFn: async ({ ids, action }: { ids: string[]; action: 'confirm' | 'dismiss' }) =>
+      (await api.post<{ count: number }>('/obligations/review', { ids, action })).data,
+    onSuccess: (r, { action }) => {
+      refresh()
+      toast.success(action === 'confirm' ? `Confirmed ${r.count} obligation${r.count === 1 ? '' : 's'}` : `Dismissed ${r.count} suggestion${r.count === 1 ? '' : 's'}`)
+    },
+    onError: () => toast.error("Couldn't save that", { description: 'Try again.' }),
+  })
+  const find = useMutation({
+    mutationFn: async () => (await api.post<{ queued: number; more: boolean }>('/obligations/find', {})).data,
+    onSuccess: r => {
+      refresh()
+      // About a few seconds a contract; follow along for that long, and a minute more.
+      setReadingUntil(Date.now() + 60_000 + r.queued * 6_000)
+      setBucket('suggested')
+      toast.success(`Reading ${r.queued} signed contract${r.queued === 1 ? '' : 's'}`, {
+        description: `Their obligations appear under "To confirm" as they're found${r.more ? ' — press again for the rest.' : '.'}`,
+      })
+    },
+    onError: () => toast.error("Couldn't start reading them", { description: 'Try again.' }),
   })
 
   /*
@@ -219,6 +265,30 @@ export function ObligationsPage() {
         Every commitment extracted from your executed contracts — payments, SLAs, renewals, audits, and reports.
       </p>
 
+      {/* docs/39 G4 — signed contracts nobody has had read for obligations. */}
+      {canFind && (stats?.unreadSigned ?? 0) > 0 && (
+        <div className="mb-5 flex items-center gap-3 rounded-md border border-paper-200 bg-paper-50 px-4 py-3" data-testid="obligations-unread">
+          <Sparkles className="size-4 shrink-0 text-assist-600" />
+          {reading ? (
+            <p className="flex-1 text-dense text-ink-700 inline-flex items-center gap-2">
+              <Loader2 className="size-3.5 animate-spin text-ink-400" />
+              Reading signed contracts — <span className="tabular-nums">{stats!.unreadSigned}</span> to go. Their obligations appear under “To confirm” as each is done.
+            </p>
+          ) : (
+            <>
+              <p className="flex-1 text-dense text-ink-700">
+                <span className="font-semibold text-ink-950 tabular-nums">{stats!.unreadSigned}</span> signed contract{stats!.unreadSigned === 1 ? ' has' : 's have'} never been read for obligations.
+                What's found is suggested for you to confirm.
+              </p>
+              <Button size="sm" variant="outline" disabled={find.isPending} onClick={() => find.mutate()} data-testid="find-obligations">
+                {find.isPending && <Loader2 className="animate-spin" />}
+                Find their obligations
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Stats strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
         <StatCard label="Open"        value={stats?.open ?? 0}         meaning="inflight" data-testid="stat-open" />
@@ -249,9 +319,9 @@ export function ObligationsPage() {
               >
                 {b.label}
                 {count != null && count > 0 && (
-                  // Bucket counts are informational — none of them is "your
-                  // turn", so none of them earns a meaning colour.
-                  <CountBadge tone={isActive ? 'ink' : 'neutral'}>{count}</CountBadge>
+                  // Bucket counts are informational — except "To confirm",
+                  // which is the reader's turn (G4), so it alone takes attention.
+                  <CountBadge tone={b.key === 'suggested' ? 'attention' : isActive ? 'ink' : 'neutral'}>{count}</CountBadge>
                 )}
               </button>
             )
@@ -287,7 +357,9 @@ export function ObligationsPage() {
             title={
               q
                 ? `No obligations match "${q}".`
-                : bucket === 'completed'
+                : bucket === 'suggested'
+                  ? 'Nothing to confirm — every suggestion has been reviewed.'
+                  : bucket === 'completed'
                   ? 'No obligations completed in the last 30 days.'
                   : bucket === 'overdue'
                     ? 'Nothing overdue — well done.'
@@ -297,13 +369,19 @@ export function ObligationsPage() {
                         ? 'Nothing outstanding — every extracted commitment is discharged.'
                         : 'No obligations extracted yet.'
             }
-            description="Obligations are auto-extracted when a contract is signed; you can also run extraction manually from any contract page."
+            description="A signed contract is read for its obligations once it's analysed, and what's found is suggested for you to confirm. You can also find them from any contract page."
           />
         </div>
       ) : (
         <div className="bg-card border border-paper-200 rounded-card overflow-hidden">
           <div className="px-5 py-2 text-[11px] text-ink-500 bg-paper-50 border-b border-paper-200 flex items-center justify-between">
-            <span className="tabular-nums">{total} {total === 1 ? 'obligation' : 'obligations'}</span>
+            <span className="tabular-nums">{total} {bucket === 'suggested' ? (total === 1 ? 'suggestion' : 'suggestions') : total === 1 ? 'obligation' : 'obligations'}</span>
+            {/* G4 — after a read-through, the lot at once. */}
+            {bucket === 'suggested' && canReview && items.length > 1 && (
+              <Button size="xs" variant="outline" disabled={review.isPending} onClick={() => review.mutate({ ids: items.map(o => o.id), action: 'confirm' })} data-testid="confirm-all">
+                Confirm all {items.length}
+              </Button>
+            )}
           </div>
           {/* Fixed layout, not content-driven. Six auto-width columns measured
               1116px inside a 730px shell with the assistant rail open, so
@@ -346,6 +424,12 @@ export function ObligationsPage() {
                             {o.description}
                           </div>
                           <div className="text-[11px] text-ink-500 mt-0.5 flex items-center gap-1.5 truncate">
+                            {/* G4 — found by the AI: machine output, not yet anyone's word. */}
+                            {o.reviewState === 'SUGGESTED' && (
+                              <span className="shrink-0 rounded-chip border border-assist-200 bg-assist-50 px-1 text-[10px] font-medium text-assist-700" data-testid={`suggested-${o.id}`}>
+                                Suggested
+                              </span>
+                            )}
                             {/* Severity used to own a column of its own, which
                                 cost 107px to say one word. It is a property of
                                 the commitment, so it rides with the commitment —
@@ -402,7 +486,21 @@ export function ObligationsPage() {
                           loudest thing on a page whose loudest thing should be
                           "120d overdue". The fill stays on single-decision
                           surfaces, including the confirmation modal this opens. */}
-                      {o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                      {o.reviewState === 'SUGGESTED' && canReview ? (
+                        // G4 — a suggestion is confirmed (or dismissed) before it's worked.
+                        <span className="inline-flex items-center gap-1">
+                          <Button type="button" size="xs" variant="outline" disabled={review.isPending}
+                            onClick={() => review.mutate({ ids: [o.id], action: 'confirm' })} data-testid={`confirm-btn-${o.id}`}>
+                            <Check />
+                            Confirm
+                          </Button>
+                          <button type="button" disabled={review.isPending} onClick={() => review.mutate({ ids: [o.id], action: 'dismiss' })}
+                            className="rounded-sm p-1 text-ink-400 hover:bg-paper-100 hover:text-ink-950" aria-label={`Dismiss: ${o.description}`} title="Not an obligation: dismiss it"
+                            data-testid={`dismiss-btn-${o.id}`}>
+                            <X className="size-3.5" />
+                          </button>
+                        </span>
+                      ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
                         <Button
                           type="button"
                           variant="outline"

@@ -261,7 +261,8 @@ export async function carryClauses(opts: { contractId: string; toVersionId: stri
     const text = spanText(to.plainText, after, moved.start, moved.end)
     // Unchanged: the same words in the same order, and the same punctuation.
     if (moved.unchanged && span && fold(spanText(from.plainText, before, span[0], span[1])) !== fold(text)) moved.unchanged = false
-    const base = { versionId: to.id, clauseType: primary.clauseType, sectionRef: primary.sectionRef, sortOrder: primary.sortOrder }
+    // docs/39 E2 — a clause a person tagged stays theirs in the new version.
+    const base = { versionId: to.id, clauseType: primary.clauseType, sectionRef: primary.sectionRef, sortOrder: primary.sortOrder, source: primary.source }
     if (moved.unchanged) {
       created.push({
         ...base,

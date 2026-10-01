@@ -98,6 +98,10 @@ async function seedOrgB(): Promise<void> {
   B.shareLink = (await prisma.contractShareLink.create({ data: { orgId: orgB, contractId: B.contract, token: `crawl-${randomUUID()}`, label: `${MARK} link`, expiresAt: new Date(Date.now() + 86_400_000), ...by } })).id
   B.notification = (await prisma.notification.create({ data: { orgId: orgB, userId: user.id, type: 'info', title: `${MARK} note`, body: `${MARK} note`, resourceType: 'contract', resourceId: B.contract } })).id
   B.fieldDef = (await prisma.contractFieldDefinition.create({ data: { orgId: orgB, fieldKey: `orgb_${randomUUID().slice(0, 6)}`, fieldLabel: `${MARK} field`, fieldType: 'text' } })).id
+  // docs/39 — a field someone asked for, a run's undo, a shared view: each Org B's own.
+  B.fieldSuggestion = (await prisma.fieldSuggestion.create({ data: { orgId: orgB, label: `${MARK} suggestion`, fieldKey: 'orgb_suggestion', fieldType: 'text', suggestedById: user.id } })).id
+  B.fieldRun = (await prisma.fieldValueRun.create({ data: { orgId: orgB, kind: 'reanalysis', contractId: B.contract, changes: [{ contractId: B.contract, fieldKey: 'governingLaw', before: { value: MARK }, after: MARK }] } })).id
+  B.savedView = (await prisma.savedView.create({ data: { orgId: orgB, ownerId: user.id, name: `${MARK} view`, shared: true, query: { q: MARK } } })).id
   B.room = (await prisma.diligenceRoom.create({ data: { orgId: orgB, name: `${MARK} room`, description: MARK, ...by } })).id
   B.skill = (await prisma.skill.create({ data: { orgId: orgB, name: `${MARK} skill`, slug: `orgb-${randomUUID().slice(0, 8)}`, description: MARK, ownerType: 'org', contextScope: 'any', systemPrompt: MARK, modelTier: 'default' } })).id
   B.role = (await prisma.role.create({ data: { orgId: orgB, name: `${MARK}-role` } })).id
@@ -118,6 +122,7 @@ const SEGMENT_TARGET: Record<string, string> = {
   threads: 'thread', comments: 'comment', notifications: 'notification', 'field-definitions': 'fieldDef',
   diligence: 'room', rooms: 'room', skills: 'skill', users: 'user', roles: 'role', team: 'user',
   'review-queue': 'contract', audit: 'audit', renewals: 'contract', sections: 'section',
+  'field-suggestions': 'fieldSuggestion', 'field-runs': 'fieldRun', 'saved-views': 'savedView',
 }
 const LITERAL_PARAM: Record<string, string> = { index: '0', provider: 'openai' }
 

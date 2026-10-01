@@ -240,3 +240,27 @@ export function invalidatePermissionCache(orgId: string): void {
 export function clearPermissionCache(): void {
   cache.clear()
 }
+
+/**
+ * The org's active people who may do action:resource, as their roles grant it
+ * — who to tell when something needs someone with that right (docs/39 C3:
+ * a suggested field, for whoever can add fields).
+ */
+export async function usersWhoCan(
+  orgId: string, action: string, resource: string,
+  opts: { exclude?: string; take?: number } = {},
+): Promise<Array<{ id: string; email: string; name: string }>> {
+  const users = await prisma.user.findMany({
+    where: { orgId, deletedAt: null, status: 'ACTIVE', ...(opts.exclude ? { id: { not: opts.exclude } } : {}) },
+    select: { id: true, email: true, name: true, userRoles: { select: { role: { select: { name: true } } } } },
+    orderBy: { createdAt: 'asc' },
+    take: 500,
+  })
+  const out: Array<{ id: string; email: string; name: string }> = []
+  for (const u of users) {
+    const perms = await getPermissionsForRoles(orgId, u.userRoles.map(r => r.role.name))
+    if (evaluatePermission(perms, action, resource).granted) out.push({ id: u.id, email: u.email, name: u.name })
+    if (out.length >= (opts.take ?? 20)) break
+  }
+  return out
+}

@@ -37,9 +37,16 @@ export interface GenerateResult {
 
 // ─── Variable Interpolation ─────────────────────────────────────────────────
 
+const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
 /**
  * Replace {{key}} tokens in HTML with values from the variable map.
  * Unfilled tokens are left with a visible placeholder.
+ *
+ * docs/39 H2 — each value stays marked with its variable (a span with
+ * data-variable, which the contract's editor keeps as a mark), so a draft's
+ * terms can be changed everywhere they appear, once; the value is escaped
+ * (it went into the HTML raw).
  */
 export function interpolateVariables(html: string, variables: VariableMap): { html: string; unfilled: string[] } {
   const unfilled: string[] = []
@@ -48,9 +55,9 @@ export function interpolateVariables(html: string, variables: VariableMap): { ht
     const value = variables[key]
     if (value === undefined || value === null || value === '') {
       unfilled.push(key)
-      return `<span class="template-variable-unfilled" data-key="${key}">[[${key}]]</span>`
+      return `<span class="template-variable-unfilled" data-variable="${key}" data-key="${key}">[[${key}]]</span>`
     }
-    return String(value)
+    return `<span data-variable="${key}">${escapeHtml(String(value))}</span>`
   })
 
   return { html: result, unfilled }

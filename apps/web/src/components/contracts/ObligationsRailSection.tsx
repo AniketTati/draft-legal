@@ -14,6 +14,7 @@ import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { CalendarClock, DollarSign, Shield, RefreshCw, FileSearch, Bell, Check, AlertTriangle, Sparkles, CheckCircle2 } from 'lucide-react'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
+import { useCanRequest } from '@/lib/permissions'
 import { ObligationDrawer, sectionLabel } from '@/components/obligations/ObligationDrawer'
 
 export interface ObligationShape {
@@ -30,6 +31,8 @@ export interface ObligationShape {
   status?: string
   completedAt?: string | null
   notifiedAt?: string | null
+  /** docs/39 G4 — found by the AI: suggested until a person confirms it. */
+  reviewState?: 'SUGGESTED' | 'CONFIRMED' | 'DISMISSED'
 }
 
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -100,6 +103,19 @@ export function ObligationsRailSection({
       onAfterExtract?.()
     },
   })
+
+  // G4 — a suggestion becomes an obligation, or goes.
+  const canReview = useCanRequest('POST /obligations/:id/confirm')
+  const review = useMutation({
+    mutationFn: async ({ ids, action }: { ids: string[]; action: 'confirm' | 'dismiss' }) =>
+      (await api.post<{ count: number }>('/obligations/review', { ids, action })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contract-obligations', contractId] })
+      qc.invalidateQueries({ queryKey: ['obligations-list'] })
+      qc.invalidateQueries({ queryKey: ['obligations-stats'] })
+    },
+  })
+  const suggested = obligations.filter(o => o.reviewState === 'SUGGESTED')
 
   const [showAll, setShowAll] = useState(false)
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
@@ -174,6 +190,20 @@ export function ObligationsRailSection({
         </div>
       ) : (
         <>
+          {suggested.length > 0 && canReview && (
+            <div className="mb-2 flex items-center gap-2 text-[11px] text-ink-700" data-testid="obligations-suggested">
+              <Sparkles className="size-3 shrink-0 text-assist-600" />
+              <span className="flex-1">
+                {suggested.length} found by the AI — confirm the ones that apply.
+              </span>
+              {suggested.length > 1 && (
+                <button type="button" disabled={review.isPending} onClick={() => review.mutate({ ids: suggested.map(o => o.id), action: 'confirm' })}
+                  className="font-medium text-ink-950 hover:underline underline-offset-2 disabled:opacity-50" data-testid="obligations-confirm-all">
+                  Confirm all
+                </button>
+              )}
+            </div>
+          )}
           <ul data-testid="obligations-list" className="space-y-1.5">
             {visible.map(o => {
               const Icon = TYPE_ICON[o.type] ?? Bell
@@ -208,6 +238,9 @@ export function ObligationsRailSection({
                         {o.description}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
+                        {o.reviewState === 'SUGGESTED' && (
+                          <span className="rounded-chip border border-assist-200 bg-assist-50 px-1 font-medium text-assist-700">Suggested</span>
+                        )}
                         <span className="font-mono uppercase tracking-wider text-ink-400">{o.type}</span>
                         <span className="text-muted-foreground">· {o.owner}</span>
                         {sectionLabel(o.sectionRef) && <span className="font-mono text-ink-500">{sectionLabel(o.sectionRef)}</span>}
@@ -222,7 +255,23 @@ export function ObligationsRailSection({
                         {!o.dueDate && o.trigger && (
                           <span className="text-muted-foreground italic truncate">{o.trigger}</span>
                         )}
-                        {o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                        {o.reviewState === 'SUGGESTED' && canReview ? (
+                          // G4 — confirmed (or dismissed) before it's worked.
+                          <span className="ml-auto inline-flex items-center gap-2">
+                            <button type="button" disabled={review.isPending}
+                              onClick={(e) => { e.stopPropagation(); review.mutate({ ids: [o.id], action: 'confirm' }) }}
+                              className="inline-flex items-center gap-0.5 font-medium text-ink-950 hover:underline underline-offset-2 disabled:opacity-50"
+                              data-testid={`obligation-confirm-${o.id}`}>
+                              <Check className="size-3" /> confirm
+                            </button>
+                            <button type="button" disabled={review.isPending}
+                              onClick={(e) => { e.stopPropagation(); review.mutate({ ids: [o.id], action: 'dismiss' }) }}
+                              className="text-ink-500 hover:text-ink-950 hover:underline underline-offset-2 disabled:opacity-50"
+                              data-testid={`obligation-dismiss-${o.id}`}>
+                              dismiss
+                            </button>
+                          </span>
+                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setCompleteTarget({ id: o.id, description: o.description }) }}

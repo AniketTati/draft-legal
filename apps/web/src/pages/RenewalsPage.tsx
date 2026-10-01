@@ -16,6 +16,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { formatCurrencyTotals, totalsByCurrency, type CurrencyTotal } from '@clm/types'
 import {
   CalendarDays, ArrowRight, Loader2, AlertCircle, RefreshCw,
   Clock, AlertTriangle, Search, Download,
@@ -58,6 +59,8 @@ interface RenewalRow {
   expiryDate:       string | null
   effectiveDate:    string | null
   value:            string | null
+  /** docs/39 F3 — value per year, when the contract says what its value is. */
+  annualValue?:     number | null
   currency:         string | null
   ownerId:          string
   ownerName:        string | null
@@ -65,8 +68,13 @@ interface RenewalRow {
   /**
    * The auto-renewal notice deadline, derived server-side (C6) by the same
    * function the daily renewal scan alerts on, so this row and the alert agree.
+   * docs/39 F1 — `label` is the notice as written ("3 months"); `confirmed`
+   * is false for a notice found before notices were told apart, which may be
+   * the notice to end early: the row asks someone to confirm it.
    */
-  notice?: { autoRenew: boolean; days: number | null; deadline: string | null }
+  notice?: { autoRenew: boolean; days: number | null; label?: string | null; confirmed?: boolean; deadline: string | null }
+  /** docs/39 G3 — an amendment ending it on another date, not set on it yet. */
+  pendingAmendment?: { id: string; title: string; expiryDate: string } | null
   renewalDecision:    string | null
   renewalDecisionAt:  string | null
   renewalAdvice: {
@@ -80,6 +88,8 @@ interface MonthGroup {
   month:      string
   label:      string
   rows:       RenewalRow[]
+  /** docs/39 D4 — per currency (older APIs send only totalValue + currency). */
+  totals?:    CurrencyTotal[]
   totalValue: number
   currency:   string
 }
@@ -99,9 +109,11 @@ interface ApiStats {
   next90:         number
   undecided:      number
   totalAcvNext90: number
+  /** docs/39 D4 — per currency (older APIs send only totalAcvNext90). */
+  acvNext90?: CurrencyTotal[]
 }
 
-const BUCKETS: { key: Bucket; label: string; statKey?: keyof ApiStats }[] = [
+const BUCKETS: { key: Bucket; label: string; statKey?: 'overdue' | 'thisWeek' | 'next30' | 'next60' | 'next90' | 'undecided' }[] = [
   { key: 'all',       label: 'Next year' },
   { key: 'this_week', label: 'This week',  statKey: 'thisWeek' },
   { key: 'next_30',   label: 'Next 30d',   statKey: 'next30' },
@@ -190,7 +202,9 @@ function noticeDeadline(r: RenewalRow): {
   const deadline = new Date(n.deadline)
   const dateStr  = deadline.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   const d        = daysUntil(deadline.toISOString())
-  const title    = `Auto-renews. ${days} days' notice to terminate, so notice must be served by ${dateStr}.`
+  // docs/39 F1 — the notice as the contract writes it: "3 months" counts back by the calendar.
+  const period   = n.label ?? `${days} days`
+  const title    = `Auto-renews. ${period}' notice to stop it renewing, so notice must be served by ${dateStr}.`
   const risky    = 'text-risk-700 font-medium'
 
   if (d == null) return { text: `Notice by ${dateStr}`, tone: 'text-ink-500', title, atRisk: false }
@@ -232,6 +246,8 @@ export function RenewalsPage() {
    */
   const [noticeOnly, setNoticeOnly] = useState(false)
   const noticeAtRiskCount = (data?.data ?? []).filter(r => noticeDeadline(r)?.atRisk).length
+  // docs/39 F1/B4 — notice periods found before the notices were told apart.
+  const unconfirmedCount = (data?.data ?? []).filter(r => r.notice?.confirmed === false).length
 
   // Client-side text filter — server endpoint doesn't support `q` for renewals yet.
   const needle = q.trim().toLowerCase()
@@ -249,12 +265,11 @@ export function RenewalsPage() {
     // filter drops rows the server's total stops describing what is on screen —
     // "8 renewals · USD 7.77M ACV" over eight rows that add up to less is the
     // kind of number a renewals owner will quote in a QBR. Re-sum what is shown.
+    // docs/39 D4 — one total per currency: rows in EUR and USD were summed.
     return {
       ...m,
       rows,
-      totalValue: clientFiltered
-        ? rows.reduce((sum, r) => sum + (Number(r.value) || 0), 0)
-        : m.totalValue,
+      totals: clientFiltered || !m.totals ? totalsByCurrency(rows.map(r => ({ value: r.annualValue ?? r.value, currency: r.currency }))) : m.totals,
     }
   }).filter(m => m.rows.length > 0)
 
@@ -284,6 +299,17 @@ export function RenewalsPage() {
       <p className="text-body text-ink-500 mb-5">
         Every executed contract heading toward its expiry — grouped by month so you can see what decisions are needed when.
       </p>
+      {unconfirmedCount > 0 && (
+        <div className="flex items-center gap-2 mb-5 rounded-md border border-attention-200 bg-attention-50 px-3 py-2 text-dense text-ink-950" data-testid="renewals-unconfirmed-banner">
+          <AlertTriangle className="size-3.5 text-attention-600 shrink-0" />
+          <span>
+            {unconfirmedCount} renewal{unconfirmedCount === 1 ? ' has a notice period' : 's have notice periods'} whose type isn&apos;t confirmed, so {unconfirmedCount === 1 ? 'its' : 'their'} opt-out deadline{unconfirmedCount === 1 ? '' : 's'} may be wrong.
+          </span>
+          <Link to="/review-queue?reason=notice_type" className="ml-auto shrink-0 font-medium text-ink-950 hover:underline underline-offset-2" data-testid="renewals-unconfirmed-link">
+            Sort them out →
+          </Link>
+        </div>
+      )}
 
       {/* Stats strip */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -296,7 +322,7 @@ export function RenewalsPage() {
           meaning="turn"
           icon={AlertTriangle}
           data-testid="stat-undecided"
-          subtitle={stats?.totalAcvNext90 ? `next 90d · ${formatMoney(stats.totalAcvNext90)} ACV` : 'next 90d'}
+          subtitle={stats?.acvNext90?.length ? `next 90d · ${formatCurrencyTotals(stats.acvNext90, { max: 2 })} ACV` : stats?.totalAcvNext90 ? `next 90d · ${formatMoney(stats.totalAcvNext90)} ACV` : 'next 90d'}
         />
       </div>
 
@@ -413,9 +439,9 @@ export function RenewalsPage() {
                     {m.rows.length} {m.rows.length === 1 ? 'renewal' : 'renewals'}
                   </span>
                 </div>
-                {m.totalValue > 0 && (
-                  <span className="text-[11px] font-medium text-ink-700 tabular-nums">
-                    {formatMoney(m.totalValue, m.currency)} ACV
+                {(m.totals?.length ?? 0) > 0 && (
+                  <span className="text-[11px] font-medium text-ink-700 tabular-nums" data-testid={`renewal-month-total-${m.month}`}>
+                    {formatCurrencyTotals(m.totals ?? [], { max: 2 })} ACV
                   </span>
                 )}
               </header>
@@ -452,6 +478,18 @@ export function RenewalsPage() {
                           {r.value && <span>· {formatMoney(Number(r.value), r.currency ?? 'USD')}</span>}
                           {r.ownerName && <span>· {r.ownerName}</span>}
                         </div>
+                        {/* docs/39 G3 — the date above may be the one an amendment replaced. */}
+                        {r.pendingAmendment && (
+                          <Link
+                            to={`/contracts/${r.pendingAmendment.id}`}
+                            className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-attention-700 hover:underline underline-offset-2"
+                            title="Its amendment's terms aren't set on it yet: open the amendment to set them"
+                            data-testid={`renewal-amended-${r.id}`}
+                          >
+                            <AlertTriangle className="size-3 shrink-0" />
+                            {r.pendingAmendment.title} ends it on {new Date(r.pendingAmendment.expiryDate).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })} — not set on it yet
+                          </Link>
+                        )}
                       </div>
                       <div className="text-right whitespace-nowrap">
                         <div className={`text-[11.5px] tabular-nums ${due.tone}`}>
@@ -466,6 +504,16 @@ export function RenewalsPage() {
                             {notice.atRisk && <AlertTriangle className="size-3 shrink-0" />}
                             {notice.text}
                           </div>
+                        )}
+                        {notice && r.notice?.confirmed === false && (
+                          <Link
+                            to={`/contracts/${r.id}?panel=fields&field=noticePeriodDays`}
+                            className="mt-0.5 inline-flex items-center gap-1 text-[10.5px] text-attention-700 hover:underline underline-offset-2"
+                            title="This notice period was found before the AI told the notice to stop a renewal apart from the notice to end early. Confirm which it is."
+                            data-testid={`renewal-notice-unconfirmed-${r.id}`}
+                          >
+                            Notice type unconfirmed · check
+                          </Link>
                         )}
                       </div>
                       <div className="flex items-center gap-1.5">

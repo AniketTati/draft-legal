@@ -176,6 +176,47 @@
   background: hsl(var(--muted));
 }
 
+/* docs/39 B2 — "Show in document": the passage a field's value came from
+   (SourceHighlight). Amber like the focused row in the Fields panel. */
+.document-canvas .source-highlight {
+  background: hsl(var(--attention) / 0.2);
+  box-shadow: 0 0 0 2px hsl(var(--attention) / 0.2);
+  border-radius: 2px;
+  animation: source-highlight-in 1.2s ease-out;
+}
+@keyframes source-highlight-in {
+  from { background: hsl(var(--attention) / 0.5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .document-canvas .source-highlight { animation: none; }
+}
+
+/* A justified line never starts with a space. TipTap sets break-spaces, so a
+   space that doesn't fit at a line's end wraps to the next one; reading has
+   no caret to keep after a trailing space, so spaces hang, as in print. */
+.document-canvas--reading .ProseMirror { white-space: pre-wrap; }
+
+/* docs/39 H2 — a draft's variables: the terms its template filled in, dotted
+   so a reader sees which words they are (and, reading, can click one to
+   change it in the Variables panel). A blank still to fill in is your turn:
+   attention. None of it prints. */
+.document-canvas [data-variable] {
+  text-decoration: underline dotted hsl(var(--muted-foreground) / 0.6);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  border-radius: 2px;
+}
+.document-canvas--reading [data-variable] { cursor: pointer; }
+.document-canvas--reading [data-variable]:hover { background: hsl(var(--muted)); }
+.document-canvas .template-variable-unfilled {
+  text-decoration: none;
+  color: hsl(var(--attention));
+  background: hsl(var(--attention) / 0.08);
+  box-shadow: inset 0 0 0 1px hsl(var(--attention) / 0.3);
+  padding: 0 2px;
+}
+.document-canvas--reading .template-variable-unfilled:hover { background: hsl(var(--attention) / 0.16); }
+
 /* B.5.17 a11y — keyboard focus ring on risk markers. */
 .document-canvas .risk-marker:focus-visible {
   outline: 2px solid hsl(var(--ring));
@@ -236,6 +277,11 @@
   .document-canvas .ProseMirror p {
     orphans: 3;
     widows: 3;
+  }
+  .document-canvas [data-variable] {
+    text-decoration: none !important;
+    background: none !important;
+    box-shadow: none !important;
   }
   /* A section heading stranded at the foot of a page is the classic contract
      printing defect — the clause number says one thing, the next sheet says

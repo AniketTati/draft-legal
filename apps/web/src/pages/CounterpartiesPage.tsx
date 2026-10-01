@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
+import { UnlinkedNames } from '@/components/counterparties/UnlinkedNames'
 import { Plus, Search, Building2, Loader2, X, ExternalLink, Trash2, FileText, ChevronRight } from 'lucide-react'
 
 interface Counterparty {
@@ -249,6 +250,8 @@ export function CounterpartiesPage() {
 
       {/* Table */}
       <div className="flex-1 overflow-auto bg-paper-50 p-6">
+        {/* docs/39 A14 — names on contracts the directory doesn't have yet. */}
+        {!debounced && <UnlinkedNames />}
         {isLoading ? (
           <div className="flex items-center justify-center h-48 gap-2 text-ink-400 text-dense">
             <Loader2 className="size-4 animate-spin" /> Loading…

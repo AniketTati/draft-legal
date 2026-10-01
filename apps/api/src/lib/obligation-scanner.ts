@@ -98,6 +98,8 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
     // a target (no reminders, no overdue webhooks), and a deleted contract's
     // obligations are gone with it.
     contract: { is: { deletedAt: null, diligenceRoomId: null } },
+    // docs/39 G4 — a dismissed suggestion is no obligation; a suggested one still reminds.
+    reviewState: { not: 'DISMISSED' },
   }
   if (opts.orgId) obWhere.orgId = opts.orgId
 
@@ -345,9 +347,13 @@ export async function scanRenewals(
                     : dlDays === 0 ? 'Notice deadline today'
                     : `Notice deadline in ${dlDays}d`
       title = `${dlLabel} · ${c.title}`
+      // docs/39 F1 — the notice as the contract writes it ("3 months"), and a
+      // warning when nobody has confirmed it is the notice that stops renewal.
+      const period = notice.noticeLabel ?? `${notice.noticeDays} days`
+      const check = notice.noticeConfirmed ? '' : ' Confirm this is the notice to stop renewal, not the notice to end early.'
       action = dlDays < 0
-        ? `auto-renews: the ${notice.noticeDays}-day notice deadline (${dlStr}) has passed. Check whether it can still be stopped.`
-        : `auto-renews unless ${notice.noticeDays} days' notice is served by ${dlStr}.`
+        ? `auto-renews: the ${period} notice deadline (${dlStr}) has passed. Check whether it can still be stopped.${check}`
+        : `auto-renews unless ${period}' notice is served by ${dlStr}.${check}`
     }
 
     queueNotification({

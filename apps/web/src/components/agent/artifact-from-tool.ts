@@ -9,6 +9,7 @@
  *
  * Returning null = the result is just text; render inline as before.
  */
+import { formatCompactMoney, formatCurrencyTotals, type CurrencyTotal } from '@clm/types'
 import type { Artifact, DocArtifact, TableArtifact, CardArtifact } from './ArtifactPane'
 
 interface ToolResult {
@@ -281,17 +282,19 @@ export function artifactFromToolResult(call: ToolResult): Artifact | null {
       }
       return a
     }
-    const fmtUsd = (n: number) =>
-      n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` :
-      n >= 1_000     ? `$${(n / 1_000).toFixed(0)}K` :
-      `$${n}`
+    // docs/39 D4 — one total per currency; every amount used to read as dollars.
+    const totals = Array.isArray(aggregate.totals) ? aggregate.totals as CurrencyTotal[] : []
+    const currencies = Array.isArray(aggregate.currencies) ? aggregate.currencies as string[] : []
+    const totalText = totals.length
+      ? formatCurrencyTotals(totals, { max: 2 })
+      : totalValue > 0 ? formatCompactMoney(totalValue, currencies.length === 1 ? currencies[0] : 'USD') : ''
     const a: CardArtifact = {
       kind: 'card',
       id: nextId('art'),
       dedupeKey: stableKey(call.name, `${cpName}:deals=${dealCount}`),
       title: cpName,
       subtitle: `${dealCount} deal${dealCount === 1 ? '' : 's'} on file`,
-      headline: totalValue > 0 ? `${fmtUsd(totalValue)} total contract value` : `${dealCount} active relationships`,
+      headline: totalText ? `${totalText} total contract value` : `${dealCount} active relationships`,
       details: [
         ...(types.length > 0 ? [`Types: ${types.join(', ')}`] : []),
         ...(typeof aggregate.lastSignedAt === 'string'

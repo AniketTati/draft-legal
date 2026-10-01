@@ -28,6 +28,12 @@ model Organization {
   requests            ContractRequest[]
   auditEvents         AuditEvent[]
   fieldDefinitions    ContractFieldDefinition[]
+  fieldSuggestions    FieldSuggestion[]
+  fieldValueRuns      FieldValueRun[]
+  savedViews          SavedView[]
+  contractExhibits    ContractExhibit[]
+  clauseTypes         ClauseTypeDefinition[]
+  diligenceCells      DiligenceCell[]
   templates           Template[]
   clauseCategories    ClauseCategory[]
   clauseItems         ClauseLibraryItem[]
@@ -144,6 +150,9 @@ model Counterparty {
   orgId     String
   name      String
   legalName String? // Official registered legal name
+  // docs/39 A14 — other names contracts give this company ("Acme Corp.",
+  // "ACME CORPORATION, INC."): a contract naming one links here.
+  aliases   String[]  @default([])
   email     String?
   phone     String?
   address   String?
@@ -221,6 +230,8 @@ model Contract {
   approvalInstances ApprovalInstance[]
   obligations       Obligation[]
   invoices          Invoice[]
+  fieldValues       ContractFieldValue[]
+  exhibits          ContractExhibit[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -293,6 +304,12 @@ model ContractClause {
   reviewedById   String?
   sectionRef     String? // e.g. "Section 5.2" or "Article III"
   sortOrder      Int                          @default(0)
+  // docs/39 E2 — who made this row. Re-analysis replaces only `ai` rows;
+  // `user` rows (a clause a person tagged) and their review state stay.
+  source         String                       @default("ai")
+  // docs/39 B2 — where the clause sits in its version's plainText.
+  docStart       Int?
+  docEnd         Int?
   // Chunking metadata
   isSubChunk     Boolean                      @default(false) // true for sliding-window sub-chunks of long clauses
   windowIndex    Int? // sub-chunk index within parent clause (null for primary)
@@ -369,6 +386,188 @@ model ContractFieldDefinition {
   @@map("contract_field_definitions")
 }
 
+// docs/39 B1/G1 — one row per contract × field: the value, where it came
+// from, and who checked it. Covers every kind of field: the core registry
+// (packages/types fields.ts), the contract type's own fields and the org's
+// custom fields. The contract's columns, keyTerms and metadata stay the read
+// model every existing reader uses; lib/field-store.ts writes both, and is
+// the only writer. Extraction may overwrite only rows whose source is `ai`
+// and that nobody verified — for anything else it leaves a `suggestion`.
+model ContractFieldValue {
+  id           String    @id @default(cuid())
+  orgId        String
+  contractId   String
+  fieldKey     String // canonical core key, contract-type field key or custom fieldKey
+  kind         String // core | type | custom
+  label        String? // contract-type fields carry their own label
+  valueType    String // FieldValueType (packages/types fields.ts)
+  value        Json? // null = no value
+  // Typed copies of `value` for filtering and sorting.
+  valueText    String?
+  valueNumber  Float?
+  valueDate    DateTime?
+  source       String    @default("ai") // ai | user | highlight | variable | amendment | import
+  confidence   Float?
+  quote        String?
+  section      String?
+  issue        String?
+  // Where the value sits in the document: { versionId, start, end, page?, bbox? }.
+  anchor       Json?
+  verifiedAt   DateTime?
+  verifiedById String?
+  rejectedAt   DateTime?
+  // What the AI read when it was not allowed to overwrite this value:
+  // { value, quote, section, confidence, versionId, at }.
+  suggestion   Json?
+  // docs/39 A6 — the contract says different things about it (a long
+  // contract's chunks read it differently): each reading once, the value's
+  // first — [{ value, display, quote, section }]. Cleared once a person
+  // chooses, checks or rejects the value.
+  candidates   Json?
+  // docs/39 B3/I2 — what the AI read before a person corrected (or rejected)
+  // it: { value, quote, section, confidence, at, rejected? }. How often each
+  // field is corrected, and the examples the AI learns from.
+  correctedFrom Json?
+  // docs/39 G3 — a value an amendment set (source 'amendment'): which contract.
+  fromContractId String?
+  updatedById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, fieldKey])
+  @@index([orgId, fieldKey])
+  @@index([orgId, verifiedAt, confidence])
+  @@map("contract_field_values")
+}
+
+/// docs/39 G1/D1 — a run that wrote field values in bulk: a contract's
+/// re-analysis, or a field filled in across contracts. Each change keeps the
+/// value before it, so the run can be undone for 30 days — a value someone
+/// has changed since is left as they left it.
+model FieldValueRun {
+  id                String    @id @default(cuid())
+  orgId             String
+  kind              String // reanalysis | backfill | counterparty | rollup | diligence (lib/field-runs.ts RunKind)
+  contractId        String? // reanalysis: the contract
+  fieldDefinitionId String? // backfill: the field
+  // [{ contractId, fieldKey, before: { value, source, confidence, quote, section, issue } | null, after: unknown }]
+  changes           Json      @default("[]")
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  undoneAt          DateTime?
+  undoneById        String?
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, kind, createdAt])
+  @@index([contractId, createdAt])
+  @@index([fieldDefinitionId])
+  @@map("field_value_runs")
+}
+
+/// docs/39 A12 — an exhibit or schedule attached to a contract, read. Its
+/// text goes into the contract's analysis after the contract's own, a value
+/// quoted from it is placed in it (not "words gone"), and search finds it.
+/// One per attachment (contracts.attachments[].s3Key).
+model ContractExhibit {
+  id         String   @id @default(cuid())
+  orgId      String
+  contractId String
+  s3Key      String
+  label      String
+  text       String   @default("")
+  pageCount  Int?
+  ocrApplied Boolean  @default(false)
+  /// Why it couldn't be read, when it couldn't.
+  error      String?
+  readAt     DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, s3Key])
+  @@index([orgId])
+  @@map("contract_exhibits")
+}
+
+/// docs/39 E3 — a clause type an organization teaches the AI: what it is and
+/// passages that are one. The extraction looks for it in every contract it
+/// reads, and a run finds it in those read before (lib/clause-types.ts).
+/// ContractClause.clauseType holds its key.
+model ClauseTypeDefinition {
+  id          String    @id @default(cuid())
+  orgId       String
+  /// `custom_…`, from its name; never one of the built-in types.
+  key         String
+  label       String
+  description String    @default("")
+  /// Passages that are this clause: [string], at most 20.
+  examples    Json      @default("[]")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  /// The run finding it in the contracts read before it existed (lib/clause-types.ts DetectState).
+  detect      Json?
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@unique([orgId, key])
+  @@index([orgId, deletedAt])
+  @@map("clause_type_definitions")
+}
+
+/// docs/39 C3 — a field someone who can't add fields asked for, from words
+/// they highlighted in a contract. An admin adds it (and the value it was
+/// asked with) or declines it; either way the person who asked hears back.
+model FieldSuggestion {
+  id                String    @id @default(cuid())
+  orgId             String
+  label             String
+  fieldKey          String
+  fieldType         String
+  contractType      String? // null: every contract type
+  helpText          String?
+  exampleContractId String?
+  exampleQuote      String?
+  exampleValue      Json?
+  suggestedById     String
+  status            String    @default("PENDING") // PENDING | ADDED | DECLINED
+  resolvedById      String?
+  resolvedAt        DateTime?
+  reason            String? // why it was declined
+  fieldDefinitionId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, status])
+  @@map("field_suggestions")
+}
+
+/// docs/39 D3 — a named list: its filters (field filters too), columns and
+/// sort, for its owner or, shared, for everyone in the org.
+model SavedView {
+  id        String   @id @default(cuid())
+  orgId     String
+  ownerId   String
+  name      String
+  page      String   @default("contracts") // the list it belongs to
+  shared    Boolean  @default(false)
+  // { filters, fieldFilters, columns, sort, q }
+  query     Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, page])
+  @@map("saved_views")
+}
+
 // ─── Templates & Clause Library ───────────────────────────────────────────
 
 model Template {
@@ -443,6 +642,10 @@ model ClauseLibraryItem {
   isApproved  Boolean   @default(false)
   usageCount  Int       @default(0)
   versions    Json      @default("[]") // [{ version, content, changedById, changedAt, note }]
+  // docs/39 E4 — wording saved from a contract: where it came from.
+  sourceContractId String?
+  sourceVersionId  String?
+  sourceSection    String?
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -453,6 +656,7 @@ model ClauseLibraryItem {
 
   @@index([orgId, categoryId])
   @@index([orgId, isApproved])
+  @@index([sourceContractId])
   @@map("clause_library_items")
 }
 
@@ -566,6 +770,11 @@ model Obligation {
   // ── Notification tracking ──
   notifiedAt    DateTime?
 
+  // ── docs/39 G4 — found by the AI: suggested until a person confirms or dismisses it ──
+  reviewState   String    @default("CONFIRMED") // SUGGESTED | CONFIRMED | DISMISSED
+  reviewedAt    DateTime?
+  reviewedById  String?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -573,6 +782,7 @@ model Obligation {
   contract    Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
   completedBy User?        @relation("ObligationCompleter", fields: [completedById], references: [id])
 
+  @@index([orgId, reviewState])
   @@index([orgId, status])
   @@index([orgId, dueDate])
   @@index([orgId, status, dueDate])
@@ -727,12 +937,47 @@ model DiligenceRoom {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   deletedAt   DateTime?
+  /// docs/39 D6 — columns the room's people added: a field, or a question
+  /// asked of every document (lib/diligence-columns.ts RoomColumn).
+  columns     Json     @default("[]")
 
   org       Organization @relation(fields: [orgId], references: [id])
   contracts Contract[]
+  cells     DiligenceCell[]
 
   @@index([orgId, status])
   @@map("diligence_rooms")
+}
+
+/// docs/39 D6 — a question column's answer for one document of a room: the
+/// value, the words it came from, how sure the AI was — or why there's none.
+model DiligenceCell {
+  id         String   @id @default(cuid())
+  orgId      String
+  roomId     String
+  columnId   String
+  contractId String
+  value      Json?
+  display    String?
+  quote      String?
+  confidence Float?
+  /// Why to doubt it: its quote isn't in the document word for word, or the answer didn't fit its type.
+  issue      String?
+  /// Asking failed for this document (said so a person can act on it).
+  error      String?
+  answeredAt DateTime @default(now())
+  /// 'ai' | 'user' — an answer a person gave is never asked again over.
+  source      String    @default("ai")
+  /// A person confirmed it (or gave it): asking again leaves it alone.
+  checkedById String?
+  checkedAt   DateTime?
+
+  org  Organization  @relation(fields: [orgId], references: [id])
+  room DiligenceRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, columnId, contractId])
+  @@index([orgId])
+  @@map("diligence_cells")
 }
 
 // ─── Phase 05 — Negotiation ────────────────────────────────────────────────

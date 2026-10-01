@@ -236,3 +236,104 @@ describe('a draft made from a template', () => {
     expect(version.plainText).toContain('SSN 219-09-9999\nCard 4111 1111 1111 1111')
   })
 })
+
+describe('docs/39 H3 — a contract drafted from a template starts with its fields', () => {
+  it('saves the filled-in variables as field values set from the template, and queues the reading of the rest', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_create_from_template',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: {
+        orgId: org, userId: owner, templateId: ndaTemplate, title: 'H3 NDA', counterpartyName: 'Initech LLC',
+        variables: { our_company: 'Us Inc', counterparty_name: 'Initech LLC', effective_date: '2025-03-01', term: '2 years', governing_law: 'Delaware', payment_terms: 'net 30' },
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const id = res.json().contractId as string
+    const list = (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/fields`, headers: auth(org, ['ADMIN'], owner) })).json().fields as Array<{ key: string }>
+    const by = Object.fromEntries(list.map(f => [f.key, f]))
+    expect(by.effectiveDate).toMatchObject({ value: '2025-03-01', source: 'variable', locked: true })
+    expect(by.initialTerm).toMatchObject({ value: { value: 2, unit: 'years' }, source: 'variable' })
+    expect(by.governingLaw).toMatchObject({ value: 'Delaware', source: 'variable' })
+    expect(by.counterpartyName).toMatchObject({ value: 'Initech LLC', source: 'variable' })
+    expect(by.paymentTermsDays).toMatchObject({ value: 30, source: 'variable' })
+    // Worked out from the two it was given (F2).
+    expect(by.expiryDate).toMatchObject({ value: '2027-02-28', source: 'calculated' })
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).analysisStatus).toBe('EXTRACTING')
+    const { agentQueue } = await import('../lib/queue.js')
+    const job = (await agentQueue.getJobs(['waiting', 'delayed', 'active', 'prioritized'])).find(j => j?.name === 'extract-ai' && j.data.contractId === id)
+    expect(job?.data).toMatchObject({ triggeredBy: 'template' })
+    await job?.remove()
+  })
+})
+
+describe('docs/39 H2 — a draft keeps its variables', () => {
+  it('marks each value in the text, keeps the template’s variables, fills the fields they name — and changes a term once', async () => {
+    const tpl = await template('H2 services', 'MSA',
+      '<p>{{client}} engages us from {{start}} under {{governing_law}} law. {{client}} pays {{fees}}.</p>',
+      [
+        { key: 'client', label: 'Client', type: 'text', required: true },
+        { key: 'start', label: 'Start date', type: 'date', required: true, field: 'effectiveDate' },
+        { key: 'governing_law', label: 'Governing law', type: 'text', required: false, field: null },
+        { key: 'fees', label: 'Fees', type: 'number', required: false },
+      ])
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_create_from_template',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, userId: owner, templateId: tpl, title: 'H2 MSA', variables: { client: 'Initech & Co', start: '2026-06-01', governing_law: 'Delaware' } },
+    })
+    expect(res.statusCode).toBe(200)
+    const id = res.json().contractId as string
+    const version = await prisma.contractVersion.findFirstOrThrow({ where: { contractId: id } })
+    expect(version.htmlContent).toContain('<span data-variable="client">Initech &amp; Co</span> engages us from <span data-variable="start">2026-06-01</span>')
+    expect(version.htmlContent).toContain('data-variable="fees" data-key="fees">[[fees]]</span>')
+    const contract = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    const drafted = (contract.metadata as { _template?: { id: string; name: string; variables: unknown[] } })._template
+    expect(drafted).toMatchObject({ id: tpl, name: 'H2 services' })
+    expect(drafted?.variables).toHaveLength(4)
+
+    const headers = auth(org, ['ADMIN'], owner)
+    const fields = async () => Object.fromEntries(((await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/fields`, headers })).json().fields as Array<{ key: string }>)
+      .map(f => [f.key, f])) as unknown as Record<string, { value: unknown; source: string | null; quote: string | null }>
+    // "start" fills the field its author named; "governing_law" was named to fill none.
+    let by = await fields()
+    expect(by.effectiveDate).toMatchObject({ value: '2026-06-01', source: 'variable' })
+    expect(by.governingLaw.source).not.toBe('variable')
+
+    const variables = async () => (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/variables`, headers })).json() as {
+      template: { id: string; name: string } | null
+      variables: Array<{ key: string; label: string; field: { key: string; inStep: boolean; hasValue: boolean } | null }>
+    }
+    let v = await variables()
+    expect(v.template).toEqual({ id: tpl, name: 'H2 services' })
+    expect(v.variables.map(x => x.key)).toEqual(['client', 'start', 'governing_law', 'fees'])
+    const vBy = Object.fromEntries(v.variables.map(x => [x.key, x]))
+    expect(vBy.start).toMatchObject({ label: 'Start date', field: { key: 'effectiveDate', inStep: true, hasValue: true } })
+    expect(vBy.governing_law.field).toBeNull()
+    expect(vBy.fees.field).toMatchObject({ key: 'value', hasValue: false, inStep: true })
+
+    // A term changed in the text reaches the field it fills, the words its quote.
+    const put = (key: string, text: string) => app.inject({ method: 'PUT', url: `/api/v1/contracts/${id}/variables/${key}`, headers, payload: { text } })
+    const moved = await put('start', '1 July 2026')
+    expect(moved.statusCode).toBe(200)
+    expect(moved.json().field).toMatchObject({ key: 'effectiveDate', value: '2026-07-01', source: 'variable', quote: '1 July 2026' })
+    // Words that don't read as the field leave it be, and say which field.
+    expect((await put('start', 'TBC')).json()).toMatchObject({ field: null, unread: { key: 'effectiveDate' } })
+    expect((await fields()).effectiveDate.value).toBe('2026-07-01')
+    // A variable that fills no field changes only the text.
+    expect((await put('governing_law', 'New York')).json()).toEqual({ field: null })
+    expect((await put('start', '  ')).statusCode).toBe(422)
+
+    // The field says July while the saved text says June: out of step, until the text says July too.
+    v = await variables()
+    expect(v.variables.find(x => x.key === 'start')?.field?.inStep).toBe(false)
+    const saved = await app.inject({
+      method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers,
+      payload: { htmlContent: version.htmlContent!.replace('<span data-variable="start">2026-06-01</span>', '<span data-variable="start">1 July 2026</span>'), changeNote: 'Changed Start date' },
+    })
+    expect(saved.statusCode).toBe(201)
+    v = await variables()
+    expect(v.variables.find(x => x.key === 'start')?.field?.inStep).toBe(true)
+    by = await fields()
+    expect(by.effectiveDate).toMatchObject({ value: '2026-07-01', source: 'variable' })
+  })
+})

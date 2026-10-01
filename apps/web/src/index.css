@@ -550,3 +550,45 @@
   }
 }
 
+/*
+ * docs/39 C1 — pdf.js 5's text layer inside @react-pdf-viewer
+ * (src/lib/pdfjs-compat.ts): the rules pdf.js's own viewer gives it, kept to
+ * the viewer's layer. Without them the text sits unsized over the page and
+ * can't be selected where it is drawn.
+ */
+.rpv-core__text-layer.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  /* Above the page's shadow (the viewer's page-layer ::after), as the viewer keeps it. */
+  z-index: 1;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.rpv-core__text-layer.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.rpv-core__text-layer.textLayer > :not(.markedContent),
+.rpv-core__text-layer.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.rpv-core__text-layer.textLayer .markedContent {
+  display: contents;
+}
+.rpv-core__text-layer.textLayer ::selection {
+  background: rgb(0 0 255 / 0.25);
+}

@@ -135,8 +135,13 @@ export interface UsageDetail {
   toolName?:     string | null
   inputChars?:   number
   outputChars?:  number
+  /** Tokens the provider reported (docs/39 A15); when given, they are used instead of the character guess. */
+  inputTokens?:  number
+  outputTokens?: number
   /** BYOK calls are the org's own spend and don't count toward the platform cap. */
   isByok?:       boolean
+  /** Model calls this record stands for (a metered run is several); default 1. */
+  calls?:        number
 }
 
 /**
@@ -162,8 +167,9 @@ export async function recordUsage(
     await recordCost(orgId, costUsd).catch(() => {})
   }
 
-  const inputTokens  = Math.ceil((detail.inputChars ?? 0) / 4)
-  const outputTokens = Math.ceil((detail.outputChars ?? 0) / 4)
+  const inputTokens  = detail.inputTokens ?? Math.ceil((detail.inputChars ?? 0) / 4)
+  const outputTokens = detail.outputTokens ?? Math.ceil((detail.outputChars ?? 0) / 4)
+  const calls = Math.max(1, detail.calls ?? 1)
   const date = new Date().toISOString().slice(0, 10)
 
   // toolName is part of the unique key, and Postgres treats NULLs as distinct
@@ -182,12 +188,12 @@ export async function recordUsage(
       inputTokens:  { increment: inputTokens },
       outputTokens: { increment: outputTokens },
       costUsd:      { increment: costUsd },
-      callCount:    { increment: 1 },
+      callCount:    { increment: calls },
     },
     create: {
       orgId, date, provider: detail.provider, model: detail.model,
       tier: detail.tier, toolName, isByok,
-      inputTokens, outputTokens, costUsd, callCount: 1,
+      inputTokens, outputTokens, costUsd, callCount: calls,
     },
   }).catch(() => { /* usage reporting must never break a served request */ })
 }

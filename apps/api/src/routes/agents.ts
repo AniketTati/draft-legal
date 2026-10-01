@@ -11,6 +11,7 @@ import { createAuditEvent } from '../lib/audit.js'
 import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument } from '../lib/queue.js'
+import { setValuesFromTemplate } from '../lib/field-store.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
@@ -138,8 +139,11 @@ export async function agentRoutes(app: FastifyInstance) {
     // X9 — read tools that need more than view:contract refuse the caller
     // server-side (internal-ai.ts); don't offer them either.
     if (!evaluatePermission(callerPermissions, 'edit', 'contract').granted) {
-      deniedTools.push('redline_propose', 'redline_propose_batch')
+      // docs/39 C5 — a field's value, like the text, is changed only by those who may.
+      deniedTools.push('redline_propose', 'redline_propose_batch', 'contract_field_set')
     }
+    // C5 — adding a field is configuring the org's contracts.
+    if (!evaluatePermission(callerPermissions, 'configure', 'contract').granted) deniedTools.push('field_create')
     if (!evaluatePermission(callerPermissions, 'view', 'playbook').granted) deniedTools.push('playbook_check')
     if (!evaluatePermission(callerPermissions, 'view', 'workflow').granted) deniedTools.push('approval_list')
     // X44 — the member directory is refused to API keys without the admin scope
@@ -462,6 +466,11 @@ export async function agentRoutes(app: FastifyInstance) {
           const owner = ownerId && { id: ownerId }
           if (owner) {
             const plainText = htmlToText(result.html)
+            // docs/39 H2 — the template's variables, kept with the draft: its
+            // Variables panel names them and knows which field each one fills.
+            const template = result.usedTemplateId
+              ? await prisma.template.findFirst({ where: { id: result.usedTemplateId, orgId }, select: { id: true, name: true, version: true, variables: true } })
+              : null
             const contract = await prisma.contract.create({
               data: {
                 orgId,
@@ -471,6 +480,7 @@ export async function agentRoutes(app: FastifyInstance) {
                 status: 'DRAFT',
                 createdBy: userId,
                 ...(counterparty && { counterpartyId: counterparty.id, counterpartyName: counterparty.name }),
+                ...(template && { metadata: { _template: { id: template.id, name: template.name, version: template.version, variables: template.variables } } as never }),
                 analysisStatus: plainText ? 'CLASSIFYING' : 'DONE',
                 versions: {
                   create: {
@@ -510,6 +520,15 @@ export async function agentRoutes(app: FastifyInstance) {
               tags:      contract.tags,
               createdAt: contract.createdAt.toISOString(),
             }).catch(err => app.log.warn({ err }, 'ES index on legacy draft save failed'))
+            // docs/39 H3 — the values the draft was filled with are its fields
+            // (set from the template); the classify → extract that follows
+            // reads the rest and leaves these alone.
+            await setValuesFromTemplate({
+              orgId, contractId: contract.id, userId,
+              variables: { ...(result.variableValues ?? {}), ...(counterparty ? { counterparty_name: counterparty.name } : {}) },
+              audit: { source: 'template' },
+              templateVariables: (template?.variables ?? null) as Array<{ key: string; field?: string | null }> | null,
+            }).catch(err => app.log.warn({ err }, 'draft template values not saved as fields'))
             if (plainText && contract.versions[0]) {
               queueClassifyDocument({ contractId: contract.id, versionId: contract.versions[0].id, orgId })
             }

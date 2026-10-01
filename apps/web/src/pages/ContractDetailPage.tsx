@@ -1,10 +1,11 @@
+import { useClauseTypes } from '@/lib/clause-types'
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 // B.5.2 — PDF viewer re-enabled as the "Original" view via the
 // [Styled | Original] toggle. Styled (TipTap / DocumentCanvas) remains the
 // default; Legal users typically flip to Original for pixel fidelity.
-import { Worker, Viewer, type RenderPageProps } from '@react-pdf-viewer/core'
+import { Worker, Viewer, type RenderPageProps, type DocumentLoadEvent } from '@react-pdf-viewer/core'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
@@ -20,7 +21,7 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
-  PanelRightClose, PanelRightOpen, FileDown,
+  PanelRightClose, PanelRightOpen, FileDown, LocateFixed, FileDiff,
 } from 'lucide-react'
 import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
@@ -41,6 +42,7 @@ import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
 import { DefinedTermsRailSection } from '@/components/contracts/DefinedTermsRailSection'
+import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
 import { RedlinePanel } from '@/components/contracts/RedlinePanel'
 import { ApprovalTimeline } from '@/components/approvals/ApprovalTimeline'
@@ -69,6 +71,17 @@ import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
 import { useCanRequest } from '@/lib/permissions'
+import { FieldsPanel, type ContractField } from '@/components/contracts/FieldsPanel'
+import { revealInCanvas, pdfSearchPattern, viewOf } from '@/components/contracts/SourceHighlight'
+import { SelectionMenu, PdfSelectionMenu, type TextSelection } from '@/components/contracts/SelectionMenu'
+import { pageTextOf } from '@/components/contracts/pdf-selection'
+import { FieldPicker } from '@/components/contracts/FieldPicker'
+import { NewFieldPopover } from '@/components/contracts/NewFieldPopover'
+import { useFieldCatalog } from '@/lib/field-catalog'
+import { ClauseTagPicker } from '@/components/contracts/ClauseTagPicker'
+import { SaveToLibraryPopover } from '@/components/contracts/SaveToLibraryPopover'
+import { AgreementPanel } from '@/components/contracts/AgreementPanel'
+import { AssistMark } from '@/components/ui/assist'
 import { Can } from '@/components/auth/Can'
 import {
   ExternalEditBanner, GoogleDocsStartDialog, RedlineNoticeBanner, downloadForCounterparty,
@@ -101,7 +114,7 @@ const TYPE_COLORS: Record<string, string> = {
 
 const CONTRACT_TYPES = [
   'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT',
-  'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'OTHER',
+  'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'DATA_PROCESSING', 'ORDER_FORM', 'OTHER',
 ]
 
 const IN_PROGRESS_STATUSES = ['PENDING', 'PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING', 'DRAFTING']
@@ -118,6 +131,15 @@ const STATUS_BANNER: Record<string, { message: string; sub: string }> = {
   ANALYZING:   { message: 'AI extracting clauses, key terms & risk…', sub: '(~30–60 seconds)' },
   INDEXING:    { message: 'Building search index…',                   sub: '' },
 }
+
+// docs/39 A1 — the extraction's own steps, inside EXTRACTING (metadata._extraction).
+const EXTRACTION_STEP_BANNER: Record<string, { message: string; sub: string }> = {
+  reading:    { message: 'Reading the document…',            sub: '' },
+  extracting: { message: 'AI reading fields and clauses…',   sub: '(~30–60 seconds)' },
+  saving:     { message: 'Saving what was read…',            sub: '' },
+}
+
+interface ExtractionMark { step: string; attempt: number; of: number; error?: string; at?: string }
 
 // Ordered pipeline steps — used for the step indicator in the progress banner
 const PIPELINE_STEPS = [
@@ -169,49 +191,6 @@ const STATUS_TRANSITIONS: Record<string, Array<{ to: string; label: string; vari
 }
 
 // ─── Clause type → human-readable label ───────────────────────────────────────
-const CLAUSE_TYPE_LABELS: Record<string, string> = {
-  limitation_of_liability:       'Limitation of Liability',
-  uncapped_liability:             'Uncapped Liability',
-  indemnification:                'Indemnification',
-  liquidated_damages:             'Liquidated Damages',
-  payment:                        'Payment Terms',
-  price_adjustment:               'Price Adjustment',
-  minimum_commitment:             'Minimum Commitment',
-  volume_restriction:             'Volume Restriction',
-  ip_ownership:                   'IP Ownership',
-  ip_license_back:                'IP License-Back',
-  license_grant:                  'License Grant',
-  joint_ip:                       'Joint IP Ownership',
-  source_code_escrow:             'Source Code Escrow',
-  termination:                    'Termination',
-  post_termination_services:      'Post-Termination Services',
-  confidentiality:                'Confidentiality',
-  confidential_info_definition:   'Definition of Confidential Information',
-  non_compete:                    'Non-Compete',
-  non_solicitation:               'Non-Solicitation',
-  non_disparagement:              'Non-Disparagement',
-  covenant_not_to_sue:            'Covenant Not to Sue',
-  governing_law:                  'Governing Law',
-  dispute_resolution:             'Dispute Resolution',
-  notice:                         'Notice',
-  auto_renewal:                   'Auto-Renewal',
-  renewal_term:                   'Renewal Terms',
-  exclusivity:                    'Exclusivity',
-  warranty:                       'Warranty',
-  warranty_duration:              'Warranty Duration',
-  representations_warranties:     'Representations & Warranties',
-  force_majeure:                  'Force Majeure',
-  assignment:                     'Assignment',
-  change_of_control:              'Change of Control',
-  mfn:                            'Most Favoured Nation',
-  audit_rights:                   'Audit Rights',
-  rofr:                           'Right of First Refusal/Offer',
-  insurance:                      'Insurance',
-  acceptance:                     'Acceptance',
-  data_protection:                'Data Protection',
-  third_party_beneficiary:        'Third-Party Beneficiary',
-  general:                        'General',
-}
 
 // Clause ratings ride the same five meanings as every other state: unfavorable
 // is exposure, unusual is "a human has to look at this", and favorable is the
@@ -226,16 +205,19 @@ const RISK_RATING_BADGE: Record<string, { label: string; cls: string }> = {
   neutral:     { label: 'Neutral',     cls: 'bg-paper-100 text-ink-500 border border-paper-200' },
 }
 
-interface FieldDef {
-  id: string; fieldKey: string; fieldLabel: string
-  fieldType: string; contractType: string | null; options: string[]
-}
 interface AiFinding {
   key: string; label: string; value: unknown; confidence: number; quote?: string
 }
-interface TypeField {
-  value: unknown; confidence: number; label: string; quote?: string
+
+/** A finding's value as words, for the new field made from it (C4). */
+function findingText(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  if (Array.isArray(v)) return v.map(String).join(', ')
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
 }
+
+/** The org already tracks it as a field: same name, or same key (C4). */
+const sameFieldName = (a: string, b: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -292,7 +274,8 @@ function formatTermValue(_key: string, v: unknown): string {
 }
 
 function ClauseCard({
-  typeLabel, sectionRef, badge, interpretation, content, onReview,
+  typeLabel, sectionRef, badge, interpretation, content, onReview, onShowInDocument,
+  clauseType, source, onRetype, onDismiss, busy,
 }: {
   typeLabel: string
   sectionRef?: string | null
@@ -301,8 +284,19 @@ function ClauseCard({
   content: string
   /** Opens the clause in the review drawer: playbook, alternative language, comments. */
   onReview?: () => void
+  /** docs/39 B2 — highlights the clause in the document. */
+  onShowInDocument?: () => void
+  /** docs/39 E1 — who made it (a person's clauses survive re-analysis), and correcting it. */
+  clauseType?: string
+  source?: string
+  onRetype?: (clauseType: string) => void
+  onDismiss?: () => void
+  busy?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [confirmDismiss, setConfirmDismiss] = useState(false)
+  // docs/39 E3 — the organization's own clause types too.
+  const { types: clauseTypes } = useClauseTypes()
   return (
     <div className="bg-card border border-paper-200 rounded-card p-4 shadow-e1 hover:border-paper-300 transition-colors">
       <div className="flex items-start justify-between gap-3 mb-2">
@@ -313,6 +307,11 @@ function ClauseCard({
             </span>
           )}
           <span className="text-body font-semibold text-ink-950">{typeLabel}</span>
+          {source === 'user' && (
+            <span className="text-[10.5px] font-medium text-ink-500 border border-paper-200 rounded-chip px-1.5 py-px" title="Tagged or corrected by a person: a re-analysis keeps it">
+              Tagged
+            </span>
+          )}
         </div>
         {sectionRef && (
           <span className="text-dense font-mono text-ink-400 flex-shrink-0 mt-0.5">{sectionRef}</span>
@@ -331,10 +330,43 @@ function ClauseCard({
           {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           {expanded ? 'Hide' : 'View'} verbatim text
         </button>
+        {onShowInDocument && (
+          <button onClick={onShowInDocument} className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium" data-testid="clause-card-show">
+            <LocateFixed className="size-3.5" /> Show in document
+          </button>
+        )}
         {onReview && (
           <button onClick={onReview} className="text-dense text-ink-700 hover:text-ink-950 font-medium underline underline-offset-2" data-testid="clause-card-review">
             Review and suggest changes
           </button>
+        )}
+        {(onRetype || onDismiss) && (
+          <div className="ml-auto flex items-center gap-2">
+            {onRetype && clauseType && (
+              <select
+                value={clauseType}
+                disabled={busy}
+                onChange={e => onRetype(e.target.value)}
+                aria-label="Clause type"
+                title="Wrong type? Pick the right one"
+                className="h-7 max-w-[11rem] rounded-md border border-input bg-card px-1.5 text-[11.5px] text-ink-700"
+                data-testid="clause-card-type"
+              >
+                {clauseTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+            )}
+            {onDismiss && (confirmDismiss ? (
+              <span className="flex items-center gap-1.5 text-dense text-ink-700">
+                Not a clause?
+                <button className="font-medium text-risk-700 hover:underline" disabled={busy} onClick={() => { setConfirmDismiss(false); onDismiss() }} data-testid="clause-card-dismiss-confirm">Remove</button>
+                <button className="text-ink-500 hover:underline" onClick={() => setConfirmDismiss(false)}>Keep</button>
+              </span>
+            ) : (
+              <button onClick={() => setConfirmDismiss(true)} disabled={busy} className="text-dense text-ink-500 hover:text-risk-700" data-testid="clause-card-dismiss">
+                Not a clause
+              </button>
+            ))}
+          </div>
         )}
       </div>
       {expanded && (
@@ -372,6 +404,37 @@ function DetailRow({ label, value, hideIfEmpty = true, evidence }: {
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
+/** docs/39 A13 — a contract type as a sentence says it. */
+const TYPE_AS: Record<string, string> = {
+  NDA: 'an NDA', MSA: 'an MSA', SOW: 'a statement of work', SLA: 'a service level agreement',
+  VENDOR_AGREEMENT: 'a vendor agreement', EMPLOYMENT: 'an employment agreement', PARTNERSHIP: 'a partnership agreement',
+  LICENSE: 'a license', DATA_PROCESSING: 'a data processing agreement', ORDER_FORM: 'an order form', OTHER: 'another kind of contract',
+}
+const typeAs = (t: string) => TYPE_AS[t] ?? t.replace(/_/g, ' ').toLowerCase()
+/** docs/39 A12 — attachments read as part of the contract (API lib/exhibits.ts EXHIBIT_READABLE). */
+const EXHIBIT_READABLE = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'text/plain', 'text/csv', 'image/png', 'image/jpeg', 'image/tiff'])
+/** How long an attachment not read yet counts as being read (then: not read, with a way to read it). */
+const READING_WINDOW_MS = 10 * 60_000
+/** docs/39 A12 — uploads read as the PDF they're made into (API lib/document.ts TO_PDF). */
+const CONVERTED_TO_PDF = new Set(['application/msword', 'image/png', 'image/jpeg', 'image/tiff'])
+/** docs/39 A7 — below this the OCR engine was unsure of a page (API lib/scan-quality.ts POOR_SCAN). */
+const POOR_SCAN = 0.6
+/** The most pages of a scan that are read (API lib/ocr-batches.ts OCR_MAX_PAGES). */
+const OCR_MAX_PAGES = 1000
+/** Pages as people write them: "3, 7–9 and 12". */
+function pageList(pages: number[]): string {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b)
+  const runs: string[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++
+    runs.push(j > i ? `${sorted[i]}–${sorted[j]}` : String(sorted[i]))
+    i = j
+  }
+  return runs.length > 1 ? `${runs.slice(0, -1).join(', ')} and ${runs[runs.length - 1]}` : runs[0] ?? ''
+}
+const typeNoun = (t: string) => typeAs(t).replace(/^an? /, '')
 
 export function ContractDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -423,6 +486,10 @@ export function ContractDetailPage() {
 
   const qc = useQueryClient()
   const layoutPlugin = defaultLayoutPlugin()
+  // The viewer's search state lives in each render's plugin instance: a
+  // deferred call ("show in document", B2) must reach the newest one.
+  const layoutPluginRef = useRef(layoutPlugin)
+  layoutPluginRef.current = layoutPlugin
 
   // B.5.2 — Styled | Original document view.
   const [docView, setDocView] = useState<'styled' | 'original'>(() => {
@@ -459,11 +526,13 @@ export function ContractDetailPage() {
   // Shared by the approver DecisionStrip and the playbook review rail.
   const jumpToClause = (clauseId: string) => {
     const el = document.querySelector(`[data-clause-id="${clauseId}"]`) as HTMLElement | null
+    // docs/39 B2 — a clause the risk layer doesn't mark is found by its words.
+    const content = (clausesData?.data ?? []).find((c: { id: string }) => c.id === clauseId)?.content as string | undefined
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
       el.classList.add('ring-2', 'ring-attention-600')
       setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
-    } else {
+    } else if (!(content && revealInCanvas(canvasEditorRef.current, content))) {
       setFocusedClauseId(clauseId)
     }
   }
@@ -482,6 +551,32 @@ export function ContractDetailPage() {
   // let into Edit mode, and every save failed (403) behind "Save failed".
   const mayEdit = useCanRequest('POST /contracts/:id/html-version')
   const canChangeStatus = useCanRequest('PATCH /contracts/:id')
+  const canEditFields = useCanRequest('PUT /contracts/:id/fields/:key')
+  // docs/39 C3 — add a field from a highlight, or suggest one to whoever can.
+  const canCreateFields = useCanRequest('POST /field-definitions')
+  const canSuggestFields = useCanRequest('POST /field-suggestions')
+  // docs/39 E1 — tag, retype or dismiss clauses.
+  const canTagClauses = useCanRequest('POST /contracts/:id/clauses/tag')
+  // docs/39 E3 — clause types' names, the organization's own included.
+  const { labelOf: clauseLabelOf } = useClauseTypes()
+  // docs/39 E4 — wording saved to the clause library from here.
+  const canSaveWording = useCanRequest('POST /clauses/from-contract')
+  const retypeClause = useMutation({
+    mutationFn: (a: { clauseId: string; clauseType: string }) => api.patch(`/contracts/clauses/${a.clauseId}/type`, { clauseType: a.clauseType }).then(r => r.data),
+    onSuccess: (_d, a) => {
+      toast.success(`Now a ${clauseLabelOf(a.clauseType).toLowerCase()} clause`, { description: 'A re-analysis keeps it.' })
+      qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error("Couldn't change the type", { description: err.response?.data?.detail ?? 'Try again.' }),
+  })
+  const dismissClause = useMutation({
+    mutationFn: (a: { clauseId: string }) => api.post(`/contracts/clauses/${a.clauseId}/dismiss`).then(r => r.data),
+    onSuccess: () => {
+      toast.success('Removed', { description: 'It won\u2019t come back when the contract is analysed again.' })
+      qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error("Couldn't remove it", { description: err.response?.data?.detail ?? 'Try again.' }),
+  })
   const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
   const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
   const canUpload = useCanRequest('POST /contracts/upload')
@@ -615,10 +710,10 @@ export function ContractDetailPage() {
   const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle')
 
   const saveHtmlVersion = useMutation({
-    mutationFn: (html: string) =>
+    mutationFn: ({ html, note }: { html: string; note?: string }) =>
       api.post(`/contracts/${id}/html-version`, {
         htmlContent: html,
-        changeNote: 'Edited in-place',
+        changeNote: note ?? 'Edited in-place',
       }).then(r => r.data),
     onMutate: () => setSaveState('saving'),
     onSuccess: () => {
@@ -645,9 +740,33 @@ export function ContractDetailPage() {
     const html = dirtyHtmlRef.current
     if (html != null) {
       dirtyHtmlRef.current = null
-      saveHtmlVersion.mutate(html)
+      saveHtmlVersion.mutate({ html })
     }
   }
+
+  /**
+   * docs/39 H2 — save what a command just changed in the document now, with
+   * its own note (a variable changed everywhere it appears), not five
+   * seconds on as "Edited in-place". Kept for the next save if it fails.
+   */
+  const saveDocumentNow = async (note?: string): Promise<boolean> => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+    }
+    const html = dirtyHtmlRef.current
+    if (html == null) return false
+    dirtyHtmlRef.current = null
+    try {
+      await saveHtmlVersion.mutateAsync({ html, note })
+      return true
+    } catch (err) {
+      dirtyHtmlRef.current ??= html
+      throw err
+    }
+  }
+  // docs/39 H2 — a variable clicked in the document, for the Variables panel to show.
+  const [focusVariable, setFocusVariable] = useState<string | null>(null)
 
   const enterEdit = () => {
     if (!canEdit) return   // the button, ⌘E and a clause's "Edit manually"
@@ -706,10 +825,14 @@ export function ContractDetailPage() {
       // "working…" forever and only a manual refresh reveals the result. The
       // playbook redline takes minutes, so it is exactly the case that suffers.
       const pr = meta?._playbookRedlineStatus
+      // docs/39 A12 — an attachment just attached is being read with the contract.
+      const read = new Set(((q.state.data as any)?.exhibits ?? []).map((e: { s3Key: string }) => e.s3Key))
+      const reading = (((q.state.data as any)?.attachments ?? []) as Array<{ s3Key: string; mimeType: string; attachedAt?: string }>)
+        .some(a => !read.has(a.s3Key) && EXHIBIT_READABLE.has(a.mimeType) && !!a.attachedAt && Date.now() - new Date(a.attachedAt).getTime() < READING_WINDOW_MS)
       const inFlight =
         (s && IN_PROGRESS_STATUSES.includes(s)) ||
         rm === 'ANALYZING' ||
-        pr === 'QUEUED' || pr === 'RUNNING'
+        pr === 'QUEUED' || pr === 'RUNNING' || reading
       // BB4 — a Google Docs copy is out: notice when it comes back.
       return inFlight ? 4000 : q.state.data?.externalEdit ? 15000 : false
     },
@@ -789,13 +912,6 @@ export function ContractDetailPage() {
     if (moved) setFocusedClauseId(moved.id)
   }, [focusedClauseId, clausesData])
 
-  const { data: fieldDefsData } = useQuery({
-    queryKey: ['field-definitions'],
-    queryFn: () => api.get('/field-definitions').then(r => r.data.data as FieldDef[]),
-    enabled: !!contract,
-    staleTime: 60_000,
-  })
-
   // Phase 06 — approval instance for this contract.
   // B.5.10 — we now load this on every detail-page open (not only when
   // the approval tab is visible) so the Decision Strip can render when
@@ -861,9 +977,15 @@ export function ContractDetailPage() {
     },
   })
 
+  // docs/39 G1 — a re-analysis refreshes the values the AI owns; values a
+  // person set or checked stay, and what the AI now reads shows beside them
+  // in the Fields panel. `fill_blanks` only fills empty fields.
   const analyze = useMutation({
-    mutationFn: () => api.post(`/contracts/${id}/analyze`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    mutationFn: (fields: 'replace_ai' | 'fill_blanks' | void) => api.post(`/contracts/${id}/analyze`, fields ? { fields } : {}),
+    onSuccess: (_r, fields) => {
+      qc.invalidateQueries({ queryKey: ['contract', id] })
+      toast.info(fields === 'fill_blanks' ? 'Re-analysing — only empty fields will be filled' : 'Re-analysing — values you set or checked are kept')
+    },
   })
 
   const reprocess = useMutation({
@@ -895,6 +1017,43 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract', id] })
     },
   })
+  const canRetype = useCanRequest('POST /contracts/:id/retype')
+  // docs/39 A12 — each attachment as it was read with the contract.
+  const exhibitReading = (att: { s3Key: string; mimeType: string; attachedAt?: string }): { state: 'read' | 'reading' | 'failed' | 'unread' | 'not-read'; pages?: number | null; ocr?: boolean; error?: string | null } => {
+    const e = ((contract as any)?.exhibits ?? []).find((x: { s3Key: string }) => x.s3Key === att.s3Key)
+    if (e) return e.error ? { state: 'failed', error: e.error } : { state: 'read', pages: e.pageCount, ocr: e.ocrApplied }
+    if (!EXHIBIT_READABLE.has(att.mimeType)) return { state: 'not-read' }
+    return att.attachedAt && Date.now() - new Date(att.attachedAt).getTime() < READING_WINDOW_MS ? { state: 'reading' } : { state: 'unread' }
+  }
+  const readAttachment = useMutation({
+    mutationFn: (idx: number) => api.post(`/contracts/${id}/attachments/${idx}/read`),
+    onSuccess: () => { toast.success('Reading it with the contract'); qc.invalidateQueries({ queryKey: ['contract', id] }) },
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start reading it'),
+  })
+  // docs/39 A7 — read the file again from the start, for pages of a scan that couldn't be read.
+  const rereadScan = useMutation({
+    mutationFn: () => api.post(`/contracts/${id}/analyze?full=true`),
+    onSuccess: () => { toast.success('Reading the scan again'); qc.invalidateQueries({ queryKey: ['contract', id] }) },
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start reading the scan again'),
+  })
+  const reread = useMutation({
+    mutationFn: () => api.post(`/contracts/${id}/retype`, { contractType: contract?.type, reread: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start the read'),
+  })
+  // docs/39 A13 — the fields list is its own query: read it again when the
+  // type changes (a retype lists the new type's fields, then reads them) or an
+  // analysis finishes, or it shows the old values until the page is reloaded —
+  // and what that analysis changed (G1), with its undo.
+  const fieldsStamp = contract ? `${contract.type}|${contract.analysisStatus}` : null
+  const lastFieldsStamp = useRef(fieldsStamp)
+  useEffect(() => {
+    if (lastFieldsStamp.current && fieldsStamp && lastFieldsStamp.current !== fieldsStamp) {
+      qc.invalidateQueries({ queryKey: ['contract-fields', id] })
+      qc.invalidateQueries({ queryKey: ['field-run-latest', id] })
+    }
+    lastFieldsStamp.current = fieldsStamp
+  }, [fieldsStamp, id, qc])
 
   // Binder split
   const [showSplitModal, setShowSplitModal] = useState(false)
@@ -907,14 +1066,39 @@ export function ContractDetailPage() {
   const splitError: string | null = (contract as any)?.metadata?._splitError ?? null
   const autoSplitDone = splitInto.length > 0
 
+  // docs/39 A1 — the extraction job's step and attempt, while it runs.
+  const extractionMark = (contract as any)?.metadata?._extraction as ExtractionMark | undefined
+  const extracting = contract?.analysisStatus === 'EXTRACTING' && extractionMark ? extractionMark : null
+  // docs/39 A13 — a retype reads only the new type's own fields: the bar says
+  // that (not a whole analysis), and a read that failed says so below.
+  const typeRead = (contract as any)?.metadata?._typeFieldsRead as { type: string; error?: string } | undefined
+  const readingType = contract?.analysisStatus === 'ANALYZING' && typeRead && !typeRead.error ? typeRead.type : null
+  // docs/39 A7 — a scan is read a few pages at a time: how far it has got.
+  const ocrMark = (contract as any)?.metadata?._ocr as { done: number; of: number } | undefined
+  const readingScan = ocrMark && (contract?.analysisStatus === 'PENDING' || contract?.analysisStatus === 'PARSING') ? ocrMark : null
+  // docs/39 A12 — read again with an exhibit just attached (until its read starts).
+  const exhibitAt = (contract as any)?.metadata?._exhibitReread as string | undefined
+  const exhibitReread = contract?.analysisStatus === 'EXTRACTING' && !!exhibitAt && Date.now() - Date.parse(exhibitAt) < READING_WINDOW_MS
+  const banner = readingType
+    ? { message: `Reading the ${typeNoun(readingType)} fields…`, sub: '' }
+    : readingScan ? { message: 'Reading the scanned pages…', sub: `${readingScan.done} of ${readingScan.of} pages` }
+    : exhibitReread && !extracting ? { message: 'Reading the contract again with its exhibits…', sub: '' }
+    : extracting ? EXTRACTION_STEP_BANNER[extracting.step] ?? STATUS_BANNER.EXTRACTING : STATUS_BANNER[contract?.analysisStatus ?? '']
+
   // Stuck detection: in-progress but updatedAt hasn't changed in 3 minutes
-  // PENDING is excluded — it's just queued, not stuck
-  const STUCK_THRESHOLD_MS = 3 * 60 * 1000
+  // PENDING is excluded — it's just queued, not stuck. An extraction job
+  // marks each step and attempt, and a long contract's run (or a retry's
+  // back-off) takes longer than a step elsewhere: 8 minutes from its last mark.
+  const STUCK_THRESHOLD_MS = (extracting ? 8 : 3) * 60 * 1000
+  const lastActivity = Math.max(
+    contract?.updatedAt ? new Date(contract.updatedAt).getTime() : 0,
+    extracting?.at ? new Date(extracting.at).getTime() : 0,
+  )
   const isStuck = !!(
     contract?.analysisStatus &&
     STUCK_DETECTABLE.includes(contract.analysisStatus) &&
-    contract.updatedAt &&
-    Date.now() - new Date(contract.updatedAt).getTime() > STUCK_THRESHOLD_MS
+    lastActivity &&
+    Date.now() - lastActivity > STUCK_THRESHOLD_MS
   )
 
   // Current step index in the pipeline (for the step indicator)
@@ -1030,7 +1214,7 @@ export function ContractDetailPage() {
   const versions = versionsData?.data ?? contract?.versions ?? []
   // DD4 — the version the contract stands on, which an undo moves back; not
   // the newest.
-  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null }>, contract?.currentVersionId)
+  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null; renderedPdfKey?: string | null }>, contract?.currentVersionId)
   // …and the version before it: what the negotiation diff compares by default.
   const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
   const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
@@ -1040,7 +1224,9 @@ export function ContractDetailPage() {
   // toggle would crash with "Invalid PDF structure". We disable it instead.
   // X49 — only a PDF: now that the version list carries the key, a DOCX or
   // TXT latest version would otherwise open the viewer on a file it can't read.
-  const hasOriginal = !!(standing?.s3Key && standing?.mimeType === 'application/pdf')
+  // docs/39 A12 — a .doc or a scan kept as an image is shown as the PDF it was read from.
+  const hasOriginal = !!(standing?.s3Key && (standing?.mimeType === 'application/pdf'
+    || (standing?.renderedPdfKey && CONVERTED_TO_PDF.has(standing?.mimeType ?? ''))))
   // …but a Word or text upload still has an original: say that, not "created
   // from text or a template".
   const originalNotPdf = !!standing?.s3Key && !hasOriginal
@@ -1056,6 +1242,85 @@ export function ContractDetailPage() {
       setDocView('original')
     }
   }, [citeTarget.page, hasOriginal])
+
+  // docs/39 B2 — "Show in document": a field's source or a clause,
+  // highlighted in the view the reader has open (the styled document or the
+  // original PDF), switching to the document first. The request waits for
+  // the view to be ready: from the Overview the canvas mounts first.
+  const [pendingReveal, setPendingReveal] = useState<{ text: string; occurrence: number; tries: number } | null>(null)
+  const showInDocument = (text: string, occurrence = 0) => {
+    if (!text.trim()) return
+    setTab('document')
+    setPendingReveal({ text, occurrence, tries: 0 })
+  }
+  // docs/39 C1/C2 — a passage selected in the document, being set as a field's value.
+  const [fieldPick, setFieldPick] = useState<TextSelection | null>(null)
+  // docs/39 C1 — the original PDF's box (its selection menu listens there) and
+  // each page's text, read once the file loads, to tell which of the passages
+  // worded alike was picked.
+  const [pdfBox, setPdfBox] = useState<HTMLDivElement | null>(null)
+  const pdfPageTexts = useRef<string[] | null>(null)
+  const readPdfPages = async ({ doc }: DocumentLoadEvent) => {
+    pdfPageTexts.current = null
+    const texts: string[] = []
+    try {
+      for (let i = 1; i <= Math.min(doc.numPages, 1000); i++) {
+        const page = await doc.getPage(i)
+        texts.push(pageTextOf((await page.getTextContent()).items as Array<{ str?: string }>))
+      }
+      pdfPageTexts.current = texts
+    } catch { /* the count then starts at the selection's own page */ }
+  }
+  // docs/39 C3 — a passage a new field is being made from.
+  const [newFieldFrom, setNewFieldFrom] = useState<TextSelection | null>(null)
+  // docs/39 C4 — an AI finding being made a field.
+  const [trackFinding, setTrackFinding] = useState<{ finding: AiFinding; rect: DOMRect } | null>(null)
+  const { data: fieldCatalog = [] } = useFieldCatalog()
+  // docs/39 E1 — a passage being tagged as a clause.
+  const [clauseFrom, setClauseFrom] = useState<TextSelection | null>(null)
+  const [libraryFrom, setLibraryFrom] = useState<TextSelection | null>(null)
+  const showFieldSource = (f: ContractField) => {
+    const text = f.anchor?.text ?? f.quote
+    if (text) showInDocument(text, f.anchor?.occurrence ?? 0)
+  }
+  // docs/39 D6 — arriving from a diligence room's cell ("Show in the
+  // contract"): the words its answer came from, highlighted. Carried in the
+  // navigation's state, not the URL, so contract text stays out of history
+  // and logs; cleared once used, so a reload doesn't jump there again.
+  const location = useLocation()
+  useEffect(() => {
+    const reveal = (location.state as { reveal?: { text?: string; occurrence?: number } } | null)?.reveal
+    if (!reveal?.text) return
+    showInDocument(reveal.text, reveal.occurrence ?? 0)
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [location.key])
+  useEffect(() => {
+    if (!pendingReveal || tab !== 'document') return
+    const notFound = () => toast.info("Couldn't find that passage in this view", {
+      description: 'The document may word it slightly differently from the quote.',
+    })
+    const pdf = docView === 'original' && hasOriginal
+    // Not mounted yet: canvasEditor changes when it is.
+    if (!pdf && !viewOf(canvasEditorRef.current)) return
+    const t = setTimeout(async () => {
+      if (!pdf) {
+        if (!revealInCanvas(canvasEditorRef.current, pendingReveal.text, pendingReveal.occurrence)) notFound()
+        setPendingReveal(null)
+        return
+      }
+      const search = () => layoutPluginRef.current.toolbarPluginInstance.searchPluginInstance
+      const pattern = pdfSearchPattern(pendingReveal.text)
+      const matches = pattern ? await search().highlight(pattern) : []
+      // The PDF may still be loading: try for a few seconds before giving up.
+      if (!matches.length && pendingReveal.tries < 6) { setPendingReveal({ ...pendingReveal, tries: pendingReveal.tries + 1 }); return }
+      // The search opens on its first match; a later one once its matches are in state.
+      const { occurrence } = pendingReveal
+      if (!matches.length) notFound()
+      else if (occurrence > 0) setTimeout(() => search().jumpToMatch(Math.min(occurrence, matches.length - 1) + 1), 150)
+      setPendingReveal(null)
+    }, pdf ? (pendingReveal.tries ? 500 : 50) : 50)
+    return () => clearTimeout(t)
+  }, [pendingReveal, tab, docView, hasOriginal, canvasEditor])
 
   const { data: commentsData } = useQuery({
     queryKey: ['comments', id],
@@ -1135,11 +1400,6 @@ export function ContractDetailPage() {
   }
 
   const keyTerms = contract.keyTerms ?? {}
-  const fieldConfidence: Record<string, any> = contract.fieldConfidence ?? {}
-  // C5 — unverified fields under the Extraction Queue's default bar (0.7).
-  const lowConfidenceCount = Object.values(fieldConfidence).filter(
-    (e: any) => e && !e.verifiedAt && typeof e.confidence === 'number' && e.confidence < 0.7,
-  ).length
   const riskFactors: string[] = contract.riskFactors ?? []
   const clauseFlags: Record<string, boolean> = currentVersionOf(contract.versions as Array<{ id: string; clauseFlags?: Record<string, boolean> }>, contract.currentVersionId)?.clauseFlags ?? {}
   // P2.1 — trust-signal: was this version's text produced by OCR? If
@@ -1165,8 +1425,18 @@ export function ContractDetailPage() {
     ocrBackend?: string
     pageCount?:  number
     ocrPages?:   number
+    // docs/39 A7 — how sure the OCR engine was of each page, and what it couldn't read.
+    ocrQuality?:   Array<{ page: number; confidence: number | null; failed?: boolean }>
+    unreadPages?:  number[]
+    ocrTruncated?: boolean
   }
   const ocrApplied = extractionMeta.ocrApplied === true
+  const unclearPages = (extractionMeta.ocrQuality ?? [])
+    .filter(q => !q.failed && q.confidence != null && q.confidence < POOR_SCAN).map(q => q.page)
+  const unreadPages = extractionMeta.unreadPages ?? []
+  // Pages past the limit — or past page 40, for a scan read before A7.
+  const pagesNotRead = extractionMeta.ocrTruncated || (!extractionMeta.ocrQuality && (extractionMeta.ocrPages ?? 0) < (extractionMeta.pageCount ?? 0))
+    ? Math.max(0, (extractionMeta.pageCount ?? 0) - (extractionMeta.ocrPages ?? 0)) : 0
   const timeline = timelineData?.data ?? []
   const presentFlags = Object.entries(CLAUSE_FLAG_LABELS).filter(([k]) => clauseFlags[k] === true)
   const keyTermEntries = Object.entries(keyTerms).filter(([, v]) => v != null && v !== '' && v !== false)
@@ -1174,16 +1444,23 @@ export function ContractDetailPage() {
 
   // Custom fields + AI findings from contract.metadata
   const customMeta = (contract.metadata ?? {}) as Record<string, unknown>
-  const aiFindings: AiFinding[] = (customMeta._aiFindings as AiFinding[]) ?? []
+  // C4 — a finding the org has since made a field is that field now: shown in Fields, not here.
+  const aiFindings: AiFinding[] = ((customMeta._aiFindings as AiFinding[]) ?? [])
+    .filter(f => !fieldCatalog.some(c => sameFieldName(c.label, f.label) || sameFieldName(c.key, f.key)))
+  const trackFindingButton = (f: AiFinding) => (canCreateFields || canSuggestFields) && (
+    <button
+      type="button"
+      onClick={e => setTrackFinding({ finding: f, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
+      className="shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={canCreateFields ? 'Add it as a field, with this value on this contract' : 'Suggest it as a field to your admins'}
+      data-testid={`track-finding-${f.key}`}
+    >
+      {canCreateFields ? 'Track as field' : 'Suggest as field'}
+    </button>
+  )
   const redlineMeta = (customMeta._redlineAnalysis ?? null) as any
   const redlineStatus = (customMeta._redlineStatus ?? null) as string | null
   const isAnalyzingRedlines = redlineStatus === 'ANALYZING'
-  const typeFieldsMap = (customMeta._typeFields ?? {}) as Record<string, TypeField>
-  const typeFieldEntries = Object.entries(typeFieldsMap).filter(([, f]) => f.value != null)
-  const relevantFieldDefs = (fieldDefsData ?? []).filter(
-    (fd: FieldDef) => fd.contractType === null || fd.contractType === contract.type
-  )
-  const populatedFields = relevantFieldDefs.filter((fd: FieldDef) => customMeta[fd.fieldKey] != null)
 
   // Suggested questions used to live here for the in-page Ask tab
   // (U.4.4 deleted). When we add per-contract suggested prompts on
@@ -1836,6 +2113,12 @@ export function ContractDetailPage() {
           {contract.jurisdiction && (
             <span className="text-ink-500" title="Governing law">⚖ {contract.jurisdiction}</span>
           )}
+          {/* docs/39 A11 — a contract not in English says so: its quotes are in its own language. */}
+          {(contract as any).metadata?._language?.code && (contract as any).metadata._language.code !== 'en' && (
+            <span className="text-ink-500" title="The language the contract is written in, as read from its text" data-testid="contract-language">
+              {(contract as any).metadata._language.name}
+            </span>
+          )}
           {contract.value != null && (
             <span
               title="Contract value"
@@ -1881,7 +2164,8 @@ export function ContractDetailPage() {
           {ocrApplied && (
             <span
               data-testid="contract-ocr-badge"
-              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`}
+              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`
+                + (unclearPages.length ? ` Hard to read: ${unclearPages.length === 1 ? 'page' : 'pages'} ${pageList(unclearPages)}. Values from ${unclearPages.length === 1 ? 'it' : 'them'} are marked Check.` : '')}
               // Provenance, not "your turn": this badge is a permanent fact
               // about how the text was obtained and rides along on executed and
               // archived contracts too. Nothing is blocked on the user, so it
@@ -1891,6 +2175,7 @@ export function ContractDetailPage() {
             >
               <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 8h10M7 12h10M7 16h6" /></svg>
               OCR'd
+              {unclearPages.length > 0 && <span className="text-attention-700" data-testid="contract-ocr-unclear">· {unclearPages.length} page{unclearPages.length === 1 ? '' : 's'} unclear</span>}
             </span>
           )}
           {id && <CollabStatusBadge contractId={id} />}
@@ -2041,15 +2326,21 @@ export function ContractDetailPage() {
           extraction failure whispered. Both are now tints of their meaning,
           which puts them in the right order: failure reads louder because red
           on the page is rarer than blue. */}
-      {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && STATUS_BANNER[contract.analysisStatus] && (
-        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
+      {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && banner && (
+        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body" data-testid="analysis-progress">
           <Loader2 className="size-4 animate-spin flex-shrink-0" />
-          <span className="font-medium">{STATUS_BANNER[contract.analysisStatus].message}</span>
-          {STATUS_BANNER[contract.analysisStatus].sub && (
-            <span className="text-ink-500 text-dense">{STATUS_BANNER[contract.analysisStatus].sub}</span>
+          <span className="font-medium">{banner.message}</span>
+          {banner.sub && (
+            <span className="text-ink-500 text-dense">{banner.sub}</span>
           )}
-          {/* Step indicator */}
-          <div className="ml-auto flex items-center gap-2.5 flex-shrink-0">
+          {/* A1 — a retry says so, and why the last attempt failed. */}
+          {extracting && extracting.attempt > 1 && (
+            <span className="text-attention-700 text-dense" title={extracting.error ? `The last attempt failed: ${extracting.error}` : undefined} data-testid="analysis-retrying">
+              Retrying ({extracting.attempt}/{extracting.of})
+            </span>
+          )}
+          {/* Step indicator — not for a retype's read, which is one step */}
+          <div className={cn('ml-auto flex items-center gap-2.5 flex-shrink-0', readingType && 'hidden')}>
             {PIPELINE_STEPS.map((step, i) => {
               const isActive = i === currentStepIdx
               const isPast = i < currentStepIdx
@@ -2092,11 +2383,14 @@ export function ContractDetailPage() {
       {contract?.analysisStatus === 'FAILED' && (
         <div className="bg-risk-50 border-b border-risk-200 text-risk-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <AlertCircle className="size-4 flex-shrink-0" />
-          <span className="font-medium">
+          <span className="font-medium whitespace-nowrap flex-shrink-0">
             {versions.length === 0 ? 'Draft generation failed' : 'Analysis failed'}
           </span>
+          {/* A1 — the extraction job names its step: "Analysis failed while saving what was read (attempt 3 of 3): …" */}
           {contract.analysisError && (
-            <span className="text-risk-900">— {contract.analysisError}</span>
+            <span className="text-risk-900 min-w-0" data-testid="analysis-error">
+              {/^Failed while /.test(contract.analysisError) ? contract.analysisError.replace(/^Failed /, '') : `— ${contract.analysisError}`}
+            </span>
           )}
           <div className="ml-auto">
             <Button
@@ -2112,6 +2406,101 @@ export function ContractDetailPage() {
           </div>
         </div>
       )}
+      {/* docs/39 A7 — pages of the scan nothing could read, or past the limit
+          (a scan read before A7 stopped at page 40): what's on them isn't in
+          the text, so it isn't in the fields. */}
+      {ocrApplied && (unreadPages.length > 0 || pagesNotRead > 0) && !IN_PROGRESS_STATUSES.includes(contract.analysisStatus) && (
+        <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="scan-unread-banner">
+          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="min-w-0 flex-1">
+            {unreadPages.length > 0 && <>Pages {pageList(unreadPages)} of the scan couldn’t be read. </>}
+            {unreadPages.length === 0 && pagesNotRead > 0 && <>Only the first {(extractionMeta.ocrPages ?? 0).toLocaleString()} of its {(extractionMeta.pageCount ?? 0).toLocaleString()} pages were read. </>}
+            <span className="text-ink-700">Anything on the missing pages isn’t in the fields.</span>
+          </span>
+          {(unreadPages.length > 0 || (extractionMeta.pageCount ?? 0) <= OCR_MAX_PAGES) && canChangeStatus && (
+            <Button size="xs" variant="outline" disabled={rereadScan.isPending} onClick={() => rereadScan.mutate()} data-testid="scan-read-again">
+              {rereadScan.isPending && <Loader2 className="size-3 animate-spin" />}
+              Read the scan again
+            </Button>
+          )}
+        </div>
+      )}
+      {/* docs/39 A9 — the other side's Word file, its tracked changes not
+          accepted: the document shows them made, and the fields keep what's
+          agreed with each change's proposal beside it. */}
+      {(() => {
+        const all = ((contract as any)?.versions ?? []) as Array<{ id: string; metadata?: any }>
+        const standing = all.find(v => v.id === contract.currentVersionId) ?? all[0]
+        const t = standing?.metadata?.trackedChanges as { insertions: number; deletions: number; byAuthor?: Record<string, number>; comments?: number } | undefined
+        const n = t ? (t.insertions ?? 0) + (t.deletions ?? 0) : 0
+        if (!n) return null
+        const who = Object.keys(t?.byAuthor ?? {})
+        const by = who.length === 0 ? '' : who.length === 1 ? ` by ${who[0]}` : ` by ${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`
+        return (
+          <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="tracked-changes-banner">
+            <FileDiff className="size-4 flex-shrink-0 text-attention-700" />
+            <span className="min-w-0 flex-1">
+              This Word file has {n} tracked change{n === 1 ? '' : 's'}{by} that nobody has accepted.
+              <span className="text-ink-700"> The document shows them made. The fields keep what's agreed, with each proposed change beside its value.</span>
+            </span>
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              {versions.length > 1 && (
+                <Button size="xs" variant="ghost" onClick={() => setCompareOpen(true)} data-testid="tracked-changes-compare">
+                  <ArrowLeftRight className="size-3.5" /> Compare versions
+                </Button>
+              )}
+              <Button size="xs" variant="outline" onClick={() => navigate(`/review-queue?contractId=${id}&reason=proposed`)} data-testid="tracked-changes-review">
+                Go through the proposals
+              </Button>
+            </div>
+          </div>
+        )
+      })()}
+      {typeRead?.error && typeRead.type === contract.type && contract.analysisStatus === 'DONE' && canRetype && (
+        <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="type-fields-failed">
+          <AlertCircle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="min-w-0 flex-1">
+            Couldn’t read the {typeNoun(contract.type)} fields <span className="text-ink-500">— {typeRead.error}</span>
+          </span>
+          <Button size="xs" variant="outline" disabled={reread.isPending} onClick={() => reread.mutate()} data-testid="type-fields-retry">
+            {reread.isPending && <Loader2 className="size-3 animate-spin" />}
+            Try again
+          </Button>
+        </div>
+      )}
+      {/* docs/39 A13 — read in full, the AI takes it for another type than the
+          one it was filed as: a person settles it. Making it that type reads
+          only that type's own fields. */}
+      {(() => {
+        const opinion = (contract as any)?.metadata?._typeOpinion?.type as string | undefined
+        if (!opinion || opinion === contract.type || !canRetype) return null
+        const as = typeAs
+        return (
+          <div className="bg-assist-50 border-b border-assist-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="type-opinion-banner">
+            <AssistMark />
+            <span className="min-w-0 flex-1">
+              {contract.type === 'OTHER'
+                ? <>Read in full, this looks like {as(opinion)}.</>
+                : <>Read in full, this looks more like {as(opinion)} than {as(contract.type)}.</>}
+            </span>
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              <Button
+                size="xs" variant="ghost" disabled={retype.isPending} data-testid="type-opinion-keep"
+                onClick={() => retype.mutate(contract.type, { onSuccess: () => toast.success(`Kept as ${as(contract.type)}`) })}
+              >
+                Keep as is
+              </Button>
+              <Button
+                size="xs" variant="assistOutline" disabled={retype.isPending} data-testid="type-opinion-use"
+                title={`Reads ${as(opinion)}’s own fields. Values a person set stay.`}
+                onClick={() => retype.mutate(opinion, { onSuccess: () => toast.success(`Now ${as(opinion)} — reading its fields`) })}
+              >
+                Make it {as(opinion)}
+              </Button>
+            </div>
+          </div>
+        )
+      })()}
       {/* P2.3 — binder child banner. When this contract was carved out
           of a binder (parentContractId set + relationshipType='exhibit_only'
           + family API returns a parent), surface a persistent "Split from
@@ -2119,7 +2508,7 @@ export function ContractDetailPage() {
           they're on. Renders on top of all other banners.
           Where a document sits in a binder is structure, not machine output, so
           the indigo this band used to wear went back to the agent surfaces. */}
-      {(contract as any)?.parentContractId && familyData?.parent && (
+      {(contract as any)?.parentContractId && (contract as any)?.relationshipType === 'exhibit_only' && familyData?.parent && (
         <div
           data-testid="binder-child-banner"
           className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
@@ -2234,6 +2623,22 @@ export function ContractDetailPage() {
         </div>
       )}
 
+      {/* The attach input, for every Attach button (the rail's and the Overview card's). */}
+      <input
+        ref={attachFileRef}
+        type="file"
+        accept=".pdf,.docx,.doc,.txt,.xlsx,.csv,.png,.jpg,.jpeg,.tif,.tiff"
+        className="hidden"
+        data-testid="attach-file-input"
+        onChange={e => {
+          const file = e.target.files?.[0]
+          if (file) {
+            attachMutation.mutate(file)
+            e.target.value = ''
+          }
+        }}
+      />
+
       {/* ── Content ─────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto">
 
@@ -2280,7 +2685,19 @@ export function ContractDetailPage() {
                             )}
                           </div>
                           {showReanalyzeMenu && (
-                            <div className="absolute right-0 top-full mt-1 z-50 bg-card border border-paper-200 rounded-md shadow-e2 py-1 w-52" onMouseDown={e => e.stopPropagation()}>
+                            <div className="absolute right-0 top-full mt-1 z-50 bg-card border border-paper-200 rounded-md shadow-e2 py-1 w-64" onMouseDown={e => e.stopPropagation()}>
+                              {/* docs/39 G1 — neither choice touches a value a person set or checked. */}
+                              <button
+                                onClick={() => { analyze.mutate('fill_blanks'); setShowReanalyzeMenu(false) }}
+                                className="w-full px-3 py-2 text-left text-dense text-ink-700 hover:bg-paper-100 flex items-center gap-2"
+                                data-testid="reanalyze-fill-blanks"
+                              >
+                                <Sparkles className="size-3.5 text-ink-400 flex-shrink-0" />
+                                <div>
+                                  <div className="font-medium">Only fill empty fields</div>
+                                  <div className="text-ink-400 mt-0.5">Leave every value there is; new readings show as suggestions</div>
+                                </div>
+                              </button>
                               <button
                                 onClick={() => { reprocess.mutate(); setShowReanalyzeMenu(false) }}
                                 className="w-full px-3 py-2 text-left text-dense text-ink-700 hover:bg-paper-100 flex items-center gap-2"
@@ -2291,6 +2708,9 @@ export function ContractDetailPage() {
                                   <div className="text-ink-400 mt-0.5">Re-parse PDF, re-classify, re-extract</div>
                                 </div>
                               </button>
+                              <p className="px-3 pt-1.5 pb-1 text-[10.5px] text-ink-400 border-t border-paper-100 mt-1">
+                                Values you set or checked are never overwritten.
+                              </p>
                             </div>
                           )}
                         </div>
@@ -2346,108 +2766,9 @@ export function ContractDetailPage() {
                   </div>
                 )}
 
-                {/* Key Terms */}
-                {keyTermEntries.length > 0 ? (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-section text-ink-950">Key Terms</h3>
-                        {lowConfidenceCount > 0 && (
-                          <button
-                            onClick={() => navigate(`/review-queue?contractId=${id}`)}
-                            className="text-dense text-attention-700 hover:underline underline-offset-2"
-                            data-testid="key-terms-review-link"
-                          >
-                            Review {lowConfidenceCount} low-confidence field{lowConfidenceCount === 1 ? '' : 's'}
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-dense text-ink-500">
-                        <span className="flex items-center gap-1"><CheckCircle2 className="size-3 text-ink-400" />High</span>
-                        <span className="flex items-center gap-1"><AlertTriangle className="size-3 text-attention-600" />Review</span>
-                        <span className="flex items-center gap-1"><XCircle className="size-3 text-risk-600" />Uncertain</span>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {keyTermEntries.map(([k, v]) => {
-                        const conf = fieldConfidence[k]
-                        return (
-                          <div key={k} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
-                            <div className="flex items-start gap-2">
-                              {conf && <ConfidenceIcon confidence={conf.confidence} />}
-                              <div className="min-w-0">
-                                <p className="text-dense text-ink-500 capitalize mb-0.5">
-                                  {k.replace(/([A-Z])/g, ' $1').trim()}
-                                </p>
-                                <p className="text-body font-semibold text-ink-950 truncate">
-                                  {formatTermValue(k, v)}
-                                </p>
-                                {conf?.issue && (
-                                  <p className="text-dense text-attention-700 mt-0.5">{conf.issue}</p>
-                                )}
-                              </div>
-                            </div>
-                            {conf?.quote && (
-                              <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
-                                <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
-                                <p className="italic text-paper-100">&ldquo;{conf.quote}&rdquo;</p>
-                                {conf.section && <p className="text-ink-400 mt-1.5 text-[10px] font-mono">{conf.section}</p>}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ) : hasAnalysis ? null : null}
-
-                {/* Contract-Type-Specific Fields */}
-                {typeFieldEntries.length > 0 && (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-section text-ink-950">
-                        {contract.type.replace(/_/g, ' ')} — Specific Terms
-                      </h3>
-                      <span className="text-dense text-ink-400 tabular-nums">{typeFieldEntries.length} fields extracted</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {typeFieldEntries.map(([key, field]) => (
-                        <div key={key} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
-                          <p className="text-dense text-ink-500 mb-1 truncate">{field.label}</p>
-                          <div className="flex items-center gap-1.5">
-                            <p className="text-dense font-semibold text-ink-950 truncate flex-1">
-                              {formatTermValue(key, field.value)}
-                            </p>
-                            <ConfidenceIcon confidence={field.confidence} />
-                          </div>
-                          {field.quote && (
-                            <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
-                              <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
-                              <p className="italic text-paper-100">&ldquo;{field.quote}&rdquo;</p>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Custom Fields */}
-                {populatedFields.length > 0 && (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <h3 className="text-section text-ink-950 mb-3">Custom Fields</h3>
-                    <div className="divide-y divide-paper-100">
-                      {populatedFields.map((fd: FieldDef) => (
-                        <DetailRow
-                          key={fd.fieldKey}
-                          label={fd.fieldLabel}
-                          value={formatTermValue(fd.fieldKey, customMeta[fd.fieldKey])}
-                          evidence={(customMeta._customFieldEvidence as Record<string, { confidence?: number; quote?: string | null }> | undefined)?.[fd.fieldKey]}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {/* docs/39 B1 — every field, who set it, and the fix in place: replaces
+                    the read-only Key Terms, contract-type terms and custom field cards. */}
+                <FieldsPanel contractId={id!} canEdit={canEditFields} onShowSource={showFieldSource} />
 
                 {/* AI Findings — extra terms the LLM found beyond defined fields */}
                 {aiFindings.length > 0 && (
@@ -2471,13 +2792,15 @@ export function ContractDetailPage() {
                     {showFindings && (
                       <div className="mt-3 divide-y divide-paper-100">
                         {aiFindings.map((f) => (
-                          <div key={f.key} className="py-2.5 flex items-start justify-between gap-3">
+                          <div key={f.key} className="group py-2.5 flex items-start justify-between gap-3">
                             <span className="text-dense text-ink-500 w-1/3 flex-shrink-0">{f.label}</span>
                             <div className="flex items-center gap-2 flex-1 justify-end">
                               <span className="text-dense text-ink-950 text-right">
                                 {formatTermValue(f.key, f.value)}
                               </span>
                               <ConfidenceIcon confidence={f.confidence} />
+                              {/* docs/39 C4 — worth tracking on every contract: one click to a field. */}
+                              {trackFindingButton(f)}
                             </div>
                           </div>
                         ))}
@@ -2659,19 +2982,6 @@ export function ContractDetailPage() {
                     >
                       {attachMutation.isPending ? 'Uploading…' : '+ Attach'}
                     </button>
-                    <input
-                      ref={attachFileRef}
-                      type="file"
-                      accept=".pdf,.docx,.doc,.txt,.xlsx,.csv"
-                      className="hidden"
-                      onChange={e => {
-                        const file = e.target.files?.[0]
-                        if (file) {
-                          attachMutation.mutate(file)
-                          e.target.value = ''
-                        }
-                      }}
-                    />
                   </div>
                   {(contract.attachments as any[] ?? []).length === 0 ? (
                     <p className="text-dense text-ink-400">No attachments. Click "+ Attach" to add exhibits, schedules, or reference documents.</p>
@@ -2680,7 +2990,22 @@ export function ContractDetailPage() {
                       {(contract.attachments as any[]).map((att: any, idx: number) => (
                         <div key={idx} className="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-paper-100 group">
                           <Paperclip className="size-3 text-ink-400 flex-shrink-0" />
-                          <span className="text-dense text-ink-700 truncate flex-1">{att.label || att.filename}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-dense text-ink-700 truncate">{att.label || att.filename}</span>
+                            {/* docs/39 A12 — read as part of the contract */}
+                            {(() => {
+                              const r = exhibitReading(att)
+                              if (r.state === 'read') return <span className="block text-[11px] text-ink-500" data-testid={`attachment-read-${idx}`}>Read with the contract{r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}{r.ocr ? ' · OCR’d' : ''}</span>
+                              if (r.state === 'reading') return <span className="block text-[11px] text-ink-500 inline-flex items-center gap-1" data-testid={`attachment-read-${idx}`}><Loader2 className="size-3 animate-spin" /> Reading it…</span>
+                              if (r.state === 'failed') return <span className="block text-[11px] text-attention-700" title={r.error ?? undefined} data-testid={`attachment-read-${idx}`}>Couldn’t read it</span>
+                              if (r.state === 'unread' && canChangeStatus) return (
+                                <button type="button" onClick={() => readAttachment.mutate(idx)} disabled={readAttachment.isPending} className="text-[11px] text-ink-500 hover:text-ink-950 underline underline-offset-2" data-testid={`attachment-read-${idx}`}>
+                                  Not read yet — read it with the contract
+                                </button>
+                              )
+                              return null
+                            })()}
+                          </span>
                           <span className="text-[10px] text-ink-400 tabular-nums">{(att.size / 1024).toFixed(0)} KB</span>
                           <button
                             onClick={() => downloadAttachment(idx, att.filename)}
@@ -2718,7 +3043,7 @@ export function ContractDetailPage() {
             const matchesSearch = !clauseSearch ||
               c.content.toLowerCase().includes(clauseSearch.toLowerCase()) ||
               c.interpretation?.toLowerCase().includes(clauseSearch.toLowerCase()) ||
-              (CLAUSE_TYPE_LABELS[c.clauseType] ?? c.clauseType).toLowerCase().includes(clauseSearch.toLowerCase())
+              clauseLabelOf(c.clauseType).toLowerCase().includes(clauseSearch.toLowerCase())
             return matchesRating && matchesSearch
           })
 
@@ -2779,7 +3104,7 @@ export function ContractDetailPage() {
                     <div className="space-y-3">
                       {filtered.map(clause => {
                         const badge = clause.riskRating ? RISK_RATING_BADGE[clause.riskRating] : null
-                        const typeLabel = CLAUSE_TYPE_LABELS[clause.clauseType] ?? clause.clauseType.replace(/_/g, ' ')
+                        const typeLabel = clauseLabelOf(clause.clauseType)
                         return (
                           <ClauseCard
                             key={clause.id}
@@ -2789,6 +3114,12 @@ export function ContractDetailPage() {
                             interpretation={clause.interpretation}
                             content={clause.content}
                             onReview={() => setFocusedClauseId(clause.id)}
+                            onShowInDocument={() => showInDocument(clause.content)}
+                            clauseType={clause.clauseType}
+                            source={(clause as { source?: string }).source}
+                            onRetype={canTagClauses ? type => retypeClause.mutate({ clauseId: clause.id, clauseType: type }) : undefined}
+                            onDismiss={canTagClauses ? () => dismissClause.mutate({ clauseId: clause.id }) : undefined}
+                            busy={retypeClause.isPending || dismissClause.isPending}
                           />
                         )
                       })}
@@ -2849,13 +3180,14 @@ export function ContractDetailPage() {
               // The document canvas: paper on warm ground, and the only surface
               // in the system allowed a drop shadow.
               <div className="h-full overflow-hidden bg-paper-50 p-4">
-                <div className="bg-card rounded-paper shadow-page h-full">
+                <div ref={setPdfBox} className="bg-card rounded-paper shadow-page h-full">
                   <Worker workerUrl={pdfWorkerUrl}>
                     <Viewer
                       // X1 — remounted per citation: initialPage applies on load.
                       key={citeTarget.page ?? 0}
                       fileUrl={pdfUrl}
                       plugins={[layoutPlugin]}
+                      onDocumentLoad={e => { void readPdfPages(e) }}
                       initialPage={citeTarget.page ? citeTarget.page - 1 : 0}
                       renderPage={citeTarget.bbox ? (props: RenderPageProps) => (
                         <>
@@ -2898,7 +3230,9 @@ export function ContractDetailPage() {
           ].includes(contract.analysisStatus ?? '')
 
           let canvasState: CanvasState
-          if (contract.analysisStatus === 'FAILED') {
+          // A failed analysis doesn't hide a document that was read: the
+          // banner above says what failed and offers the retry (docs/39 A1).
+          if (contract.analysisStatus === 'FAILED' && !hasText) {
             canvasState = {
               kind: 'analysis_failed',
               reason: contract.analysisError ?? undefined,
@@ -2942,6 +3276,12 @@ export function ContractDetailPage() {
               onRiskClick={(clauseId) => {
                 // B.5.6 — open the focused-review drawer on this clause.
                 setFocusedClauseId(clauseId)
+              }}
+              onSetField={canEditFields ? setFieldPick : undefined}
+              onVariableClick={(key) => {
+                setFocusVariable(key)
+                if (isXl) setRailCollapsed(false)
+                else setRailOpen(true)
               }}
               onAiAction={(selected) => {
                 // P6.3 — bubble menu's ✨ opens the streaming BubbleAiPopover
@@ -3629,6 +3969,24 @@ export function ContractDetailPage() {
           )}
         </RailSection>
 
+        {/* docs/39 H2 — a draft's variables: each term changed once, everywhere
+            it appears and in the field it fills. Only a draft made from a
+            template has any. */}
+        {id && (
+          <VariablesRailSection
+            contractId={id}
+            editor={canvasEditor}
+            canEdit={canEdit}
+            canEditFields={canEditFields}
+            title={contract.title}
+            canRetitle={canChangeStatus}
+            focusKey={focusVariable}
+            onFocused={() => setFocusVariable(null)}
+            beforeChange={() => saveDocumentNow()}
+            saveDocument={note => saveDocumentNow(note)}
+          />
+        )}
+
         {/* P5.1 — Obligations rail section. When metadata.obligations
             exists, show the list with a due-date indicator + an
             "Extract obligations" button for un-extracted contracts. */}
@@ -3764,41 +4122,40 @@ export function ContractDetailPage() {
           )
         })()}
 
-        <RailSection title="Key Terms" defaultOpen>
-          <dl className="space-y-0">
-            <DetailRow label="Owner" value={contract.owner?.name ?? '—'} />
-            <DetailRow
-              label="Counterparty"
-              value={contract.counterpartyName ?? contract.counterparty?.name ?? '—'}
-            />
-            <DetailRow
-              label="Effective"
-              value={
-                contract.effectiveDate
-                  ? new Date(contract.effectiveDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-                  : keyTerms.effectiveDate ? formatTermValue('effectiveDate', keyTerms.effectiveDate) : '—'
-              }
-            />
-            <DetailRow
-              label="Expires"
-              value={
-                contract.expiryDate
-                  ? new Date(contract.expiryDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-                  : keyTerms.expiryDate ? formatTermValue('expiryDate', keyTerms.expiryDate) : '—'
-              }
-            />
-            <DetailRow
-              label="Value"
-              value={
-                contract.value
-                  ? `${contract.currency ?? keyTerms.currency ?? 'USD'} ${Number(contract.value).toLocaleString()}`
-                  : keyTerms.value ? `${keyTerms.currency ?? 'USD'} ${Number(keyTerms.value).toLocaleString()}` : '—'
-              }
-            />
-            <DetailRow label="Jurisdiction" value={contract.jurisdiction ?? keyTerms.governingLaw ?? '—'} />
-            <DetailRow label="Contract No." value={contract.contractNumber ?? '—'} />
+        {/* docs/39 B1 — the contract's fields beside its text: every value,
+            who set it, and the fix in place (was a read-only list of six). */}
+        {/* docs/39 G3 — the agreement this one amends: its changes, set there; or the agreement it may belong to. */}
+        {id && <AgreementPanel contractId={id} canEdit={canEditFields} />}
+
+        <RailSection title="Fields" defaultOpen>
+          <dl className="flex flex-wrap gap-x-4 gap-y-0.5 pb-2 text-[11px] text-ink-500">
+            <div><dt className="inline">Owner </dt><dd className="inline text-ink-700">{contract.owner?.name ?? '—'}</dd></div>
+            {contract.contractNumber && <div><dt className="inline">No. </dt><dd className="inline font-mono text-ink-700">{contract.contractNumber}</dd></div>}
           </dl>
+          <FieldsPanel contractId={id!} canEdit={canEditFields} variant="rail" onShowSource={showFieldSource} />
         </RailSection>
+
+        {/* docs/39 C4 — what the AI noticed beyond the fields, beside them (it
+            was only on the Overview tab, read-only), each one a click from
+            being tracked on every contract. */}
+        {aiFindings.length > 0 && (
+          <RailSection title="AI findings" count={aiFindings.length}>
+            <p className="pb-1.5 text-[11px] text-ink-500">Terms the AI noticed beyond your fields. Track one to follow it on every contract.</p>
+            <ul className="space-y-1.5" data-testid="ai-findings-rail">
+              {aiFindings.map(f => (
+                <li key={f.key} className="rounded-md border border-paper-200 bg-card px-2 py-1.5 text-[11.5px]">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-ink-500">{f.label}</p>
+                      <p className="text-ink-950 break-words" title={f.quote ? `“${f.quote}”` : undefined}>{formatTermValue(f.key, f.value)}</p>
+                    </div>
+                    {trackFindingButton(f)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </RailSection>
+        )}
 
         {/* B.1.5d — Risks (collapsed by default, count in header) */}
         <RailSection
@@ -3882,7 +4239,7 @@ export function ContractDetailPage() {
               {clausesData.data.slice(0, 6).map((c: any) => (
                 <li key={c.id} className="text-dense">
                   <div className="font-medium text-ink-950 truncate">
-                    {CLAUSE_TYPE_LABELS[c.clauseType] ?? c.clauseType.replace(/_/g, ' ')}
+                    {clauseLabelOf(c.clauseType)}
                   </div>
                   {c.riskRating && (
                     <div className={cn(
@@ -3920,19 +4277,35 @@ export function ContractDetailPage() {
             (familyData?.parent ? 1 : 0) || null
           }
           action={
-            // X51 — the tab bar shows only outside the document view, and the
-            // way out was Clauses' "View all" or an approval: a contract with
-            // no extracted clauses could never open Negotiate to analyze its
-            // redlines. (The header's Compare is a different view, CompareMode.)
-            versions.length >= 2 ? (
-              <button
-                onClick={() => setTab('negotiate')}
-                data-testid="rail-history-negotiate"
-                className="text-[11px] font-semibold text-ink-950 hover:underline"
-              >
-                Negotiate
-              </button>
-            ) : null
+            <span className="inline-flex items-center gap-3">
+              {/* docs/39 A12 — attach an exhibit where the attachments are listed:
+                  the Overview tab that had the only Attach button can't be
+                  reached from the document for a contract without clauses. */}
+              {mayEdit && (
+                <button
+                  onClick={() => attachFileRef.current?.click()}
+                  disabled={attachMutation.isPending}
+                  data-testid="rail-history-attach"
+                  className="text-[11px] font-semibold text-ink-950 hover:underline disabled:opacity-50"
+                  title="Attach an exhibit or schedule — it's read as part of the contract"
+                >
+                  {attachMutation.isPending ? 'Attaching…' : 'Attach'}
+                </button>
+              )}
+              {/* X51 — the tab bar shows only outside the document view, and the
+                  way out was Clauses' "View all" or an approval: a contract with
+                  no extracted clauses could never open Negotiate to analyze its
+                  redlines. (The header's Compare is a different view, CompareMode.) */}
+              {versions.length >= 2 && (
+                <button
+                  onClick={() => setTab('negotiate')}
+                  data-testid="rail-history-negotiate"
+                  className="text-[11px] font-semibold text-ink-950 hover:underline"
+                >
+                  Negotiate
+                </button>
+              )}
+            </span>
           }
         >
           <ol className="space-y-2.5">
@@ -3974,8 +4347,21 @@ export function ContractDetailPage() {
               <li key={`att-${i}`} className="flex items-start gap-2.5">
                 <Paperclip className="size-3.5 text-ink-400 mt-1 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-dense text-ink-700 truncate">{att.label || att.filename}</div>
-                  <div className="text-[11px] text-ink-400">Attachment</div>
+                  <button type="button" onClick={() => downloadAttachment(i, att.filename)} className="block max-w-full text-dense text-ink-700 hover:text-ink-950 hover:underline truncate text-left" title="Download">
+                    {att.label || att.filename}
+                  </button>
+                  {(() => {
+                    const r = exhibitReading(att)
+                    if (r.state === 'reading') return <div className="text-[11px] text-ink-500 inline-flex items-center gap-1" data-testid={`rail-attachment-read-${i}`}><Loader2 className="size-3 animate-spin" /> Reading it with the contract…</div>
+                    if (r.state === 'failed') return <div className="text-[11px] text-attention-700" title={r.error ?? undefined} data-testid={`rail-attachment-read-${i}`}>Attachment · couldn’t read it</div>
+                    if (r.state === 'unread' && mayEdit) return (
+                      <div className="text-[11px] text-ink-400" data-testid={`rail-attachment-read-${i}`}>
+                        Attachment · not read yet —{' '}
+                        <button type="button" onClick={() => readAttachment.mutate(i)} disabled={readAttachment.isPending} className="underline underline-offset-2 hover:text-ink-950">read it with the contract</button>
+                      </div>
+                    )
+                    return <div className="text-[11px] text-ink-400" data-testid={`rail-attachment-read-${i}`}>{r.state === 'read' ? `Attachment · read with the contract${r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}` : 'Attachment'}</div>
+                  })()}
                 </div>
               </li>
             ))}
@@ -4238,6 +4624,67 @@ export function ContractDetailPage() {
         selectedText={aiPopoverText}
         selectionRange={aiPopoverRange}
       />
+
+      {/* docs/39 C1 — the selection menu while reading (the bubble menu has it
+          while editing), and C2's field picker it opens. */}
+      <SelectionMenu
+        editor={canvasEditor}
+        enabled={tab === 'document' && docView === 'styled' && !isEditing}
+        onSetField={canEditFields ? setFieldPick : undefined}
+        onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
+        onTagClause={canTagClauses ? setClauseFrom : undefined}
+        onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+      />
+      {/* …and over the original PDF, with the same actions. */}
+      <PdfSelectionMenu
+        container={pdfBox}
+        pageTexts={pdfPageTexts}
+        enabled={tab === 'document' && docView === 'original' && hasOriginal}
+        onSetField={canEditFields ? setFieldPick : undefined}
+        onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
+        onTagClause={canTagClauses ? setClauseFrom : undefined}
+        onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+      />
+      {libraryFrom && id && (
+        <SaveToLibraryPopover contractId={id} selection={libraryFrom} onClose={() => setLibraryFrom(null)} />
+      )}
+      {clauseFrom && id && (
+        <ClauseTagPicker
+          contractId={id}
+          selection={clauseFrom}
+          onClose={() => setClauseFrom(null)}
+          // The tagged passage, highlighted in whichever view is open (the document or the original PDF).
+          onTagged={() => showInDocument(clauseFrom.text, clauseFrom.occurrence)}
+        />
+      )}
+      {newFieldFrom && id && (
+        <NewFieldPopover
+          contractId={id}
+          contractType={contract?.type ?? null}
+          selection={newFieldFrom}
+          canCreate={canCreateFields}
+          onClose={() => setNewFieldFrom(null)}
+        />
+      )}
+      {/* docs/39 C4 — something the AI found, tracked as a field from here on. */}
+      {trackFinding && id && (
+        <NewFieldPopover
+          contractId={id}
+          contractType={contract?.type ?? null}
+          selection={{ text: findingText(trackFinding.finding.value), occurrence: 0, rect: trackFinding.rect, before: '', after: '' }}
+          seed={{ label: trackFinding.finding.label, quote: trackFinding.finding.quote ?? null }}
+          canCreate={canCreateFields}
+          onClose={() => setTrackFinding(null)}
+        />
+      )}
+      {fieldPick && id && (
+        <FieldPicker
+          contractId={id}
+          selection={fieldPick}
+          onClose={() => setFieldPick(null)}
+          onSaved={() => showInDocument(fieldPick.text, fieldPick.occurrence)}
+        />
+      )}
 
       {/* U.6.1 — Send-for-Review dialog. Picks workflow + adds optional
           message. Replaces the silent state flip the toolbar button did. */}

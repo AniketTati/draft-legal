@@ -1,6 +1,9 @@
 """
 POST /classify — called by agent.worker.ts after detect-binder determines no split is needed.
-Identifies the contract type from the first 5K chars (fast, cheap, Haiku).
+Identifies the contract type from the document's opening and its headings
+(fast, cheap, Haiku). docs/39 A13 — it read the first 5K characters only, so
+an MSA whose first pages are definitions, or a SOW behind a long cover
+letter, could come back as whatever the opening sounded like.
 
 Returns: { contractType, confidence, reason }
 """
@@ -8,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -19,6 +23,41 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_CHARS = 5_000
+# Of which the opening: the rest of the sample is the document's headings.
+OPENING_CHARS = 3_500
+MAX_HEADINGS = 40
+
+_HEADING = re.compile(
+    r"^(?:(?:section|article|clause|schedule|exhibit|annex|appendix|part)\s+[\w.]+|\d+(?:\.\d+)*[.)]?\s+[A-Z]|[A-Z][A-Z0-9 ,&'()/-]{4,})",
+    re.IGNORECASE,
+)
+
+
+def structure_sample(text: str) -> str:
+    """The document's opening, then the headings of the rest: its structure
+    (the sections an MSA has, a SOW's deliverables and milestones) in the few
+    thousand characters the classifier reads."""
+    if len(text) <= MAX_CHARS:
+        return text
+    opening = text[:OPENING_CHARS]
+    headings: list[str] = []
+    seen: set[str] = set()
+    for line in text[OPENING_CHARS:].splitlines():
+        line = line.strip()
+        if not (4 <= len(line) <= 90) or not _HEADING.match(line):
+            continue
+        # A heading is short; a sentence that happens to start with a number isn't.
+        if line.endswith(('.', ';', ',')) and len(line) > 40:
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        headings.append(line)
+        if len(headings) >= MAX_HEADINGS:
+            break
+    tail = "\n".join(headings)
+    return f"{opening}\n\n[…]\n\nHEADINGS FROM THE REST OF THE DOCUMENT:\n{tail}"[:MAX_CHARS + 400] if headings else opening
 
 VALID_TYPES = {
     "NDA", "MSA", "SOW", "SLA", "VENDOR_AGREEMENT", "EMPLOYMENT",
@@ -26,7 +65,7 @@ VALID_TYPES = {
 }
 
 _PROMPT = """\
-You are a legal contract classifier. Read the beginning of the following legal document and identify its primary contract type.
+You are a legal contract classifier. Read the beginning of the following legal document, and the headings of the rest of it when they are given, and identify its primary contract type.
 
 Return ONLY valid JSON in this exact structure:
 {
@@ -71,7 +110,7 @@ class ClassifyResponse(BaseModel):
 
 @router.post("/classify", response_model=ClassifyResponse)
 async def classify_document(req: ClassifyRequest) -> ClassifyResponse:
-    text_sample = req.plainText[:MAX_CHARS]
+    text_sample = structure_sample(req.plainText)
     logger.info("[classify] chars_sampled=%d", len(text_sample))
 
     try:

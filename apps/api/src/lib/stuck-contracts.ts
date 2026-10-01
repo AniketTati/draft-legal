@@ -2,7 +2,10 @@
  * Stuck-contract recovery — run by the workers every few minutes.
  *
  * In-progress statuses (PARSING … ANALYZING) older than 5 minutes mean the
- * job died mid-flight: reset to FAILED so the user can retry.
+ * job died mid-flight: reset to FAILED so the user can retry. docs/39 A1 —
+ * unless a job for the contract is still queued or running: the extraction
+ * now runs inside its job, with retries, and a long contract (or a retry's
+ * back-off) outlasts five minutes without anything having died.
  *
  * C13 — PENDING needs different handling. It is also the column's default,
  * so template drafts, request intakes and imports sit at PENDING by design
@@ -20,7 +23,7 @@
  * alone: never FAILED on a guess.
  */
 import { prisma } from './prisma.js'
-import { documentQueue } from './queue.js'
+import { documentQueue, agentQueue } from './queue.js'
 
 export const IN_PROGRESS_STATUSES = ['PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING']
 export const STUCK_THRESHOLD_MS = 5 * 60 * 1000
@@ -39,22 +42,51 @@ export async function queuedParseContractIds(): Promise<Set<string>> {
   )
 }
 
+const LIVE_STATES = ['waiting', 'active', 'delayed', 'prioritized', 'waiting-children', 'paused'] as const
+
+/** Contract ids with any job still to run or running, in either queue. */
+export async function liveJobContractIds(): Promise<Set<string>> {
+  const jobs = [...await documentQueue.getJobs([...LIVE_STATES]), ...await agentQueue.getJobs([...LIVE_STATES])]
+  return new Set(
+    jobs.map(j => (j?.data as { contractId?: string } | undefined)?.contractId)
+      .filter((id): id is string => typeof id === 'string'),
+  )
+}
+
 export interface RecoveryResult { inProgressFailed: number; pendingFailed: number; pendingSkipped: 'queue-unavailable' | null }
 
 export async function recoverStuckContracts(opts: {
   now?: number
   /** Injectable for tests; defaults to reading the document queue. */
   listQueued?: () => Promise<Set<string>>
+  /** Injectable for tests; defaults to reading both queues. */
+  listLive?: () => Promise<Set<string>>
 } = {}): Promise<RecoveryResult> {
   const now = opts.now ?? Date.now()
 
-  const inProgress = await prisma.contract.updateMany({
+  const stale = await prisma.contract.findMany({
     where: {
       analysisStatus: { in: IN_PROGRESS_STATUSES },
       updatedAt: { lt: new Date(now - STUCK_THRESHOLD_MS) },
     },
-    data: { analysisStatus: 'FAILED', analysisError: 'Processing timed out — the job may have crashed mid-flight. Click Re-analyze to retry.' },
+    select: { id: true },
+    take: 5_000,
   })
+  let live = new Set<string>()
+  if (stale.length) {
+    // A job still queued or running is slow, not dead. If the queues can't be
+    // read, the time rule alone decides, as it always did.
+    try { live = await (opts.listLive ?? liveJobContractIds)() }
+    catch (err) { console.warn('[recovery] queues unavailable — in-progress contracts judged by time alone:', (err as Error).message) }
+  }
+  const dead = stale.map(c => c.id).filter(id => !live.has(id))
+  const inProgress = dead.length
+    ? await prisma.contract.updateMany({
+        // Re-check the status: the job may have finished since we looked.
+        where: { id: { in: dead }, analysisStatus: { in: IN_PROGRESS_STATUSES } },
+        data: { analysisStatus: 'FAILED', analysisError: 'Processing timed out — the job may have crashed mid-flight. Click Re-analyze to retry.' },
+      })
+    : { count: 0 }
 
   // PENDING uploads that have waited past the threshold and were never parsed.
   const candidates = await prisma.contract.findMany({

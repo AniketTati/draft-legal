@@ -13,6 +13,12 @@ export interface VariableDef {
   required: boolean
   defaultValue?: string
   options?: string[] // for select type
+  /**
+   * docs/39 H1/H2 — the contract field its value fills (a field key), when
+   * the author named one: a draft's value, and a later change to it, reach
+   * the field. Without it the key is matched to a field by name (H3).
+   */
+  field?: string | null
 }
 
 export interface ConditionalLogic {

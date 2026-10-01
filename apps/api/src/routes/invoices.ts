@@ -69,6 +69,8 @@ async function autoMatchInvoice(orgId: string, invoice: {
       // never a diligence room's: its obligations are a target's, and a match
       // would let reconciling our invoice close them.
       contract: { is: { deletedAt: null, diligenceRoomId: null, ...(ownerId ? { ownerId } : {}) } },
+      // docs/39 G4 — never a suggestion someone dismissed.
+      reviewState: { not: 'DISMISSED' },
     },
     include: {
       contract: { select: { counterpartyName: true, currency: true, value: true } },

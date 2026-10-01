@@ -21,7 +21,11 @@ describe('custom fields in the agents service', () => {
     expect(agents('main.py')).toContain('app.include_router(extract_fields.router)')
     const route = agents('app', 'routes', 'extract_fields.py')
     expect(route).toContain('@router.post("/extract-fields")')
-    expect(route).toContain('PII_TOKEN_RULE')
-    expect(route).toContain('wrap_untrusted_document(')
+    // docs/39 A5 — it runs the custom-field pass the review run uses, which holds both.
+    expect(route).toContain('extract_custom_fields(')
+    const pass = agents('app', 'agents', 'custom_fields.py')
+    expect(pass).toContain('PII_TOKEN_RULE')
+    expect(pass).toContain('wrap_untrusted_document(')
+    expect(agents('app', 'agents', 'review_agent.py')).toContain('await extract_custom_fields(')
   })
 })

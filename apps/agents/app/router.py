@@ -31,6 +31,7 @@ from typing import Any, Literal
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from .usage_meter import current_meter
 from .config import settings
 from .providers import build_llm, normalise_model
 from .tracing import get_callback
@@ -394,13 +395,19 @@ def _build_resolved(
         extra_metadata=extra_metadata,
         trace_id=trace_id,
     )
+    callbacks: list[Any] = [handler] if handler else []
+    # docs/39 A15 — a run that meters its use (usage_meter.metering) gets each
+    # call's tokens, by the model that ran.
+    meter = current_meter()
+    if meter is not None:
+        callbacks.append(meter.handler(provider, model, source))
     return ResolvedLlm(
         llm=llm,
         provider=provider,
         model=model,
         source=source,
         tier=tier,
-        callbacks=[handler] if handler else [],
+        callbacks=callbacks,
     )
 
 

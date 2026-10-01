@@ -3,21 +3,24 @@
  * Browse, create, and manage contract templates.
  * Template builder with TipTap section editor + variable definition panel.
  */
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { sanitizeHtml } from '@/lib/sanitize'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload } from 'lucide-react'
 import { api } from '@/lib/api'
-import { ContractEditor } from '@/components/editor/ContractEditor'
+import { ContractEditor, type VariableSelection } from '@/components/editor/ContractEditor'
+import { FieldSelect, MakeVariablePopover, SuggestedVariables, type MadeVariable } from '@/components/templates/TemplateVariables'
+import { useFieldCatalog } from '@/lib/field-catalog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
-import type { Template, VariableDef } from '@clm/types'
+import { ContractType, applyTemplateVariables, countInTemplate, replaceInTemplate, type CatalogField, type SuggestedVariable, type Template, type VariableDef } from '@clm/types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const CONTRACT_TYPES = ['NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'ORDER_FORM', 'OTHER']
+// docs/39 A3 — the one list of contract types (this copy had lost DATA_PROCESSING).
+const CONTRACT_TYPES: string[] = Object.values(ContractType)
 const VARIABLE_TYPES = ['text', 'number', 'date', 'boolean', 'select'] as const
 
 // The contract type — a category, not a state — so it carries no meaning color.
@@ -155,15 +158,30 @@ function TemplateCard({
 function VariableEditor({
   variables,
   onChange,
+  catalog,
+  usage,
+  onRename,
 }: {
   variables: VariableDef[]
   onChange: (vars: VariableDef[]) => void
+  /** docs/39 H1 — the fields a variable can fill. */
+  catalog: CatalogField[]
+  /** docs/39 H1 — how many times each {{key}} is in the text. */
+  usage: Record<string, number>
+  /** docs/39 H1 — a key renamed: its {{key}} in the text follows. */
+  onRename: (from: string, to: string) => void
 }) {
   const addVar = () =>
     onChange([...variables, { key: '', label: '', type: 'text', required: false }])
 
-  const updateVar = (i: number, patch: Partial<VariableDef>) =>
+  const updateVar = (i: number, patch: Partial<VariableDef>) => {
+    const before = variables[i]
+    // The text's tokens follow a rename, unless the new key is another variable's.
+    if (patch.key !== undefined && before.key && patch.key && patch.key !== before.key && !variables.some((v, j) => j !== i && v.key === patch.key)) {
+      onRename(before.key, patch.key)
+    }
     onChange(variables.map((v, idx) => (idx === i ? { ...v, ...patch } : v)))
+  }
 
   const removeVar = (i: number) =>
     onChange(variables.filter((_, idx) => idx !== i))
@@ -209,6 +227,15 @@ function VariableEditor({
               <X className="size-3.5" />
             </button>
           </div>
+          {/* Row 3 (docs/39 H1): the field it fills, and where it is in the text. */}
+          <div className="flex gap-1.5 items-center">
+            <FieldSelect value={v.field} onChange={field => updateVar(i, { field })} catalog={catalog} className="flex-1 min-w-0" label={`Field ${v.label || v.key || i + 1} fills`} />
+            {v.key && (
+              <span className={`shrink-0 text-[10.5px] tabular-nums ${usage[v.key] ? 'text-ink-500' : 'text-attention-700'}`} title={usage[v.key] ? undefined : 'No {{' + v.key + '}} in the text: the draft has nowhere to put it'}>
+                {usage[v.key] ? `used ${usage[v.key]}×` : 'not in the text'}
+              </span>
+            )}
+          </div>
         </div>
       ))}
     </div>
@@ -248,10 +275,43 @@ function TemplateBuilderModal({
     template?.sections ?? [{ title: 'Section 1', content: '', sortOrder: 0, clauseRefs: [], conditionalLogic: null }],
   )
   const [saving, setSaving] = useState(false)
+  // docs/39 H1 — the fields a variable can fill; words being made a variable.
+  const { data: catalog = [] } = useFieldCatalog()
+  const [makeVar, setMakeVar] = useState<VariableSelection | null>(null)
+  const sectionHtml = useMemo(() => sections.map(sec => (sec.content ?? '') as string), [sections])
+  const usage = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const html of sectionHtml) for (const m of html.matchAll(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g)) counts[m[1]] = (counts[m[1]] ?? 0) + 1
+    return counts
+  }, [sectionHtml])
 
   const updateSectionContent = (idx: number, html: string) => {
     setSections(s => s.map((sec, i) => (i === idx ? { ...sec, content: html } : sec)))
   }
+
+  /** H1 — the placeholders the author took, made variables in every section, and listed. */
+  const applySuggestions = (picks: SuggestedVariable[]) => {
+    setSections(s => s.map(sec => ({ ...sec, content: applyTemplateVariables(sec.content ?? '', picks) })))
+    setVariables(vs => [
+      ...vs,
+      ...picks.filter(p => !p.listed && !vs.some(v => v.key === p.key)).map(p => ({ key: p.key, label: p.label, type: p.type, required: false, field: p.field })),
+    ])
+  }
+
+  /** H1 — selected words made a variable: here, or everywhere they are (other sections too). */
+  const makeVariable = (made: MadeVariable) => {
+    if (!makeVar) return
+    const token = `{{${made.key}}}`
+    const text = makeVar.text
+    makeVar.replace(token, made.everywhere)
+    if (made.everywhere) setSections(s => s.map((sec, i) => (i === activeSectionIdx ? sec : { ...sec, content: replaceInTemplate(sec.content ?? '', text, made.key) })))
+    if (made.def && !variables.some(v => v.key === made.def!.key)) setVariables(vs => [...vs, made.def!])
+    setMakeVar(null)
+  }
+
+  /** H1 — a variable's key renamed: its tokens in every section follow. */
+  const renameKey = (from: string, to: string) =>
+    setSections(s => s.map(sec => ({ ...sec, content: String(sec.content ?? '').split(`{{${from}}}`).join(`{{${to}}}`) })))
 
   const addSection = () => {
     setSections(s => [...s, { title: `Section ${s.length + 1}`, content: '', sortOrder: s.length, clauseRefs: [], conditionalLogic: null }])
@@ -354,8 +414,11 @@ function TemplateBuilderModal({
               </div>
             </div>
 
+            {/* docs/39 H1 — the text's placeholders, offered as variables. */}
+            <SuggestedVariables sections={sectionHtml} variables={variables} catalog={catalog} onApply={applySuggestions} />
+
             {/* Variable definitions */}
-            <VariableEditor variables={variables} onChange={setVariables} />
+            <VariableEditor variables={variables} onChange={setVariables} catalog={catalog} usage={usage} onRename={renameKey} />
           </div>
 
           {/* Right panel: section editor */}
@@ -372,7 +435,19 @@ function TemplateBuilderModal({
                   <ContractEditor
                     initialContent={sections[activeSectionIdx].content}
                     onChange={(html) => updateSectionContent(activeSectionIdx, html)}
+                    variableKeys={variables.map(v => v.key)}
+                    onMakeVariable={setMakeVar}
                   />
+                  {makeVar && (
+                    <MakeVariablePopover
+                      selection={makeVar}
+                      variables={variables.filter(v => v.key)}
+                      catalog={catalog}
+                      elsewhere={sectionHtml.reduce((n, html, i) => (i === activeSectionIdx ? n : n + countInTemplate(html, makeVar.text)), 0)}
+                      onMake={makeVariable}
+                      onClose={() => setMakeVar(null)}
+                    />
+                  )}
                 </div>
               </>
             )}

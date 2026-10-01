@@ -16,7 +16,7 @@ const SUB_CHUNK_LEN   = 1_800   // max chars per sub-chunk
 const SUB_CHUNK_OVERLAP = 360   // chars — ~10% overlap to prevent boundary loss
 const SNAP_WINDOW     = 100     // chars to search left/right for a sentence boundary
 
-export const CLAUSES_INDEX = 'clauses'
+export const CLAUSES_INDEX = `${process.env.ES_INDEX_PREFIX ?? ''}clauses`
 
 // ─── Sentence boundary snapping ──────────────────────────────────────────────
 

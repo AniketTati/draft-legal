@@ -52,6 +52,13 @@ export async function refreshVersion(data: RefreshVersionJob): Promise<void> {
   // A later save (the editor saves five seconds after typing stops) made a
   // newer version: its own job indexes and embeds that one.
   if (!contract || contract.currentVersionId !== versionId) return
+  // docs/39 G2 — values whose words the edit changed, read again from the new words.
+  try {
+    const { recheckValuesAfterEdit } = await import('./field-store.js')
+    await recheckValuesAfterEdit(contractId, versionId)
+  } catch (err) {
+    console.warn('[version-refresh] re-checking values on versionId=%s failed: %s', versionId, (err as Error).message)
+  }
   try {
     await reindexContract(contractId)
   } catch (err) {
