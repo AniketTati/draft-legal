@@ -23,7 +23,7 @@ const DPA = [
 const NDA = 'MUTUAL NON-DISCLOSURE AGREEMENT\nThe parties (each a “Party”) will exchange business plans. Each Party keeps the other’s plans secret.'
 
 // What the mocked agents service is asked, and answers.
-const calls = { facts: 0, checks: [] as Array<{ frameworks: string[]; applicabilityDecided: boolean }> }
+const calls = { facts: 0, down: false, checks: [] as Array<{ frameworks: string[]; applicabilityDecided: boolean }> }
 const factsFor: Record<string, unknown[]> = {}
 
 function factsReply(text: string): unknown[] {
@@ -74,6 +74,7 @@ beforeAll(async () => {
       return new Response(JSON.stringify({ facts: factsReply(body.plainText), model: 'fake', provider: 'fake' }))
     }
     if (url.endsWith('/check_compliance')) {
+      if (calls.down) throw new TypeError('fetch failed')
       const body = JSON.parse(String(init?.body)) as { frameworks: string[]; applicabilityDecided: boolean }
       calls.checks.push({ frameworks: body.frameworks, applicabilityDecided: body.applicabilityDecided })
       return new Response(JSON.stringify({
@@ -170,6 +171,24 @@ describe('applicability from facts (Part 9)', () => {
     expect(res.statusCode).toBe(422)
     const bad = await app.inject({ method: 'POST', url: `/api/v1/contracts/${nda}/compliance/facts/confirm`, headers: editor(), payload: { key: 'is_gdpr', value: 'yes' } })
     expect(bad.statusCode).toBe(422)
+  })
+
+  it('keeps an answer when the checks cannot run, and says so', async () => {
+    calls.down = true
+    try {
+      const res = await app.inject({ method: 'POST', url: `/api/v1/contracts/${nda}/compliance/facts/confirm`, headers: editor(), payload: { key: 'personal_data', value: 'yes' } })
+      expect(res.statusCode).toBe(200)
+      // No regions known: nothing applies yet, so nothing to check.
+      expect(res.json().checkError).toBeNull()
+      const regions = await app.inject({ method: 'POST', url: `/api/v1/contracts/${nda}/compliance/facts/confirm`, headers: editor(), payload: { key: 'data_subject_regions', value: ['UK'] } })
+      expect(regions.statusCode).toBe(200)
+      expect(fw(regions.json(), 'UK_GDPR')).toBe('yes')
+      expect(regions.json().checkError).toMatch(/could not run/)
+      const added = await app.inject({ method: 'POST', url: `/api/v1/contracts/${nda}/compliance/frameworks`, headers: editor(), payload: { framework: 'HIPAA' } })
+      expect(added.statusCode).toBe(502)
+    } finally {
+      calls.down = false
+    }
   })
 
   it('adds a framework by hand, and keeps the results already there', async () => {

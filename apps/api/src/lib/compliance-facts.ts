@@ -19,7 +19,7 @@ import type { ComplianceFactKey, ComplianceFrameworkId, PolicyRule } from '@clm/
 import { COMPLIANCE_FACTS, COMPLIANCE_FACT_KEYS, COMPLIANCE_FRAMEWORK_IDS, CompliancePolicyRulesSchema } from '@clm/types'
 import { prisma } from './prisma.js'
 import { applyPiiPolicy } from './pii-policy.js'
-import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from './costCap.js'
+import { assertCostCapNotExceeded, estimateCostUsd, recordUsage, CostCapExceededError } from './costCap.js'
 import { modelFetch } from './model-boundary.js'
 import { runComplianceCheck, textHashOf, type ComplianceReport } from './compliance-check.js'
 import { DEFAULT_COMPLIANCE_POLICY, evaluatePolicy, applyingFrameworks, type PolicyEvaluation, type StoredFact } from './compliance-policy.js'
@@ -107,7 +107,8 @@ export async function extractComplianceFacts({ orgId, contractId, versionId, use
       'x-pii-redaction-count': String(piiTotal),
     },
     body: JSON.stringify({ plainText: text, contractType: contract.type, jurisdiction: contract.jurisdiction ?? undefined, orgId }),
-  }, { orgId, surface: 'compliance_facts', contractId, userId })
+  }, { orgId, surface: 'compliance_facts', contractId, userId }).catch((err: Error) => err)
+  if (res instanceof Error) return { ok: false, error: `agents service unreachable: ${res.message}` }
   if (!res.ok) return { ok: false, error: `agents service error: ${(await res.text()).slice(0, 300)}` }
   const parsed = await res.json() as { facts?: AgentFact[]; error?: string; model?: string; provider?: string }
   recordUsage(orgId, estimateCostUsd(text.length), {
@@ -222,7 +223,14 @@ export async function runApplicableChecks({ orgId, contractId, userId }: { orgId
   const done = a.report?.textHash === hash ? new Set(a.report.frameworks.map(f => f.framework)) : new Set<string>()
   const need = applyingFrameworks(a).filter(f => !done.has(f))
   if (!need.length) return { ran: [] }
-  const r = await runComplianceCheck({ orgId, contractId, userId, frameworks: need, merge: true, applicabilityDecided: true })
+  let r: Awaited<ReturnType<typeof runComplianceCheck>>
+  try {
+    r = await runComplianceCheck({ orgId, contractId, userId, frameworks: need, merge: true, applicabilityDecided: true })
+  } catch (err) {
+    if (err instanceof CostCapExceededError) throw err
+    console.warn('[compliance-facts] check failed contractId=%s: %s', contractId, (err as Error)?.message ?? err)
+    return { ran: [], error: 'the compliance check could not run. Try again shortly.' }
+  }
   return r.ok ? { ran: need } : { ran: [], error: r.error ?? r.skippedReason ?? 'compliance check failed' }
 }
 

@@ -62,7 +62,7 @@ const REGION_OPTIONS = [
 export const COMPLIANCE_FACTS: Record<ComplianceFactKey, ComplianceFactSpec> = {
   personal_data: { kind: 'boolean', label: 'Personal data', question: 'Does this agreement involve personal data (information about identifiable people)?' },
   personal_data_categories: { kind: 'list', label: 'Kinds of personal data' },
-  data_subject_regions: { kind: 'list', label: 'Where the people whose data it is are', question: 'Where are the people whose personal data is involved?', options: REGION_OPTIONS },
+  data_subject_regions: { kind: 'list', label: 'Where the people in the data are', question: 'Where are the people whose personal data is involved?', options: REGION_OPTIONS },
   health_data: { kind: 'boolean', label: 'Health information', question: 'Does this agreement involve health or medical information about people?' },
   hipaa_covered_entity: { kind: 'boolean', label: 'US healthcare provider, plan or their business associate', question: 'Is either party a US healthcare provider, health plan, or a business associate of one?' },
   payment_card_data: { kind: 'boolean', label: 'Payment card data', question: 'Will either party store, process or send payment card numbers under this agreement?' },

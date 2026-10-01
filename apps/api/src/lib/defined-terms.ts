@@ -220,6 +220,15 @@ export function quoteAround(text: string, from: number, to: number, max = 160): 
   const after = text.slice(to, b0)
   const end = after.search(/\n|[.;](?=\s|$)/)
   if (end >= 0) b = to + end + (after[end] === '\n' ? 0 : 1)
+  // Cut at a word, never inside one.
+  if (a > 0 && /\w/.test(text[a - 1] ?? '') && /\w/.test(text[a])) {
+    const sp = text.slice(a, from).search(/\s/)
+    if (sp >= 0) a += sp + 1
+  }
+  if (b < text.length && /\w/.test(text[b - 1] ?? '') && /\w/.test(text[b] ?? '')) {
+    const sp = text.slice(to, b).search(/\s\S*$/)
+    if (sp >= 0) b = to + sp
+  }
   return text.slice(a, b).replace(/\s+/g, ' ').trim()
 }
 

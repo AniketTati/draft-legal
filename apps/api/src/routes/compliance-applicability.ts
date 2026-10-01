@@ -99,7 +99,10 @@ export async function complianceApplicabilityRoutes(app: FastifyInstance) {
       if (!r.ok) return reply.status(502).send({ detail: 'compliance agent failed', upstream: r.error })
       return reply.send(await complianceApplicability(orgId, id))
     } catch (err) {
-      return costCapped(reply, err)
+      if (err instanceof CostCapExceededError) return costCapped(reply, err)
+      // The agents service is down: the framework is added; checking it can be retried.
+      req.log.warn({ err }, '[compliance] framework check failed')
+      return reply.status(502).send({ detail: 'The compliance check could not run. Try again shortly.' })
     }
   })
 }
