@@ -107,6 +107,8 @@ export function CompareMode({
 
   const qc = useQueryClient()
   const applyMerge = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => {
       const mergedHtml = sanitizeHtml(resolveDiff(diff!.diffHtml, decisions, 'reject'))
       const note = `Redline merge: ${acceptedCount} accepted, ${rejectedCount} rejected vs v${newer?.versionNumber ?? '?'}`
@@ -129,6 +131,8 @@ export function CompareMode({
    * not a pattern to copy.
    */
   const downloadDocx = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => {
       const r = await api.get(
         `/contracts/${contractId}/versions/${olderId}/redline-docx/${newerId}`,

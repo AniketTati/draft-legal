@@ -43,6 +43,8 @@ export function WorkflowDefinitionList() {
   })
 
   const saveWorkflow = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (payload: { id?: string; name: string; description: string; steps: WorkflowStepDef[]; isDefault: boolean; triggerRules: TriggerRules }) => {
       if (payload.id) {
         return api.patch(`/approvals/workflows/${payload.id}`, payload).then(r => r.data)

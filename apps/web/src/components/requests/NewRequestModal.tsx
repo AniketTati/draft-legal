@@ -50,6 +50,8 @@ export function NewRequestModal({ onClose }: Props) {
   const [submitted, setSubmitted] = useState(false)
 
   const create = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => {
       // P7.4.14 — prefer the linked counterpartyId; fall back to free
       // text. Sends both so existing API code paths keep working

@@ -58,6 +58,8 @@ export function SendForSignatureDialog({
   const [message, setMessage] = useState('')
 
   const submit = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => api.post(`/contracts/${contractId}/send-for-signature`, {
       // Only submit rows that have BOTH name + email — empty placeholder
       // rows would make the backend Zod schema reject the whole batch.

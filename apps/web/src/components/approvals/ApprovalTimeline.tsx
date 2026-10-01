@@ -13,11 +13,11 @@ interface ApprovalStep {
   approverId: string
   approverName?: string
   status: string
-  decision?: string
-  comment?: string
-  delegatedToId?: string
-  decidedAt?: string
-  escalateAt?: string
+  decision?: string | null
+  comment?: string | null
+  delegatedToId?: string | null
+  decidedAt?: string | null
+  escalateAt?: string | null
 }
 
 interface ApprovalInstance {
@@ -25,9 +25,9 @@ interface ApprovalInstance {
   status: string
   currentStepOrder: number
   submittedAt: string
-  decidedAt?: string
-  aiSummary?: string
-  approvalRecommendation?: string
+  decidedAt?: string | null
+  aiSummary?: string | null
+  approvalRecommendation?: string | null
 }
 
 interface Props {
@@ -38,7 +38,7 @@ interface Props {
 // The per-status icon + colour table is gone: every one of these keys already
 // lives in lib/status, and <StatusPill/> renders them the one agreed way.
 
-function fmtDate(d?: string) {
+function fmtDate(d?: string | null) {
   if (!d) return null
   return new Date(d).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }

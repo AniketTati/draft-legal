@@ -79,6 +79,8 @@ export function SendForReviewDialog({
   const effectiveWorkflow = workflows.find(w => w.id === effectiveWorkflowId) ?? autoDefault
 
   const submit = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => api.post(`/contracts/${contractId}/submit-approval`, {
       workflowDefinitionId: effectiveWorkflowId,
       comment: message.trim() || undefined,

@@ -426,6 +426,20 @@ export async function approvalRoutes(app: FastifyInstance) {
       resourceId:   stepId,
       metadata:     { decision, instanceId },
     }).catch(() => {})
+    // docs/41 P0.6 — on the contract too, with the reason: its Activity
+    // showed nothing of an approver's decision.
+    await createAuditEvent({
+      orgId,
+      userId,
+      action:       AuditAction.APPROVAL_DECIDED,
+      resourceType: 'contract',
+      resourceId:   instance.contractId,
+      metadata:     {
+        decision, instanceId, stepId, stepName: step.stepName,
+        ...(decision === 'REJECTED' && { outcome: 'returned', reason: comment?.trim() ?? null }),
+        ...(decision === 'APPROVED' && comment?.trim() && { comment: comment.trim() }),
+      },
+    }).catch(err => req.log.warn({ err }, 'approval decision not recorded on the contract'))
 
     // Run the state machine to advance or close the workflow
     await advanceWorkflow(instanceId, prisma)

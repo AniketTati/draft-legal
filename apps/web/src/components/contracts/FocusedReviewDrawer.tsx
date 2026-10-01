@@ -152,6 +152,8 @@ export function FocusedReviewDrawer({
   // On demand rather than automatic: each call is an LLM round-trip, and the
   // reviewer clicks through many clauses that need no rewrite.
   const suggest = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (clauseId: string) => {
       const r = await api.post(`/contracts/${contractId}/clauses/${clauseId}/suggest`, {})
       return r.data as {
@@ -166,6 +168,8 @@ export function FocusedReviewDrawer({
   // "apply" always should have meant — the old Accept button only marked the
   // clause resolved and wrote no text at all.
   const applyVariant = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (v: {
       aggression: string; proposedText: string; rationale: string
       changes?: Array<{ before: string; after: string; reason?: string }>

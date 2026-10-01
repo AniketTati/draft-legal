@@ -63,6 +63,8 @@ export function OnboardingWizard() {
   const [picked, setPicked] = useState<IndustryPackId>(null)
 
   const installIndustryPack = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (packId: Exclude<IndustryPackId, null>) =>
       api.post('/organization/install-industry-pack', { packId }).then(r => r.data),
     onSuccess: () => {
@@ -73,6 +75,8 @@ export function OnboardingWizard() {
   })
 
   const finish = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () =>
       api.patch('/organization', { settings: { onboardingCompleted: true } }).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['organization'] }),
@@ -221,6 +225,8 @@ function Step2FirstContract({
   const firstContractId = contracts?.data?.[0]?.id ?? null
 
   const uploadMut = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append('file', file)

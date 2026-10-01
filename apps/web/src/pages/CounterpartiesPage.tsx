@@ -41,6 +41,8 @@ function AddCounterpartyModal({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState({ name: '', legalName: '', email: '', phone: '', website: '' })
 
   const create = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => api.post('/counterparties', {
       name:      form.name,
       legalName: form.legalName || undefined,

@@ -15,7 +15,7 @@ import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
-import { redlineTargets, uncheckedClauses, type ReviewFinding } from '../lib/playbook-redline-targets.js'
+import { redlineTargets, uncheckedClauses, redlineClearNote, type ReviewFinding } from '../lib/playbook-redline-targets.js'
 import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
@@ -397,6 +397,8 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     // "Could not be checked" means neither the rules nor the review judged it.
     const uncoveredClauses = await uncheckedClauses(versionId, review, checked.summary?.uncoveredClauses ?? 0)
     if (deviatingIds.length === 0) {
+      // docs/41 P0.7 — zero clauses checked is not an all-clear.
+      const clauseCount = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
       await setMeta({
         _playbookRedlineStatus: 'DONE',
         _playbookRedline: {
@@ -404,8 +406,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
           worstSeverity: checked.summary?.worstSeverity ?? null,
           truncated: checked.summary?.truncated ?? false,
           uncoveredClauses,
+          clauseCount,
           stagedAt: new Date().toISOString(),
-          note: 'No clause deviated from the playbook.',
+          note: redlineClearNote(clauseCount, (checked.checks ?? []).length),
         },
       })
       return

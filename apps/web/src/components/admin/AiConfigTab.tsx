@@ -550,6 +550,8 @@ function ApiKeysSection() {
   const [busy, setBusy] = useState<Provider | null>(null)
 
   const putKey = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (params: { provider: Provider; apiKey: string }) =>
       api.put(`/admin/ai/keys/${params.provider}`, { apiKey: params.apiKey }).then(r => r.data),
   })
@@ -558,6 +560,8 @@ function ApiKeysSection() {
       api.post(`/admin/ai/keys/${provider}/test`, {}).then(r => r.data),
   })
   const deleteKey = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (provider: Provider) =>
       api.delete(`/admin/ai/keys/${provider}`).then(r => r.data),
   })

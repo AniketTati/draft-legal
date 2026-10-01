@@ -1243,8 +1243,14 @@ export async function contractRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       take: 100,
     })
+    // docs/41 P0.6 — who did it, by name (the Activity tab showed user ids).
+    const actorIds = [...new Set(events.map(e => e.userId).filter((u): u is string => !!u))]
+    const actors = actorIds.length
+      ? await prisma.user.findMany({ where: { id: { in: actorIds }, orgId }, select: { id: true, name: true, email: true } })
+      : []
+    const nameOf = new Map(actors.map(a => [a.id, a.name || a.email]))
 
-    return reply.send({ data: events })
+    return reply.send({ data: events.map(e => ({ ...e, userName: e.userId ? nameOf.get(e.userId) ?? null : null })) })
   })
 
   // ── Update metadata ──────────────────────────────────────────────────────
@@ -2484,11 +2490,23 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true, metadata: true },
+      select: { id: true, currentVersionId: true, metadata: true, analysisStatus: true, analysisError: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    if (!contract.currentVersionId) {
-      return reply.status(400).send({ detail: 'Contract has no current version to redline' })
+    // docs/41 P0.7 — the redline reads the clauses the analysis found, of the
+    // version the contract stands on. Without them it answered 400 (no
+    // current version) with nothing shown, or ran over zero clauses and said
+    // "No clause deviated from the playbook".
+    const state = analysisState(contract)
+    if (!contract.currentVersionId || state.kind !== 'done') {
+      return reply.status(409).send({
+        code: 'NOT_ANALYSED',
+        analysis: state,
+        detail: state.kind === 'running' ? 'This contract is still being analysed. The redline can run once it is done.'
+          : state.kind === 'stale' ? 'The document changed after it was analysed. Analyse this version first, then run the redline.'
+          : state.kind === 'failed' ? 'This contract’s analysis failed. Analyse it again, then run the redline.'
+          : 'This contract hasn’t been analysed yet. Analyse it first, then run the redline.',
+      })
     }
 
     const meta = (contract.metadata as Record<string, unknown> | null) ?? {}

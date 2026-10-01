@@ -250,6 +250,8 @@ function TryOnContract({ type, onClose }: { type: ClauseTypeOption; onClose: () 
     staleTime: 5000,
   })
   const preview = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (contractId: string) => (await api.post<{ clauses: Found[] }>(`/clause-types/${type.id}/preview`, { contractId })).data.clauses,
   })
   const pick = (c: { id: string; title: string }) => { setPicked(c); preview.mutate(c.id) }

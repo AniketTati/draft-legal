@@ -28,6 +28,7 @@ import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
 import { recommendationText } from '@/lib/recommendation'
+import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import {
   CheckCircle2, XCircle, ArrowRight, Loader2,
   ShieldAlert, TrendingUp, ChevronDown,
@@ -94,15 +95,16 @@ export function DecisionStrip({
         ...payload,
       }).then(r => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['contract', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['contract-approval', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['approval-instance-by-contract', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['approvals', 'my-queue'] })
+      // docs/41 P0.6 — every place the approval is read from (lib/approval-keys.ts):
+      // the keys cleared here used to match none of the ones the pages read.
+      invalidateApproval(queryClient, awaitingMe.contract.id, awaitingMe.instanceId)
       setPending(null)
       setComment('')
       setDelegateTo('')
       onDecided?.()
     },
+    // Shown in the strip with the server's reason; handled, so no global toast.
+    onError: () => {},
   })
 
   const recKey = (awaitingMe.instance.approvalRecommendation ?? 'review_required').toLowerCase()
@@ -217,7 +219,7 @@ export function DecisionStrip({
             className="gap-1"
           >
             <XCircle className="size-3.5" />
-            Reject
+            Return
           </Button>
           <Button
             size="sm"
@@ -232,6 +234,14 @@ export function DecisionStrip({
         </div>
       </div>
 
+      {/* docs/41 P0.6 — a decision that didn't go through says so, and why:
+          the strip used to just stay as it was. */}
+      {decide.isError && (
+        <div role="alert" className="px-6 pb-2 text-dense text-risk-700" data-testid="decision-error">
+          The decision wasn’t recorded: {serverMessage(decide.error)}
+        </div>
+      )}
+
       {/* Inline confirmation row — appears below the strip once a decision
           is clicked. Collects the required input for the chosen action. */}
       {pending && (
@@ -242,7 +252,7 @@ export function DecisionStrip({
                 autoFocus
                 value={comment}
                 onChange={e => setComment(e.target.value)}
-                placeholder="Reason for rejection (required) — helps the submitter fix and re-submit…"
+                placeholder="What needs to change (required) — the owner sees this on the contract and in their notification…"
                 className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/15 resize-y min-h-[52px]"
               />
             )}
@@ -293,7 +303,7 @@ export function DecisionStrip({
               className="gap-1"
             >
               {decide.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Confirm {pending === 'APPROVED' ? 'Approve' : pending === 'REJECTED' ? 'Reject' : 'Delegate'}
+              Confirm {pending === 'APPROVED' ? 'Approve' : pending === 'REJECTED' ? 'Return for changes' : 'Delegate'}
             </Button>
           </div>
         </div>

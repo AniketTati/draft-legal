@@ -201,16 +201,18 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
       })
     }
 
-    // Notify submitter
+    // Notify submitter — docs/41 P0.6: who returned it and why (the reason
+    // was stored and shown nowhere).
     const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
+    const by = rejectedBy ? await prisma.user.findUnique({ where: { id: rejectedBy.approverId }, select: { name: true, email: true } }) : null
     queueNotification({
       orgId:        instance.orgId,
       userId:       instance.submittedById,
       type:         'APPROVAL_DECIDED',
-      title:        'Contract approval rejected',
-      body:         `"${contract?.title ?? 'Contract'}" was rejected and returned to Draft.`,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
+      title:        'Contract returned for changes',
+      body:         returnedBody(contract?.title ?? 'Contract', by?.name || by?.email || null, rejectedBy?.comment ?? null, reverted.count > 0),
+      resourceType: 'contract',
+      resourceId:   instance.contractId,
     })
     return
   }
@@ -309,6 +311,13 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
       email:        emailById.get(approverId) ?? undefined,
     })
   })
+}
+
+/** docs/41 P0.6 — the notification a returned approval sends: who, why, and where the contract is now. */
+export function returnedBody(title: string, by: string | null, reason: string | null, backToDraft: boolean): string {
+  const who = by ? `${by} returned` : 'An approver returned'
+  const why = reason?.trim() ? `: “${reason.trim()}”` : '.'
+  return `${who} "${title}" for changes${why}${backToDraft ? ' It is back in Draft to fix and resubmit.' : ''}`
 }
 
 // ─── Auto-approval check ─────────────────────────────────────────────────────

@@ -90,6 +90,8 @@ import {
 
 import { currentVersionOf } from '@/lib/current-version'
 import { analysisLine } from '@/lib/analysis-state'
+import { approvalKeys, invalidateApproval } from '@/lib/approval-keys'
+import { activityText } from '@/lib/activity'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -117,6 +119,30 @@ const CONTRACT_TYPES = [
   'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT',
   'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'DATA_PROCESSING', 'ORDER_FORM', 'OTHER',
 ]
+
+/** GET /contracts/:id/approval (docs/41 P0.6). */
+interface ApprovalView {
+  id: string
+  status: string
+  outcome: 'pending' | 'approved' | 'auto_approved' | 'returned' | 'cancelled'
+  workflowName: string | null
+  submittedAt: string
+  decidedAt: string | null
+  submittedBy: { id: string; name: string }
+  currentStepOrder: number
+  currentStepName: string | null
+  waitingOn: Array<{ id: string; name: string }>
+  returnedBy: { id: string; name: string } | null
+  reason: string | null
+  approvalRecommendation: string | null
+  recommendationReasons: string[]
+  steps: Array<{ id: string; stepOrder: number; stepName: string; approverId: string; approverName: string; status: string; decision: string | null; comment: string | null; decidedAt: string | null }>
+}
+interface ContractApproval {
+  current: ApprovalView | null
+  history: ApprovalView[]
+  awaitingMe: any
+}
 
 const IN_PROGRESS_STATUSES = ['PENDING', 'PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING', 'DRAFTING']
 
@@ -913,20 +939,20 @@ export function ContractDetailPage() {
     if (moved) setFocusedClauseId(moved.id)
   }, [focusedClauseId, clausesData])
 
-  // Phase 06 — approval instance for this contract.
-  // B.5.10 — we now load this on every detail-page open (not only when
-  // the approval tab is visible) so the Decision Strip can render when
-  // the current user is the pending approver (docs/26 State 4).
-  const { data: approvalData, refetch: refetchApproval } = useQuery({
-    queryKey: ['contract-approval', id],
-    queryFn: () => api.get(`/approvals/my-queue`).then(r => {
-      // Filter to this contract's approval context
-      const items = r.data?.data ?? []
-      return items.find((i: { contract: { id: string } }) => i.contract?.id === id) ?? null
-    }),
+  // Phase 06 — this contract's approval. docs/41 P0.6 — one read, from the
+  // contract (GET /contracts/:id/approval): the latest request with its steps,
+  // approver names, outcome and the reason it was returned, the earlier
+  // requests, and the step waiting on the current user (the DecisionStrip's).
+  // It used to filter the user's own queue, and the full instance came from
+  // GET /approvals?contractId=, which doesn't exist: the timeline, the rail
+  // section and the "waiting on" strip were always empty.
+  const { data: contractApproval, refetch: refetchApproval } = useQuery({
+    queryKey: approvalKeys.contract(id ?? ''),
+    queryFn: () => api.get(`/contracts/${id}/approval`).then(r => r.data as ContractApproval),
     enabled: !!id,
     staleTime: 15_000,
   })
+  const approvalData = contractApproval?.awaitingMe ?? null
 
   // B.5.10 — Approver Mode flag. True when the current user has a PENDING
   // approval step assigned to them on this contract. Drives:
@@ -947,35 +973,23 @@ export function ContractDetailPage() {
     staleTime: 60_000,
   })
 
-  // Full approval instance (for timeline + B.5.12 negotiation strip).
-  // B.5.12 relaxed the enabled gate so owners see "waiting on approver"
-  // signal without opening the approval tab. Still cheap — two GETs,
-  // 15s stale window.
-  const { data: approvalInstanceData } = useQuery({
-    queryKey: ['approval-instance-by-contract', id],
-    queryFn: () => api.get(`/approvals?contractId=${id}&limit=1`).then(async r => {
-      // Get the most recent instance for this contract via my-queue or direct lookup
-      // Using the submit endpoint response pattern: GET /approvals/:instanceId
-      const queue = r.data?.data ?? []
-      const item = queue.find((i: { contract: { id: string } }) => i.contract?.id === id)
-      if (!item) return null
-      return api.get(`/approvals/${item.instanceId}`).then(r2 => r2.data)
-    }),
-    enabled: !!id && (
-      tab === 'approval'
-      || ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')
-    ),
-    staleTime: 15_000,
-  })
+  // The latest request for approval, in the shape the timeline, the rail and
+  // the negotiation strip read.
+  const approvalInstanceData = contractApproval?.current
+    ? { ...contractApproval.current, instance: { status: contractApproval.current.status, submittedAt: contractApproval.current.submittedAt, submittedByName: contractApproval.current.submittedBy.name } }
+    : null
+  const approvalHistory = contractApproval?.history ?? []
+  // docs/41 P0.6 — returned for changes and not yet sent again: the banner says by whom and why.
+  const returned = contractApproval?.current?.outcome === 'returned' && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
+    ? contractApproval.current
+    : null
 
   const submitForApproval = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (workflowDefinitionId?: string) =>
       api.post(`/contracts/${id}/submit-approval`, { workflowDefinitionId }).then(r => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-      qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-    },
+    onSuccess: () => invalidateApproval(qc, id),
   })
 
   // docs/39 G1 — a re-analysis refreshes the values the AI owns; values a
@@ -2328,12 +2342,7 @@ export function ContractDetailPage() {
           awaitingMe={approvalData}
           riskScore={contract?.riskScore ?? null}
           onJumpToClause={jumpToClause}
-          onDecided={() => {
-            qc.invalidateQueries({ queryKey: ['contract', id] })
-            qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-            qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-            refetchApproval()
-          }}
+          onDecided={() => { refetchApproval() }}
         />
       )}
 
@@ -2571,6 +2580,15 @@ export function ContractDetailPage() {
           </div>
         )
       })()}
+      {/* docs/41 P0.6 — returned for changes: by whom, why, and what to do. */}
+      {returned && (
+        <div className="bg-attention-50 border-b border-attention-200 text-ink-950 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-dense" data-testid="returned-banner" role="status">
+          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="font-medium">Returned by {returned.returnedBy?.name ?? 'an approver'}{returned.reason ? ':' : ''}</span>
+          {returned.reason && <span className="text-ink-700">“{returned.reason}”</span>}
+          <span className="text-ink-500">— fix and send it for approval again.</span>
+        </div>
+      )}
       {/* P2.3 — binder child banner. When this contract was carved out
           of a binder (parentContractId set + relationshipType='exhibit_only'
           + family API returns a parent), surface a persistent "Split from
@@ -3504,13 +3522,17 @@ export function ContractDetailPage() {
                         is a neutral rule marker, not an inflight dot. */}
                     <div className="absolute left-3.5 top-1.5 size-3 rounded-full bg-card border-2 border-paper-300" />
                     <div className="bg-card rounded-card border border-paper-200 shadow-e1 px-4 py-3 flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-dense font-semibold text-ink-950">{e.action.replace(/_/g, ' ')}</span>
-                        <span className="text-dense text-ink-400 tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
+                      {/* docs/41 P0.6 — in words, with who and why (a return's reason). */}
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-dense font-semibold text-ink-950">{activityText(e).title}</span>
+                        <span className="text-dense text-ink-400 tabular-nums flex-shrink-0">{new Date(e.createdAt).toLocaleString()}</span>
                       </div>
-                      {e.userId && (
+                      {activityText(e).detail && (
+                        <p className="text-dense text-ink-700 mt-1" data-testid="activity-detail">{activityText(e).detail}</p>
+                      )}
+                      {e.userName && (
                         <p className="text-dense text-ink-500 mt-1 flex items-center gap-1">
-                          <User className="size-3" /> {e.userId}
+                          <User className="size-3" /> {e.userName}
                         </p>
                       )}
                     </div>
@@ -3577,12 +3599,7 @@ export function ContractDetailPage() {
                   stepName={approvalData.stepName}
                   contract={approvalData.contract}
                   instance={approvalData.instance}
-                  onDecided={() => {
-                    qc.invalidateQueries({ queryKey: ['contract', id] })
-                    qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-                    qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-                    refetchApproval()
-                  }}
+                  onDecided={() => { refetchApproval() }}
                 />
               </div>
             )}
@@ -3596,6 +3613,24 @@ export function ContractDetailPage() {
                     instance={approvalInstanceData}
                     steps={approvalInstanceData.steps ?? []}
                   />
+                </div>
+              </div>
+            )}
+
+            {/* docs/41 P0.6 — earlier requests for approval stay on the record. */}
+            {approvalHistory.length > 0 && (
+              <div data-testid="approval-history">
+                <h3 className="text-section text-ink-950 mb-3">Earlier requests</h3>
+                <div className="space-y-3">
+                  {approvalHistory.map(h => (
+                    <div key={h.id} className="bg-card rounded-card border border-paper-200 p-4">
+                      <p className="text-dense text-ink-500 mb-2">
+                        Sent {new Date(h.submittedAt).toLocaleDateString()} by {h.submittedBy.name}
+                        {h.outcome === 'returned' && h.returnedBy && <> · returned by {h.returnedBy.name}{h.reason ? <>: “{h.reason}”</> : null}</>}
+                      </p>
+                      <ApprovalTimeline instance={h} steps={h.steps} />
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -4095,6 +4130,12 @@ export function ContractDetailPage() {
               ?._playbookRedlineStatus as 'IDLE' | 'QUEUED' | 'RUNNING' | 'DONE' | 'APPLIED' | 'FAILED') ?? 'IDLE'}
             staged={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedline as never}
             error={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedlineError as string | null}
+            analysis={{
+              ready: analysis.state === 'done',
+              text: analysis.state === 'running' ? 'Analysing this version' : analysis.text,
+              onAnalyse: canChangeStatus && analysis.canAnalyse ? () => analyze.mutate() : undefined,
+              analysing: analyze.isPending,
+            }}
           />
         )}
 
@@ -4543,8 +4584,8 @@ export function ContractDetailPage() {
                   <span className="text-ink-400 tabular-nums min-w-[3.5rem]">
                     {new Date(evt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                   </span>
-                  <span className="text-ink-700">
-                    {evt.action?.replace(/_/g, ' ').toLowerCase().replace(/\b./g, (c: string) => c.toUpperCase())}
+                  <span className="text-ink-700" title={activityText(evt).detail ?? undefined}>
+                    {activityText(evt).title}
                   </span>
                 </li>
               ))}
@@ -4768,10 +4809,7 @@ export function ContractDetailPage() {
           contractCurrency={contract?.currency}
           open={sendForReviewOpen}
           onClose={() => setSendForReviewOpen(false)}
-          onSent={() => {
-            qc.invalidateQueries({ queryKey: ['contract', id] })
-            qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-          }}
+          onSent={() => invalidateApproval(qc, id)}
         />
       )}
 

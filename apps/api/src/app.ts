@@ -35,6 +35,7 @@ import { contractFieldRoutes } from './routes/contract-fields.js'
 import { contractImportRoutes } from './routes/contract-import.js'
 import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
 import { contractFamilyRoutes } from './routes/contract-family.js'
+import { contractApprovalRoutes } from './routes/contract-approval.js'
 import { clauseTagRoutes } from './routes/clause-tags.js'
 import { clauseTypeRoutes } from './routes/clause-types.js'
 import { contractQueryRoutes } from './routes/contract-query.js'
@@ -275,6 +276,7 @@ export async function buildApp() {
   await app.register(contractImportRoutes,  { prefix: '/api/v1/contracts' })
   await app.register(contractCounterpartyRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractApprovalRoutes, { prefix: '/api/v1/contracts' })
   await app.register(clauseTagRoutes,       { prefix: '/api/v1/contracts' })
   // docs/39 E3 — clause types the organization adds
   await app.register(clauseTypeRoutes,      { prefix: '/api/v1/clause-types' })

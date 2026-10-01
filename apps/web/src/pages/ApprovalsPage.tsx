@@ -8,8 +8,9 @@
  */
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { useAuthStore } from '@/store/auth'
 import { ApprovalCard, waitingDaysSince } from '@/components/approvals/ApprovalCard'
 import { WorkflowDefinitionList } from '@/components/approvals/WorkflowDefinitionList'
@@ -96,11 +97,12 @@ export function ApprovalsPage() {
   // The /approvals/all endpoint is gated on `configure:workflow` so a
   // non-admin call would 403; we hide the tab proactively to avoid
   // showing a feature the user can't use.
+  const qc = useQueryClient()
   const userRoles = (useAuthStore(s => s.user?.roles ?? []) as readonly string[])
   const canSeeAll = userRoles.includes('ADMIN') || userRoles.includes('LEGAL_OPS')
 
   const { data, isLoading, refetch } = useQuery<{ data: QueueItem[]; total: number }>({
-    queryKey: ['approval-queue'],
+    queryKey: approvalKeys.myQueue,
     queryFn:  () => api.get('/approvals/my-queue').then(r => r.data),
     enabled:  tab === 'queue',
     staleTime: 10_000,
@@ -109,7 +111,7 @@ export function ApprovalsPage() {
   // P7.2.2 — All-approvals query (admin only). Lazy: only fires when
   // the tab is active so we don't burn a query for non-admin viewers.
   const { data: allData, isLoading: allLoading } = useQuery<{ data: AllApprovalRow[]; total: number }>({
-    queryKey: ['approval-all'],
+    queryKey: approvalKeys.all,
     queryFn:  () => api.get('/approvals/all').then(r => r.data),
     enabled:  tab === 'all' && canSeeAll,
     staleTime: 10_000,
@@ -279,6 +281,8 @@ export function ApprovalsPage() {
                     items={items}
                     onClose={() => setBulkOpen(false)}
                     onDone={() => { setBulkOpen(false); refetch() }}
+                    // docs/41 P0.6 — the badge, the other tab and each contract page follow.
+                    onDecided={(contractIds) => { for (const c of contractIds) invalidateApproval(qc, c); if (!contractIds.length) invalidateApproval(qc) }}
                   />
                 )}
               </>
@@ -459,10 +463,13 @@ function BulkDecisionDialog({
   items,
   onClose,
   onDone,
+  onDecided,
 }: {
   items: QueueItem[]
   onClose: () => void
   onDone: () => void
+  /** The contracts a decision landed on, once the run ends (failures included). */
+  onDecided?: (contractIds: string[]) => void
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set(items.map(i => i.stepId)))
   const [decision, setDecision] = useState<'APPROVED' | 'REJECTED'>('APPROVED')
@@ -497,15 +504,14 @@ function BulkDecisionDialog({
         })
         done++
       } catch (err) {
-        const detail =
-          (err as { response?: { data?: { detail?: string; error?: string } } })?.response?.data?.detail ??
-          (err as { response?: { data?: { error?: string } } })?.response?.data?.error ??
-          'Request failed'
+        const detail = serverMessage(err, 'Request failed')
         failedItems.push({ stepId: t.stepId, title: t.contract?.title ?? t.stepName ?? t.stepId, detail })
       }
       setProgress({ done, failed: failedItems.length, total: targets.length })
     }
     setFailures(failedItems)
+    const failedSteps = new Set(failedItems.map(f => f.stepId))
+    onDecided?.([...new Set(targets.filter(t => !failedSteps.has(t.stepId)).map(t => t.contract?.id).filter((c): c is string => !!c))])
     // Only close on a clean run. Closing over failures is what made a partial
     // failure indistinguishable from success.
     if (failedItems.length === 0) setTimeout(() => onDone(), 600)

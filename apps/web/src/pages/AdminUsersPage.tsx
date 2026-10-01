@@ -81,6 +81,8 @@ export function AdminUsersPage() {
 
   // Mutations
   const inviteUser = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (body: { email: string; name: string; roles: string[] }) =>
       api.post('/admin/users/invite', body).then(r => r.data),
     onSuccess: (data) => {
@@ -110,6 +112,8 @@ export function AdminUsersPage() {
   })
 
   const deactivateUser = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (userId: string) =>
       api.post(`/admin/users/${userId}/deactivate`).then(r => r.data),
     onSuccess: () => {

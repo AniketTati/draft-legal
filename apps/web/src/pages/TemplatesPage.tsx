@@ -534,6 +534,8 @@ export function TemplatesPage() {
   })
 
   const createMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (body: any) => {
       const { sections, ...templateData } = body
       return api.post('/templates', { ...templateData, sections })
@@ -542,6 +544,8 @@ export function TemplatesPage() {
   })
 
   const updateMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: ({ id, body }: { id: string; body: any }) => {
       const { sections, ...templateData } = body
       return Promise.all([

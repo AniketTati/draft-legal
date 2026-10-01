@@ -408,11 +408,15 @@ export function PlaybookPage() {
   }
 
   const createMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (body: any) => api.post('/playbook/positions', body),
     onSuccess: () => { refreshPlaybook(); setShowEditor(false); setAddType(undefined) },
   })
 
   const updateMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: ({ id, data }: { id: string; data: any }) => api.patch(`/playbook/positions/${id}`, data),
     onSuccess: () => { refreshPlaybook(); setShowEditor(false); setEditPosition(undefined) },
   })

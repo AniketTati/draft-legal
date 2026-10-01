@@ -108,6 +108,8 @@ export function SignatureStatus({
   })
 
   const voidMut = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     // Pass `{}` body — Fastify rejects empty body on POSTs with json content-type.
     mutationFn: (srId: string) =>
       api.post(`/contracts/${contractId}/signature-requests/${srId}/void`, {}).then(r => r.data),

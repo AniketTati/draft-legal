@@ -95,6 +95,8 @@ export function ObligationsRailSection({
   const extractedAt = list.data?.extractedAt ?? null
 
   const extract = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => (await api.post<{ ok: boolean; obligations: ObligationShape[]; summary: string }>(
       `/contracts/${contractId}/extract-obligations`,
     )).data,

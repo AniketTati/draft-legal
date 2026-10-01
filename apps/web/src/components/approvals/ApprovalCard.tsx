@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom'
 import { Chip, Eyebrow } from '@/components/ui/primitives'
 import { AssistMark, AssistChip } from '@/components/ui/assist'
 import { recommendationText } from '@/lib/recommendation'
+import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import {
   CheckCircle2, XCircle, ArrowRight, ChevronDown, ChevronUp,
   AlertTriangle, Building2, DollarSign, Calendar, Loader2, ExternalLink,
@@ -102,12 +103,12 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
     mutationFn: (payload: { stepId: string; decision: string; comment?: string; delegateTo?: string }) =>
       api.post(`/approvals/${instanceId}/decide`, payload).then(r => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['approval-queue'] })
-      queryClient.invalidateQueries({ queryKey: ['contract-approval', contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['contract', contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['approval-instance', instanceId] })
+      // docs/41 P0.6 — every place the approval is read from (lib/approval-keys.ts).
+      invalidateApproval(queryClient, contract.id, instanceId)
       onDecided?.()
     },
+    // Shown below the button (the server's reason); handled, so no global toast.
+    onError: () => {},
   })
 
   function handleSubmit() {
@@ -355,7 +356,7 @@ export function ApprovalCard({ stepId, instanceId, stepName, escalateAt, contrac
               </Button>
               {submitDecision.isError && (
                 <span className="text-dense text-risk-700">
-                  {(submitDecision.error as Error)?.message ?? 'Failed — try again'}
+                  {serverMessage(submitDecision.error, 'The decision wasn’t recorded — try again.')}
                 </span>
               )}
             </div>

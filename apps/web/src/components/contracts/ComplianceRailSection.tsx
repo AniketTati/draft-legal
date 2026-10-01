@@ -81,6 +81,8 @@ export function ComplianceRailSection({
   const report = query.data?.report ?? null
 
   const check = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => (await api.post<{ ok: boolean; report: ComplianceReport }>(
       `/contracts/${contractId}/compliance-check`,
     )).data,

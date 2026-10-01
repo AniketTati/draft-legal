@@ -66,11 +66,18 @@ export function PlaybookRedlineRailSection({
   status,
   staged,
   error,
+  analysis,
 }: {
   contractId: string
   status:     Status
   staged?:    StagedRedline | null
   error?:     string | null
+  /**
+   * docs/41 P0.7 — whether the version the contract stands on is analysed.
+   * A redline needs its clauses: without them it answered 400 (no current
+   * version) or, worse, "No clause deviated" over zero clauses.
+   */
+  analysis?:  { ready: boolean; text: string; detail?: string | null; onAnalyse?: () => void; analysing?: boolean }
 }) {
   const qc = useQueryClient()
   const [accepted, setAccepted] = useState<Set<string>>(new Set())
@@ -90,6 +97,8 @@ export function PlaybookRedlineRailSection({
   })
 
   const applyAccepted = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (clauseIds: string[]) =>
       api.post(`/contracts/${contractId}/redline-against-playbook/apply`, { acceptedClauseIds: clauseIds })
         .then(r => r.data),
@@ -127,7 +136,22 @@ export function PlaybookRedlineRailSection({
 
   return (
     <RailSection title="Playbook redline" defaultOpen>
-      {status === 'IDLE' && (
+      {(status === 'IDLE' || status === 'FAILED') && analysis && !analysis.ready && (
+        <div className="space-y-2" data-testid="playbook-redline-not-analysed">
+          <p className="text-dense text-ink-700">
+            <span className="font-medium">{analysis.text}.</span>{' '}
+            The redline reads the clauses the analysis finds, so it runs once this version has been analysed.
+          </p>
+          {analysis.onAnalyse && (
+            <Button size="sm" variant="outline" className="w-full gap-1.5" onClick={analysis.onAnalyse} disabled={analysis.analysing}>
+              {analysis.analysing && <Loader2 className="size-3.5 animate-spin" />}
+              Analyse now
+            </Button>
+          )}
+        </div>
+      )}
+
+      {status === 'IDLE' && (!analysis || analysis.ready) && (
         <div className="space-y-2">
           <p className="text-dense text-ink-500">
             Check every clause against your playbook and draft a first-pass markup.
@@ -158,7 +182,7 @@ export function PlaybookRedlineRailSection({
         </div>
       )}
 
-      {status === 'FAILED' && (
+      {status === 'FAILED' && (!analysis || analysis.ready) && (
         <div className="space-y-2">
           <div className="flex items-start gap-2 rounded-md border border-risk-200 bg-risk-50 px-2 py-1.5">
             <AlertTriangle className="size-3.5 text-risk-600 mt-0.5 shrink-0" />

@@ -536,6 +536,8 @@ function EditModal({
   })
 
   const save = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => api.patch<{ linkedContracts?: number; unlinkedContracts?: number }>(`/counterparties/${cp.id}`, {
       name:      form.name,
       // We send empty strings as undefined so we don't accidentally

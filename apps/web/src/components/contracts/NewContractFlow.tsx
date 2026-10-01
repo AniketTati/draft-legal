@@ -34,6 +34,8 @@ export function NewContractFlow({ onClose, onCreated, initialCounterparty }: Pro
   const [context, setContext] = useState('')
 
   const draftMutation = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => {
       const message = [
         `Draft a ${selectedTemplate?.contractType ?? 'contract'} contract titled "${title}"`,
