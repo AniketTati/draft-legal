@@ -105,6 +105,9 @@ async function seedOrgB(): Promise<void> {
   B.room = (await prisma.diligenceRoom.create({ data: { orgId: orgB, name: `${MARK} room`, description: MARK, ...by } })).id
   B.skill = (await prisma.skill.create({ data: { orgId: orgB, name: `${MARK} skill`, slug: `orgb-${randomUUID().slice(0, 8)}`, description: MARK, ownerType: 'org', contextScope: 'any', systemPrompt: MARK, modelTier: 'default' } })).id
   B.role = (await prisma.role.create({ data: { orgId: orgB, name: `${MARK}-role` } })).id
+  // docs/41 Part 9 — a fact someone answered, and the org's own compliance rules.
+  B.fact = (await prisma.contractFact.create({ data: { orgId: orgB, contractId: B.contract, versionId: version.id, key: 'personal_data', value: true, quote: `${MARK} quote`, confidence: 1, source: 'user', confirmedById: user.id, confirmedAt: new Date() } })).id
+  B.policy = (await prisma.compliancePolicy.create({ data: { orgId: orgB, rules: [{ id: `${MARK}-rule`, framework: 'GDPR', enabled: true, when: [{ fact: 'personal_data', op: 'is_true' }] }], updatedById: user.id } })).id
   B.audit = (await prisma.auditEvent.create({ data: { orgId: orgB, action: 'CONTRACT_VIEWED', resourceType: 'contract', resourceId: B.contract, metadata: { note: MARK } } })).id
 }
 

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<LightningComponentBundle xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>61.0</apiVersion>
+    <isExposed>true</isExposed>
+    <masterLabel>draftLegal: New contract</masterLabel>
+    <description>Start a contract from this deal: a form filled from the record through draftLegal's field map.</description>
+    <targets>
+        <target>lightning__RecordPage</target>
+        <target>lightning__RecordAction</target>
+    </targets>
+    <targetConfigs>
+        <targetConfig targets="lightning__RecordPage">
+            <objects>
+                <object>Opportunity</object>
+                <object>Account</object>
+                <object>Quote</object>
+            </objects>
+        </targetConfig>
+        <targetConfig targets="lightning__RecordAction">
+            <actionType>ScreenAction</actionType>
+        </targetConfig>
+    </targetConfigs>
+</LightningComponentBundle>

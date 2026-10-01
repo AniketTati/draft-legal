@@ -4163,6 +4163,7 @@ export function ContractDetailPage() {
         {id && (
           <ComplianceRailSection
             contractId={id}
+            canEdit={canEdit}
             onAfterCheck={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
           />
         )}
@@ -4171,7 +4172,7 @@ export function ContractDetailPage() {
             terms + any inconsistent author-typed variants + an
             "Apply defined term everywhere" action. Only renders when
             the doc has ≥1 defined term pattern. */}
-        <DefinedTermsRailSection editor={canvasEditor} canEdit={canEdit} />
+        <DefinedTermsRailSection contractId={id} versionId={contract.currentVersionId} editor={canvasEditor} canEdit={canEdit} />
 
         {/* P5.3 — Renewal advisor. Shows inside the 180-day expiry
             window; offers an LLM-backed recommendation + decision

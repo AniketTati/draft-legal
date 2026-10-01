@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DL_Opportunity__c</fullName>
+    <label>Opportunity</label>
+    <type>Lookup</type>
+    <deleteConstraint>SetNull</deleteConstraint>
+    <referenceTo>Opportunity</referenceTo>
+    <relationshipLabel>draftLegal Contracts</relationshipLabel>
+    <relationshipName>DL_Contracts</relationshipName>
+    <required>false</required>
+</CustomField>

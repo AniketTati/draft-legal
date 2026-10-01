@@ -34,6 +34,8 @@ model Organization {
   contractExhibits    ContractExhibit[]
   analysisRuns        AnalysisRun[]
   reviewFindings      ReviewFinding[]
+  contractFacts       ContractFact[]
+  compliancePolicy    CompliancePolicy?
   clauseTypes         ClauseTypeDefinition[]
   diligenceCells      DiligenceCell[]
   templates           Template[]
@@ -243,6 +245,7 @@ model Contract {
   exhibits          ContractExhibit[]
   analysisRuns      AnalysisRun[]
   reviewFindings    ReviewFinding[]
+  facts             ContractFact[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -599,6 +602,54 @@ model AnalysisRun {
   @@index([contractId, startedAt])
   @@index([versionId])
   @@map("analysis_runs")
+}
+
+/// docs/41 Part 9 — a fact about a contract that decides which compliance
+/// frameworks apply: does it involve personal data, whose, health data, card
+/// data… The AI reads each with a quote and a confidence; a person's answer
+/// (confirmedAt set) stands until they change it, through every re-analysis.
+/// One row per fact; versionId is the version the AI read it from.
+model ContractFact {
+  id            String    @id @default(cuid())
+  orgId         String
+  contractId    String
+  versionId     String?
+  /// One of COMPLIANCE_FACT_KEYS (@clm/types).
+  key           String
+  /// true/false, a list of codes ("EU", "US-CA"), or one value ("processor"); null: not known.
+  value         Json?
+  quote         String?
+  confidence    Float     @default(0)
+  /// 'ai' or 'user'.
+  source        String    @default("ai")
+  confirmedById String?
+  confirmedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, key])
+  @@index([orgId])
+  @@map("contract_facts")
+}
+
+/// docs/41 Part 9 — the org's rules from facts to compliance frameworks
+/// ("personal data of EU data subjects → GDPR"). Absent: the default rules
+/// (lib/compliance-policy.ts). Set by an admin; lawyers never pick frameworks.
+model CompliancePolicy {
+  id          String   @id @default(cuid())
+  orgId       String   @unique
+  /// PolicyRule[] (@clm/types).
+  rules       Json
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@map("compliance_policies")
 }
 
 /// docs/39 E3 — a clause type an organization teaches the AI: what it is and
@@ -1692,4 +1743,184 @@ model CollabState {
   updatedAt    DateTime @updatedAt
 
   @@map("collab_states")
+}
+
+// ─── docs/41 Parts 17 and 20 — the integration layer, SSO and SCIM ──────────
+//
+// One set of tables every integration shares (Salesforce first; HubSpot,
+// DocuSign and the rest later): a connection with encrypted tokens, field
+// mappings, a sync log, and the conflicts a sync raised instead of writing.
+// Then per-org single sign-on (OIDC) and SCIM provisioning.
+//
+// These models deliberately carry no Prisma relation to Organization or User:
+// a back-relation would edit those shared models for every integration added.
+// `orgId` is still on every row, indexed, covered by the tenant guard (which
+// reads the column, not the relation) and by row-level security (migration).
+
+/// An org's link to an outside system. One per provider for now (Salesforce:
+/// one Salesforce org per draftLegal org; several later, as Ironclad allows).
+model IntegrationConnection {
+  id                    String    @id @default(cuid())
+  orgId                 String
+  provider              String // 'salesforce'
+  status                String    @default("pending") // pending | connected | error | disconnected
+  /// The outside system's own org id (Salesforce: 00D…). Every inbound call
+  /// must come from this org; a call naming another is refused.
+  externalOrgId         String?
+  instanceUrl           String?
+  /// Where the OAuth flow signs in (Salesforce: login.salesforce.com, test.salesforce.com or a My Domain).
+  loginUrl              String?
+  /// AES-GCM, as BYOK keys (lib/encryption.ts). Never returned by any route.
+  encryptedAccessToken  String?   @db.Text
+  encryptedRefreshToken String?   @db.Text
+  tokenExpiresAt        DateTime?
+  config                Json      @default("{}")
+  connectedById         String?
+  connectedAt           DateTime?
+  lastSyncAt            DateTime?
+  lastError             String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([orgId, provider])
+  @@index([provider, externalOrgId])
+  @@map("integration_connections")
+}
+
+/// One mapped field: an outside object's field ↔ a draftLegal field (a key of
+/// the field registry in packages/types, a request column, or `var:<name>` for
+/// a template variable). Per org, optionally per contract type.
+model IntegrationFieldMapping {
+  id             String   @id @default(cuid())
+  orgId          String
+  provider       String
+  contractType   String? // null = every type
+  externalObject String // 'Opportunity' | 'Quote' | 'Account' | 'DL_Contract__c' …
+  externalField  String // 'Amount'
+  dlField        String // 'value' | 'counterpartyName' | 'var:governing_law' …
+  direction      String   @default("inbound") // inbound | outbound | both
+  /// Shown read-only on the launch form in Salesforce.
+  locked         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([orgId, provider, contractType])
+  @@map("integration_field_mappings")
+}
+
+/// Every sync attempt, in or out, as the plan asks: what moved, its payload
+/// hash, how it ended and on which attempt. Integration health reads it.
+model IntegrationSyncLog {
+  id          String    @id @default(cuid())
+  orgId       String
+  provider    String
+  direction   String // outbound | inbound
+  object      String // 'DL_Contract__c' | 'ContentVersion' | 'ContractRequest' …
+  externalId  String?
+  contractId  String?
+  requestId   String?
+  event       String?
+  payloadHash String?
+  status      String    @default("queued") // queued | success | failed | skipped | conflict
+  error       String?   @db.Text
+  attempt     Int       @default(0)
+  detail      Json?
+  at          DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([orgId, provider, at])
+  @@index([orgId, status])
+  @@index([contractId])
+  @@map("integration_sync_logs")
+}
+
+/// A change the outside system sent for a field it owns, after the contract
+/// was frozen (out for signature or signed). Never written silently: someone
+/// applies it to the contract or dismisses it.
+model IntegrationConflict {
+  id             String    @id @default(cuid())
+  orgId          String
+  provider       String
+  contractId     String
+  externalObject String
+  externalField  String
+  dlField        String
+  currentValue   Json?
+  incomingValue  Json?
+  status         String    @default("open") // open | applied | dismissed
+  resolvedById   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([orgId, status])
+  @@index([contractId])
+  @@map("integration_conflicts")
+}
+
+/// Per-org OIDC single sign-on. Sign-in finds it by the email's domain.
+model SsoConnection {
+  id                    String    @id @default(cuid())
+  orgId                 String    @unique
+  protocol              String    @default("oidc")
+  issuer                String
+  clientId              String
+  encryptedClientSecret String    @db.Text
+  /// Lower-case email domains this connection signs in ("acme.com").
+  allowedDomains        String[]  @default([])
+  /// Create a user on first sign-in, with `defaultRole`.
+  jitProvisioning       Boolean   @default(true)
+  defaultRole           String    @default("VIEWER")
+  enabled               Boolean   @default(false)
+  createdById           String
+  lastLoginAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("sso_connections")
+}
+
+/// A bearer token an identity provider's SCIM client uses. Stored hashed,
+/// as API keys are; shown once.
+model ScimToken {
+  id          String    @id @default(cuid())
+  orgId       String
+  name        String
+  tokenHash   String    @unique
+  prefix      String
+  createdById String
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([orgId, revokedAt])
+  @@map("scim_tokens")
+}
+
+/// A SCIM group, and the role its members get.
+model ScimGroup {
+  id          String   @id @default(cuid())
+  orgId       String
+  externalId  String?
+  displayName String
+  roleName    String?
+  memberIds   String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([orgId, displayName])
+  @@map("scim_groups")
+}
+
+/// Who a user is at an identity provider: the OIDC subject, or SCIM's externalId.
+model IdentityLink {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  provider  String // oidc | scim
+  subject   String
+  createdAt DateTime @default(now())
+
+  @@unique([orgId, provider, subject])
+  @@index([userId])
+  @@map("identity_links")
 }

@@ -178,6 +178,10 @@
   border-radius: 2px;
   padding: 0 1px;
 }
+/* docs/41 Part 10 — a defined term's use: its definition on hover (title), and
+   reading, a click jumps to it. No underline at rest: a contract is full of them. */
+.ProseMirror .defined-term-use { cursor: help; border-radius: 2px; }
+.ProseMirror .defined-term-use:hover { background: hsl(var(--assist) / 0.08); box-shadow: 0 1px 0 hsl(var(--assist) / 0.5); }
 /* P6.2 — Background clause classifier margin badges.
    Paragraphs need position:relative so the absolute-positioned badge
    in the widget can anchor off to the left gutter. */
