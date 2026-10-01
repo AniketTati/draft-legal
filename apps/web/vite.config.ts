@@ -26,6 +26,11 @@ export default defineConfig({
         target: process.env.API_PROXY_TARGET ?? 'http://localhost:3001',
         changeOrigin: true,
       },
+      // docs/41 Part 20 — SCIM provisioning is served by the API too.
+      '/scim': {
+        target: process.env.API_PROXY_TARGET ?? 'http://localhost:3001',
+        changeOrigin: true,
+      },
     },
   },
   build: {

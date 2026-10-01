@@ -309,10 +309,10 @@ Things that hold throughout this section:
 
 | # | Do | Expect |
 |---|----|--------|
-| 1 | Open `$WEB`. | You are sent to `/login`. The card shows the draftLegal wordmark, the heading "Sign in", "Welcome back — please enter your details.", three buttons "Continue with Google", "Continue with Microsoft" and "Use enterprise SSO (SAML / OIDC)", a divider "or", the fields **Email** (placeholder `you@company.com`) and **Password** with the link "Forgot password?" beside its label, the button **Sign in**, and "No account? Create one". |
-| 2 | Click **Continue with Google**. | A dialog "Sign in with Google" with the chip "Available in v1.1" (shown in capitals), the text "Your admin will be able to link your workspace to Google Workspace for one-click sign-in.", the note "Sign in with email + password below to continue for now." and **Got it**. The Network panel shows no request. Click **Got it**: the dialog closes. |
-| 3 | Click **Continue with Microsoft**, then click the dimmed area outside the dialog. | "Sign in with Microsoft", "Available in v1.1", "Your admin will be able to link your workspace to Microsoft Entra ID (formerly Azure AD) for one-click sign-in." Clicking outside closes it. |
-| 4 | Click **Use enterprise SSO (SAML / OIDC)**. | "Enterprise SSO (SAML / OIDC)", "Available in v1.1", "For companies using Okta, OneLogin, JumpCloud or any SAML 2.0 / OIDC identity provider. Your admin configures the IdP connection once; users sign in with their corporate identity forever after." Click **Got it**. |
+| 1 | Open `$WEB`. | You are sent to `/login`. The card shows the draftLegal wordmark, the heading "Sign in", "Welcome back — please enter your details.", the button "Sign in with SSO", a divider "or", the fields **Email** (placeholder `you@company.com`) and **Password** with the link "Forgot password?" beside its label, the button **Sign in**, and "No account? Create one". |
+| 2 | Click **Sign in with SSO**. | A "Work email" field appears in place of the button, with **Cancel** and **Continue**. The email you typed below, if any, is already in it. |
+| 3 | Enter `someone@example.org` and click **Continue**. | "Single sign-on isn't set up for example.org. Sign in with your password, or ask your admin." Nothing else changes. |
+| 4 | Click **Cancel**. | The field closes and "Sign in with SSO" is back. (A domain set up under Settings → Integrations → Single sign-on goes to its identity provider instead: see docs/43.) |
 | 5 | Click **Sign in** with both fields empty. | The browser's own "fill out this field" bubble points at Email. No request is sent. |
 | 6 | Email `admin@demo.com`, password `wrongpass1`, **Sign in**. | The button reads "Signing in…", then the red line "Invalid email or password" appears and you stay on `/login`. Network: `POST /api/v1/auth/login` **401** `{"detail":"Invalid email or password"}`. |
 | 7 | Email `nobody@qa.test`, password `wrongpass1`, **Sign in**. | The same message and the same 401 body: the page doesn't reveal whether an account exists. |
@@ -339,7 +339,7 @@ Things that hold throughout this section:
 - **Permissions.** Sign-in is the same for every role.
 
 **Known limits**
-- Single sign-on (Google, Microsoft, SAML/OIDC) isn't available; the buttons only explain it ("Available in v1.1").
+- Single sign-on is OIDC only (Okta, Entra ID, Google Workspace…); SAML isn't available yet (docs/43).
 - The sign-in page doesn't link to Privacy, Terms or Status.
 - Besides the per-email throttle, one IP address gets 200 sign-in attempts per 15 minutes (429 "Too many login attempts
   from your network. Try again in 15 minutes.").

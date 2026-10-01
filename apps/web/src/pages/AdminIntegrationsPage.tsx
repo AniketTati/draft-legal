@@ -10,6 +10,7 @@
  * Lives at /admin/integrations.
  */
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
@@ -18,12 +19,16 @@ import { useCanRequest } from '@/lib/permissions'
 import {
   Plug, Plus, Loader2, Copy, Check, Trash2, X, Send, AlertCircle, Lock,
   Key, Webhook as WebhookIcon, ChevronRight, ChevronDown,
-  Activity, RefreshCw, MessageSquare,
+  Activity, RefreshCw, MessageSquare, Cloud, KeyRound,
 } from 'lucide-react'
 import { StatusPill } from '@/components/ui/status-pill'
 import { MEANING_CLASS, type Meaning } from '@/lib/status'
 import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 import { API_KEY_EXPIRY_OPTIONS, buildCreateApiKeyBody } from '@/lib/api-keys'
+// docs/41 Parts 17 and 20 — Salesforce, single sign-on and integration health.
+import { SalesforceSection } from '@/components/admin/SalesforceSection'
+import { SsoSection } from '@/components/admin/SsoSection'
+import { IntegrationHealthPanel, type IntegrationHealth } from '@/components/admin/IntegrationHealthPanel'
 
 interface ApiKey {
   id:         string
@@ -63,10 +68,14 @@ interface Delivery {
   deliveredAt:    string | null
 }
 
-type Tab = 'keys' | 'webhooks' | 'slack' | 'health'
+type Tab = 'keys' | 'webhooks' | 'slack' | 'salesforce' | 'sso' | 'health'
+const TABS: readonly Tab[] = ['keys', 'webhooks', 'slack', 'salesforce', 'sso', 'health']
 
 export function AdminIntegrationsPage() {
-  const [tab, setTab] = useState<Tab>('keys')
+  // ?tab= opens a tab directly (the Salesforce sign-in comes back to ?tab=salesforce).
+  const [searchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') as Tab | null
+  const [tab, setTab] = useState<Tab>(initialTab && TABS.includes(initialTab) ? initialTab : 'keys')
   // P14 audit (2026-04-29). Without this gate, non-admin users hitting
   // /admin/integrations triggered a 403 GET /api/v1/admin/integrations/
   // api-keys flood that surfaced in the rail console + felt broken.
@@ -121,6 +130,12 @@ export function AdminIntegrationsPage() {
         <TabButton active={tab === 'slack'} onClick={() => setTab('slack')} testId="tab-slack">
           <MessageSquare className="size-4" /> Slack
         </TabButton>
+        <TabButton active={tab === 'salesforce'} onClick={() => setTab('salesforce')} testId="tab-salesforce">
+          <Cloud className="size-4" /> Salesforce
+        </TabButton>
+        <TabButton active={tab === 'sso'} onClick={() => setTab('sso')} testId="tab-sso">
+          <KeyRound className="size-4" /> Single sign-on
+        </TabButton>
         <TabButton active={tab === 'health'} onClick={() => setTab('health')} testId="tab-health">
           <Activity className="size-4" /> Health
         </TabButton>
@@ -129,6 +144,8 @@ export function AdminIntegrationsPage() {
       {tab === 'keys' ? <ApiKeysSection />
         : tab === 'webhooks' ? <WebhooksSection />
         : tab === 'slack' ? <SlackSection />
+        : tab === 'salesforce' ? <SalesforceSection />
+        : tab === 'sso' ? <SsoSection />
         : <HealthSection />}
     </div>
   )
@@ -866,6 +883,7 @@ function HealthSection() {
 
   return (
     <div data-testid="health-section">
+      <IntegrationHealthPanel items={(data as HealthResponse & { integrations?: IntegrationHealth[] }).integrations} />
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <SummaryCard

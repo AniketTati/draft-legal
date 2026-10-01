@@ -5,6 +5,8 @@ import { api } from '@/lib/api'
 import { AppShell } from '@/components/layout/AppShell'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { LoginPage } from '@/pages/LoginPage'
+import { SsoCallbackPage } from '@/pages/SsoCallbackPage'
+import { EmbedContractPage } from '@/pages/EmbedContractPage'
 import { RegisterPage } from '@/pages/RegisterPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { AgentHomePage } from '@/pages/AgentHomePage'
@@ -83,6 +85,10 @@ export default function App() {
     <Toaster />
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* docs/41 Part 20 — where single sign-on lands. */}
+      <Route path="/login/sso" element={<SsoCallbackPage />} />
+      {/* docs/41 Part 17 — the read-only preview Salesforce frames, by token. */}
+      <Route path="/embed/contracts/:id" element={<EmbedContractPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/accept-invite/:token" element={<AcceptInvitePage />} />
       <Route path="/portal/:portalToken" element={<ExternalPortalPage />} />
