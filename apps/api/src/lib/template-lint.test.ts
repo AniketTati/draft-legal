@@ -9,6 +9,7 @@ import type { TemplateSnapshot } from './template-snapshot.js'
 import { UNIVERSAL_TEMPLATES } from './org-seed/universal/templates.js'
 import { UNIVERSAL_PLAYBOOK } from './org-seed/universal/playbook.js'
 import { UNIVERSAL_CATEGORIES } from './org-seed/universal/categories.js'
+import { matchCategory } from './clause-category.js'
 
 const CONF = { id: 'cat_conf', name: 'Confidentiality' }
 const DISPUTE = { id: 'cat_dispute', name: 'Dispute Resolution' }
@@ -104,3 +105,24 @@ describe('the seeded NDA and the seeded playbook agree', () => {
     expect(lintSnapshot(s, positions).map(w => w.message)).toEqual(['Confidentiality term of 3 years is your fallback position, not your preferred one (5 years).'])
   })
 })
+
+describe('a seeded NDA has the term its presence rule asks for (41: browser QA)', () => {
+  // Term & Termination is required for NDAs; a section that only said how
+  // long confidentiality lasts read as confidentiality, so every NDA drafted
+  // from the seed was "Term & Termination — not detected".
+  const termCategory = UNIVERSAL_CATEGORIES.find(c => c.slug === 'term-termination')!
+  it('Term & Termination is required for an NDA, and a termination clause is of that category', () => {
+    expect(termCategory.required).toContain('NDA')
+    const cats = UNIVERSAL_CATEGORIES.map(c => ({ id: c.slug, name: c.name }))
+    expect(matchCategory(cats, 'termination')?.id).toBe('term-termination')
+  })
+
+  for (const t of UNIVERSAL_TEMPLATES.filter(x => x.contractType === 'NDA')) {
+    it(`${t.name}: says how long it runs and how either party ends it`, () => {
+      const term = t.sections.find(x => x.title === 'Term and Termination')
+      expect(term?.content).toMatch(/continues until either Party terminates it/i)
+      expect(term?.content).toMatch(/written notice/)
+    })
+  }
+})
+
