@@ -3842,7 +3842,6 @@ export function ContractDetailPage() {
           contractId={id ?? ''}
           expiryDate={contract.expiryDate ?? null}
           advice={(contract.metadata?.renewalAdvice as RenewalAdvice | undefined) ?? null}
-          decision={(contract.metadata?.renewalDecision as string | undefined) ?? null}
           onAfterAdvice={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
           onAfterDecision={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
         />
