@@ -288,9 +288,15 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
     const key = byNorm.get(norm(k))
     if (key && typeof v === 'string' && v.trim()) set(key, v.trim(), stated)
   }
+  // Our side's name is the org's (step 3), never read from the request: the
+  // extractor put the counterparty in customerName too, so both parties were
+  // "Initech Solutions".
+  const ourNameKeys = new Set<string>([...ALIASES.ourCompany, ...ALIASES.ourRole])
+  if (byNorm.has('customername') && byNorm.has('providername')) ourNameKeys.add(weSell(template.name) ? 'providername' : 'customername')
   // What the extractor read from the request — only with the words it read it from.
   for (const e of input.extracted ?? []) {
     const key = byNorm.get(norm(e.key))
+    if (ourNameKeys.has(norm(e.key))) continue
     if (key && variables[key] === undefined && e.value?.trim()) set(key, e.value.trim(), 'request_text', e.quote)
   }
   fill(ALIASES.counterparty, input.counterpartyName)
