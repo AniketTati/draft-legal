@@ -18,7 +18,9 @@ import { z } from 'zod'
 import { familyLabel, type AmendmentChangeSpec } from '@clm/types'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
-import { proposeClauseAlternatives } from './clause-propose.js'
+import { redactJson, restorePii } from './pii-policy.js'
+import { modelFetch } from './model-boundary.js'
+import { effectiveView } from './family.js'
 import { diffSequences } from './ooxml/sequence-diff.js'
 
 /**
@@ -123,37 +125,68 @@ export interface DraftedLanguage {
   clauseId: string
   sectionRef: string | null
   clauseType: string
-  /** The parent's words: the evidence the draft is of. */
+  /** The parent's words in effect: the evidence the draft is of. */
   parentText: string
+  /** The words of the parent the draft changes, as the model quoted them; only when the clause holds them. */
+  quote: string | null
   proposedText: string | null
   rationale: string | null
   error: string | null
 }
 
+const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
+
 /**
  * The AI's draft of new words for each clause a person wants changed, from
- * their instruction — to be edited before the amendment is made. A clause
- * the proposer can't draft comes back with its error and no text: the
- * person writes it.
+ * their instruction (agents /amendment_language) — to be edited before the
+ * amendment is made. Each comes back with the parent's words in effect and
+ * the part it changes, quoted; a clause it can't draft comes back with its
+ * error and no text: the person writes it. The clause goes to the model
+ * under the org's PII policy and its values are put back.
  */
 export async function draftAmendmentLanguage(orgId: string, parentId: string, items: Array<{ clauseId: string; instruction: string }>): Promise<DraftedLanguage[]> {
-  const out: DraftedLanguage[] = []
-  for (const it of items) {
-    const r = await proposeClauseAlternatives({ contractId: parentId, orgId, clauseId: it.clauseId, instructions: it.instruction })
-    if (!r.ok) {
-      const clause = await prisma.contractClause.findFirst({ where: { id: it.clauseId, version: { contractId: parentId } }, select: { content: true, sectionRef: true, clauseType: true } })
-      out.push({ clauseId: it.clauseId, sectionRef: clause?.sectionRef ?? null, clauseType: clause?.clauseType ?? 'other', parentText: clause?.content ?? '', proposedText: null, rationale: null, error: r.detail })
-      continue
-    }
-    // The middle variant when there are three (the balanced one), else the first.
-    const v = r.data.variants.find(x => /balanced|moderate/i.test(x.aggression)) ?? r.data.variants[0]
-    out.push({
-      clauseId: it.clauseId, sectionRef: r.data.clause.sectionRef, clauseType: r.data.clause.clauseType,
-      parentText: r.data.clause.originalText, proposedText: v?.proposedText ?? null, rationale: v?.rationale ?? null,
-      error: v ? null : (r.data.error ?? 'No draft came back'),
-    })
-  }
-  return out
+  const parent = await prisma.contract.findFirst({ where: { id: parentId, orgId, deletedAt: null }, select: { id: true, type: true, currentVersionId: true } })
+  if (!parent) return []
+  const view = await effectiveView(orgId, parentId)
+  const rows = await prisma.contractClause.findMany({
+    where: { id: { in: items.map(i => i.clauseId) }, version: { contractId: parentId, contract: { orgId } } },
+    select: { id: true, clauseType: true, sectionRef: true, content: true },
+  })
+  const picked = items.flatMap(it => {
+    const c = rows.find(r => r.id === it.clauseId)
+    if (!c) return []
+    const text = view?.sections.find(x => x.clauseId === c.id)?.text || c.content
+    return [{ ...it, clause: c, text }]
+  })
+  const out: DraftedLanguage[] = picked.map(p => ({
+    clauseId: p.clauseId, sectionRef: p.clause.sectionRef, clauseType: p.clause.clauseType, parentText: p.text,
+    quote: null, proposedText: null, rationale: null, error: 'No draft came back',
+  }))
+  if (!picked.length) return out
+  const document = parent.currentVersionId
+    ? (await prisma.contractVersion.findUnique({ where: { id: parent.currentVersionId }, select: { plainText: true } }))?.plainText ?? ''
+    : ''
+  const source = [...picked.map(p => p.text), document]
+  const redacted = await redactJson(orgId, { texts: picked.map(p => p.text) }, {
+    surface: 'amendment_language', contractId: parentId, roundTrip: parentId, valuesFrom: source,
+  })
+  const res = await modelFetch(`${AGENTS_URL}/amendment_language`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
+    body: JSON.stringify({
+      orgId, contractType: parent.type,
+      items: picked.map((p, i) => ({ clauseId: p.clauseId, clauseText: redacted.texts[i], clauseType: p.clause.clauseType, sectionRef: p.clause.sectionRef, instruction: p.instruction })),
+    }),
+  }, { orgId, surface: 'amendment_language', contractId: parentId }).catch(() => null)
+  if (!res?.ok) return out.map(o => ({ ...o, error: 'The drafting service didn’t answer: write the new words yourself' }))
+  const body = restorePii(await res.json() as { drafts?: Array<{ clauseId: string; proposedText: string | null; rationale: string | null; quote: string | null; error: string | null }> }, source, parentId)
+  return out.map(o => {
+    const d = body.drafts?.find(x => x.clauseId === o.clauseId)
+    if (!d) return o
+    // The quote is the evidence: kept only when the parent's words hold it.
+    const quote = d.quote && o.parentText.replace(/\s+/g, ' ').includes(d.quote.replace(/\s+/g, ' ')) ? d.quote : null
+    return { ...o, proposedText: d.proposedText, rationale: d.rationale, quote, error: d.proposedText ? null : d.error ?? 'No draft came back' }
+  })
 }
 
 /** The label an amendment is shown and drafted under. */

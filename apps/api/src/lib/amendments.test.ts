@@ -5,7 +5,6 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 vi.mock('./prisma.js', () => ({ prisma: {} }))
-vi.mock('./clause-propose.js', () => ({ proposeClauseAlternatives: vi.fn() }))
 import { normaliseRelationshipType, familyLabel, familyShortLabel, type AmendmentChangeSpec } from '@clm/types'
 import {
   amendmentHtml, amendmentRedlineItems, changeSentence, obligationsReplaced, proposedTextsFromHtml, redlineSegments, sectionName,

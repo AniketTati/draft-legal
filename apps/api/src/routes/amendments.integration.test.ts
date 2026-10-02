@@ -7,16 +7,20 @@
  * from another org.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-vi.mock('../lib/clause-propose.js', () => ({
-  proposeClauseAlternatives: vi.fn(async (a: { clauseId: string }) => ({
-    ok: true,
-    data: {
-      contract: { id: 'x', title: 'x', type: 'MSA' },
-      clause: { id: a.clauseId, clauseType: 'payment_terms', sectionRef: '5', originalText: 'Payment is due within thirty (30) days of invoice.' },
-      category: null, hasPlaybook: false,
-      variants: [{ aggression: 'balanced', proposedText: 'Payment is due within forty-five (45) days of invoice.', rationale: 'As asked', changes: [] }],
-    },
-  })),
+// The agents service, as /amendment_language answers: new words, and a quote
+// of the parent's words (one the clause holds, one it doesn't).
+const agentCalls: Array<{ items: Array<{ clauseText: string; instruction: string }> }> = []
+vi.mock('../lib/model-boundary.js', async (orig) => ({
+  ...await orig<typeof import('../lib/model-boundary.js')>(),
+  modelFetch: vi.fn(async (url: string, init: RequestInit) => {
+    if (!url.endsWith('/amendment_language')) return new Response('{}', { status: 503 })
+    const body = JSON.parse(init.body as string)
+    agentCalls.push(body)
+    return new Response(JSON.stringify({ drafts: body.items.map((it: { clauseId: string }, i: number) => ({
+      clauseId: it.clauseId, proposedText: 'Payment is due within forty-five (45) days of invoice.', rationale: 'As asked',
+      quote: i === 0 ? 'thirty (30) days' : 'sixty (60) days', error: null,
+    })) }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }),
 }))
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
@@ -106,7 +110,11 @@ describe('drafting an amendment from what changes', () => {
   it('drafts new words from an instruction, with the parent’s words as the evidence', async () => {
     const r = await req('POST', `/${parent}/amendment-language`, { items: [{ clauseId: feesClause, instruction: 'Make it 45 days' }] })
     expect(r.statusCode).toBe(200)
-    expect(r.json().drafts[0]).toMatchObject({ clauseId: feesClause, parentText: FEES, proposedText: 'Payment is due within forty-five (45) days of invoice.' })
+    expect(r.json().drafts[0]).toMatchObject({ clauseId: feesClause, parentText: FEES, quote: 'thirty (30) days', proposedText: 'Payment is due within forty-five (45) days of invoice.' })
+    expect(agentCalls[0].items[0]).toMatchObject({ clauseText: FEES, instruction: 'Make it 45 days' })
+    // A quote the clause doesn't hold is not shown as evidence.
+    const two = await req('POST', `/${parent}/amendment-language`, { items: [{ clauseId: termClause, instruction: 'Two years' }, { clauseId: feesClause, instruction: 'Sixty days' }] })
+    expect(two.json().drafts[1]).toMatchObject({ clauseId: feesClause, quote: null })
   })
 })
 
