@@ -20,6 +20,7 @@
  */
 import { prisma } from './prisma.js'
 import { queueNotification } from './queue.js'
+import { escalationDays, escalationDue, legalOpsUsers, renewalRecipients } from './renewal-reminders.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS, RENEWAL_COLUMNS } from './renewal-notice.js'
@@ -251,6 +252,8 @@ export interface RenewalScanResult {
   notified:          number
   skippedCooldown:   number
   skippedNoOwner:    number
+  /** docs/41 Part 14 — undecided renewals escalated to Legal Ops this run. */
+  escalated:         number
   errors:            string[]
 }
 
@@ -264,7 +267,7 @@ export async function scanRenewals(
 
   const res: RenewalScanResult = {
     scannedContracts: 0, candidates: 0, notified: 0,
-    skippedCooldown: 0, skippedNoOwner: 0, errors: [],
+    skippedCooldown: 0, skippedNoOwner: 0, escalated: 0, errors: [],
   }
 
   // Candidates: expiring inside the lead window, or far enough out that an
@@ -301,9 +304,41 @@ export async function scanRenewals(
     select: { contractId: true },
   })).map(d => d.contractId))
 
+  // docs/41 Part 14 — each org's escalation lead, and its Legal Ops people
+  // (looked up only when something is to be escalated).
+  const orgs = new Map((await prisma.organization.findMany({
+    where: { id: { in: [...new Set(contracts.map(c => c.orgId))] } },
+    select: { id: true, settings: true },
+  })).map(o => [o.id, escalationDays(o.settings)]))
+  const legalOps = new Map<string, Awaited<ReturnType<typeof legalOpsUsers>>>()
+
   for (const c of contracts) {
     if (!c.expiryDate) continue
     const notice = amendedRenewalNotice(c, c.amendments)
+
+    // Escalate an undecided renewal whose notice deadline is close, once per
+    // deadline — before the reminder cooldown, which mustn't hold it back.
+    const escalatedFor = ((c.metadata ?? {}) as { renewalEscalatedFor?: string }).renewalEscalatedFor
+    const esc = escalationDue(notice.deadline, now, orgs.get(c.orgId) ?? 14, escalatedFor)
+    if (esc.due && !decidedIds.has(c.id)) {
+      if (!legalOps.has(c.orgId)) legalOps.set(c.orgId, await legalOpsUsers(c.orgId))
+      for (const u of legalOps.get(c.orgId)!) {
+        queueNotification({
+          orgId: c.orgId, userId: u.id, type: 'ESCALATION',
+          title: `No renewal decision · ${c.title}`,
+          body: `${c.counterpartyName ?? 'Counterparty'} — the last day to give notice is ${esc.key}, and nobody has decided whether to renew. Ask the owner, or decide on the contract.`.slice(0, 400),
+          resourceType: 'contract', resourceId: c.id, email: u.email ?? undefined,
+        })
+      }
+      c.metadata = { ...(c.metadata as Record<string, unknown>), renewalEscalatedFor: esc.key } as never
+      try {
+        await prisma.contract.update({ where: { id: c.id }, data: { metadata: c.metadata as never } })
+        res.escalated++
+      } catch (err) {
+        res.errors.push(`${c.id}: ${(err as Error).message.slice(0, 160)}`)
+      }
+    }
+
     const expiringSoon = c.expiryDate.getTime() <= windowEnd
     const noticeDue = notice.deadline != null
       && notice.deadline.getTime() <= now + NOTICE_LEAD_DAYS * 24 * 60 * 60 * 1000
@@ -326,11 +361,9 @@ export async function scanRenewals(
       continue
     }
 
-    const owner = await prisma.user.findFirst({
-      where: { id: c.ownerId, orgId: c.orgId },
-      select: { id: true, email: true },
-    })
-    if (!owner) { res.skippedNoOwner++; continue }
+    // docs/41 Part 14 — the owner and everyone watching the contract.
+    const recipients = await renewalRecipients(c.orgId, c.id, c.ownerId)
+    if (!recipients.length) { res.skippedNoOwner++; continue }
 
     // Anchor to midnight for a clean daysOut count.
     const todayMid = new Date(); todayMid.setHours(0, 0, 0, 0)
@@ -362,16 +395,18 @@ export async function scanRenewals(
         : `auto-renews unless ${period}' notice is served by ${dlStr}.${check}`
     }
 
-    queueNotification({
-      orgId:        c.orgId,
-      userId:       owner.id,
-      type:         'RENEWAL_DUE',
-      title,
-      body:         `${c.counterpartyName ?? 'Counterparty'}${valueStr ? ` · ${valueStr}` : ''} — ${action}`.slice(0, 400),
-      resourceType: 'contract',
-      resourceId:   c.id,
-      email:        owner.email ?? undefined,
-    })
+    for (const to of recipients) {
+      queueNotification({
+        orgId:        c.orgId,
+        userId:       to.id,
+        type:         'RENEWAL_DUE',
+        title,
+        body:         `${c.counterpartyName ?? 'Counterparty'}${valueStr ? ` · ${valueStr}` : ''} — ${action}`.slice(0, 400),
+        resourceType: 'contract',
+        resourceId:   c.id,
+        email:        to.email ?? undefined,
+      })
+    }
 
     try {
       const nextMeta = { ...(c.metadata as Record<string, unknown>), renewalNotifiedAt: new Date().toISOString() }

@@ -2199,13 +2199,17 @@ model ContractWatcher {
 }
 
 /// docs/41 Part 14 — a person's calendar feed (.ics). The feed URL carries a
-/// signed token naming this row's version; rotating the link bumps it, and
-/// every older link stops working.
+/// signed random token; only its hash is kept. Making a new link bumps the
+/// version and replaces the hash, so every older link stops working; revoking
+/// clears it.
 model CalendarFeed {
   id        String   @id @default(cuid())
   orgId     String
   userId    String   @unique
   version   Int      @default(1)
+  /// SHA-256 of the feed link's token; the token itself is shown once.
+  tokenHash String?  @unique
+  revokedAt DateTime?
   createdAt DateTime @default(now())
   rotatedAt DateTime @default(now())
 
