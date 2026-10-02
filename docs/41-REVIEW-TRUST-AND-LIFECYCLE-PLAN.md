@@ -1405,6 +1405,24 @@ every keystroke save.
   - *Given* Save with "Send to counterparty", *then* the turn changes and the
     banner says so.
 
+**As built (C4, suggestion mode)**
+- Our own small TipTap extension (`components/editor/TrackChanges.ts`); no
+  maintained free one was available. Marks `insertion`/`deletion` stored as
+  `<ins|del data-change-id data-author-id data-author data-time>`. On by itself
+  at stage negotiate; a "Suggesting" toggle otherwise. Not tracked: formatting,
+  paragraph splits and joins, tables.
+- **Decision: analysis reads the document as if every pending suggestion were
+  accepted** (`apps/api/src/lib/suggestions.ts`): the version's plain text,
+  Changes mode and the text written into their Word paper. The banner and
+  Changes mode show how many are pending; Keep original and Counter wait until
+  they are decided (they rewrite the document from that reading).
+- Word: pending suggestions export as w:ins/w:del with each one's author and
+  time. A returned .docx's tracked changes come back as suggestions with
+  Word's authors where mammoth's paragraph text matches Word's exactly;
+  otherwise accepted, as before (known limit). Into their own paper
+  ("download for counterparty" on their Word file) the suggestions go as
+  tracked changes by the person downloading, not each author (known limit).
+
 **Priority / effort / dependencies**
 - **P1:** workspace, banner, panel, and working copy. Effort L.
 - **P1:** suggestion mode. Effort XL; can come later in the phase.
