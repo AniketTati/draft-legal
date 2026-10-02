@@ -103,6 +103,16 @@ describe('visibility', () => {
     // Their thread stays external.
     expect((await patch(c.json().id, { visibility: 'internal' })).statusCode).toBe(409)
   })
+
+  it('a portal comment keeps the name its author typed, also once someone resolves it', async () => {
+    const c = await portalPost({ body: 'Cap at fees?', authorName: 'Jo (Acme legal)' })
+    const id = c.json().id as string
+    expect(await prisma.contractComment.findUniqueOrThrow({ where: { id } })).toMatchObject({ authorName: 'Jo (Acme legal)', resolvedById: null })
+    expect((await portalList()).json().data.find((t: { id: string }) => t.id === id)?.authorName).toBe('Jo (Acme legal)')
+    expect((await patch(id, { resolved: true })).statusCode).toBe(200)
+    expect(await prisma.contractComment.findUniqueOrThrow({ where: { id } })).toMatchObject({ authorName: 'Jo (Acme legal)', resolvedById: owner })
+    expect((await list()).json().data.find((t: { id: string }) => t.id === id)?.authorName).toBe('Jo (Acme legal)')
+  })
 })
 
 describe('anchors', () => {

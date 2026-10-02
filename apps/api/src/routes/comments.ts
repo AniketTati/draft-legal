@@ -12,11 +12,6 @@ import { Prisma } from '@prisma/client'
 import { withAnchors } from '../lib/comment-anchors.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 
-/** A portal author's typed name, kept in resolvedById until someone resolves the thread. */
-function portalName(c: { resolvedById: string | null; resolved?: boolean }) {
-  return c.resolved ? null : c.resolvedById
-}
-
 export async function commentRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
   guardOwnScopeContractRoutes(app)
@@ -64,10 +59,10 @@ export async function commentRoutes(app: FastifyInstance) {
     const ids = [...new Set(comments.flatMap(c => [c, ...c.replies]).map(c => c.authorId).filter(a => !a.startsWith('portal:')))]
     const users = ids.length ? await prisma.user.findMany({ where: { id: { in: ids }, orgId }, select: { id: true, name: true } }) : []
     const nameOf = new Map(users.map(u => [u.id, u.name]))
-    const named = <C extends { authorId: string; resolvedById: string | null }>(c: C) => ({
+    const named = <C extends { authorId: string; authorName: string | null }>(c: C) => ({
       ...c,
-      // A portal comment keeps its author's typed name in resolvedById (portal.ts).
-      authorName: c.authorId.startsWith('portal:') ? (portalName(c) ?? 'External reviewer') : nameOf.get(c.authorId) ?? null,
+      // A portal comment keeps the name its author typed (portal.ts).
+      authorName: c.authorId.startsWith('portal:') ? (c.authorName ?? 'External reviewer') : nameOf.get(c.authorId) ?? null,
     })
     const data = placed.map(t => ({ ...named(t), replies: t.replies.map(named) }))
     // docs/41 Part 12 — how many threads there are, for counts that don't

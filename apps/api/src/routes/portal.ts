@@ -163,8 +163,8 @@ export async function portalRoutes(app: FastifyInstance) {
       id: c.id, body: c.body, createdAt: c.createdAt, resolved: c.resolved, visibility: c.visibility,
       fromThisLink: c.authorId === `portal:${link.id}`,
       fromCounterparty: c.authorId.startsWith('portal:'),
-      // A portal comment keeps its author's typed name in resolvedById (see POST).
-      authorName: c.authorId.startsWith('portal:') ? (c.resolved ? 'External reviewer' : c.resolvedById ?? 'External reviewer') : nameOf.get(c.authorId) ?? contract.org.name,
+      // A portal comment keeps the name its author typed (see POST).
+      authorName: c.authorId.startsWith('portal:') ? (c.authorName ?? 'External reviewer') : nameOf.get(c.authorId) ?? contract.org.name,
     })
     const placed = await withAnchors(payload.orgId, payload.contractId, threads, shown?.id ?? null)
     return reply.send({
@@ -220,8 +220,8 @@ export async function portalRoutes(app: FastifyInstance) {
         // Everything the counterparty writes is, by definition, shared with them.
         visibility: 'external',
         anchor: anchor ? (anchor as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
-        // Store portal user info in a structured way
-        resolvedById: authorName ?? authorEmail ?? 'External reviewer',
+        // The name they typed; resolvedById is for whoever resolves the thread.
+        authorName: (authorName ?? authorEmail ?? 'External reviewer').slice(0, 200),
       },
       include: { replies: true },
     })

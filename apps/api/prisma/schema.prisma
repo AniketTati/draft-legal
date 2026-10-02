@@ -1391,6 +1391,9 @@ model ContractComment {
   clauseRef    String? // optional section/clause anchor string
   parentId     String? // null = top-level thread; set = reply
   authorId     String // userId or "portal:<linkId>" for external commenters
+  // The name an external commenter typed in the portal (users are named by
+  // authorId). It was kept in resolvedById, which resolving overwrote.
+  authorName   String?
   body         String
   // docs/41 Part 16 — "internal" (our side only) or "external" (the
   // counterparty sees it in the portal). Set on the thread; replies follow it.
