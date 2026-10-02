@@ -20,7 +20,7 @@
  */
 import { prisma } from './prisma.js'
 import { queueNotification } from './queue.js'
-import { escalationDays, escalationDue, legalOpsUsers, renewalRecipients } from './renewal-reminders.js'
+import { escalationDays, escalationDue, legalOpsUsers, renewalRecipients, renewalReminderAction } from './renewal-reminders.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS, RENEWAL_COLUMNS } from './renewal-notice.js'
@@ -377,23 +377,21 @@ export async function scanRenewals(
 
     // The notice deadline, when it is what makes this due, leads the alert.
     let title = `${label} · ${c.title}`
-    let action = 'review renewal options now.'
+    // Fix-up 17 — worded by how it renews: only an automatic renewal "auto-renews".
+    const expiryStr = c.expiryDate.toISOString().slice(0, 10)
+    let deadline: { date: string; days: number; period: string; confirmed: boolean } | null = null
     if (noticeDue && notice.deadline) {
       const dlMid = new Date(notice.deadline); dlMid.setHours(0, 0, 0, 0)
       const dlDays = Math.round((dlMid.getTime() - todayMid.getTime()) / (24 * 60 * 60 * 1000))
-      const dlStr = notice.deadline.toISOString().slice(0, 10)
       const dlLabel = dlDays < 0 ? 'Notice deadline passed'
                     : dlDays === 0 ? 'Notice deadline today'
                     : `Notice deadline in ${dlDays}d`
       title = `${dlLabel} · ${c.title}`
       // docs/39 F1 — the notice as the contract writes it ("3 months"), and a
-      // warning when nobody has confirmed it is the notice that stops renewal.
-      const period = notice.noticeLabel ?? `${notice.noticeDays} days`
-      const check = notice.noticeConfirmed ? '' : ' Confirm this is the notice to stop renewal, not the notice to end early.'
-      action = dlDays < 0
-        ? `auto-renews: the ${period} notice deadline (${dlStr}) has passed. Check whether it can still be stopped.${check}`
-        : `auto-renews unless ${period}' notice is served by ${dlStr}.${check}`
+      // warning when nobody has confirmed which notice it is.
+      deadline = { date: notice.deadline.toISOString().slice(0, 10), days: dlDays, period: notice.noticeLabel ?? `${notice.noticeDays} days`, confirmed: notice.noticeConfirmed }
     }
+    const action = renewalReminderAction({ renewalType: notice.renewalType, expiry: expiryStr, deadline })
 
     for (const to of recipients) {
       queueNotification({

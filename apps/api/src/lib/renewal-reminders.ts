@@ -68,3 +68,36 @@ export function escalationDue(
   const last = new Date(now + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   return { due: key >= today && key <= last && escalatedFor !== key, key }
 }
+
+/**
+ * Fix-up 17 — what a renewal reminder asks, worded by how the contract renews
+ * (pure). Only an automatic renewal "auto-renews unless notice is served"; a
+ * contract that renews by agreement ends unless both agree, and the deadline
+ * is the last day to tell them; one that runs until ended, or doesn't renew,
+ * says so. `deadline` is the notice deadline when it is what made this due.
+ */
+export function renewalReminderAction(n: {
+  renewalType: string | null; expiry: string
+  deadline?: { date: string; days: number; period: string; confirmed: boolean } | null
+}): string {
+  const d = n.deadline
+  if (d && (n.renewalType === 'auto' || n.renewalType === 'manual')) {
+    if (n.renewalType === 'auto') {
+      const check = d.confirmed ? '' : ' Confirm this is the notice to stop renewal, not the notice to end early.'
+      return d.days < 0
+        ? `auto-renews: the ${d.period} notice deadline (${d.date}) has passed. Check whether it can still be stopped.${check}`
+        : `auto-renews unless ${d.period}' notice is served by ${d.date}.${check}`
+    }
+    const check = d.confirmed ? '' : ' Confirm this is the notice to renew, not the notice to end early.'
+    return d.days < 0
+      ? `renews only if both sides agree, and the ${d.period} notice deadline (${d.date}) has passed. Without an agreed renewal it ends on ${n.expiry}.${check}`
+      : `renews only if both sides agree: tell them by ${d.date} (${d.period}' notice) if you want to renew. Otherwise it ends on ${n.expiry}.${check}`
+  }
+  switch (n.renewalType) {
+    case 'auto': return `renews automatically on ${n.expiry} unless notice is served. Review renewal options now.`
+    case 'manual': return `ends on ${n.expiry} unless both sides agree to renew. Review renewal options now.`
+    case 'evergreen': return 'runs until either side ends it. Review whether to keep it.'
+    case 'none': return `ends on ${n.expiry} and does not renew. Review whether to replace it.`
+    default: return 'review renewal options now.'
+  }
+}
