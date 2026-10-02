@@ -98,6 +98,10 @@ describe('signature request tokens', () => {
   })
 
   it('the signing email\'s log line does not carry the link\'s token', async () => {
+    // Outside development the line is scrubbed. Pin the mode, since a dev .env
+    // (NODE_ENV=development) prints the link whole on purpose.
+    const mode = process.env.NODE_ENV
+    process.env.NODE_ENV = 'test'
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
     const fresh = await makeContract(org, owner, { title: 'Log probe', status: 'APPROVED' })
     const v = await prisma.contractVersion.create({ data: { contractId: fresh, versionNumber: 1, createdById: owner, plainText: 'x' } })
@@ -110,6 +114,7 @@ describe('signature request tokens', () => {
     const sent = res.json().signers[0].token as string
     const lines = info.mock.calls.map(c => String(c[0])).filter(l => l.startsWith('[signing]'))
     info.mockRestore()
+    process.env.NODE_ENV = mode
     expect(lines.some(l => l.includes('log-probe@example.com') && l.includes('/sign/[REDACTED]'))).toBe(true)
     expect(lines.join('\n')).not.toContain(sent)
   })

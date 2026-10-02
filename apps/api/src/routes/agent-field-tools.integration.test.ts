@@ -33,13 +33,16 @@ beforeAll(async () => {
     payload: { keyTerms: { paymentTermsDays: 30 }, fieldConfidence: { paymentTermsDays: { confidence: 0.8, quote: 'net thirty (30) days' } } },
   })
 
+  // The API calls itself at the base agent-threads.ts derives from the env (PORT or API_URL), so
+  // route that same base back into the app rather than assuming :3001.
+  const self = process.env.API_URL ?? `http://localhost:${process.env.PORT ?? 3001}`
   const realFetch = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input)
-    if (url.startsWith('http://localhost:3001/api/')) {
+    if (url.startsWith(`${self}/api/`)) {
       const res = await app.inject({
         method: (init?.method ?? 'GET') as 'POST',
-        url: url.slice('http://localhost:3001'.length),
+        url: url.slice(self.length),
         headers: init?.headers as Record<string, string>,
         payload: init?.body as string | undefined,
       })

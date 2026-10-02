@@ -126,10 +126,15 @@ describe('X44 — routes that need only a signed-in user', () => {
       expect((await get(url, auth(org, ['VIEWER'], viewer))).statusCode, url).toBe(200)
     }
     // The model list is guarded the same way; past the guard it asks the
-    // agents service, which the integration stack doesn't run.
+    // agents service. That may or may not be running where the suite runs, so
+    // it is stubbed down: getting a 502 back means the guard let the call through.
+    const realFetch = globalThis.fetch
+    const down = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) =>
+      String(input).endsWith('/agent/models') ? new Response('', { status: 503 }) : realFetch(input, init))
     expect((await get('/api/v1/agent/models', reader)).statusCode).toBe(403)
     expect((await get('/api/v1/agent/models', full)).statusCode).toBe(502)
     expect((await get('/api/v1/agent/models', auth(org, ['VIEWER'], viewer))).statusCode).toBe(502)
+    down.mockRestore()
 
     const internal = { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '', 'x-internal-service': 'agents', 'x-org-id': org }
     expect((await get('/api/v1/organization', internal)).statusCode).toBe(200)
