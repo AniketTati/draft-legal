@@ -22,6 +22,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { toast } from '@/components/common/Toaster'
+import { agoWords, fetchWorkingCopy, workingCopyKey } from '@/lib/working-copy'
 
 export interface StageView {
   contractId: string
@@ -75,6 +76,12 @@ export function StatusBanner({
   const { data: s, isError } = useQuery<StageView>({
     queryKey: approvalKeys.stage(contractId),
     queryFn: () => api.get(`/contracts/${contractId}/stage`).then(r => r.data),
+    staleTime: 10_000,
+  })
+  // docs/41 Part 16 — edits typed but not yet saved as a version.
+  const { data: draft } = useQuery({
+    queryKey: workingCopyKey(contractId),
+    queryFn: () => fetchWorkingCopy(contractId),
     staleTime: 10_000,
   })
 
@@ -163,6 +170,15 @@ export function StatusBanner({
         )}
         {s.signatures && s.stage === 'sign' && (
           <span className="text-[11.5px] text-ink-500 tabular-nums" data-testid="stage-signatures">Signatures {s.signatures.signed} of {s.signatures.total}</span>
+        )}
+        {draft && (
+          <span
+            className="inline-flex items-center rounded-full border border-attention-200 bg-attention-50 px-2 py-0.5 text-[11.5px] font-medium text-attention-700"
+            title={`Saved by ${draft.updatedBy.name ?? 'someone'} ${agoWords(draft.updatedAt)}. Not a version yet: open Edit to save them as one, or discard them.`}
+            data-testid="draft-changes-chip"
+          >
+            Unsaved draft changes
+          </span>
         )}
         {s.exceptions.open > 0 && (
           <span className="text-[11.5px] text-attention-700">{s.exceptions.open} exception{s.exceptions.open === 1 ? '' : 's'} to decide</span>

@@ -45,6 +45,8 @@ export function invalidateApproval(qc: QueryClient, contractId?: string | null, 
     qc.invalidateQueries({ queryKey: ['contract-timeline', contractId] })
     qc.invalidateQueries({ queryKey: ['contract-checks', contractId] })
     qc.invalidateQueries({ queryKey: ['contract-review', contractId] })
+    // docs/41 Part 16 — submitting saves draft changes as a version first.
+    qc.invalidateQueries({ queryKey: ['working-copy', contractId] })
   }
 }
 

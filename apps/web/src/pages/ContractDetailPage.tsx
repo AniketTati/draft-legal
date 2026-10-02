@@ -64,12 +64,11 @@ import { CompareMode } from '@/components/contracts/CompareMode'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { CreateAmendmentDialog } from '@/components/contracts/CreateAmendmentDialog'
-import { CollabStatusBadge } from '@/components/contracts/CollabStatusBadge'
 import { SignatureStatusRailSection } from '@/components/contracts/SignatureStatusRailSection'
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
-import { useCanRequest } from '@/lib/permissions'
+import { useCanRequest, usePermission } from '@/lib/permissions'
 import { FieldsPanel, type ContractField } from '@/components/contracts/FieldsPanel'
 import { revealInCanvas, pdfSearchPattern, viewOf } from '@/components/contracts/SourceHighlight'
 import { SelectionMenu, PdfSelectionMenu, type TextSelection } from '@/components/contracts/SelectionMenu'
@@ -90,7 +89,10 @@ import {
 import { currentVersionOf } from '@/lib/current-version'
 import { analysisLine } from '@/lib/analysis-state'
 import { familyLine } from '@/lib/family-banner'
-import { approvalKeys, invalidateApproval } from '@/lib/approval-keys'
+import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { useWorkingCopy } from '@/hooks/useWorkingCopy'
+import { type SaveVersionBody, type SaveVersionResult } from '@/lib/working-copy'
+import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -561,7 +563,11 @@ export function ContractDetailPage() {
   // X75, Y3 — each action is offered only to a user who may make the request
   // it sends, by the permission the server's route for it needs: a viewer was
   // let into Edit mode, and every save failed (403) behind "Save failed".
-  const mayEdit = useCanRequest('POST /contracts/:id/html-version')
+  // docs/41 Part 16 — typing saves to the draft changes, so that is the request edit mode needs.
+  const mayEdit = useCanRequest('PUT /contracts/:id/working-copy')
+  // Save as version's "Send to counterparty" by link or email, and its "Reset approvals".
+  const canShare = useCanRequest('POST /contracts/:id/share')
+  const canResetApprovals = usePermission('configure', 'workflow')
   const canChangeStatus = useCanRequest('PATCH /contracts/:id')
   const canEditFields = useCanRequest('PUT /contracts/:id/fields/:key')
   // docs/39 C3 — add a field from a highlight, or suggest one to whoever can.
@@ -718,24 +724,11 @@ export function ContractDetailPage() {
   // (the defined-terms glossary, P6.3 BubbleAiPopover) re-render
   // when the editor remounts on Edit-mode toggle.
   const [canvasEditor, setCanvasEditor] = useState<import('@tiptap/react').Editor | null>(null)
-  const dirtyHtmlRef = useRef<string | null>(null)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle')
-
-  const saveHtmlVersion = useMutation({
-    mutationFn: ({ html, note }: { html: string; note?: string }) =>
-      api.post(`/contracts/${id}/html-version`, {
-        htmlContent: html,
-        changeNote: note ?? 'Edited in-place',
-      }).then(r => r.data),
-    onMutate: () => setSaveState('saving'),
-    onSuccess: () => {
-      setSaveState('saved')
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contract-versions', id] })
-    },
-    onError: (err) => {
-      setSaveState('error')
+  // docs/41 Part 16 (C1) — typing autosaves to the draft changes (the
+  // working copy), not to a version: a version is made only with a note
+  // (Save as version), on submit or send, or after a long pause (the server's).
+  const draft = useWorkingCopy(id, {
+    onSaveError: (err) => {
       // BB4 — someone took a Google Docs copy while this was open for editing.
       const data = (err as { response?: { data?: { code?: string; detail?: string } } })?.response?.data
       if (data?.code === 'EDITING_IN_GOOGLE_DOCS') {
@@ -744,62 +737,164 @@ export function ContractDetailPage() {
       }
     },
   })
+  const saveState = draft.saveState
+  const [saveVersionOpen, setSaveVersionOpen] = useState(false)
+  const [savingVersion, setSavingVersion] = useState(false)
+  const [saveVersionError, setSaveVersionError] = useState<string | null>(null)
+  // Leaving the editor with draft changes: where to go once the person chooses.
+  const [leaving, setLeaving] = useState<null | { then: () => void }>(null)
+  const [leaveBusy, setLeaveBusy] = useState<LeaveChoice | null>(null)
+  const afterSaveVersion = useRef<(() => void) | null>(null)
 
-  const flushPendingSave = () => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    const html = dirtyHtmlRef.current
-    if (html != null) {
-      dirtyHtmlRef.current = null
-      saveHtmlVersion.mutate({ html })
+  /**
+   * docs/39 H2 — what a command just changed in the document (a variable
+   * changed everywhere it appears), or typing before the server changes the
+   * draft itself, becomes a version now with its own note. Through the
+   * draft changes, like every other version made in the editor.
+   */
+  const saveDocumentNow = async (note?: string): Promise<boolean> => {
+    if (!await draft.flush()) throw new Error('Your latest changes could not be saved.')
+    if (!draft.hasDraft()) return false
+    try {
+      await draft.saveVersion({ note: note ?? 'Draft changes saved before a change to the draft' })
+      return true
+    } catch (err) {
+      if ((err as { response?: { data?: { code?: string } } })?.response?.data?.code === 'NO_WORKING_COPY') return false
+      throw err
     }
   }
 
-  /**
-   * docs/39 H2 — save what a command just changed in the document now, with
-   * its own note (a variable changed everywhere it appears), not five
-   * seconds on as "Edited in-place". Kept for the next save if it fails.
-   */
-  const saveDocumentNow = async (note?: string): Promise<boolean> => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    const html = dirtyHtmlRef.current
-    if (html == null) return false
-    dirtyHtmlRef.current = null
+  const saveAsVersion = async (body: SaveVersionBody) => {
+    if (!id) return
+    setSavingVersion(true)
+    setSaveVersionError(null)
     try {
-      await saveHtmlVersion.mutateAsync({ html, note })
-      return true
+      const r = await draft.saveVersion(body)
+      setSaveVersionOpen(false)
+      invalidateApproval(qc, id)
+      toast.success(r.created ? `Saved as v${r.version.versionNumber}` : 'No changes to save', { description: body.note })
+      if (r.send) await followUpSend(id, r)
+      const then = afterSaveVersion.current
+      afterSaveVersion.current = null
+      then?.()
     } catch (err) {
-      dirtyHtmlRef.current ??= html
-      throw err
+      setSaveVersionError(serverMessage(err, (err as Error).message || 'Not saved. Try again.'))
+    } finally {
+      setSavingVersion(false)
+    }
+  }
+
+  /** After Save as version sent it: the download, link or email the person asked for. */
+  const followUpSend = async (contractId: string, r: SaveVersionResult) => {
+    const send = r.send!
+    if (!send.ok) {
+      toast.error(`Saved as v${r.version.versionNumber}, but not sent`, { description: send.detail ?? 'Try sending it again.', durationMs: 9000 })
+      return
+    }
+    if (send.method === 'word') {
+      setRedlineNotice(await downloadForCounterparty(contractId))
+    } else if (send.method === 'pdf') {
+      try {
+        const { url } = (await api.get(`/contracts/${contractId}/download`, { params: { versionId: r.version.id } })).data as { url: string }
+        window.open(url, '_blank', 'noopener')
+      } catch (err) {
+        toast.error('The PDF could not be downloaded', { description: serverMessage(err, 'Try Download from the menu.') })
+      }
+    } else if (send.method === 'email') {
+      toast.success(send.emailDelivered === false ? 'Link made, but the email was not sent' : `Emailed to ${send.emailedTo ?? 'the counterparty'}`, {
+        description: send.emailDelivered === false ? `Email isn't set up. Copy the link and send it yourself: ${send.portalUrl ?? ''}` : undefined, durationMs: 9000,
+      })
+    } else if (send.portalUrl) {
+      await navigator.clipboard?.writeText(send.portalUrl).catch(() => {})
+      toast.success('Share link copied', { description: send.portalUrl, durationMs: 9000 })
+    }
+  }
+
+  /** Done, Esc or a link while editing: ask first when there are draft changes. */
+  const leaveEdit = (then: () => void = () => {}) => {
+    if (!draft.hasDraft()) { setIsEditing(false); then(); return }
+    setLeaving({ then })
+  }
+  const chooseLeave = async (choice: LeaveChoice) => {
+    const then = leaving?.then ?? (() => {})
+    if (choice === 'save') {
+      setLeaving(null)
+      afterSaveVersion.current = () => { setIsEditing(false); then() }
+      setSaveVersionOpen(true)
+      return
+    }
+    setLeaveBusy(choice)
+    try {
+      if (choice === 'keep') await draft.flush()
+      else {
+        await draft.discard()
+        qc.invalidateQueries({ queryKey: ['contract', id] })
+      }
+      setLeaving(null)
+      setIsEditing(false)
+      track('edit_exited', { leave: choice })
+      then()
+    } catch (err) {
+      toast.error(choice === 'discard' ? 'Not discarded' : 'Not saved', { description: serverMessage(err, 'Try again.') })
+    } finally {
+      setLeaveBusy(null)
     }
   }
   // docs/39 H2 — a variable clicked in the document, for the Variables panel to show.
   const [focusVariable, setFocusVariable] = useState<string | null>(null)
 
-  const enterEdit = () => {
+  // The draft changes the editor opens on, when there are any (else the version).
+  const [draftHtml, setDraftHtml] = useState<string | null>(null)
+  const enterEdit = async () => {
     if (!canEdit) return   // the button, ⌘E and a clause's "Edit manually"
     // Edit requires Styled view (can't edit a PDF).
     if (docView !== 'styled') setDocView('styled')
+    let html: string | null = null
+    try {
+      const copy = await draft.load(contract?.currentVersionId ?? null)
+      html = copy?.html ?? null
+      if (copy?.stale) {
+        toast.info('These draft changes were started on an older version', {
+          description: `They were made on v${copy.baseVersionNumber ?? '?'}; a newer version was saved since. Check them before saving them as a version.`, durationMs: 9000,
+        })
+      }
+    } catch { /* opens on the version; the next save says what's wrong */ }
+    setDraftHtml(html)
     setIsEditing(true)
-    track('edit_entered', { from: docView })
+    track('edit_entered', { from: docView, draft: !!html })
   }
-  const exitEdit = () => {
-    flushPendingSave()
-    setIsEditing(false)
-    track('edit_exited', {})
-  }
+  const exitEdit = () => leaveEdit()
+
+  // A link clicked, or the tab closed, with draft changes not yet a version.
+  useEffect(() => {
+    if (!isEditing) return
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !draft.hasDraft()) return
+      const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!a || a.target === '_blank' || a.hasAttribute('download') || a.origin !== window.location.origin) return
+      const to = a.pathname + a.search + a.hash
+      if (to === window.location.pathname + window.location.search + window.location.hash) return
+      e.preventDefault()
+      e.stopPropagation()
+      leaveEdit(() => navigate(to))
+    }
+    const onUnload = (e: BeforeUnloadEvent) => {
+      if (!draft.hasPendingTyping()) return
+      void draft.flush()
+      e.preventDefault()
+    }
+    document.addEventListener('click', onClick, true)
+    window.addEventListener('beforeunload', onUnload)
+    return () => { document.removeEventListener('click', onClick, true); window.removeEventListener('beforeunload', onUnload) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing])
 
   // Esc exits edit mode. Cmd+S forces a flush.
   useEffect(() => {
     if (!isEditing) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); exitEdit() }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); flushPendingSave() }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void draft.flush() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1697,16 +1792,22 @@ export function ContractDetailPage() {
                 >
                   <RefreshCw className="size-4" />
                 </Button>
-                <span className={cn(
-                  'text-dense text-ink-400 min-w-[4rem] text-center',
-                  saveState === 'error' && 'text-risk-700',
-                )}>
-                  {saveState === 'saving' ? 'Saving…'
-                    : saveState === 'saved' ? 'Saved ✓'
-                    : saveState === 'dirty' ? 'Unsaved'
-                    : saveState === 'error' ? 'Save failed'
-                    : ''}
+                <span
+                  className={cn('text-dense text-ink-400 min-w-[4rem] text-center', saveState === 'error' && 'text-risk-700')}
+                  data-testid="draft-save-state"
+                >
+                  {draftStatusText(saveState)}
                 </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setSaveVersionError(null); setSaveVersionOpen(true) }}
+                  disabled={!draft.hasDraft()}
+                  title={draft.hasDraft() ? 'Make a version of your draft changes, with a note' : 'Nothing changed since the last version'}
+                  data-testid="save-as-version"
+                >
+                  Save as version
+                </Button>
                 {/* Outlined: the ink fill in this header belongs to the one
                     workflow CTA, and leaving edit mode is chrome. */}
                 <Button variant="outline" size="sm" onClick={exitEdit} className="gap-1.5">
@@ -2157,7 +2258,6 @@ export function ContractDetailPage() {
               {unclearPages.length > 0 && <span className="text-attention-700" data-testid="contract-ocr-unclear">· {unclearPages.length} page{unclearPages.length === 1 ? '' : 's'} unclear</span>}
             </span>
           )}
-          {id && <CollabStatusBadge contractId={id} />}
         </div>
       </div>
 
@@ -3139,9 +3239,12 @@ export function ContractDetailPage() {
           // B.5.1 — Styled branch. TipTap + contract-paper CSS. Default.
           // DD4 — the version the contract stands on (an undo moves it back), not the newest.
           const latest = currentVersionOf(contract.versions as any[], contract.currentVersionId)
-          const rawHtml = latest?.htmlContent?.trim()
-            ? latest.htmlContent
-            : latest?.plainText?.trim() || ''
+          // docs/41 Part 16 — while editing, the draft changes when there are any.
+          const rawHtml = isEditing && draftHtml
+            ? draftHtml
+            : latest?.htmlContent?.trim()
+              ? latest.htmlContent
+              : latest?.plainText?.trim() || ''
           // A freshly-seeded amendment/draft carries markup-only content like
           // '<p></p>' — truthy, but with no real text. Strip tags before deciding
           // emptiness; otherwise the Styled view mounts a blank editor and paints
@@ -3181,10 +3284,7 @@ export function ContractDetailPage() {
                 // X75 review — nothing a viewer changes is saved (the server
                 // refuses it): a view-mode command still changes the canvas.
                 if (canvasState.kind !== 'ready' || !canEdit) return
-                setSaveState('dirty')
-                dirtyHtmlRef.current = html
-                if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-                saveTimerRef.current = setTimeout(flushPendingSave, 5000)
+                draft.change(html)
               }}
               // B.5.5 — feed extracted clauses into the decoration layer
               riskClauses={(clausesData?.data ?? []).map((c: any) => ({
@@ -4394,6 +4494,31 @@ export function ContractDetailPage() {
           onSaved={() => showInDocument(fieldPick.text, fieldPick.occurrence)}
         />
       )}
+
+      {/* docs/41 Part 16 — the editor's draft changes: save as a version, leave, or a save that met someone else's. */}
+      <SaveVersionDialog
+        key={saveVersionOpen ? 'open' : 'closed'}
+        open={saveVersionOpen}
+        onClose={() => { setSaveVersionOpen(false); afterSaveVersion.current = null }}
+        onSave={saveAsVersion}
+        saving={savingVersion}
+        error={saveVersionError}
+        canResetApprovals={canResetApprovals}
+        canShare={canShare}
+      />
+      <LeaveDraftPrompt open={!!leaving} busy={leaveBusy} onChoose={chooseLeave} onClose={() => setLeaving(null)} />
+      <WorkingCopyConflictDialog
+        conflict={draft.conflict}
+        onClose={draft.dismissConflict}
+        onReload={async () => {
+          const html = await draft.reloadTheirs()
+          if (html != null) {
+            setDraftHtml(html)
+            canvasEditorRef.current?.commands.setContent(html, { emitUpdate: false })
+          }
+        }}
+        onOverwrite={() => { void draft.overwrite() }}
+      />
 
       {/* U.6.1 — Send-for-Review dialog. Picks workflow + adds optional
           message. Replaces the silent state flip the toolbar button did. */}
