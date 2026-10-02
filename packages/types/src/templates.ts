@@ -115,6 +115,8 @@ export interface PlaybookPosition {
   positionType: PositionType
   content: string
   notes: string | null
+  /** docs/41 Part 16 — offered as an external comment when a contract misses this position. */
+  counterpartyNote?: string | null
   riskThreshold: number
   contractTypes: string[]
   sortOrder: number

@@ -25,6 +25,8 @@ const CreatePositionSchema = z.object({
   positionType: z.enum(POSITION_TYPES),
   content: z.string().default(''),
   notes: z.string().max(2048).optional(),
+  // docs/41 Part 16 — the suggested note to the counterparty (external comment).
+  counterpartyNote: z.string().max(2000).nullable().optional(),
   riskThreshold: z.number().min(0).max(1).default(0.5),
   contractTypes: z.array(z.string()).default([]),
   sortOrder: z.number().int().default(0),
@@ -178,7 +180,9 @@ export async function playbookRoutes(app: FastifyInstance) {
       data: body,
       include: { clauseCategory: { select: { id: true, name: true } } },
     })
-    await bumpPlaybookVersion(existing.playbookId)
+    // The note to the counterparty changes no review: only other edits re-judge contracts.
+    const judged = Object.keys(body).some(k => k !== 'counterpartyNote')
+    if (judged) await bumpPlaybookVersion(existing.playbookId)
     if (body.playbookId && body.playbookId !== existing.playbookId) await bumpPlaybookVersion(body.playbookId)
 
     return reply.send(updated)

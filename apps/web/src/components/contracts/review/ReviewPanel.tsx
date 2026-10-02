@@ -20,7 +20,7 @@
  *     then says who it is waiting for, and later what they decided.
  * Every status label explains itself on hover.
  */
-import { useState, type ReactNode } from 'react'
+import { createContext, useContext, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { approvalKeys, serverMessage } from '@/lib/approval-keys'
@@ -97,6 +97,9 @@ function StatusChip({ reviewStatus, label, definition }: { reviewStatus: string;
   )
 }
 
+/** docs/41 Part 16 — what a finding's "Suggested note to counterparty" does (absent: not offered). */
+const SuggestedNote = createContext<((f: ReviewFindingView) => void) | null>(null)
+
 export function ReviewPanel({
   contractId,
   contractMetadata,
@@ -106,6 +109,7 @@ export function ReviewPanel({
   analysing,
   onShowText,
   definedTerms,
+  onSuggestedNote,
 }: {
   contractId: string
   contractMetadata: Record<string, unknown> | null | undefined
@@ -117,6 +121,8 @@ export function ReviewPanel({
   onShowText?: (text: string) => void
   /** The defined-terms glossary, shown under Drafting. */
   definedTerms?: ReactNode
+  /** docs/41 Part 16 — "Suggested note to counterparty": start an external comment with the position's note. */
+  onSuggestedNote?: (f: ReviewFindingView) => void
 }) {
   const qc = useQueryClient()
   const q = useQuery({
@@ -161,6 +167,7 @@ export function ReviewPanel({
   const exceptions = useExceptionLines(contractId, r ? [...needs, ...missing, ...compliance, ...r.groups.accepted] : [])
 
   return (
+    <SuggestedNote.Provider value={canEdit ? onSuggestedNote ?? null : null}>
     <RailSection title="Review" defaultOpen count={open || null}>
       {q.isLoading && <p className="text-[11px] text-muted-foreground">Loading…</p>}
       {q.isError && <p className="text-[11px] text-risk-700">The review could not be loaded: {serverMessage(q.error)}</p>}
@@ -272,6 +279,7 @@ export function ReviewPanel({
         </div>
       )}
     </RailSection>
+    </SuggestedNote.Provider>
   )
 }
 
@@ -314,6 +322,7 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, ex
   exception?: { line: string; reason: string | null } | null
 }) {
   const qc = useQueryClient()
+  const suggestNote = useContext(SuggestedNote)
   const [mode, setMode] = useState<null | 'accept' | 'tag' | 'exception'>(null)
   const [text, setText] = useState('')
   const [proposal, setProposal] = useState<{ originalText: string; proposedText: string; rationale: string } | null>(null)
@@ -441,6 +450,9 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, ex
             <button type="button" className="underline text-ink-700" disabled={busy} onClick={() => { askException.reset(); setMode('exception') }} data-testid={`finding-request-exception-${f.id}`}>
               {f.status === 'exception_declined' ? 'Request exception again' : 'Request exception'}
             </button>
+          )}
+          {suggestNote && f.counterpartyNote && (
+            <button type="button" className="underline text-ink-700" onClick={() => suggestNote(f)} title={f.counterpartyNote} data-testid={`finding-suggested-note-${f.id}`}>Suggested note to counterparty</button>
           )}
           {has('resolve') && <button type="button" className="underline text-ink-700" disabled={busy} onClick={() => act.mutate('resolve')}>Mark resolved</button>}
           {busy && <Loader2 className="size-3 animate-spin text-ink-500" />}

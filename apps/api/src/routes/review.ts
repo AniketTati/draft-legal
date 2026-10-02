@@ -135,9 +135,14 @@ export async function reviewRoutes(app: FastifyInstance) {
     // Which categories the playbook has positions for: a clause outside them is "not covered".
     const [categories, positions] = await Promise.all([
       prisma.clauseCategory.findMany({ where: { orgId }, select: { id: true, name: true } }),
-      playbook.where ? prisma.playbookPosition.findMany({ where: playbook.where, select: { id: true, clauseCategoryId: true, positionType: true } }) : Promise.resolve([]),
+      playbook.where ? prisma.playbookPosition.findMany({ where: playbook.where, select: { id: true, clauseCategoryId: true, positionType: true, counterpartyNote: true } }) : Promise.resolve([]),
     ])
     const covered = new Set(positions.map(p => p.clauseCategoryId))
+    // docs/41 Part 16 — the note to the counterparty: the finding's own
+    // position's, else the preferred position's of its clause type.
+    const noteById = new Map(positions.filter(p => p.counterpartyNote?.trim()).map(p => [p.id, p.counterpartyNote!.trim()]))
+    const noteByCategory = new Map(positions.filter(p => p.positionType === 'preferred' && p.counterpartyNote?.trim()).map(p => [p.clauseCategoryId, p.counterpartyNote!.trim()]))
+    const counterpartyNoteOf = (f: ReviewFinding) => (f.positionId && noteById.get(f.positionId)) || (f.categoryId && noteByCategory.get(f.categoryId)) || null
     const canInsert = new Set(positions.filter(p => p.positionType === 'preferred' || p.positionType === 'acceptable').map(p => p.clauseCategoryId))
 
     const statusText = (s: ReviewStatus, source?: string | null) => ({
@@ -168,6 +173,7 @@ export async function reviewRoutes(app: FastifyInstance) {
       resolvedById: f.resolvedById, resolvedAt: f.resolvedAt, resolutionNote: f.resolutionNote,
       // docs/41 Part 15 — the model's advice on a counterparty's change (lib/change-advice.ts).
       advice: f.advice ?? null,
+      counterpartyNote: counterpartyNoteOf(f),
       actions: actionsOf(f),
     })
 

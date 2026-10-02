@@ -998,6 +998,9 @@ model PlaybookPosition {
   positionType     String // preferred | acceptable | fallback | walkaway
   content          String   @default("") // HTML — what we want to see in this position
   notes            String? // Legal team guidance notes
+  // docs/41 Part 16 — what we tell the counterparty when their words miss
+  // this position: offered as an external comment on the finding.
+  counterpartyNote String?
   riskThreshold    Float    @default(0.5) // 0-1, score below which we escalate
   contractTypes    String[] @default([]) // [] = applies to all; otherwise filter by type
   sortOrder        Int      @default(0)

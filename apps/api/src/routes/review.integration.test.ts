@@ -94,7 +94,7 @@ beforeAll(async () => {
   playbookId = (await prisma.playbook.create({ data: { orgId: org, name: 'Default playbook', isDefaultForType: true } })).id
   await prisma.playbookPosition.createMany({
     data: [
-      { orgId: org, playbookId, clauseCategoryId: `${org}-gov`, positionType: 'preferred', content: '<p>This Agreement is governed by the laws of the State of New York.</p>', createdById: owner },
+      { orgId: org, playbookId, clauseCategoryId: `${org}-gov`, positionType: 'preferred', content: '<p>This Agreement is governed by the laws of the State of New York.</p>', counterpartyNote: 'We need New York law, as in our master agreement.', createdById: owner },
       { orgId: org, playbookId, clauseCategoryId: `${org}-conf`, positionType: 'preferred', content: '<p>The obligations of confidentiality last five years.</p>', createdById: owner },
     ],
   })
@@ -153,6 +153,8 @@ describe('golden: Governing Law deleted, and the fixes', () => {
     expect(f).toMatchObject({ kind: 'deleted', title: 'Governing Law — deleted since v1 (required)', label: 'Deleted since v1', reviewStatus: 'deleted' })
     expect(f.evidence.baselineQuote).toBe(GOV)
     expect(f.actions).toEqual(['insert_standard', 'accept', 'request_exception', 'resolve'])
+    // docs/41 Part 16 — the position's note to the counterparty rides on the finding.
+    expect(f.counterpartyNote).toBe('We need New York law, as in our master agreement.')
     expect(r.recommendation.reasons[0].findingIds).toEqual([f.id])
     findingId = f.id
   })
@@ -348,5 +350,21 @@ describe('drafting and compliance findings (docs/41 Parts 9, 10)', () => {
     await afterAnalysis(id, v1.id)
     expect(await prisma.reviewFinding.groupBy({ by: ['kind'], where: { contractId: id }, _count: true, orderBy: { kind: 'asc' } }))
       .toEqual([{ kind: 'compliance', _count: 2 }, { kind: 'drafting', _count: nDrafting }])
+  })
+})
+
+describe('the suggested note to the counterparty (docs/41 Part 16)', () => {
+  it('is edited on the position without re-judging contracts; other edits still do', async () => {
+    const pos = await prisma.playbookPosition.findFirstOrThrow({ where: { orgId: org, clauseCategoryId: `${org}-conf` } })
+    const before = (await prisma.playbook.findUniqueOrThrow({ where: { id: playbookId } })).version
+    const patch = (payload: object, o = org) => app.inject({ method: 'PATCH', url: `/api/v1/playbook/positions/${pos.id}`, headers: as(o), payload })
+    const r = await patch({ counterpartyNote: 'Five years is our standard.' })
+    expect(r.statusCode, r.body).toBe(200)
+    expect(r.json().counterpartyNote).toBe('Five years is our standard.')
+    expect((await prisma.playbook.findUniqueOrThrow({ where: { id: playbookId } })).version).toBe(before)
+    await patch({ notes: 'Keep at five.' })
+    expect((await prisma.playbook.findUniqueOrThrow({ where: { id: playbookId } })).version).toBe(before + 1)
+    expect((await patch({ counterpartyNote: 'x'.repeat(2001) })).statusCode).toBe(422)
+    expect((await patch({ counterpartyNote: 'theirs' }, other)).statusCode).toBe(404)
   })
 })

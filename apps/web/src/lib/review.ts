@@ -26,6 +26,8 @@ export interface ReviewFindingView {
   resolutionNote: string | null
   actions: FindingAction[]
   /** docs/41 Part 15 — the model's advice on a counterparty's change (lib/change-advice.ts in the API). */
+  /** docs/41 Part 16 — the playbook position's suggested note to the counterparty. */
+  counterpartyNote?: string | null
   advice?: { recommendation: 'accept' | 'counter' | 'reject'; reasoning: string; counterText?: string | null; counterNote?: string | null } | null
 }
 

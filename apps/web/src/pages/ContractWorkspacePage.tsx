@@ -297,6 +297,12 @@ export function ContractWorkspacePage() {
                 canEdit={canEdit}
                 onJumpToClause={clauseId => showInDocument({ clauseId })}
                 onShowText={quote => showInDocument({ quote })}
+                // The position's note, as a comment the counterparty will see, on the finding's words.
+                onSuggestedNote={f => startComment({
+                  body: f.counterpartyNote ?? '',
+                  visibility: 'external',
+                  anchor: f.evidence.quote ? { quote: f.evidence.quote, start: 0, end: f.evidence.quote.length, versionId: contract.currentVersionId } : null,
+                })}
               />
             )}
             {panel === 'details' && (

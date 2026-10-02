@@ -79,6 +79,9 @@ function PositionCard({
       {position.notes && (
         <p className="text-[11.5px] text-ink-500 mt-2 italic">{position.notes}</p>
       )}
+      {position.counterpartyNote && (
+        <p className="text-[11.5px] text-ink-700 mt-1"><span className="text-ink-500">To the counterparty:</span> {position.counterpartyNote}</p>
+      )}
       {/*
         The bar used to set `background: currentColor` inline on top of a wash
         class and a brightness filter, so it painted in whatever the inherited
@@ -183,13 +186,14 @@ function PositionEditor({
   )
   const [content, setContent] = useState(position?.content ?? '')
   const [notes, setNotes] = useState(position?.notes ?? '')
+  const [counterpartyNote, setCounterpartyNote] = useState(position?.counterpartyNote ?? '')
   const [riskThreshold, setRiskThreshold] = useState(position?.riskThreshold ?? 0.5)
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave({ clauseCategoryId: categoryId, positionType, content, notes, riskThreshold })
+      await onSave({ clauseCategoryId: categoryId, positionType, content, notes, counterpartyNote: counterpartyNote.trim() || null, riskThreshold })
     } finally {
       setSaving(false)
     }
@@ -239,6 +243,20 @@ function PositionEditor({
               onChange={e => setNotes(e.target.value)}
               placeholder="Guidance for the legal team..."
             />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-ink-700 mb-1 block" htmlFor="counterparty-note">Suggested note to counterparty</label>
+            <textarea
+              id="counterparty-note"
+              value={counterpartyNote}
+              onChange={e => setCounterpartyNote(e.target.value)}
+              rows={3}
+              maxLength={2000}
+              placeholder="What we tell the other side when their wording misses this position, e.g. “We need the cap to cover fees paid in the prior 12 months.”"
+              className="w-full text-[13px] bg-card border border-input rounded-md px-[11px] py-2 resize-none focus-visible:outline-none focus-visible:border-brand-700"
+              data-testid="position-counterparty-note"
+            />
+            <p className="text-[11px] text-ink-500 mt-1">Offered as a comment the counterparty can see, on a finding against this position.</p>
           </div>
           <div>
             <label className="text-[11px] font-medium text-ink-700 mb-1 block">
