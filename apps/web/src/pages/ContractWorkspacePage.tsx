@@ -33,6 +33,7 @@ import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureD
 import { revealInCanvas } from '@/components/contracts/SourceHighlight'
 import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 import { WorkspaceDetails } from '@/components/contracts/workspace/WorkspaceDetails'
+import { ChangesView } from '@/components/contracts/workspace/ChangesView'
 import { WORKSPACE_PANELS, jumpTo, type WorkspacePanel } from '@/lib/workspace'
 
 interface ContractLite {
@@ -60,7 +61,7 @@ export function ContractWorkspacePage() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [submitOpen, setSubmitOpen] = useState(false)
   const [signatureOpen, setSignatureOpen] = useState(false)
-  const [commentQuote] = useState<string | null>(null)
+  const [commentQuote, setCommentQuote] = useState<string | null>(null)
 
   const mayEdit = useCanRequest('PUT /contracts/:id/working-copy')
   const canEditFields = useCanRequest('PUT /contracts/:id/fields/:key')
@@ -106,6 +107,14 @@ export function ContractWorkspacePage() {
     return () => { gone = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contract?.id])
+
+  /** Put new text in the editor and the draft changes (a decision in Changes mode). */
+  const replaceDocument = async (next: string) => {
+    setDraftHtml(next)
+    editorRef.current?.commands.setContent(next, { emitUpdate: false })
+    draft.change(next)
+    return draft.flush()
+  }
 
   // Typing not yet saved when the tab closes; ⌘S saves now.
   useEffect(() => {
@@ -201,7 +210,14 @@ export function ContractWorkspacePage() {
       <div className="flex-1 min-h-0 flex">
         <main className="flex-1 min-w-0 overflow-y-auto" data-testid="workspace-document">
           <div className="max-w-[860px] mx-auto py-6 px-4">
-            {changesMode ? null : (
+            {changesMode ? (
+              <ChangesView
+                contractId={id}
+                canEdit={canEdit}
+                onApply={replaceDocument}
+                onComment={quote => { setCommentQuote(`“${quote.slice(0, 400)}” `); setPanel('comments') }}
+              />
+            ) : (
               <DocumentCanvas
                 state={canvasState}
                 editable={canEdit && loaded}

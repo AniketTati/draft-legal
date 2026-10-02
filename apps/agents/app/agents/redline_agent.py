@@ -507,3 +507,33 @@ async def run_redline(
         "confidence":        result["confidence"],
         "error":             result.get("error"),
     }
+
+
+async def counter_change(
+    our_text: str,
+    their_text: str,
+    contract_type: str = "general commercial",
+    playbook_positions: list[dict] | None = None,
+    clause_type: str | None = None,
+    org_id: str | None = None,
+) -> dict:
+    """docs/41 Part 15 — Counter… on one change in the workspace: step 3 alone.
+
+    Returns {"counterText", "counterNote"}; empty strings when the model gave
+    none (the caller says so rather than inserting nothing)."""
+    change = {
+        "changeId": "change_001",
+        "clauseType": clause_type or "other",
+        "ourText": our_text,
+        "theirText": their_text,
+        "recommendation": "counter",
+    }
+    state: RedlineState = {
+        "org_id": org_id, "diff_html": "", "contract_type": contract_type,
+        "playbook_positions": playbook_positions or [], "changes": [change],
+        "scored_changes": [change], "final_changes": [], "summary": "",
+        "recommended_action": "counter", "requires_human_gate": False, "confidence": 0.5, "error": None,
+    }
+    out = await step_generate_counters(state)
+    first = (out.get("final_changes") or [{}])[0]
+    return {"counterText": str(first.get("counterText") or ""), "counterNote": str(first.get("counterNote") or "")}
