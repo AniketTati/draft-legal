@@ -599,7 +599,8 @@ Rules:
 - "quote" must be copied character for character from the request.
 - For a country, use its ISO 3166 two-letter code as the value (quote the words that name it).
 - Leave out anything the request does not say.
-- A mention that says there is no value or that it is undecided ("no law", "law not specified", "TBD") is not a value: leave the variable out."""
+- A mention that says there is no value or that it is undecided ("no law", "law not specified", "TBD") is not a value: leave the variable out.
+- Each value is put into a sentence of the contract, so give it in the form the sentence needs. A purpose is a noun phrase that follows "in connection with": "evaluating a data-sharing pilot", never a bare verb ("evaluate a data-sharing pilot")."""
 
 
 def _norm_text(s: str) -> str:

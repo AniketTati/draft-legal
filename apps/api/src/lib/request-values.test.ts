@@ -3,7 +3,7 @@
  * name one: "QA NDA no law" was read as asking for the governing law "no law".
  */
 import { describe, it, expect } from 'vitest'
-import { isAbsentValue, namesAValue } from './request-values.js'
+import { isAbsentValue, namesAValue, fitToSentence, gerund } from './request-values.js'
 
 describe('a value that says there is none', () => {
   it('is no value', () => {
@@ -34,5 +34,27 @@ describe('a legal choice read from a request', () => {
   it('other values are only dropped when they say there is none', () => {
     expect(namesAValue('purpose', 'a partnership with no exclusivity', 'for a partnership with no exclusivity')).toBe(true)
     expect(namesAValue('purpose', 'TBD', 'purpose TBD')).toBe(false)
+  })
+})
+
+describe('a purpose fits "in connection with {{purpose}}"', () => {
+  it('a bare verb becomes its -ing form', () => {
+    expect(fitToSentence('purpose', 'evaluate a 12-month data-sharing pilot')).toBe('evaluating a 12-month data-sharing pilot')
+    expect(fitToSentence('purpose', 'to explore a reseller partnership')).toBe('exploring a reseller partnership')
+    expect(fitToSentence('purpose', 'Discuss a merger')).toBe('discussing a merger')
+    expect(fitToSentence('purposeOfDisclosure', 'run a pilot')).toBe('running a pilot')
+    expect(fitToSentence('purpose', 'pilot the new API')).toBe('piloting the new API')
+  })
+
+  it('a noun phrase, a noun that is also a verb, and other keys stay as read', () => {
+    expect(fitToSentence('purpose', 'evaluating a pilot')).toBe('evaluating a pilot')
+    expect(fitToSentence('purpose', 'a potential partnership')).toBe('a potential partnership')
+    expect(fitToSentence('purpose', 'pilot program for logistics')).toBe('pilot program for logistics')
+    expect(fitToSentence('purpose', 'review of the vendor')).toBe('review of the vendor')
+    expect(fitToSentence('scope', 'evaluate a pilot')).toBe('evaluate a pilot')
+  })
+
+  it('makes the -ing form', () => {
+    expect(['evaluate', 'see', 'tie', 'plan', 'share', 'test'].map(gerund)).toEqual(['evaluating', 'seeing', 'tying', 'planning', 'sharing', 'testing'])
   })
 })

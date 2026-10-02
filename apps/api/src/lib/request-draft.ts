@@ -22,7 +22,7 @@ import { chooseTemplate, planDraft, type DraftPlan, type TemplateChoice } from '
 import { draftSource } from './template-snapshot.js'
 import { quoteIn, sentenceNaming } from './clause-resolution.js'
 import { requestTerms, type DraftAgentResult } from './draft-save.js'
-import { namesAValue } from './request-values.js'
+import { namesAValue, fitToSentence } from './request-values.js'
 
 export interface RequestDraftContext {
   requestTitle: string
@@ -87,8 +87,9 @@ async function plan(input: {
   const { ctx } = input
   const text = requestTextOf(ctx)
   const classified = quotedTerms(ctx, text)
-  // A value read from the request's words must name one ("no law" doesn't).
-  const extracted = input.extracted.filter(e => namesAValue(e.key, e.value, e.quote))
+  // A value read from the request's words must name one ("no law" doesn't),
+  // and fit the sentence it goes into (a purpose is a noun phrase).
+  const extracted = input.extracted.filter(e => namesAValue(e.key, e.value, e.quote)).map(e => ({ ...e, value: fitToSentence(e.key, e.value) }))
   const read = new Map(extracted.map(e => [e.key, e]))
   // Governing law: the classifier's, else the extractor's — with its words either way.
   const law = classified.governingLaw ?? read.get('governingLaw')

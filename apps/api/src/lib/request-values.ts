@@ -44,3 +44,35 @@ export function namesAValue(key: string, value: string, quote?: string | null): 
   }
   return true
 }
+
+/** Verbs a request starts its purpose with ("evaluate a pilot", "to explore a partnership"). */
+const BARE_VERBS = new Set([
+  'analyse', 'analyze', 'assess', 'build', 'collaborate', 'conduct', 'consider', 'create', 'design', 'determine', 'develop',
+  'discuss', 'enable', 'enter', 'establish', 'evaluate', 'examine', 'exchange', 'explore', 'facilitate', 'form', 'identify',
+  'implement', 'integrate', 'investigate', 'negotiate', 'perform', 'pilot', 'plan', 'prepare', 'provide', 'pursue', 'review',
+  'run', 'scope', 'share', 'study', 'support', 'test', 'trial', 'use', 'validate', 'work',
+])
+/** Short verbs whose last consonant doubles: run → running, plan → planning. */
+const DOUBLES = new Set(['run', 'plan', 'set', 'get', 'put', 'stop', 'ship', 'map'])
+
+export function gerund(verb: string): string {
+  const v = verb.toLowerCase()
+  if (DOUBLES.has(v)) return `${v}${v.at(-1)}ing`
+  if (v.endsWith('ie')) return `${v.slice(0, -2)}ying`
+  if (v.endsWith('ee') || !v.endsWith('e')) return `${v}ing`
+  return `${v.slice(0, -1)}ing`
+}
+
+/**
+ * A purpose fills "in connection with {{purpose}}", so it is a noun phrase:
+ * "evaluate a 12-month pilot" (or "to evaluate…") becomes "evaluating a
+ * 12-month pilot". Other values are as read.
+ */
+export function fitToSentence(key: string, value: string): string {
+  if (!/purpose/i.test(key)) return value
+  const m = value.trim().match(/^(?:to\s+)?([A-Za-z]+)\b([\s\S]*)$/)
+  if (!m || !BARE_VERBS.has(m[1].toLowerCase())) return value
+  // "pilot", "trial" and "test" are nouns too: "pilot program" stays.
+  if (/^(pilot|trial|test|study|plan|work|review|exchange|form|scope|design)$/i.test(m[1]) && !/^\s+(?:a|an|the|our|their|its|whether|how|what)\b/i.test(m[2])) return value
+  return `${gerund(m[1])}${m[2]}`
+}

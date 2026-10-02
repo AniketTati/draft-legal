@@ -156,6 +156,16 @@ describe('a request that says there is no law (41: browser QA)', () => {
   })
 })
 
+describe('a purpose read as a verb (41: browser QA)', () => {
+  it('is put into the sentence as a noun phrase', async () => {
+    const r = await draftFromRequest({ orgId: org, contractId: 'c-purpose', ctx: ctx({ requestDescription: 'Mutual NDA with Initech to evaluate a 12-month data-sharing pilot.' }) },
+      extractor([{ key: 'purpose', value: 'evaluate a 12-month data-sharing pilot', quote: 'to evaluate a 12-month data-sharing pilot' }]))
+    expect(r.html).toContain('evaluating a 12-month data-sharing pilot')
+    expect(r.html).not.toContain('evaluate a 12-month')
+    expect(r.origin!.variables).toEqual(expect.arrayContaining([expect.objectContaining({ key: 'purpose', value: 'evaluating a 12-month data-sharing pilot', source: 'request_text' })]))
+  })
+})
+
 describe('deterministic choices', () => {
   it('the same request drafted twice has the same template and variants', async () => {
     const a = await draftFromRequest({ orgId: org, contractId: 'c5', ctx: ctx({ extractedTerms: { governingLaw: 'New York' } }) }, extractor())
