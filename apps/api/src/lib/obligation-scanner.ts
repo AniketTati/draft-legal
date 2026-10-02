@@ -100,6 +100,8 @@ export async function scanObligations(opts: ScanOptions = {}): Promise<ScanResul
     contract: { is: { deletedAt: null, diligenceRoomId: null } },
     // docs/39 G4 — a dismissed suggestion is no obligation; a suggested one still reminds.
     reviewState: { not: 'DISMISSED' },
+    // docs/41 Part 13 — replaced by a signed amendment: kept on record, no longer owed.
+    supersededById: null,
   }
   if (opts.orgId) obWhere.orgId = opts.orgId
 
