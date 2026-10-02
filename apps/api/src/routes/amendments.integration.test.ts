@@ -148,6 +148,18 @@ describe('once it is signed', () => {
     expect(r.items[1]).toMatchObject({ kind: 'term', name: 'Expiry date', current: '2025-12-31', proposed: '2027-12-31' })
   })
 
+  it('still finds the words being signed after an editor save drops the marker and adds a suggestion (fix-up 14)', async () => {
+    const c = await prisma.contract.findUniqueOrThrow({ where: { id: a1 }, select: { currentVersionId: true, metadata: true } })
+    expect((c.metadata as { _amendment: { endsBefore?: string } })._amendment.endsBefore).toMatch(/^except as amended/)
+    const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: c.currentVersionId! } })
+    const saved = v.htmlContent!.replace(/ data-amendment-[a-z]+="\d+"/g, '').replace(/ data-ai-suggested="true"/g, '')
+      .replace('forty-five (45)', '<del data-change-id="s1">forty-five (45)</del><ins data-change-id="s1">sixty (60)</ins>')
+    await prisma.contractVersion.update({ where: { id: v.id }, data: { htmlContent: saved } })
+    const r = (await req('GET', `/${a1}/amendment-redline`)).json()
+    expect(r.items[0]).toMatchObject({ name: 'Section 5', proposed: 'Payment is due within sixty (60) days of invoice.' })
+    await prisma.contractVersion.update({ where: { id: v.id }, data: { htmlContent: v.htmlContent } })
+  })
+
   it('marks the amended section in the parent’s effective view, and leaves the rest as written', async () => {
     const r = (await req('GET', `/${parent}/effective`)).json()
     const fees = r.sections.find((s: { clauseId: string }) => s.clauseId === feesClause)

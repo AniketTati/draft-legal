@@ -27,7 +27,7 @@ import { recordRun, UNDO_DAYS } from '../lib/field-runs.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { familyTree, effectiveView, amendmentSpecOf, nextFamilyNumber, isSigned } from '../lib/family.js'
 import { recordRollUp, termHistory } from '../lib/term-history.js'
-import { amendmentRedlineItems, draftAmendmentLanguage, obligationsReplaced, proposedTextsFromHtml } from '../lib/amendments.js'
+import { amendmentRedlineItems, draftAmendmentLanguage, obligationsReplaced, proposedTextsFromDocument } from '../lib/amendments.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 
 const ParentSchema = z.object({
@@ -256,9 +256,11 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
       return !s || s.amendedBy.some(a => a.contractId === id) ? null : s.text
     }
     const version = c.currentVersionId
-      ? await prisma.contractVersion.findFirst({ where: { id: c.currentVersionId, contractId: c.id }, select: { htmlContent: true } })
+      ? await prisma.contractVersion.findFirst({ where: { id: c.currentVersionId, contractId: c.id }, select: { htmlContent: true, plainText: true } })
       : null
-    const items = amendmentRedlineItems(spec.changes, effectiveText, proposedTextsFromHtml(version?.htmlContent ?? ''))
+    // Fix-up 14 — found by the marker or, once an editor save dropped it, by the text.
+    const edited = proposedTextsFromDocument(spec.changes, version?.htmlContent, { plainText: version?.plainText, endsBefore: spec.endsBefore })
+    const items = amendmentRedlineItems(spec.changes, effectiveText, edited)
     return reply.send({ parent: view.contract, items })
   })
 }
