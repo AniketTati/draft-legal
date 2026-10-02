@@ -89,7 +89,7 @@ export function withGoverningLawSlot(t: SeedTemplate): SeedTemplate {
   return { ...t, sections }
 }
 
-// ─── The 20 templates ─────────────────────────────────────────────────────
+// ─── The 22 templates ─────────────────────────────────────────────────────
 /** As first seeded, governing law as literal text (scripts/backfill-clause-families.ts recognises it). */
 export const UNIVERSAL_TEMPLATES_LITERAL: SeedTemplate[] = [
   // 1. Mutual NDA
@@ -572,6 +572,52 @@ export const UNIVERSAL_TEMPLATES_LITERAL: SeedTemplate[] = [
       { title: 'Ratification',        sortOrder: 30, content: `<p>Except as amended by this Amendment, the Agreement remains in full force and effect.</p>` },
       { title: 'Conflicts',           sortOrder: 40, content: `<p>In the event of a conflict between this Amendment and the Agreement, this Amendment controls.</p>` },
       { title: 'Counterparts',        sortOrder: 50, content: `<p>This Amendment may be executed in counterparts (including by electronic signature), each of which is deemed an original.</p>` },
+    ],
+  },
+
+  // 21–22. docs/41 Part 14 — what a renewal decision drafts: a short letter
+  // extending the term (renew as is, renewing by agreement) and the notice
+  // that stops a renewal (let it lapse, end it). lib/renewal-decisions.ts
+  // fills the variables from the agreement and its renewal terms.
+  {
+    name: 'Renewal letter',
+    description: 'A short letter agreement renewing an existing agreement for another term on the same terms.',
+    contractType: 'RENEWAL_LETTER',
+    isPublished: true,
+    isDefaultForType: true,
+    variables: [
+      { key: 'senderName',        label: 'Our company',             type: 'string', required: true },
+      { key: 'recipientName',     label: 'Counterparty',            type: 'string', required: true },
+      { key: 'agreementName',     label: 'Agreement',               type: 'string', required: true },
+      { key: 'agreementDate',     label: 'Agreement date',          type: 'date',   required: false },
+      { key: 'currentExpiryDate', label: 'Current end date',        type: 'date',   required: true },
+      { key: 'renewalTerm',       label: 'Renewal term',            type: 'string', required: true, defaultValue: '12 months' },
+      { key: 'newExpiryDate',     label: 'New end date',            type: 'date',   required: true },
+    ],
+    sections: [
+      { title: 'Renewal',      sortOrder: 10, content: `<p>Dear {{recipientName}},</p><p>We refer to the {{agreementName}} dated {{agreementDate}} (the "Agreement"), whose current term ends on {{currentExpiryDate}}. The parties agree to renew the Agreement for a further term of {{renewalTerm}}, so that it ends on {{newExpiryDate}}.</p>` },
+      { title: 'Same terms',   sortOrder: 20, content: `<p>Except for its term, the Agreement continues on the same terms. Capitalised terms not defined in this letter have the meanings given in the Agreement.</p>` },
+      { title: 'Agreement',   sortOrder: 30, content: `<p>Please sign below to confirm your agreement. This letter may be signed in counterparts, including by electronic signature.</p><p>{{senderName}}</p>` },
+    ],
+  },
+  {
+    name: 'Notice of non-renewal',
+    description: 'Written notice that an agreement will not renew at the end of its current term.',
+    contractType: 'NON_RENEWAL_NOTICE',
+    isPublished: true,
+    isDefaultForType: true,
+    variables: [
+      { key: 'senderName',        label: 'Our company',             type: 'string', required: true },
+      { key: 'recipientName',     label: 'Counterparty',            type: 'string', required: true },
+      { key: 'agreementName',     label: 'Agreement',               type: 'string', required: true },
+      { key: 'agreementDate',     label: 'Agreement date',          type: 'date',   required: false },
+      { key: 'currentExpiryDate', label: 'End of current term',     type: 'date',   required: true },
+      { key: 'noticeDays',        label: 'Notice period (days)',    type: 'number', required: false },
+    ],
+    sections: [
+      { title: 'Notice',          sortOrder: 10, content: `<p>Dear {{recipientName}},</p><p>We refer to the {{agreementName}} dated {{agreementDate}} (the "Agreement"). This letter is our written notice, given under the Agreement's renewal provisions ({{noticeDays}} days' notice), that the Agreement will not renew and will end at the end of its current term on {{currentExpiryDate}}.</p>` },
+      { title: 'Until then',      sortOrder: 20, content: `<p>Until that date both parties continue to perform the Agreement. The provisions of the Agreement that survive its end continue to apply.</p>` },
+      { title: 'Sender',          sortOrder: 30, content: `<p>{{senderName}}</p>` },
     ],
   },
 ]

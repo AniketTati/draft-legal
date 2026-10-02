@@ -295,6 +295,11 @@ export async function scanRenewals(
     take: 5_000,
   })
   res.scannedContracts = contracts.length
+  // docs/41 Part 14 — a decision is a row of its own (lib/renewal-decisions.ts).
+  const decidedIds = new Set((await prisma.renewalDecision.findMany({
+    where: { contractId: { in: contracts.map(c => c.id) }, supersededAt: null },
+    select: { contractId: true },
+  })).map(d => d.contractId))
 
   for (const c of contracts) {
     if (!c.expiryDate) continue
@@ -307,7 +312,6 @@ export async function scanRenewals(
 
     const md = (c.metadata ?? {}) as {
       renewalNotifiedAt?:  string
-      renewalDecision?:    string  // 'renew' | 'renegotiate' | 'let_expire' | 'unknown'
     }
     if (!opts.force && md.renewalNotifiedAt) {
       const last = new Date(md.renewalNotifiedAt).getTime()
@@ -316,7 +320,7 @@ export async function scanRenewals(
         continue
       }
     }
-    if (md.renewalDecision && md.renewalDecision !== 'unknown') {
+    if (decidedIds.has(c.id)) {
       // Owner already logged a decision — no more reminders.
       res.skippedCooldown++
       continue

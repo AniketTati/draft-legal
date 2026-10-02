@@ -39,6 +39,7 @@ import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
 import { contractFamilyRoutes } from './routes/contract-family.js'
 import { contractApprovalRoutes } from './routes/contract-approval.js'
 import { contractLifecycleRoutes } from './routes/contract-lifecycle.js'
+import { contractRenewalRoutes } from './routes/contract-renewal.js'
 import { inboxRoutes } from './routes/inbox.js'
 import { analysisHealthRoutes, contractAnalysisRunRoutes } from './routes/analysis-health.js'
 import { reviewRoutes } from './routes/review.js'
@@ -295,6 +296,7 @@ export async function buildApp() {
   await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractApprovalRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractLifecycleRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractRenewalRoutes, { prefix: '/api/v1/contracts' })
   await app.register(inboxRoutes,           { prefix: '/api/v1/inbox' })
   await app.register(contractAnalysisRunRoutes, { prefix: '/api/v1/contracts' })
   await app.register(reviewRoutes,          { prefix: '/api/v1/contracts' })

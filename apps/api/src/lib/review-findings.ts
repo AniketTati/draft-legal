@@ -463,15 +463,17 @@ export function positionCheckTargets(current: ClauseIn[], changedClauseIds: stri
 
 // ── The baseline ─────────────────────────────────────────────────────────────
 
-export type BaselineReason = 'approved' | 'sent' | 'origin' | 'analysed'
+export type BaselineReason = 'approved' | 'sent' | 'origin' | 'analysed' | 'parent'
 
-export interface Baseline { versionId: string; versionNumber: number; reason: BaselineReason }
+/** versionNumber is null for a 'parent' baseline: a version of another contract. */
+export interface Baseline { versionId: string; versionNumber: number | null; reason: BaselineReason }
 
 const BASELINE_WORDS: Record<BaselineReason, string> = {
   approved: 'the last approved version',
   sent: 'the last version sent to the counterparty',
   origin: 'the version generated from the template',
   analysed: 'the version analysed before this one',
+  parent: 'the agreement it renews, as it stands',
 }
 export const baselineWords = (r: BaselineReason) => BASELINE_WORDS[r]
 
@@ -486,7 +488,7 @@ export async function resolveBaseline(contractId: string, version: { id: string;
     select: { id: true, versionNumber: true },
     orderBy: { versionNumber: 'desc' },
   })
-  if (!earlier.length) return null
+  if (!earlier.length) return parentBaseline(contractId)
   const byId = new Map(earlier.map(v => [v.id, v]))
   const byNumber = new Map(earlier.map(v => [v.versionNumber, v]))
   const marks: Array<{ id: string; reason: BaselineReason }> = []
@@ -517,6 +519,24 @@ export async function resolveBaseline(contractId: string, version: { id: string;
   })
   const prev = (run && byId.get(run.versionId)) ?? earlier[0]
   return { versionId: prev.id, versionNumber: prev.versionNumber, reason: 'analysed' }
+}
+
+/**
+ * docs/41 Part 14 — a renewal drafted to renegotiate starts from the
+ * agreement it renews (metadata._renewal.baselineVersionId, the parent's
+ * version its words came from): its first version is reviewed against those
+ * terms, so the findings show what the renewal changes. Later versions have
+ * their own earlier ones.
+ */
+async function parentBaseline(contractId: string): Promise<Baseline | null> {
+  const c = await prisma.contract.findUnique({ where: { id: contractId }, select: { orgId: true, parentContractId: true, metadata: true } })
+  const id = (c?.metadata as { _renewal?: { baselineVersionId?: string } } | null)?._renewal?.baselineVersionId
+  if (!c?.parentContractId || !id) return null
+  const v = await prisma.contractVersion.findFirst({
+    where: { id, contractId: c.parentContractId, contract: { orgId: c.orgId }, clauses: { some: { isSubChunk: false } } },
+    select: { id: true },
+  })
+  return v ? { versionId: v.id, versionNumber: null, reason: 'parent' } : null
 }
 
 // ── Working them out for a version, and keeping them ─────────────────────────

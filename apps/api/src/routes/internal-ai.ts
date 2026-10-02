@@ -53,6 +53,7 @@ import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope,
 import { manualRefusal, manualSource, manualTarget } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
+import { standingDecisions } from '../lib/renewal-decisions.js'
 import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, RENEWAL_COLUMNS, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
@@ -4148,10 +4149,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       negotiationPoints?: Array<Record<string, unknown>>
       riskFlags?: string[]; timeline?: string; generatedAt?: string
     }
+    // docs/41 Part 14 — the standing decision is a RenewalDecision row.
+    const decided = await standingDecisions(body.orgId, contracts.map(c => c.id))
     const items = contracts.map(c => {
       const md = (c.metadata ?? {}) as {
         renewalAdvice?: Advice
-        renewalDecision?: string
         renewalNotifiedAt?: string
       }
       const expiry = c.expiryDate ? c.expiryDate.getTime() : null
@@ -4173,7 +4175,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         value:            c.value ? c.value.toString() : null,
         currency:         c.currency,
         renewalAdvice:    md.renewalAdvice ?? null,
-        renewalDecision:  md.renewalDecision ?? null,
+        renewalDecision:  decided.get(c.id)?.decision ?? null,
         renewalNotifiedAt: md.renewalNotifiedAt ?? null,
         autoRenews:       notice.autoRenew,
         noticeDays:       notice.noticeDays,

@@ -3094,35 +3094,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
   })
 
-  // ── POST /:id/renewal-decision (P5.3) ────────────────────────────────────
-  // Records the owner's decision ("renew"/"renegotiate"/"let_expire"/"pause")
-  // so the renewal scanner stops pinging this contract.
-  app.post('/:id/renewal-decision', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const { orgId } = req.user
-    const body = req.body as { decision?: string; note?: string } | undefined
-    const decision = body?.decision
-    if (!decision || !['renew', 'renegotiate', 'let_expire', 'pause', 'unknown'].includes(decision)) {
-      return reply.status(400).send({ detail: 'invalid decision' })
-    }
-
-    const contract = await prisma.contract.findFirst({
-      where: { id, orgId, deletedAt: null },
-      select: { id: true, metadata: true },
-    })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-
-    const md = (contract.metadata ?? {}) as Record<string, unknown>
-    const nextMeta: Record<string, unknown> = {
-      ...md,
-      renewalDecision:   decision,
-      renewalDecisionAt: new Date().toISOString(),
-      renewalDecisionNote: body?.note ?? null,
-    }
-    await prisma.contract.update({ where: { id }, data: { metadata: nextMeta as never } })
-
-    return reply.send({ ok: true, decision })
-  })
+  // POST /:id/renewal-decision lives in routes/contract-renewal.ts (docs/41 Part 14).
 }
 
 // Local alias to avoid naming collision with the imported queueEscalation

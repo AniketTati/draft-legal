@@ -126,11 +126,34 @@ export function renewalTypeOf(raw: unknown): RenewalType | null {
 }
 
 /** The decision a person makes about a renewal, and the action each starts. */
-export const RENEWAL_DECISIONS = ['renew', 'renegotiate', 'terminate'] as const
+export const RENEWAL_DECISIONS = ['renew', 'renegotiate', 'let_lapse', 'terminate'] as const
 export type RenewalDecisionKind = typeof RENEWAL_DECISIONS[number]
 
 export const RENEWAL_DECISION_LABEL: Record<RenewalDecisionKind, string> = {
   renew:       'Renew as is',
   renegotiate: 'Renegotiate',
-  terminate:   'Let it lapse or end it',
+  let_lapse:   'Let it lapse',
+  terminate:   'End it',
+}
+
+/** A decision as stored before docs/41 Part 14 ("let_expire"), or as sent: the kind it is, or null. */
+export function renewalDecisionOf(raw: unknown): RenewalDecisionKind | null {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : ''
+  if (s === 'let_expire') return 'let_lapse'
+  return (RENEWAL_DECISIONS as readonly string[]).includes(s) ? s as RenewalDecisionKind : null
+}
+
+/**
+ * What each decision does, in the words the decision dialog shows. `auto` is
+ * whether the contract renews on its own (renewing it then needs no paper).
+ */
+export function renewalDecisionEffect(d: RenewalDecisionKind, auto: boolean): string {
+  switch (d) {
+    case 'renew': return auto
+      ? 'It renews on its own. We record the decision and put the renewal date in your calendar. Nothing is sent.'
+      : 'We draft a short renewal letter extending the term, from your template. It then goes for approval and signature.'
+    case 'renegotiate': return 'We open a renewal draft from the agreement as it stands today, linked to it, and review it against the current terms.'
+    case 'let_lapse': return 'We draft a notice of non-renewal from your template. Mark it sent before the deadline. The contract shows as expiring, then expired.'
+    case 'terminate': return 'We draft a notice of non-renewal from your template. Mark it sent before the deadline. The contract shows as expiring, then ended.'
+  }
 }
