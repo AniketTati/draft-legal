@@ -200,7 +200,8 @@ async function askRoomQuestions(data: ExtractAiJob): Promise<void> {
  */
 function withoutDraftBlanks(contract: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(contract)) out[k] = blankAsNull(v)
+  // Left out, not null: the PATCH's date columns take a date or nothing.
+  for (const [k, v] of Object.entries(contract)) if (blankAsNull(v) !== null || v === null) out[k] = v
   const kt = contract.keyTerms
   if (kt && typeof kt === 'object' && !Array.isArray(kt)) {
     out.keyTerms = Object.fromEntries(Object.entries(kt as Record<string, unknown>).map(([k, v]) => [k, blankAsNull(v)]))
