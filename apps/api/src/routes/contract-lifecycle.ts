@@ -95,7 +95,7 @@ export function historyItemOf(e: { id: string; action: string; createdAt: Date; 
         : source === 'counterparty' || source === 'send' ? 'negotiation' : source === 'dates' || source === 'system' ? 'system' : 'negotiation'
       return {
         ...base, group, kind: 'stage',
-        title: turnOnly ? `${TURN_LABEL[(m.toTurn as keyof typeof TURN_LABEL)] ?? 'Turn changed'}` : `Moved to ${label}`,
+        title: m.created === true ? `Created in ${label}` : turnOnly ? `${TURN_LABEL[(m.toTurn as keyof typeof TURN_LABEL)] ?? 'Turn changed'}` : `Moved to ${label}`,
         detail: str(m.reason),
         meta: { from: m.from, to: m.to, fromStage, toStage, fromState: m.fromState, toState, fromTurn: m.fromTurn, toTurn: m.toTurn, source },
       }

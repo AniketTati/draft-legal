@@ -21,6 +21,7 @@ import {
 } from '@clm/types'
 import { prisma } from './prisma.js'
 import { recordStageChange, type StagePosition } from './status-change.js'
+import { createAuditEvent } from './audit.js'
 
 export interface StageTarget {
   stage: Stage
@@ -72,6 +73,28 @@ export function positionOf(c: { stage: string; stageState: string; turn: string;
 export function initialStage(status = 'DRAFT', opts: { turn?: Turn } = {}): { status: string; stage: Stage; stageState: StageState; turn: Turn } {
   const p = stageForStatus(status)
   return { status: statusFor(p.stage, p.state), stage: p.stage, stageState: p.state, turn: opts.turn ?? turnFor(p.stage, p.state) }
+}
+
+/**
+ * A contract created in its first stage (docs/41 Part 14, from E1): the
+ * starting point goes on the record as a STAGE_CHANGED event with no `from`,
+ * so the stage history and the progress bar of a child drafted by a flow (an
+ * amendment, a renewal letter, a notice) begin where it began rather than at
+ * its first move. Never throws.
+ */
+export async function recordCreatedStage(a: { orgId: string; contractId: string; position: StagePosition; source: TransitionSource; userId?: string | null; versionId?: string | null; extra?: Record<string, unknown> }): Promise<void> {
+  const p = a.position
+  await createAuditEvent({
+    orgId: a.orgId,
+    ...(a.userId && a.userId !== 'system' ? { userId: a.userId } : {}),
+    action: AuditAction.STAGE_CHANGED,
+    resourceType: 'contract',
+    resourceId: a.contractId,
+    metadata: {
+      from: null, to: p.status, toStage: p.stage, toState: p.stageState, toTurn: p.turn, source: a.source, created: true,
+      ...(a.versionId ? { versionId: a.versionId } : {}), ...(a.extra ?? {}),
+    },
+  }).catch(err => console.warn('[stage-change] creation not recorded contractId=%s: %s', a.contractId, (err as Error).message))
 }
 
 function matches(from: StagePosition, only: Array<Stage | StagePoint>): boolean {

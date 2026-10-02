@@ -76,7 +76,9 @@ describe('drafting an amendment from what changes', () => {
     const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: c.currentVersionId! } })
     expect(v.htmlContent).toContain('Section 5 of the Agreement is deleted in its entirety and replaced with the following:')
     expect(v.htmlContent).toContain('forty-five (45) days')
-    expect(v.plainText).toContain('The Expiry date is amended to read: 2027-12-31.')
+    expect(v.plainText).toContain('The Expiry date is amended to read: 2027-12-31.')    // E2 step 0 — created through the lifecycle: its starting stage is on the record.
+    const ev = await prisma.auditEvent.findFirst({ where: { orgId: org, resourceId: a1, action: 'STAGE_CHANGED' } })
+    expect(ev?.metadata).toMatchObject({ created: true, toStage: 'draft', from: null, parentContractId: parent, relationshipType: 'amendment' })
   })
 
   it('counts on per parent, takes a number a person gives, and lets it be corrected', async () => {

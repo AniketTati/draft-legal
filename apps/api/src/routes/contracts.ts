@@ -73,6 +73,7 @@ import {
 } from '@clm/types'
 import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml } from '../lib/amendments.js'
 import { nextFamilyNumber, effectiveView } from '../lib/family.js'
+import { createChildContract } from '../lib/child-contract.js'
 import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
@@ -2142,87 +2143,24 @@ export async function contractRoutes(app: FastifyInstance) {
     const amendmentSpec: AmendmentSpec | null = drafted
       ? { parentId: parent.id, number: amendmentNumber, effectiveDate: effectiveDay, templateId: template?.id ?? null, changes }
       : null
-    const created = await prisma.contract.create({
-      data: {
-        orgId, ownerId,
-        title,
-        type,
-        ...initialStage('DRAFT'),
-        analysisStatus: NOT_ANALYSED,
-        parentContractId: parent.id,
-        relationshipType,
-        amendmentNumber,
-        counterpartyId:   parent.counterpartyId,
-        counterpartyName: parent.counterpartyName,
-        currency:         body.currency ?? parent.currency ?? 'USD',
-        value:            value != null && !isNaN(value) ? value : null,
-        effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
-        expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
-        matterId:         matterId ?? undefined,
-        // C11 — an amendment to a diligence-room document stays in that room.
-        diligenceRoomId:  parent.diligenceRoomId ?? undefined,
-        metadata:         {
-          ...(body.description ? { amendmentDescription: body.description } : {}),
-          ...(amendmentSpec ? { _amendment: amendmentSpec } : {}),
-        } as Prisma.InputJsonValue,
-        versions: {
-          create: {
-            versionNumber: 1,
-            htmlContent:   drafted ?? (body.description
-              ? `<p>${escapeHtml(body.description)}</p>`
-              : '<p></p>'),
-            plainText:     draftedText ?? body.description ?? '',
-            changeNote:    `Initial ${relationshipType} draft`,
-            createdById:   userId,
-          },
-        },
+    // Created through the one child path (lib/child-contract.ts): its stage on
+    // the record, a drafted amendment read like any draft (P0.1), indexed, announced.
+    const created = await createChildContract({
+      orgId, userId, ownerId, parent, title, type, relationshipType, amendmentNumber, matterId,
+      currency:      body.currency ?? null,
+      value:         value != null && !isNaN(value) ? value : null,
+      effectiveDate: body.effectiveDate ? new Date(body.effectiveDate) : null,
+      expiryDate:    body.expiryDate ? new Date(body.expiryDate) : null,
+      metadata: {
+        ...(body.description ? { amendmentDescription: body.description } : {}),
+        ...(amendmentSpec ? { _amendment: amendmentSpec } : {}),
       },
-      include: { versions: true },
-    })
-    // Set currentVersionId now that the version row has an id. A drafted
-    // amendment is read like any draft (docs/41 P0.1): the playbook applies
-    // to the amended words.
-    if (created.versions[0]) {
-      await prisma.contract.update({
-        where: { id: created.id },
-        data:  { currentVersionId: created.versions[0].id },
-      })
-      if (drafted) {
-        await onVersionCreated(created.id, created.versions[0].id, 'generated')
-          .catch(err => app.log.warn({ err }, 'analysis of a drafted amendment was not queued'))
-      }
-    }
-
-    // P81 audit (2026-05-02). Index amendments in ES so they
-    // surface in portfolio_search when users ask about the changed
-    // contract family. Was previously skipped — every "find me the
-    // amendment that adjusted SLAs" query missed.
-    indexContract(created.id, {
-      orgId,
-      title:            created.title,
-      type:             created.type,
-      status:           created.status,
-      counterpartyName: created.counterpartyName ?? undefined,
-      plainText:        draftedText ?? body.description ?? '',
-      tags:             [],
-      createdAt:        created.createdAt.toISOString(),
-      effectiveDate:    created.effectiveDate?.toISOString(),
-      expiryDate:       created.expiryDate?.toISOString(),
-    }).catch(err => app.log.warn({ err }, 'ES index on amendment failed'))
-
-    await createAuditEvent({
-      orgId, userId,
-      action: AuditAction.CONTRACT_CREATED,
-      resourceType: 'contract', resourceId: created.id,
-      metadata: { relationshipType, parentContractId: parent.id, source: 'amendment_flow' },
+      html:      drafted ?? (body.description ? `<p>${escapeHtml(body.description)}</p>` : '<p></p>'),
+      plainText: draftedText ?? body.description ?? '',
+      drafted:   !!drafted,
+      source:    'amendment_flow',
       ipAddress: req.ip,
-    })
-    // H2 — `amendment.created` was advertised but never emitted. This route
-    // creates every related document (amendment, SOW, order form, renewal,
-    // exhibit); the event names the relationship so subscribers can filter.
-    fireWebhook(orgId, 'amendment.created', {
-      contractId: created.id, parentContractId: parent.id, relationshipType,
-      title: created.title, type: created.type,
+      log:       app.log,
     })
 
     return reply.status(201).send({
