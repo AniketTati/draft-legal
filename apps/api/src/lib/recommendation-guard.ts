@@ -43,12 +43,13 @@ import { analysisState, type AnalysisState, type RecommendationLabel } from '@cl
 import { prisma } from './prisma.js'
 import { analysisStampOf } from './analysis-trigger.js'
 import { findingsFor } from './review-findings.js'
+import { openChoices } from './open-choices.js'
 
 export type GuardCode =
   | 'analysis_missing' | 'analysis_failed' | 'analysis_running' | 'analysis_stale'
   | 'no_clauses' | 'risk_unknown'
   | 'required_missing' | 'required_deleted' | 'clause_deleted' | 'clause_cut' | 'not_allowed_present'
-  | 'unreadable_text' | 'counterparty_version'
+  | 'unreadable_text' | 'counterparty_version' | 'open_choices'
 
 export interface GuardReason { code: GuardCode; text: string }
 
@@ -77,6 +78,8 @@ export interface GuardInput {
   findings: PolicyFinding[]
   /** The counterparty's newest version, when it arrived after the last analysis. */
   counterpartyVersionAfterAnalysis: { versionNumber: number } | null
+  /** Terms the draft still leaves as choices (governing law nobody named…), by label. */
+  openChoices?: string[]
 }
 
 /** Statuses that still need something from someone. */
@@ -111,6 +114,13 @@ export function guardReasons(input: GuardInput): GuardReason[] {
   }
   if (input.counterpartyVersionAfterAnalysis) {
     out.push({ code: 'counterparty_version', text: `the counterparty sent v${input.counterpartyVersionAfterAnalysis.versionNumber} after the last analysis` })
+  }
+  // A draft that can't be sent can't be ready to approve either: a choice left
+  // open (governing law, venue…) is a term nobody has agreed yet.
+  const choices = input.openChoices ?? []
+  if (choices.length) {
+    const list = choices.length <= 3 ? choices.join(', ') : `${choices.slice(0, 3).join(', ')} and ${choices.length - 3} more`
+    out.push({ code: 'open_choices', text: `${choices.length === 1 ? '1 choice is' : `${choices.length} choices are`} still open in the draft (${list})` })
   }
   return out
 }
@@ -169,7 +179,7 @@ export async function recommendationGuard(contractId: string, orgId: string): Pr
   }
   const analysis = analysisState(c)
   const stamp = analysisStampOf(c.metadata)
-  const [clauseCount, rows, counterparty] = await Promise.all([
+  const [clauseCount, rows, counterparty, choices] = await Promise.all([
     c.currentVersionId ? prisma.contractClause.count({ where: { versionId: c.currentVersionId, isSubChunk: false } }) : Promise.resolve(0),
     // Findings are only worked out for a version something has read: the
     // analysis's own, or one edited since (its clauses carried).
@@ -181,11 +191,13 @@ export async function recommendationGuard(contractId: string, orgId: string): Pr
           select: { versionNumber: true, createdById: true },
         })
       : Promise.resolve(null),
+    openChoices(contractId),
   ])
   const findings: PolicyFinding[] = rows.map(f => ({ id: f.id, kind: f.kind, severity: f.severity, status: f.status, title: f.title }))
   const input: GuardInput = {
     analysis, clauseCount, riskScore: c.riskScore, findings,
     counterpartyVersionAfterAnalysis: counterparty && COUNTERPARTY.test(counterparty.createdById) ? { versionNumber: counterparty.versionNumber } : null,
+    openChoices: choices.map(ch => ch.label),
   }
   const reasons = guardReasons(input)
   return { passes: reasons.length === 0, reasons, findings, recommendation: policy(input) }
