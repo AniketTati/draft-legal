@@ -251,27 +251,19 @@ async function renewalsSection(ctx: AnalyticsContext, f: AnalyticsFilters): Prom
 }
 
 /**
- * AI acceptance by feature, from `ai_suggestion_events` (shown, accepted,
- * edited, dismissed). That table is added by another part of the plan; until
- * it exists here — or lacks the columns read — the section says it is not
- * available rather than showing zeros.
+ * AI acceptance by feature, from the suggestion events the editor records
+ * (shown, accepted, edited, dismissed). Grouped by contract too, so each bar
+ * can list the contracts behind it.
  */
 async function ai(ctx: AnalyticsContext, f: AnalyticsFilters): Promise<SectionParts> {
-  const unavailable = { headline: {}, charts: { byFeature: [] }, available: false }
-  const [{ t }] = await prisma.$queryRaw<Array<{ t: string | null }>>`SELECT to_regclass('ai_suggestion_events')::text AS t`
-  if (!t) return { acceptance: unavailable }
-  const cols = new Set((await prisma.$queryRaw<Array<{ c: string }>>`SELECT column_name AS c FROM information_schema.columns WHERE table_name = 'ai_suggestion_events'`).map(r => r.c))
-  if (!['orgId', 'feature', 'outcome', 'createdAt', 'contractId'].every(c => cols.has(c))) return { acceptance: unavailable }
-  const scoped = await loadContracts(ctx, f, {})
   const restrict = !!(ctx.scope.ownerId || f.type || f.ownerId || f.paperSource)
-  const allowed = scoped.map(c => c.id)
-  const rows = await prisma.$queryRaw<Array<{ feature: string; outcome: string; n: number; ids: string[] | null }>>`
-    SELECT feature, outcome, count(*)::int AS n, array_agg(DISTINCT "contractId") FILTER (WHERE "contractId" IS NOT NULL) AS ids
-    FROM ai_suggestion_events
-    WHERE "orgId" = ${ctx.orgId} AND "createdAt" >= ${f.from} AND "createdAt" <= ${f.to}
-      AND (${!restrict} OR "contractId" = ANY(${allowed}::text[]))
-    GROUP BY feature, outcome`
-  const section = aiAcceptance(rows.map(r => ({ feature: r.feature, outcome: r.outcome, n: r.n, contractIds: r.ids ?? [] })))
+  const allowed = restrict ? (await loadContracts(ctx, f, {})).map(c => c.id) : null
+  const groups = await prisma.aiSuggestionEvent.groupBy({
+    by: ['feature', 'outcome', 'contractId'],
+    where: { orgId: ctx.orgId, at: { gte: f.from, lte: f.to }, ...(allowed ? { contractId: { in: allowed } } : {}) },
+    _count: { _all: true },
+  })
+  const section = aiAcceptance(groups.map(g => ({ feature: g.feature, outcome: g.outcome, n: g._count._all, contractIds: [g.contractId] })))
   return { acceptance: { ...section, available: true } }
 }
 

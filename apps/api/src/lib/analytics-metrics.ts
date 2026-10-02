@@ -476,6 +476,12 @@ export function adherence(executed: Array<{ id: string; versionId: string | null
 
 export interface AiOutcomeCount { feature: string; outcome: string; n: number; contractIds: string[] }
 
+// The names people see for the features the suggestion log records (lib/ai-suggestion-events.ts).
+const AI_FEATURE_LABELS: Record<string, string> = {
+  ask_ai: 'Ask AI', counter: 'Counter-proposal', insert_standard: 'Insert our standard clause',
+  redline_to_position: 'Edit to our position', fix_all: 'Fix all', amendment_language: 'Amendment wording', draft: 'Drafting',
+}
+
 /** accepted ÷ shown per feature; edited counts the accepted ones a person changed afterwards. */
 export function aiAcceptance(rows: AiOutcomeCount[]): Section {
   const m = new Map<string, { shown: number; accepted: number; edited: number; dismissed: number; ids: Set<string> }>()
@@ -487,7 +493,7 @@ export function aiAcceptance(rows: AiOutcomeCount[]): Section {
   }
   const rate = (a: number, b: number) => b ? Math.round((a / b) * 100) / 100 : null
   const bars: Bar[] = [...m.entries()].map(([f, g]) => ({
-    key: f, label: clauseLabel(f), value: rate(g.accepted, g.shown), n: g.shown, ids: [...g.ids],
+    key: f, label: AI_FEATURE_LABELS[f] ?? clauseLabel(f), value: rate(g.accepted, g.shown), n: g.shown, ids: [...g.ids],
     extra: { shown: g.shown, accepted: g.accepted, edited: g.edited, dismissed: g.dismissed, editedAfterAccept: rate(g.edited, g.accepted) },
   })).sort((a, b) => b.n - a.n)
   const shown = bars.reduce((t, b) => t + b.n, 0), accepted = [...m.values()].reduce((t, g) => t + g.accepted, 0)

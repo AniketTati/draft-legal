@@ -218,13 +218,14 @@ describe('playbook adherence at signature', () => {
 describe('AI acceptance', () => {
   it('is accepted over shown per feature, with edits after acceptance', () => {
     const r = aiAcceptance([
-      { feature: 'clause_suggestion', outcome: 'shown', n: 10, contractIds: ['a'] },
-      { feature: 'clause_suggestion', outcome: 'accepted', n: 4, contractIds: ['a'] },
-      { feature: 'clause_suggestion', outcome: 'edited', n: 1, contractIds: [] },
-      { feature: 'redline', outcome: 'shown', n: 2, contractIds: ['b'] },
+      { feature: 'counter', outcome: 'shown', n: 10, contractIds: ['a'] },
+      { feature: 'counter', outcome: 'accepted', n: 4, contractIds: ['a'] },
+      { feature: 'counter', outcome: 'edited', n: 1, contractIds: [] },
+      { feature: 'ask_ai', outcome: 'shown', n: 2, contractIds: ['b'] },
     ])
     expect(r.headline).toEqual({ shown: 12, accepted: 4, rate: 0.33 })
-    expect(r.charts.byFeature[0]).toMatchObject({ key: 'clause_suggestion', label: 'Clause suggestion', value: 0.4, extra: { editedAfterAccept: 0.25 } })
+    expect(r.charts.byFeature[0]).toMatchObject({ key: 'counter', label: 'Counter-proposal', value: 0.4, extra: { editedAfterAccept: 0.25 } })
+    expect(r.charts.byFeature[1]).toMatchObject({ key: 'ask_ai', label: 'Ask AI', value: 0 })
   })
 })
 

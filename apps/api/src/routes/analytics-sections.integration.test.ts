@@ -162,11 +162,26 @@ describe('renewals', () => {
 })
 
 describe('AI acceptance', () => {
-  it('says it is not available while suggestion outcomes are not recorded here', async () => {
-    const [{ t }] = await prisma.$queryRaw<Array<{ t: string | null }>>`SELECT to_regclass('ai_suggestion_events')::text AS t`
+  it('counts suggestion outcomes per feature from the suggestion log, within the period and the filters', async () => {
+    const e = (contractId: string, feature: string, outcome: string, daysAgo = 2, orgId = org, userId = owner) =>
+      ({ orgId, contractId, userId, feature, outcome, at: ago(daysAgo) })
+    await prisma.aiSuggestionEvent.createMany({ data: [
+      e(ids.ours, 'counter', 'shown'), e(ids.ours, 'counter', 'shown'), e(ids.ours, 'counter', 'accepted'), e(ids.ours, 'counter', 'edited'),
+      e(ids.theirs, 'counter', 'shown'), e(ids.theirs, 'ask_ai', 'shown'), e(ids.theirs, 'ask_ai', 'dismissed'),
+      e(ids.ours, 'counter', 'shown', 400), // outside the period
+      e(ids.foreign, 'counter', 'shown', 2, otherOrg, otherUser), // another org's
+    ] })
     const p = (await get('ai')).json().parts.acceptance
-    if (!t) expect(p.available).toBe(false)
-    else expect(p.available).toBe(true)
+    expect(p.available).toBe(true)
+    expect(p.headline).toEqual({ shown: 4, accepted: 1, rate: 0.25 })
+    expect(bar(p.charts.byFeature, 'counter')).toMatchObject({ label: 'Counter-proposal', n: 3, value: 0.33, extra: { accepted: 1, edited: 1 } })
+    expect((await get('drilldown?metric=ai.acceptance.byFeature&key=counter')).json().ids.sort()).toEqual([ids.ours, ids.theirs].sort())
+    expect(bar(p.charts.byFeature, 'ask_ai')).toMatchObject({ label: 'Ask AI', n: 1, value: 0, extra: { dismissed: 1 } })
+
+    // Filtered to MSAs, only the MSA's events count.
+    const msa = (await get('ai?type=MSA')).json().parts.acceptance
+    expect(msa.headline).toEqual({ shown: 2, accepted: 0, rate: 0 })
+    expect((await get('drilldown?metric=ai.acceptance.byFeature&key=ask_ai')).json().ids).toEqual([ids.theirs])
   })
 })
 
