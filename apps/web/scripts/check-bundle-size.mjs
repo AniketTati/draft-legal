@@ -27,15 +27,20 @@ const DIST = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'assets
 // the filename before the content hash). A file matches a key if it starts with
 // `<key>-`. Unknown JS chunks are allowed but still count toward TOTAL_JS_KB.
 const CHUNK_BUDGETS_KB = {
-  index:    460,  // app entry — the big one; code-split further over time
+  // App entry. Pages load on first visit (App.tsx), which took it from 532 kB to
+  // 150 kB; the cap holds that gain with some room.
+  index:    200,
   pdf:      290,
   editor:   190,
   charts:   145,
   tanstack:  30,
   icons:     25,
 }
-// Ceiling on total gzipped JS shipped from dist/assets.
-const TOTAL_JS_KB = 1080
+// Ceiling on total gzipped JS shipped from dist/assets. Raised from 1080 when
+// pages became their own chunks: each chunk gzips alone and shared code repeats
+// across some, so the sum grew ~60 kB while what a first visit downloads fell
+// by ~380 kB. No one downloads every page.
+const TOTAL_JS_KB = 1150
 
 function gzipKb(path) {
   return gzipSync(readFileSync(path)).length / 1024

@@ -95,4 +95,22 @@ describe('stuck-contract recovery', () => {
   it('the threshold is 30 minutes', () => {
     expect(PENDING_LOST_THRESHOLD_MS).toBe(30 * 60 * 1000)
   })
+
+  it('docs/39 A1 — an extraction still running, or waiting to retry, is slow, not dead', async () => {
+    const slow = await makeContract(org, owner, { title: 'Long contract, third attempt' })
+    const dead = await makeContract(org, owner, { title: 'Nothing running for it' })
+    await prisma.contract.updateMany({ where: { id: { in: [slow, dead] } }, data: { analysisStatus: 'EXTRACTING' } })
+    await prisma.$executeRaw`UPDATE contracts SET "updatedAt" = NOW() - INTERVAL '12 minutes' WHERE id IN (${slow}, ${dead})`
+    await recoverStuckContracts({ listQueued: async () => new Set(), listLive: async () => new Set([slow]) })
+    expect((await status(slow))?.analysisStatus).toBe('EXTRACTING')
+    expect((await status(dead))?.analysisStatus).toBe('FAILED')
+  })
+
+  it('an extract job in the agents queue counts as live', async () => {
+    const { agentQueue } = await import('./queue.js')
+    const { liveJobContractIds } = await import('./stuck-contracts.js')
+    const waiting = await makeContract(org, owner, { title: 'Waiting to retry' })
+    jobs.push(await agentQueue.add('extract-ai', { contractId: waiting, versionId: 'v', orgId: org, triggeredBy: 'upload' }, { delay: 60 * 60 * 1000 }))
+    expect((await liveJobContractIds()).has(waiting)).toBe(true)
+  })
 })

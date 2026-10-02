@@ -28,10 +28,26 @@ model Organization {
   requests            ContractRequest[]
   auditEvents         AuditEvent[]
   fieldDefinitions    ContractFieldDefinition[]
+  fieldSuggestions    FieldSuggestion[]
+  fieldValueRuns      FieldValueRun[]
+  savedViews          SavedView[]
+  contractExhibits    ContractExhibit[]
+  analysisRuns        AnalysisRun[]
+  contractWorkingCopies ContractWorkingCopy[]
+  aiSuggestionEvents    AiSuggestionEvent[]
+  reviewFindings      ReviewFinding[]
+  contractFacts       ContractFact[]
+  compliancePolicy    CompliancePolicy?
+  clauseTypes         ClauseTypeDefinition[]
+  diligenceCells      DiligenceCell[]
   templates           Template[]
   clauseCategories    ClauseCategory[]
   clauseItems         ClauseLibraryItem[]
   playbookPositions   PlaybookPosition[]
+  playbooks           Playbook[]
+  clauseFamilies      ClauseFamily[]
+  clauseLibraryVersions ClauseLibraryVersion[]
+  templateVersions    TemplateVersion[]
   contractComments    ContractComment[]
   shareLinks          ContractShareLink[]
   workflowDefinitions WorkflowDefinition[]
@@ -144,6 +160,9 @@ model Counterparty {
   orgId     String
   name      String
   legalName String? // Official registered legal name
+  // docs/39 A14 — other names contracts give this company ("Acme Corp.",
+  // "ACME CORPORATION, INC."): a contract naming one links here.
+  aliases   String[]  @default([])
   email     String?
   phone     String?
   address   String?
@@ -173,16 +192,48 @@ model Contract {
   contractNumber    String? // Auto-generated: CTR-2026-0001
   title             String
   type              String // ContractType enum
+  // docs/41 Part 18 — derived from stage + stageState (packages/types
+  // lifecycle.ts statusFor), kept for webhooks, analytics and API clients.
+  // Set only through lib/lifecycle.ts; a writer that still sets only the
+  // status gets its stage derived by the contracts_stage_sync trigger.
   status            String    @default("DRAFT") // ContractStatus enum
+  // docs/41 Part 18 — where the contract is, what is happening there, and
+  // whose move it is (docs/47-STAGE-STATE-TURN.md).
+  stage             String    @default("draft") // request | draft | negotiate | approve | sign | active | closed
+  stageState        String    @default("drafting")
+  turn              String    @default("internal") // internal | counterparty | approvers | signers | none
+  turnSince         DateTime  @default(now())
+  // The person whose move it is, when the turn is ours (the owner, unless someone else was handed it).
+  turnOwnerId       String?
   counterpartyId    String?
   counterpartyName  String?
   parentContractId  String? // For amendments — links to parent contract
-  relationshipType  String? // amendment | sow | order_form | renewal | nda | exhibit_only
+  // docs/41 Part 13 — one of packages/types family.ts RELATIONSHIP_TYPES:
+  // amendment | renewal | sow | order_form | exhibit | split_part | nda | other
+  // (a CHECK constraint holds it to them; `exhibit_only` became exhibit or split_part).
+  relationshipType  String?
+  // Numbered per parent and relationship ("Amendment No. 2"), by date; editable.
+  amendmentNumber   Int?
   attachments       Json      @default("[]") // [{filename, s3Key, mimeType, size, label}]
   value             Decimal?
   currency          String?   @default("USD")
   effectiveDate     DateTime?
   expiryDate        DateTime?
+  // docs/41 P0.10 — when it became EXECUTED (lib/status-change.ts statusData).
+  executedAt        DateTime?
+  // docs/41 Part 14 — the renewal terms, worked out from the contract's
+  // field values and its signed amendments (lib/renewal-terms.ts), so lists,
+  // the daily scan, the calendar feed and analytics read one stored answer.
+  renewalType       String? // auto | manual | evergreen | none
+  renewalTermMonths Int?
+  noticeDays        Int?
+  // The last day to give notice so it doesn't renew (auto), or to decide (manual).
+  noticeDeadline    DateTime?
+  // The earliest day notice may be given, when the contract sets a window.
+  optOutWindowStart DateTime?
+  priceUpliftCap    Float?
+  // Every renewal value it has was confirmed by a person (field-capture's trust model).
+  renewalConfirmed  Boolean   @default(false)
   jurisdiction      String? // Governing law jurisdiction (dedicated column for ES filtering)
   ownerId           String
   createdBy         String? // User who created (may differ from owner)
@@ -208,11 +259,15 @@ model Contract {
 
   // P4.1 — optional matter link. null = ungrouped (current behaviour).
   matterId          String?
+  // docs/41 P1 — the playbook a person chose for this contract. Null: the
+  // default for its type, or the only one (lib/playbooks.ts resolvePlaybook).
+  playbookId        String?
 
   org               Organization        @relation(fields: [orgId], references: [id])
   owner             User                @relation("ContractOwner", fields: [ownerId], references: [id])
   counterparty      Counterparty?       @relation(fields: [counterpartyId], references: [id])
   matter            Matter?             @relation(fields: [matterId], references: [id])
+  playbook          Playbook?           @relation(fields: [playbookId], references: [id], onDelete: SetNull)
   versions          ContractVersion[]
   parentContract    Contract?           @relation("ContractAmendments", fields: [parentContractId], references: [id])
   amendments        Contract[]          @relation("ContractAmendments")
@@ -221,6 +276,16 @@ model Contract {
   approvalInstances ApprovalInstance[]
   obligations       Obligation[]
   invoices          Invoice[]
+  fieldValues       ContractFieldValue[]
+  exhibits          ContractExhibit[]
+  analysisRuns      AnalysisRun[]
+  workingCopy       ContractWorkingCopy?
+  aiSuggestionEvents AiSuggestionEvent[]
+  reviewFindings    ReviewFinding[]
+  facts             ContractFact[]
+  termValues        ContractTermValue[]
+  renewalDecisions  RenewalDecision[]
+  watchers          ContractWatcher[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -229,12 +294,16 @@ model Contract {
   diligenceRoom     DiligenceRoom? @relation(fields: [diligenceRoomId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
+  @@index([orgId, stage])
   @@index([orgId, type])
   @@index([orgId, ownerId])
   @@index([orgId, counterpartyId])
   @@index([orgId, jurisdiction])
   @@index([orgId, matterId])
   @@index([orgId, expiryDate])
+  @@index([orgId, noticeDeadline])
+  @@index([orgId, executedAt])
+  @@index([parentContractId])
   @@index([diligenceRoomId])
   @@map("contracts")
 }
@@ -293,6 +362,23 @@ model ContractClause {
   reviewedById   String?
   sectionRef     String? // e.g. "Section 5.2" or "Article III"
   sortOrder      Int                          @default(0)
+  // docs/39 E2 — who made this row. Re-analysis replaces only `ai` rows;
+  // `user` rows (a clause a person tagged) and their review state stay.
+  source         String                       @default("ai")
+  // docs/39 B2 — where the clause sits in its version's plainText.
+  docStart       Int?
+  docEnd         Int?
+  // docs/41 P1 (Part 2) — where the words came from: template | library
+  // (matched, unchanged, against the fingerprint generation stamped) |
+  // counterparty | internal_edit | unknown. A template or library clause is
+  // "Standard" and isn't sent to a model for an opinion.
+  provenance     String?
+  // template:<templateId>:<version>:<sectionId> | library:<itemId>:<version>
+  sourceRef      String?
+  // docs/41 P1 (Part 7) — the model's judgement of this clause against the
+  // playbook's positions, for the version it is on:
+  // { positionId, verdict: meets_preferred|meets_fallback|needs_approval|not_met, quote, explanation, at }
+  positionVerdict Json?
   // Chunking metadata
   isSubChunk     Boolean                      @default(false) // true for sliding-window sub-chunks of long clauses
   windowIndex    Int? // sub-chunk index within parent clause (null for primary)
@@ -330,6 +416,8 @@ model ContractRequest {
   metadata         Json      @default("{}")
   // P4.1 — optional link to the Matter this request belongs to.
   matterId         String?
+  // docs/41 Part 4 — why the request was declined ("Decline request").
+  rejectionReason  String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
   deletedAt        DateTime?
@@ -369,6 +457,376 @@ model ContractFieldDefinition {
   @@map("contract_field_definitions")
 }
 
+// docs/39 B1/G1 — one row per contract × field: the value, where it came
+// from, and who checked it. Covers every kind of field: the core registry
+// (packages/types fields.ts), the contract type's own fields and the org's
+// custom fields. The contract's columns, keyTerms and metadata stay the read
+// model every existing reader uses; lib/field-store.ts writes both, and is
+// the only writer. Extraction may overwrite only rows whose source is `ai`
+// and that nobody verified — for anything else it leaves a `suggestion`.
+model ContractFieldValue {
+  id           String    @id @default(cuid())
+  orgId        String
+  contractId   String
+  fieldKey     String // canonical core key, contract-type field key or custom fieldKey
+  kind         String // core | type | custom
+  label        String? // contract-type fields carry their own label
+  valueType    String // FieldValueType (packages/types fields.ts)
+  value        Json? // null = no value
+  // Typed copies of `value` for filtering and sorting.
+  valueText    String?
+  valueNumber  Float?
+  valueDate    DateTime?
+  source       String    @default("ai") // ai | user | highlight | variable | amendment | import | renewal
+  confidence   Float?
+  quote        String?
+  section      String?
+  issue        String?
+  // Where the value sits in the document: { versionId, start, end, page?, bbox? }.
+  anchor       Json?
+  verifiedAt   DateTime?
+  verifiedById String?
+  rejectedAt   DateTime?
+  // What the AI read when it was not allowed to overwrite this value:
+  // { value, quote, section, confidence, versionId, at }.
+  suggestion   Json?
+  // docs/39 A6 — the contract says different things about it (a long
+  // contract's chunks read it differently): each reading once, the value's
+  // first — [{ value, display, quote, section }]. Cleared once a person
+  // chooses, checks or rejects the value.
+  candidates   Json?
+  // docs/39 B3/I2 — what the AI read before a person corrected (or rejected)
+  // it: { value, quote, section, confidence, at, rejected? }. How often each
+  // field is corrected, and the examples the AI learns from.
+  correctedFrom Json?
+  // docs/39 G3 — a value an amendment set (source 'amendment'): which contract.
+  fromContractId String?
+  updatedById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, fieldKey])
+  @@index([orgId, fieldKey])
+  @@index([orgId, verifiedAt, confidence])
+  @@map("contract_field_values")
+}
+
+/// docs/39 G1/D1 — a run that wrote field values in bulk: a contract's
+/// re-analysis, or a field filled in across contracts. Each change keeps the
+/// value before it, so the run can be undone for 30 days — a value someone
+/// has changed since is left as they left it.
+model FieldValueRun {
+  id                String    @id @default(cuid())
+  orgId             String
+  kind              String // reanalysis | backfill | counterparty | rollup | diligence (lib/field-runs.ts RunKind)
+  contractId        String? // reanalysis: the contract
+  fieldDefinitionId String? // backfill: the field
+  // [{ contractId, fieldKey, before: { value, source, confidence, quote, section, issue } | null, after: unknown }]
+  changes           Json      @default("[]")
+  createdById       String?
+  createdAt         DateTime  @default(now())
+  undoneAt          DateTime?
+  undoneById        String?
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, kind, createdAt])
+  @@index([contractId, createdAt])
+  @@index([fieldDefinitionId])
+  @@map("field_value_runs")
+}
+
+/// docs/39 A12 — an exhibit or schedule attached to a contract, read. Its
+/// text goes into the contract's analysis after the contract's own, a value
+/// quoted from it is placed in it (not "words gone"), and search finds it.
+/// One per attachment (contracts.attachments[].s3Key).
+model ContractExhibit {
+  id         String   @id @default(cuid())
+  orgId      String
+  contractId String
+  s3Key      String
+  label      String
+  text       String   @default("")
+  pageCount  Int?
+  ocrApplied Boolean  @default(false)
+  /// Why it couldn't be read, when it couldn't.
+  error      String?
+  readAt     DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, s3Key])
+  @@index([orgId])
+  @@map("contract_exhibits")
+}
+
+/// docs/41 P1 (Workstream A, Part 7) — one thing the review of a version
+/// found, measured against a baseline (the version last sent, approved, or
+/// generated; else the one analysed before): a required clause not
+/// detected, a clause deleted, cut or changed, a clause the playbook doesn't
+/// allow, a position not met, text that doesn't read as language. Each
+/// carries the words that show it. Computed per (version, baseline) by
+/// lib/review-findings.ts; the recommendation is a policy over these rows,
+/// never a model's opinion.
+model ReviewFinding {
+  id                String    @id @default(cuid())
+  orgId             String
+  contractId        String
+  versionId         String
+  baselineVersionId String?
+  /// missing_required | deleted | not_allowed_present | modified | added |
+  /// material_cut | position_not_met | position_fallback |
+  /// needs_approval_position | unreadable_text | drafting | compliance
+  kind              String
+  /// The same finding across recomputes and versions (kind + clause type + rule).
+  key               String
+  clauseType        String?
+  clauseId          String?
+  categoryId        String?
+  positionId        String?
+  /// low | medium | high | critical
+  severity          String
+  title             String
+  explanation       String
+  /// { quote, baselineQuote, offsets: { start, end }, sectionRef }
+  evidence          Json      @default("{}")
+  /// deterministic | llm
+  source            String
+  /// docs/41 Part 15 — the model's advice on a counterparty's change (lib/change-advice.ts):
+  /// { recommendation: accept | counter | reject, reasoning, severity, ourText, theirText,
+  ///   counterText, counterNote, baselineVersionId, at }
+  advice            Json?
+  /// open | resolved | accepted | exception_requested | exception_approved | exception_declined
+  status            String    @default("open")
+  resolvedById      String?
+  resolvedAt        DateTime?
+  resolutionNote    String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, key])
+  @@index([orgId, contractId])
+  @@index([contractId, versionId, status])
+  @@map("review_findings")
+}
+
+/// docs/41 P1 (Workstream A) — one analysis of one version: why it ran, each
+/// step it took (with timings, counts and the error of a failed one), and
+/// how it ended. `Contract.analysisStatus` said only DONE or FAILED, of
+/// whichever version, and a step that failed quietly (a review callback, a
+/// chunk with no clauses) left no trace. Every analysis step records itself
+/// here (lib/analysis-runs.ts); the admin "Analysis health" page lists the
+/// runs that failed or stopped moving.
+// docs/41 Part 16 (C1) — the edits typed in the editor since the last
+// version: autosaved here, not as a version. A version is made only when
+// someone saves one with a note (or sends, submits, or leaves it idle):
+// see lib/working-copy.ts. One per contract; `revision` goes up on every
+// save, and a save naming an older revision is refused (two editors).
+model ContractWorkingCopy {
+  id            String   @id @default(cuid())
+  orgId         String
+  contractId    String   @unique
+  /// The version the edits were made on.
+  baseVersionId String?
+  html          String
+  revision      Int      @default(1)
+  updatedById   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("contract_working_copies")
+}
+
+/// docs/41 Part 16 — what became of each AI suggestion: shown, accepted,
+/// edited before use, or dismissed. One row per outcome, so acceptance can be
+/// read per feature ("every AI insertion is logged").
+model AiSuggestionEvent {
+  id           String   @id @default(cuid())
+  orgId        String
+  contractId   String
+  versionId    String?
+  userId       String
+  /// ask_ai | counter | insert_standard | redline_to_position | fix_all | amendment_language | draft
+  feature      String
+  /// shown | accepted | edited | dismissed
+  outcome      String
+  /// Ties the outcomes of one suggestion together.
+  suggestionId String?
+  at           DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId, at])
+  @@index([orgId, feature, outcome])
+  @@map("ai_suggestion_events")
+}
+
+model AnalysisRun {
+  id         String    @id @default(cuid())
+  orgId      String
+  contractId String
+  versionId  String
+  /// generated | uploaded | added | checkpoint | backfill | retry | unknown
+  reason     String
+  /// full (read from scratch) | incremental (an edit: only what changed)
+  mode       String    @default("full")
+  /// queued | running | done | failed | superseded
+  status     String    @default("queued")
+  /// [{ name, status, startedAt, ms, error, attempt, counts }]
+  steps      Json      @default("[]")
+  /// The step a failed run stopped at.
+  failedStep String?
+  error      String?
+  /// The models the LLM steps used: [{ step, provider, model }].
+  model      Json?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([contractId, startedAt])
+  @@index([versionId])
+  @@map("analysis_runs")
+}
+
+/// docs/41 Part 9 — a fact about a contract that decides which compliance
+/// frameworks apply: does it involve personal data, whose, health data, card
+/// data… The AI reads each with a quote and a confidence; a person's answer
+/// (confirmedAt set) stands until they change it, through every re-analysis.
+/// One row per fact; versionId is the version the AI read it from.
+model ContractFact {
+  id            String    @id @default(cuid())
+  orgId         String
+  contractId    String
+  versionId     String?
+  /// One of COMPLIANCE_FACT_KEYS (@clm/types).
+  key           String
+  /// true/false, a list of codes ("EU", "US-CA"), or one value ("processor"); null: not known.
+  value         Json?
+  quote         String?
+  confidence    Float     @default(0)
+  /// 'ai' or 'user'.
+  source        String    @default("ai")
+  confirmedById String?
+  confirmedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, key])
+  @@index([orgId])
+  @@map("contract_facts")
+}
+
+/// docs/41 Part 9 — the org's rules from facts to compliance frameworks
+/// ("personal data of EU data subjects → GDPR"). Absent: the default rules
+/// (lib/compliance-policy.ts). Set by an admin; lawyers never pick frameworks.
+model CompliancePolicy {
+  id          String   @id @default(cuid())
+  orgId       String   @unique
+  /// PolicyRule[] (@clm/types).
+  rules       Json
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@map("compliance_policies")
+}
+
+/// docs/39 E3 — a clause type an organization teaches the AI: what it is and
+/// passages that are one. The extraction looks for it in every contract it
+/// reads, and a run finds it in those read before (lib/clause-types.ts).
+/// ContractClause.clauseType holds its key.
+model ClauseTypeDefinition {
+  id          String    @id @default(cuid())
+  orgId       String
+  /// `custom_…`, from its name; never one of the built-in types.
+  key         String
+  label       String
+  description String    @default("")
+  /// Passages that are this clause: [string], at most 20.
+  examples    Json      @default("[]")
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  /// The run finding it in the contracts read before it existed (lib/clause-types.ts DetectState).
+  detect      Json?
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@unique([orgId, key])
+  @@index([orgId, deletedAt])
+  @@map("clause_type_definitions")
+}
+
+/// docs/39 C3 — a field someone who can't add fields asked for, from words
+/// they highlighted in a contract. An admin adds it (and the value it was
+/// asked with) or declines it; either way the person who asked hears back.
+model FieldSuggestion {
+  id                String    @id @default(cuid())
+  orgId             String
+  label             String
+  fieldKey          String
+  fieldType         String
+  contractType      String? // null: every contract type
+  helpText          String?
+  exampleContractId String?
+  exampleQuote      String?
+  exampleValue      Json?
+  suggestedById     String
+  status            String    @default("PENDING") // PENDING | ADDED | DECLINED
+  resolvedById      String?
+  resolvedAt        DateTime?
+  reason            String? // why it was declined
+  fieldDefinitionId String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, status])
+  @@map("field_suggestions")
+}
+
+/// docs/39 D3 — a named list: its filters (field filters too), columns and
+/// sort, for its owner or, shared, for everyone in the org.
+model SavedView {
+  id        String   @id @default(cuid())
+  orgId     String
+  ownerId   String
+  name      String
+  page      String   @default("contracts") // the list it belongs to
+  shared    Boolean  @default(false)
+  // { filters, fieldFilters, columns, sort, q }
+  query     Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id])
+
+  @@index([orgId, page])
+  @@map("saved_views")
+}
+
 // ─── Templates & Clause Library ───────────────────────────────────────────
 
 model Template {
@@ -381,6 +839,14 @@ model Template {
   isPublished  Boolean   @default(false)
   version      Int       @default(1)
   usageCount   Int       @default(0)
+  // docs/41 Part 1 — the template drafting uses for its contract type when
+  // nobody picked one. At most one per org and type (a partial unique index
+  // in the migration: only live defaults count).
+  isDefaultForType      Boolean @default(false)
+  // The snapshot drafts are made from (TemplateVersion). Edits after it are a
+  // draft revision that drafting doesn't see until it is published again.
+  publishedVersionId    String?
+  hasUnpublishedChanges Boolean @default(false)
   createdById  String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -388,10 +854,37 @@ model Template {
 
   org      Organization      @relation(fields: [orgId], references: [id])
   sections TemplateSection[]
+  publishedVersions TemplateVersion[]
 
   @@index([orgId, contractType])
   @@index([orgId, isPublished])
   @@map("templates")
+}
+
+/// docs/41 Part 1 — a template as it was published: every section's text and,
+/// for each clause slot, the approved variants of its family at the version
+/// they had then (pinned). Drafts are made from this, so a later edit to the
+/// template or the library doesn't change what a draft says until the
+/// template is published again.
+model TemplateVersion {
+  id            String   @id @default(cuid())
+  orgId         String
+  templateId    String
+  /// Template.version at publish.
+  version       Int
+  /// lib/template-snapshot.ts TemplateSnapshot.
+  snapshot      Json
+  /// Template lint at publish (lib/template-lint.ts), kept with what it judged.
+  lint          Json     @default("[]")
+  publishedById String
+  publishedAt   DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  template Template     @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, version])
+  @@index([orgId, templateId])
+  @@map("template_versions")
 }
 
 model TemplateSection {
@@ -402,10 +895,14 @@ model TemplateSection {
   content          String   @default("") // HTML content (may contain {{variable}} tokens)
   conditionalLogic Json? // { field, operator, value } — if set, section only included when true
   clauseRefs       Json     @default("[]") // [clauseLibraryItemId] — clause library items embedded
+  // docs/41 Part 1 — a clause slot: the section's text is the variant of this
+  // clause family drafting picks (lib/clause-resolution.ts), not `content`.
+  slotFamilyId     String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  template   Template      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  slotFamily ClauseFamily? @relation(fields: [slotFamilyId], references: [id])
 
   @@index([templateId])
   @@map("template_sections")
@@ -418,6 +915,19 @@ model ClauseCategory {
   description      String?
   parentCategoryId String? // Self-referential for category tree
   sortOrder        Int      @default(0)
+  // docs/41 P0.3 — whether a contract must have a clause of this category:
+  // required | not_allowed | optional. On the category, not on a position:
+  // a category holds several positions (preferred, fallback…) that must not
+  // disagree about it, and a clause can be required with no position written
+  // for it yet. Applies to the contract types listed ([] = every type).
+  presence              String   @default("optional")
+  presenceContractTypes String[] @default([])
+  /// When the presence rule last changed: a version reviewed before it is reviewed again when next read.
+  presenceChangedAt     DateTime?
+  // docs/41 Part 7 — who decides an exception to this category's positions:
+  // a person, or every holder of a role (the first to decide claims it).
+  approverUserId        String?
+  approverRoleId        String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -426,6 +936,7 @@ model ClauseCategory {
   children          ClauseCategory[]    @relation("CategoryTree")
   clauseItems       ClauseLibraryItem[]
   playbookPositions PlaybookPosition[]
+  families          ClauseFamily[]
 
   @@index([orgId])
   @@index([orgId, parentCategoryId])
@@ -443,26 +954,106 @@ model ClauseLibraryItem {
   isApproved  Boolean   @default(false)
   usageCount  Int       @default(0)
   versions    Json      @default("[]") // [{ version, content, changedById, changedAt, note }]
+  // docs/39 E4 — wording saved from a contract: where it came from.
+  sourceContractId String?
+  sourceVersionId  String?
+  sourceSection    String?
+  // docs/41 Part 1 — a variant of a clause family (Governing law: New York).
+  // `condition` (packages/types clause-families.ts) picks it for a draft;
+  // `matchValues` are the values a request may name it by ("New York",
+  // "NY"), matched exactly, never by similarity. One live default per family
+  // (a partial unique index in the migration). Each edit of its words is a
+  // new, immutable ClauseLibraryVersion and bumps `version`.
+  familyId         String?
+  variantLabel     String?
+  condition        Json?
+  matchValues      String[]  @default([])
+  isFamilyDefault  Boolean   @default(false)
+  variantOrder     Int       @default(0)
+  version          Int       @default(1)
   createdById String
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   deletedAt   DateTime?
 
-  org      Organization   @relation(fields: [orgId], references: [id])
-  category ClauseCategory @relation(fields: [categoryId], references: [id])
+  org          Organization           @relation(fields: [orgId], references: [id])
+  category     ClauseCategory         @relation(fields: [categoryId], references: [id])
+  family       ClauseFamily?          @relation(fields: [familyId], references: [id])
+  textVersions ClauseLibraryVersion[]
+  positions    PlaybookPosition[]
 
   @@index([orgId, categoryId])
   @@index([orgId, isApproved])
+  @@index([sourceContractId])
+  @@index([familyId])
   @@map("clause_library_items")
+}
+
+/// docs/41 Part 1 / §6.2 — one clause the org has approved alternatives for
+/// (Governing law), with the rules that pick one per draft. A template slot
+/// points at the family, not at a variant, so variants can be added, replaced
+/// or re-defaulted without touching the templates that use them.
+model ClauseFamily {
+  id          String    @id @default(cuid())
+  orgId       String
+  categoryId  String?
+  name        String
+  description String?
+  /// The request/contract term whose value names a variant (governingLaw):
+  /// a request that says "New York law" picks the variant matching it.
+  requestKey  String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  org      Organization        @relation(fields: [orgId], references: [id])
+  category ClauseCategory?     @relation(fields: [categoryId], references: [id])
+  variants ClauseLibraryItem[]
+  slots    TemplateSection[]
+
+  @@index([orgId, deletedAt])
+  @@map("clause_families")
+}
+
+/// docs/41 Part 1 — a library clause's words at one version, never changed
+/// once written. A template's published snapshot pins (item, version); a
+/// draft records the version it used.
+model ClauseLibraryVersion {
+  id           String   @id @default(cuid())
+  orgId        String
+  itemId       String
+  version      Int
+  title        String
+  content      String
+  variantLabel String?
+  condition    Json?
+  matchValues  String[] @default([])
+  note         String?
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  org  Organization      @relation(fields: [orgId], references: [id])
+  item ClauseLibraryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, version])
+  @@index([orgId])
+  @@map("clause_library_versions")
 }
 
 model PlaybookPosition {
   id               String   @id @default(cuid())
   orgId            String
   clauseCategoryId String
+  // docs/41 P1 — the playbook it belongs to. Null only for a position written
+  // by an older path; it is read as part of the org's default playbook.
+  playbookId       String?
   positionType     String // preferred | acceptable | fallback | walkaway
   content          String   @default("") // HTML — what we want to see in this position
   notes            String? // Legal team guidance notes
+  // docs/41 Part 16 — what we tell the counterparty when their words miss
+  // this position: offered as an external comment on the finding.
+  counterpartyNote String?
   riskThreshold    Float    @default(0.5) // 0-1, score below which we escalate
   contractTypes    String[] @default([]) // [] = applies to all; otherwise filter by type
   sortOrder        Int      @default(0)
@@ -486,16 +1077,54 @@ model PlaybookPosition {
   //     severity: 'low' | 'medium' | 'high' | 'walkaway'
   //   }
   rules            Json?
+  // docs/41 §6.2 — one clause model: a position can be a library variant (the
+  // approved words themselves), so a template using that variant and the
+  // playbook judging it can't disagree.
+  libraryItemId    String?
   createdById      String
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  org            Organization   @relation(fields: [orgId], references: [id])
-  clauseCategory ClauseCategory @relation(fields: [clauseCategoryId], references: [id])
+  org            Organization       @relation(fields: [orgId], references: [id])
+  clauseCategory ClauseCategory     @relation(fields: [clauseCategoryId], references: [id])
+  playbook       Playbook?          @relation(fields: [playbookId], references: [id], onDelete: SetNull)
+  libraryItem    ClauseLibraryItem? @relation(fields: [libraryItemId], references: [id])
 
   @@index([orgId, clauseCategoryId])
   @@index([orgId, positionType])
+  @@index([playbookId])
   @@map("playbook_positions")
+}
+
+/// docs/41 P1 (Part 3) — a named set of positions, for the contract types it
+/// covers. There was no Playbook object: "the playbook" was every position
+/// the org had, filtered by type, so two playbooks for one type couldn't
+/// exist and nobody could say which one a review used. Which one applies to
+/// a contract is decided in code, never by a model (lib/playbooks.ts): the
+/// one chosen on the contract, else the default for its type, else the only
+/// one that covers it, else the person is asked.
+model Playbook {
+  id               String    @id @default(cuid())
+  orgId            String
+  name             String
+  description      String?
+  /// The contract types it covers; [] = every type.
+  contractTypes    String[]  @default([])
+  /// The one used for its types when a contract names none.
+  isDefaultForType Boolean   @default(false)
+  /// Raised when its positions change, so a review can say which it used.
+  version          Int       @default(1)
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  org       Organization       @relation(fields: [orgId], references: [id])
+  positions PlaybookPosition[]
+  contracts Contract[]
+
+  @@index([orgId])
+  @@map("playbooks")
 }
 
 // ─── Audit Events (append-only, immutable) ────────────────────────────────
@@ -524,6 +1153,8 @@ model AuditEvent {
 
   @@index([orgId, createdAt])
   @@index([orgId, resourceType, resourceId])
+  // docs/41 §6.3 — stage events (STAGE_CHANGED) read by action, for durations.
+  @@index([orgId, action, createdAt])
   @@map("audit_events")
 }
 
@@ -553,7 +1184,9 @@ model Obligation {
   sectionRef    String?
 
   // ── Lifecycle state ──
-  status         String    @default("OPEN") // OPEN | COMPLETED | OVERDUE | WAIVED
+  // PROPOSED: read from a draft (docs/41 Part 11), not owed until the
+  // contract is signed; at signing it becomes OPEN.
+  status         String    @default("OPEN") // PROPOSED | OPEN | COMPLETED | OVERDUE | WAIVED
   completedAt    DateTime?
   completedById  String?
   completionNote String?   @db.Text
@@ -566,6 +1199,20 @@ model Obligation {
   // ── Notification tracking ──
   notifiedAt    DateTime?
 
+  // ── docs/39 G4 — found by the AI: suggested until a person confirms or dismisses it ──
+  reviewState   String    @default("CONFIRMED") // SUGGESTED | CONFIRMED | DISMISSED
+  reviewedAt    DateTime?
+  reviewedById  String?
+
+  // ── docs/41 Part 13 — the clause it came from was replaced by an amendment ──
+  // The amendment (a Contract id) whose roll-up a person confirmed; the
+  // obligation stays on the record but is no longer owed.
+  supersededById String?
+  supersededAt   DateTime?
+
+  // ── docs/41 Part 11 — the version a proposed obligation was read from ──
+  versionId     String?
+
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
@@ -573,6 +1220,7 @@ model Obligation {
   contract    Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
   completedBy User?        @relation("ObligationCompleter", fields: [completedById], references: [id])
 
+  @@index([orgId, reviewState])
   @@index([orgId, status])
   @@index([orgId, dueDate])
   @@index([orgId, status, dueDate])
@@ -727,12 +1375,47 @@ model DiligenceRoom {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   deletedAt   DateTime?
+  /// docs/39 D6 — columns the room's people added: a field, or a question
+  /// asked of every document (lib/diligence-columns.ts RoomColumn).
+  columns     Json     @default("[]")
 
   org       Organization @relation(fields: [orgId], references: [id])
   contracts Contract[]
+  cells     DiligenceCell[]
 
   @@index([orgId, status])
   @@map("diligence_rooms")
+}
+
+/// docs/39 D6 — a question column's answer for one document of a room: the
+/// value, the words it came from, how sure the AI was — or why there's none.
+model DiligenceCell {
+  id         String   @id @default(cuid())
+  orgId      String
+  roomId     String
+  columnId   String
+  contractId String
+  value      Json?
+  display    String?
+  quote      String?
+  confidence Float?
+  /// Why to doubt it: its quote isn't in the document word for word, or the answer didn't fit its type.
+  issue      String?
+  /// Asking failed for this document (said so a person can act on it).
+  error      String?
+  answeredAt DateTime @default(now())
+  /// 'ai' | 'user' — an answer a person gave is never asked again over.
+  source      String    @default("ai")
+  /// A person confirmed it (or gave it): asking again leaves it alone.
+  checkedById String?
+  checkedAt   DateTime?
+
+  org  Organization  @relation(fields: [orgId], references: [id])
+  room DiligenceRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, columnId, contractId])
+  @@index([orgId])
+  @@map("diligence_cells")
 }
 
 // ─── Phase 05 — Negotiation ────────────────────────────────────────────────
@@ -745,7 +1428,16 @@ model ContractComment {
   clauseRef    String? // optional section/clause anchor string
   parentId     String? // null = top-level thread; set = reply
   authorId     String // userId or "portal:<linkId>" for external commenters
+  // The name an external commenter typed in the portal (users are named by
+  // authorId). It was kept in resolvedById, which resolving overwrote.
+  authorName   String?
   body         String
+  // docs/41 Part 16 — "internal" (our side only) or "external" (the
+  // counterparty sees it in the portal). Set on the thread; replies follow it.
+  visibility   String    @default("internal")
+  // { quote, start, end, versionId } — the words the thread was left on, as
+  // plain-text offsets in that version; re-found by quote in later versions.
+  anchor       Json?
   resolved     Boolean   @default(false)
   resolvedById String?
   resolvedAt   DateTime?
@@ -761,6 +1453,7 @@ model ContractComment {
   @@index([orgId, contractId])
   @@index([contractId, clauseRef])
   @@index([contractId, parentId])
+  @@index([contractId, visibility])
   @@map("contract_comments")
 }
 
@@ -925,7 +1618,14 @@ model ApprovalInstance {
   aiSummary              String?
   keyRisks               Json      @default("[]") // [{ title, description, severity }]
   nonStandardTerms       String[]  @default([])
-  approvalRecommendation String? // "approve" | "review_required" | "reject_advised"
+  approvalRecommendation String? // docs/41 P1: ready_to_approve | review | needs_exception | escalate | cant_recommend (older rows: approve | review_required | reject_advised)
+  // docs/41 Part 4 — what became of it: approved | returned | declined |
+  // withdrawn (a counterparty's version arrived) | cancelled. `status` keeps
+  // its older values (a return or a decline is REJECTED there).
+  outcome                String?
+  // docs/41 P1 — the version submitted: the baseline later changes are
+  // measured against once it is approved.
+  versionId              String?
   submittedAt            DateTime  @default(now())
   decidedAt              DateTime?
   createdAt              DateTime  @default(now())
@@ -945,14 +1645,33 @@ model ApprovalInstance {
 // One row per approver per step in a workflow instance
 model ApprovalStep {
   id                 String    @id @default(cuid())
-  approvalInstanceId String
+  // Null for a clause exception, which belongs to the contract, not to a round of approval.
+  approvalInstanceId String?
   orgId              String
+  // docs/41 Part 7 — approval (a step of a workflow) | clause_exception (an
+  // exception to a playbook position, asked for from a review finding).
+  kind               String    @default("approval")
+  contractId         String?
+  // The finding a clause exception was asked for (ReviewFinding.id), and its clause type.
+  findingId          String?
+  clauseType         String?
+  // The version the step was decided on (reset rules compare against it).
+  versionId          String?
   stepOrder          Int // matches WorkflowStepDef.order
   stepName           String
-  approverId         String // userId of assigned approver
+  // userId of the approver. Null while a role's step waits in its pool:
+  // every holder of approverRoleId sees it, and the first to decide claims it.
+  approverId         String?
+  approverRoleId     String?
   status             String    @default("PENDING") // ApprovalStatus enum
-  decision           String? // APPROVED | REJECTED | DELEGATED
+  decision           String? // APPROVED | RETURNED | DECLINED | DELEGATED (older rows: REJECTED)
   comment            String?
+  // docs/41 Part 4 — the findings and clauses a reviewer pointed at when returning or declining.
+  linkedFindingIds   String[]  @default([])
+  linkedClauseIds    String[]  @default([])
+  // A clause exception: who asked for it, and why.
+  requestedById      String?
+  requestNote        String?
   delegatedToId      String? // set when DELEGATED
   decidedAt          DateTime?
   escalationJobId    String? // BullMQ job ID — removed on decision to cancel timer
@@ -960,11 +1679,13 @@ model ApprovalStep {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  instance ApprovalInstance @relation(fields: [approvalInstanceId], references: [id])
+  instance ApprovalInstance? @relation(fields: [approvalInstanceId], references: [id], onDelete: Restrict)
 
   @@index([approvalInstanceId])
   @@index([approverId, status])
+  @@index([approverRoleId, status])
   @@index([orgId, status])
+  @@index([contractId, kind])
   @@map("approval_steps")
 }
 
@@ -1292,4 +2013,283 @@ model CollabState {
   updatedAt    DateTime @updatedAt
 
   @@map("collab_states")
+}
+
+// ─── docs/41 Parts 17 and 20 — the integration layer, SSO and SCIM ──────────
+//
+// One set of tables every integration shares (Salesforce first; HubSpot,
+// DocuSign and the rest later): a connection with encrypted tokens, field
+// mappings, a sync log, and the conflicts a sync raised instead of writing.
+// Then per-org single sign-on (OIDC) and SCIM provisioning.
+//
+// These models deliberately carry no Prisma relation to Organization or User:
+// a back-relation would edit those shared models for every integration added.
+// `orgId` is still on every row, indexed, covered by the tenant guard (which
+// reads the column, not the relation) and by row-level security (migration).
+
+/// An org's link to an outside system. One per provider for now (Salesforce:
+/// one Salesforce org per draftLegal org; several later, as Ironclad allows).
+model IntegrationConnection {
+  id                    String    @id @default(cuid())
+  orgId                 String
+  provider              String // 'salesforce'
+  status                String    @default("pending") // pending | connected | error | disconnected
+  /// The outside system's own org id (Salesforce: 00D…). Every inbound call
+  /// must come from this org; a call naming another is refused.
+  externalOrgId         String?
+  instanceUrl           String?
+  /// Where the OAuth flow signs in (Salesforce: login.salesforce.com, test.salesforce.com or a My Domain).
+  loginUrl              String?
+  /// AES-GCM, as BYOK keys (lib/encryption.ts). Never returned by any route.
+  encryptedAccessToken  String?   @db.Text
+  encryptedRefreshToken String?   @db.Text
+  tokenExpiresAt        DateTime?
+  config                Json      @default("{}")
+  connectedById         String?
+  connectedAt           DateTime?
+  lastSyncAt            DateTime?
+  lastError             String?   @db.Text
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([orgId, provider])
+  @@index([provider, externalOrgId])
+  @@map("integration_connections")
+}
+
+/// One mapped field: an outside object's field ↔ a draftLegal field (a key of
+/// the field registry in packages/types, a request column, or `var:<name>` for
+/// a template variable). Per org, optionally per contract type.
+model IntegrationFieldMapping {
+  id             String   @id @default(cuid())
+  orgId          String
+  provider       String
+  contractType   String? // null = every type
+  externalObject String // 'Opportunity' | 'Quote' | 'Account' | 'DL_Contract__c' …
+  externalField  String // 'Amount'
+  dlField        String // 'value' | 'counterpartyName' | 'var:governing_law' …
+  direction      String   @default("inbound") // inbound | outbound | both
+  /// Shown read-only on the launch form in Salesforce.
+  locked         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([orgId, provider, contractType])
+  @@map("integration_field_mappings")
+}
+
+/// Every sync attempt, in or out, as the plan asks: what moved, its payload
+/// hash, how it ended and on which attempt. Integration health reads it.
+model IntegrationSyncLog {
+  id          String    @id @default(cuid())
+  orgId       String
+  provider    String
+  direction   String // outbound | inbound
+  object      String // 'DL_Contract__c' | 'ContentVersion' | 'ContractRequest' …
+  externalId  String?
+  contractId  String?
+  requestId   String?
+  event       String?
+  payloadHash String?
+  status      String    @default("queued") // queued | success | failed | skipped | conflict
+  error       String?   @db.Text
+  attempt     Int       @default(0)
+  detail      Json?
+  at          DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([orgId, provider, at])
+  @@index([orgId, status])
+  @@index([contractId])
+  @@map("integration_sync_logs")
+}
+
+/// A change the outside system sent for a field it owns, after the contract
+/// was frozen (out for signature or signed). Never written silently: someone
+/// applies it to the contract or dismisses it.
+model IntegrationConflict {
+  id             String    @id @default(cuid())
+  orgId          String
+  provider       String
+  contractId     String
+  externalObject String
+  externalField  String
+  dlField        String
+  currentValue   Json?
+  incomingValue  Json?
+  status         String    @default("open") // open | applied | dismissed
+  resolvedById   String?
+  resolvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([orgId, status])
+  @@index([contractId])
+  @@map("integration_conflicts")
+}
+
+/// Per-org OIDC single sign-on. Sign-in finds it by the email's domain.
+model SsoConnection {
+  id                    String    @id @default(cuid())
+  orgId                 String    @unique
+  protocol              String    @default("oidc")
+  issuer                String
+  clientId              String
+  encryptedClientSecret String    @db.Text
+  /// Lower-case email domains this connection signs in ("acme.com").
+  allowedDomains        String[]  @default([])
+  /// Create a user on first sign-in, with `defaultRole`.
+  jitProvisioning       Boolean   @default(true)
+  defaultRole           String    @default("VIEWER")
+  enabled               Boolean   @default(false)
+  createdById           String
+  lastLoginAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("sso_connections")
+}
+
+/// A bearer token an identity provider's SCIM client uses. Stored hashed,
+/// as API keys are; shown once.
+model ScimToken {
+  id          String    @id @default(cuid())
+  orgId       String
+  name        String
+  tokenHash   String    @unique
+  prefix      String
+  createdById String
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([orgId, revokedAt])
+  @@map("scim_tokens")
+}
+
+/// A SCIM group, and the role its members get.
+model ScimGroup {
+  id          String   @id @default(cuid())
+  orgId       String
+  externalId  String?
+  displayName String
+  roleName    String?
+  memberIds   String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([orgId, displayName])
+  @@map("scim_groups")
+}
+
+/// Who a user is at an identity provider: the OIDC subject, or SCIM's externalId.
+model IdentityLink {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  provider  String // oidc | scim
+  subject   String
+  createdAt DateTime @default(now())
+
+  @@unique([orgId, provider, subject])
+  @@index([userId])
+  @@map("identity_links")
+}
+
+/// docs/41 Part 13 — a contract's term values over time: the original value
+/// and each value an amendment set, so the effective value is current and
+/// the original is one click away ("Show amended values"). The current
+/// value itself stays in ContractFieldValue (source 'amendment',
+/// fromContractId), which every reader already reads; this is its history.
+/// Written when a person confirms an amendment's roll-up
+/// (lib/term-history.ts), undone with it.
+model ContractTermValue {
+  id               String    @id @default(cuid())
+  orgId            String
+  /// The contract whose term it is (the parent).
+  contractId       String
+  key              String
+  label            String?
+  value            Json?
+  display          String    @default("")
+  quote            String?
+  /// The contract that set it: null for the contract's own (original) value.
+  sourceContractId String?
+  effectiveFrom    DateTime?
+  /// The value that replaced it, when one did.
+  supersededById   String?
+  supersededAt     DateTime?
+  createdById      String?
+  createdAt        DateTime  @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId, key])
+  @@index([sourceContractId])
+  @@map("contract_term_values")
+}
+
+/// docs/41 Part 14 — a decision about a contract's renewal, and the action
+/// it started: renew as is (a renewal letter or amendment for one that
+/// doesn't renew on its own), renegotiate (a renewal draft linked to it), or
+/// let it lapse / end it (a non-renewal notice, tracked until sent).
+model RenewalDecision {
+  id               String    @id @default(cuid())
+  orgId            String
+  contractId       String
+  /// renew | renegotiate | terminate
+  decision         String
+  decidedById      String
+  reason           String?
+  /// The contract the action made (renewal letter, renewal draft, notice).
+  actionContractId String?
+  /// The notice deadline when it was decided, and whether it was decided in time.
+  noticeDeadline   DateTime?
+  decidedInTime    Boolean?
+  /// A non-renewal notice: when it was sent, and whether before the deadline.
+  noticeSentAt     DateTime?
+  noticeSentInTime Boolean?
+  /// Superseded by a later decision (the latest one stands).
+  supersededAt     DateTime?
+  createdAt        DateTime  @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId])
+  @@index([orgId, createdAt])
+  @@map("renewal_decisions")
+}
+
+/// docs/41 Part 14 — people who follow a contract besides its owner: they
+/// get its renewal reminders and see its dates in their calendar feed.
+model ContractWatcher {
+  id         String   @id @default(cuid())
+  orgId      String
+  contractId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, userId])
+  @@index([orgId, userId])
+  @@map("contract_watchers")
+}
+
+/// docs/41 Part 14 — a person's calendar feed (.ics). The feed URL carries a
+/// signed random token; only its hash is kept. Making a new link bumps the
+/// version and replaces the hash, so every older link stops working; revoking
+/// clears it.
+model CalendarFeed {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String   @unique
+  version   Int      @default(1)
+  /// SHA-256 of the feed link's token; the token itself is shown once.
+  tokenHash String?  @unique
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  rotatedAt DateTime @default(now())
+
+  @@index([orgId])
+  @@map("calendar_feeds")
 }

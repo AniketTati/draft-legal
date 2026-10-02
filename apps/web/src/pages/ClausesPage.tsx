@@ -3,10 +3,11 @@
  * Category tree (left) + clause list (center) + clause editor (right)
  */
 import { useEffect, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ChevronRight, ChevronDown, Plus, Trash2,
-  CheckCircle, Circle, Loader2, BookOpen,
+  CheckCircle, Circle, Loader2, BookOpen, FileText,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { ContractEditor } from '@/components/editor/ContractEditor'
@@ -16,9 +17,36 @@ import { Chip, EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
 import type { ClauseLibraryItem, ClauseCategory } from '@clm/types'
 import { cn } from '@/lib/utils'
+import { ClauseFamiliesView } from '@/components/clauses/ClauseFamiliesView'
+import { CategoryApproverField } from '@/components/clauses/CategoryApproverField'
+import { flattenCategories, type ApproverCategory } from '@/lib/clause-approver'
 
-/** A clause row carries its category when the list isn't already filtered to one. */
-type ClauseRowItem = ClauseLibraryItem & { category?: { id: string; name: string } | null }
+/**
+ * A clause row carries its category when the list isn't already filtered to
+ * one, and (docs/39 E4) the contract its wording was saved from.
+ */
+type ClauseRowItem = ClauseLibraryItem & {
+  category?: { id: string; name: string } | null
+  sourceContract?: { id: string; title: string } | null
+  sourceSection?: string | null
+}
+
+/** docs/39 E4 — where saved wording came from, as a link back. */
+function SourceLink({ clause, className }: { clause: ClauseRowItem; className?: string }) {
+  if (!clause.sourceContract) return null
+  return (
+    <Link
+      to={`/contracts/${clause.sourceContract.id}`}
+      onClick={e => e.stopPropagation()}
+      className={cn('inline-flex items-center gap-1 text-[11px] text-ink-500 hover:text-ink-950 hover:underline underline-offset-2 min-w-0', className)}
+      title="Saved from this contract"
+      data-testid={`clause-source-${clause.id}`}
+    >
+      <FileText className="size-3 shrink-0" />
+      <span className="truncate">From {clause.sourceContract.title}{clause.sourceSection ? ` §${clause.sourceSection}` : ''}</span>
+    </Link>
+  )
+}
 
 // ─── Category Tree ────────────────────────────────────────────────────────────
 
@@ -144,6 +172,7 @@ function ClauseRow({
           {showCategory && clause.category?.name && (
             <p className="text-[11px] text-ink-500 truncate mt-0.5">{clause.category.name}</p>
           )}
+          <SourceLink clause={clause} className="mt-0.5 max-w-full" />
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             {!clause.isApproved && (
               <StatusPill meaning="inflight">Not approved</StatusPill>
@@ -285,10 +314,11 @@ function ClauseDetailPanel({
       </div>
 
       {clause && (
-        <div className="px-4 py-2 border-t border-paper-200 bg-paper-50">
+        <div className="px-4 py-2 border-t border-paper-200 bg-paper-50 flex items-center gap-3">
           <p className="text-[11px] tabular-nums text-ink-400">
             {Array.isArray(clause.versions) ? clause.versions.length : 0} version(s) · used {clause.usageCount}×
           </p>
+          <SourceLink clause={clause as ClauseRowItem} className="ml-auto" />
         </div>
       )}
     </div>
@@ -303,7 +333,27 @@ export function ClausesPage() {
   const qc = useQueryClient()
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
   const [selectedClause, setSelectedClause] = useState<ClauseLibraryItem | null>(null)
+  // docs/39 E4 — ?clause= opens one (wording just saved from a contract).
+  const [params, setParams] = useSearchParams()
+  const linked = params.get('clause')
+  useEffect(() => {
+    if (!linked) return
+    let live = true
+    api.get<ClauseRowItem>(`/clauses/${linked}`).then(r => {
+      if (!live) return
+      setSelectedCategoryId(r.data.categoryId)
+      setSelectedClause(r.data)
+    }).catch(() => {}).finally(() => {
+      if (!live) return
+      const next = new URLSearchParams(params)
+      next.delete('clause')
+      setParams(next, { replace: true })
+    })
+    return () => { live = false }
+  }, [linked])
   const [showNewClause, setShowNewClause] = useState(false)
+  // docs/41 Part 1 — the library's clauses, or its families of alternatives.
+  const [view, setView] = useState<'clauses' | 'families'>(params.get('view') === 'families' ? 'families' : 'clauses')
   const [q, setQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
   // The two questions this library is actually searched with. Both are server
@@ -353,11 +403,15 @@ export function ClausesPage() {
   })
 
   const createMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (body: any) => api.post('/clauses', { ...body, categoryId: selectedCategoryId! }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['clauses'] }); setShowNewClause(false); setSelectedClause(null) },
   })
 
   const updateMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: ({ id, data }: { id: string; data: any }) => api.patch(`/clauses/${id}`, data),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['clauses'] }); setSelectedClause(null) },
   })
@@ -397,10 +451,31 @@ export function ClausesPage() {
     addCategory.mutate({ name, parentCategoryId: parentId ?? null })
   }
 
+  const flatCategories = categories.flatMap(c => [c, ...(c.children ?? [])]).map(c => ({ id: c.id, name: c.name }))
+  // docs/41 Part 7 — the selected category, with who decides its exceptions.
+  const allCategories = flattenCategories(categories as unknown as ApproverCategory[])
+  const selectedCategory = selectedCategoryId ? allCategories.find(c => c.id === selectedCategoryId) ?? null : null
+
   return (
     <div className="flex h-full">
       {/* ── Category Tree (Left) ── */}
       <div className="w-56 shrink-0 border-r border-paper-200 bg-paper-50 flex flex-col">
+        {/* docs/41 Part 1 — clauses, or families of approved alternatives. */}
+        <div className="flex gap-1 p-2 border-b border-paper-200" role="tablist" aria-label="Library view">
+          {(['clauses', 'families'] as const).map(v => (
+            <button
+              key={v}
+              role="tab"
+              aria-selected={view === v}
+              onClick={() => setView(v)}
+              data-testid={`clauses-view-${v}`}
+              className={cn('flex-1 rounded-md px-2 py-1 text-[12px]', view === v ? 'bg-ink-950 text-white font-medium' : 'text-ink-700 hover:bg-paper-100')}
+            >
+              {v === 'clauses' ? 'Clauses' : 'Families'}
+            </button>
+          ))}
+        </div>
+        {view === 'clauses' && (<>
         <div className="flex items-center justify-between px-3 py-3 border-b border-paper-200">
           <p className="text-eyebrow uppercase text-ink-700">Categories</p>
           <button onClick={() => handleAddCategory()} className="text-ink-400 hover:text-ink-950">
@@ -427,8 +502,11 @@ export function ClausesPage() {
             />
           ))}
         </div>
+        {selectedCategory && <CategoryApproverField category={selectedCategory} all={allCategories} />}
+        </>)}
       </div>
 
+      {view === 'families' ? <ClauseFamiliesView categories={flatCategories} /> : (<>
       {/* ── Clause List (Center) ── */}
       <div className="w-80 shrink-0 border-r border-paper-200 flex flex-col">
         <div className="flex items-center gap-2 px-3 pt-3 pb-2">
@@ -580,6 +658,7 @@ export function ClausesPage() {
           </div>
         )}
       </div>
+      </>)}
 
       {/*
         Deleting used to be one unconfirmed click on a 14px icon, next to the

@@ -10,6 +10,13 @@ too little text relative to page count, we rasterise each page and run
 ocrmac (Apple Vision OCR, native on macOS — no binary dependency). In
 production this should ship with a tesseract or Textract backend behind
 the same interface; the detector + handoff are what matter.
+
+docs/39 A7 — a long scan is read a few pages at a time: the API asks first
+with `ocr=none` (the digital text, and whether it's a scan), then sends the
+scan's pages in small batches, each with its `pageOffset`, so no request
+runs long and no page limit of this service's cuts it short. Each OCR'd page
+says how sure the engine was of it (`ocrQuality`) and where it starts in the
+text (`pageStarts`).
 """
 import logging
 import os
@@ -18,7 +25,7 @@ import statistics
 # X11 — PDF text is data, not markup. Built into HTML unescaped, a PDF whose
 # text reads `<iframe src=…>` was stored as live HTML in htmlContent.
 from html import escape as _escape_html, unescape as _unescape_html
-from fastapi import APIRouter, UploadFile, File, HTTPException, Header
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Header
 
 logger = logging.getLogger("extract")
 router = APIRouter()
@@ -34,7 +41,7 @@ except ImportError:
 # backend is available at runtime; on macOS we use ocrmac (Apple Vision).
 # Threshold: < 30 chars per page on average = likely scanned.
 _SCANNED_CHARS_PER_PAGE = 30
-_OCR_MAX_PAGES          = 40   # safety cap; huge binders are a P2.3 concern
+_OCR_MAX_PAGES          = 40   # per request: the API reads a longer scan in batches (A7)
 
 try:
     from PIL import Image
@@ -72,50 +79,93 @@ def _is_likely_scanned(plain_text: str, page_count: int) -> bool:
     return avg < _SCANNED_CHARS_PER_PAGE
 
 
-def _ocr_page_lines(img) -> list[str]:
-    """OCR one rendered page image into reading-order text lines. Prefers
+def _weighted(pairs: list[tuple[str, float]]) -> float | None:
+    """How sure the engine was of a page: its readings' confidence, weighted by length."""
+    total = sum(len(t) * c for t, c in pairs)
+    weight = sum(len(t) for t, _ in pairs)
+    return round(total / weight, 3) if weight else None
+
+
+def _tesseract_lines(data: dict) -> tuple[list[str], float | None]:
+    """Reading-order lines from tesseract's word table, and how sure it was of them (0-1)."""
+    lines: dict[tuple, list[str]] = {}
+    scored: list[tuple[str, float]] = []
+    for i, word in enumerate(data.get("text") or []):
+        w = (word or "").strip()
+        if not w:
+            continue
+        lines.setdefault((data["block_num"][i], data["par_num"][i], data["line_num"][i]), []).append(w)
+        try:
+            conf = float(data["conf"][i])
+        except (TypeError, ValueError, KeyError, IndexError):
+            conf = -1.0
+        if conf >= 0:
+            scored.append((w, conf / 100))
+    return [" ".join(ws) for ws in lines.values()], _weighted(scored)
+
+
+def _ocr_page(img) -> tuple[list[str], float | None]:
+    """OCR one rendered page image into reading-order text lines, and how
+    sure the engine was of them (0-1; None when it doesn't say). Prefers
     ocrmac (macOS); falls back to pytesseract (Linux/prod)."""
     if _ocrmac_available:
         # ocrmac returns (text, confidence, [x, y, w, h]) with Y inverted
         # (bottom-left origin) — sort by Y then X for top-down reading order.
         rows = _ocrmac.OCR(img).recognize()
         sorted_rows = sorted(rows, key=lambda r: (-(r[2][1] + r[2][3]), r[2][0]))
-        return [t for t in ((text or "").strip() for text, _c, _b in sorted_rows) if t]
-    # pytesseract yields reading-order plain text directly.
-    raw = _pytesseract.image_to_string(img)
-    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        read = [((text or "").strip(), c) for text, c, _b in sorted_rows]
+        read = [(t, c) for t, c in read if t]
+        return [t for t, _ in read], _weighted([(t, float(c)) for t, c in read if isinstance(c, (int, float))])
+    # pytesseract's word table: the lines, and a confidence for each word.
+    return _tesseract_lines(_pytesseract.image_to_data(img, output_type=_pytesseract.Output.DICT))
 
 
-def _ocr_pdf(doc) -> tuple[str, str, int]:
-    """Render each page as a PIL image at 200 DPI + pass through the available
-    OCR backend. Returns (html, plain, pages_ocrd). Stops at _OCR_MAX_PAGES.
+def _render_page(page):
+    """A page as an image for the OCR engine: 200 DPI gives it enough detail
+    without blowing up memory on huge contracts."""
+    pix = page.get_pixmap(dpi=200, alpha=False)
+    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def _ocr_pdf(doc, page_offset: int = 0) -> tuple[str, str, int, list[dict], list[dict]]:
+    """OCR each page through the available backend, at most _OCR_MAX_PAGES.
+    Returns (html, plain, pages_ocrd, quality, page_starts): how sure the
+    engine was of each page, and where each page's text starts in `plain`.
+    Pages are numbered from `page_offset` + 1 — their place in the whole
+    document when this is a batch of it (A7).
     """
     if not _ocr_available:
-        return "", "", 0
+        return "", "", 0, [], []
     html_parts: list[str] = []
     plain_parts: list[str] = []
+    quality: list[dict] = []
+    page_starts: list[dict] = []
+    plain_len = 0
     pages_ocrd = 0
     for page_num, page in enumerate(doc):
         if page_num >= _OCR_MAX_PAGES:
             break
-        # 200 DPI gives the OCR engine enough detail without blowing up
-        # memory on huge contracts.
-        pix = page.get_pixmap(dpi=200, alpha=False)
-        img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        n = page_offset + page_num + 1
         try:
-            page_lines = _ocr_page_lines(img)
+            page_lines, confidence = _ocr_page(_render_page(page))
         except Exception as e:  # noqa: BLE001
-            logger.warning("[extract] OCR page %d failed: %s", page_num + 1, e)
+            logger.warning("[extract] OCR page %d failed: %s", n, e)
+            quality.append({"page": n, "confidence": None, "failed": True})
             continue
         pages_ocrd += 1
+        quality.append({"page": n, "confidence": confidence})
         if page_lines:
             page_plain = " ".join(page_lines)
+            if plain_parts:
+                plain_len += 2  # the "\n\n" between pages
+            page_starts.append({"page": n, "start": plain_len})
             plain_parts.append(page_plain)
+            plain_len += len(page_plain)
             html_parts.append(
-                f"<!-- page {page_num + 1} --><p>"
+                f"<!-- page {n} --><p>"
                 + "</p>\n<p>".join(_escape_html(l, quote=False) for l in page_lines) + "</p>"
             )
-    return "\n".join(html_parts), "\n\n".join(plain_parts), pages_ocrd
+    return "\n".join(html_parts), "\n\n".join(plain_parts), pages_ocrd, quality, page_starts
 
 _WORD_GAP_PT    = 1.5   # gap (pts) between spans to insert a word space
 _INDENT_STEP    = 30.0  # pts per indent level
@@ -191,6 +241,53 @@ def _is_section_prefix_heading(plain: str) -> bool:
     if len(stripped) < 3 or len(stripped) > 140:
         return False
     return bool(_SECTION_HEADING_PATTERN.match(stripped))
+
+
+# docs/39 A10 — a table on a PDF page was read line by line into the running
+# text: "Plan Annual fee Seats Enterprise USD 120,000 500", no telling which
+# figure went with which heading. PyMuPDF finds the page's tables; each is
+# kept as a table — in the HTML a <table>, in the text its rows one to a line,
+# cells split by " | " — at its place among the paragraphs, and its words are
+# left out of them.
+_TABLE_MIN_ROWS = 2
+_TABLE_MIN_COLS = 2
+
+
+def _page_tables(page) -> list[dict]:
+    """The page's tables, top to bottom: each its bbox, its rows of cell text,
+    and whether its first row is its header."""
+    try:
+        found = page.find_tables()
+    except Exception as e:  # noqa: BLE001 — finding tables is best-effort; the text reads as before
+        logger.warning("[extract] finding tables on page %d failed: %s", page.number + 1, e)
+        return []
+    out: list[dict] = []
+    for t in found.tables:
+        rows = [[" ".join((c or "").split()) for c in row] for row in t.extract()]
+        rows = [r for r in rows if any(r)]
+        cols = max((sum(1 for c in r if c) for r in rows), default=0)
+        # Two rows of two filled cells at least: a ruled box around one paragraph isn't a table.
+        if len(rows) < _TABLE_MIN_ROWS or cols < _TABLE_MIN_COLS:
+            continue
+        header = getattr(t, "header", None)
+        out.append({"bbox": tuple(t.bbox), "rows": rows, "header": bool(header is not None and not getattr(header, "external", True))})
+    return sorted(out, key=lambda t: t["bbox"][1])
+
+
+def _in_table(line_bbox, tables: list[dict]) -> bool:
+    """A line whose middle sits inside one of the tables: its words are the table's."""
+    cx, cy = (line_bbox[0] + line_bbox[2]) / 2, (line_bbox[1] + line_bbox[3]) / 2
+    return any(b[0] - 1 <= cx <= b[2] + 1 and b[1] - 1 <= cy <= b[3] + 1 for b in (t["bbox"] for t in tables))
+
+
+def _table_html_plain(table: dict) -> tuple[str, str]:
+    """A table as HTML, and as text: a row to a line, its cells split by " | "."""
+    html_rows: list[str] = []
+    for i, row in enumerate(table["rows"]):
+        tag = "th" if i == 0 and table["header"] else "td"
+        html_rows.append("<tr>" + "".join(f"<{tag}>{_escape_html(c, quote=False)}</{tag}>" for c in row) + "</tr>")
+    plain = "\n".join(" | ".join(c for c in row if c) for row in table["rows"])
+    return "<table><tbody>" + "".join(html_rows) + "</tbody></table>", plain
 
 
 def _all_lines(page) -> list[dict]:
@@ -313,8 +410,20 @@ def _pdf_to_html(content: bytes) -> tuple[str, str, list[dict]]:
     # P2.4 — track per-paragraph {page, bbox} so every emitted HTML
     # token carries a PDF-anchor the citations layer can scroll to.
     # bbox is the union of all line bboxes inside the paragraph.
+    def emit_table(table: dict) -> None:
+        nonlocal in_list
+        if in_list:
+            html_parts.append("</ul>")
+            in_list = False
+        html, plain = _table_html_plain(table)
+        html_parts.append(html)
+        plain_parts.append(plain)
+
     for page_num, page in enumerate(doc, start=1):
         lines = _all_lines(page)
+        # A10 — the page's tables, each emitted where it sits among the paragraphs.
+        tables = _page_tables(page)
+        pending = list(tables)
 
         # Left margin = leftmost x0 among lines with substantial text (ignores page labels)
         left_margin = min(
@@ -335,8 +444,20 @@ def _pdf_to_html(content: bytes) -> tuple[str, str, list[dict]]:
             plain, html_line, avg_size = _join_spans(line)
             if len(plain) < _MIN_LINE_CHARS:
                 continue
+            # A10 — its words are a table's, read as the table.
+            if tables and _in_table(line["bbox"], tables):
+                continue
 
             y0 = line["bbox"][1]
+
+            # A10 — a table above this line: the paragraph before it ends there, then the table.
+            if pending and pending[0]["bbox"][1] <= y0:
+                flush_para(para_plain, para_html, para_size, para_indent, para_page, para_bbox)
+                para_plain, para_html = [], []
+                para_bbox = None
+                prev_y0 = None
+                while pending and pending[0]["bbox"][1] <= y0:
+                    emit_table(pending.pop(0))
 
             # P2.2 — If this line is clearly a heading, always flush
             # the current paragraph so the heading stands alone. Also
@@ -385,6 +506,8 @@ def _pdf_to_html(content: bytes) -> tuple[str, str, list[dict]]:
                 para_bbox = None
 
         flush_para(para_plain, para_html, para_size, para_indent, para_page, para_bbox)
+        for table in pending:  # A10 — tables below the page's last paragraph
+            emit_table(table)
         prev_y0 = None  # reset between pages
 
     if in_list:
@@ -563,6 +686,11 @@ def _flatten_sections_for_nav(tree: list[dict]) -> list[dict]:
 @router.post("/extract")
 async def extract_pdf(
     file: UploadFile = File(...),
+    # A7 — "none": the digital text only, and whether the file is a scan (the
+    # API then sends its pages in batches); "auto": OCR a scan, as before.
+    ocr: str = Form("auto"),
+    # A7 — where this file's first page sits in the whole document.
+    pageOffset: int = Form(0),
     x_internal_secret: str = Header(default=""),
 ):
     if INTERNAL_SECRET and x_internal_secret != INTERNAL_SECRET:
@@ -587,19 +715,22 @@ async def extract_pdf(
     ocr_applied    = False
     ocr_pages      = 0
     ocr_backend    = None
+    ocr_quality: list[dict] = []
+    page_starts: list[dict] = []
 
     # P2.1 — OCR fallback for scanned PDFs. We detect by character-density
     # (< 30 chars/page) rather than by trying to inspect the PDF structure,
     # because stamped/signed digital PDFs often have mixed content and the
     # density heuristic catches both pure-scan and mostly-scan cases.
-    if _doc is not None and _is_likely_scanned(plain_text, page_count):
+    scanned = _doc is not None and _is_likely_scanned(plain_text, page_count)
+    if scanned and ocr != "none":
         if _ocr_available:
             backend_name = "ocrmac" if _ocrmac_available else "tesseract"
             logger.info(
                 "[extract] scanned PDF detected (pages=%d, digital_chars=%d) — running OCR via %s",
                 page_count, len(plain_text), backend_name,
             )
-            ocr_html, ocr_plain, ocr_pages = _ocr_pdf(_doc)
+            ocr_html, ocr_plain, ocr_pages, ocr_quality, page_starts = _ocr_pdf(_doc, max(0, pageOffset))
             if ocr_plain:
                 html_content = ocr_html
                 plain_text   = ocr_plain
@@ -649,6 +780,11 @@ async def extract_pdf(
         "ocrApplied":  ocr_applied,
         "ocrPages":    ocr_pages,
         "ocrBackend":  ocr_backend,
+        # A7 — a scan (read now, or left for the API to send in batches), how
+        # sure the engine was of each page it read, and where each starts.
+        "scanned":     scanned,
+        "ocrQuality":  ocr_quality,
+        "pageStarts":  page_starts,
         # P2.2 — section tree + flat-nav view. Tree preserves parent-child
         # nesting for section-aware tooling; nav is the easy-render form
         # for a TOC sidebar.

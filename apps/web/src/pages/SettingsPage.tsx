@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { useAuthStore } from '@/store/auth'
@@ -11,24 +11,38 @@ import {
   Type, Hash, Calendar, ToggleLeft, List, ChevronDown,
   AlertCircle, Check, Loader2, Mail, FileSignature,
   CheckCircle2, AlertTriangle, Clock, Briefcase,
+  AlignLeft, Banknote, Timer, Percent, BookMarked,
 } from 'lucide-react'
+import { ContractType } from '@clm/types'
 import { Eyebrow, EmptyState } from '@/components/ui/primitives'
 import { ConfirmDialog } from '@/components/admin/ConfirmDialog'
 import { IndustryPacksTab } from '@/components/settings/IndustryPacksTab'
 import { useCanRequest } from '@/lib/permissions'
+import { FieldSuggestionsPanel } from '@/components/settings/FieldSuggestionsPanel'
+import { FieldFillDialog } from '@/components/settings/FieldFillDialog'
+import { FieldRecords } from '@/components/settings/FieldRecords'
+import { ClauseTypesSection } from '@/components/settings/ClauseTypesSection'
+import { toast } from '@/components/common/Toaster'
+import { CalendarFeedSection } from '@/components/settings/CalendarFeedSection'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const FIELD_TYPES = [
   { value: 'text',        label: 'Text',        icon: Type },
+  { value: 'longtext',    label: 'Long text',   icon: AlignLeft },
   { value: 'number',      label: 'Number',      icon: Hash },
+  // docs/39 D2 — money, lengths of time and rates compare and filter as values.
+  { value: 'currency',    label: 'Money',       icon: Banknote },
+  { value: 'duration',    label: 'Duration',    icon: Timer },
+  { value: 'percentage',  label: 'Percentage',  icon: Percent },
   { value: 'date',        label: 'Date',        icon: Calendar },
   { value: 'boolean',     label: 'Yes / No',    icon: ToggleLeft },
   { value: 'select',      label: 'Select',      icon: List },
   { value: 'multiselect', label: 'Multi-select',icon: List },
 ]
 
-const CONTRACT_TYPES = ['', 'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'OTHER']
+// docs/39 A3 — the one list of contract types (this copy had lost DATA_PROCESSING and ORDER_FORM).
+const CONTRACT_TYPES = ['', ...Object.values(ContractType)]
 
 /*
  * The six field types used to own six hues — blue, purple, green, amber, orange,
@@ -38,8 +52,8 @@ const CONTRACT_TYPES = ['', 'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMP
  */
 const FIELD_TYPE_CHIP = 'bg-paper-100 text-ink-700 border-paper-200 font-mono'
 
-type Tab = 'custom-fields' | 'general' | 'notifications' | 'industry-packs'
-const TAB_IDS: Tab[] = ['custom-fields', 'general', 'notifications', 'industry-packs']
+type Tab = 'custom-fields' | 'clause-types' | 'general' | 'notifications' | 'industry-packs'
+const TAB_IDS: Tab[] = ['custom-fields', 'clause-types', 'general', 'notifications', 'industry-packs']
 
 // U.8.1 — typed user preferences. Loosely-typed to keep backend
 // schema simple (Record<string, unknown> on the API), but the front
@@ -81,16 +95,36 @@ const COMMON_TIMEZONES = [
 ]
 
 /** X2 — one line on where a field's backfill stands. */
-function backfillLabel(b: { status: string; processed: number; filled: number; failed: number; total: number | null; error: string | null }): string {
+function backfillLabel(b: { status: string; processed: number; filled: number; failed: number; total: number | null; error: string | null; read?: number; mode?: string }, run?: FillRun | null): string {
   const of = b.total != null ? ` of ${b.total}` : ''
+  // docs/39 D5 — a re-check reads the AI's values again: it reports what changed.
+  if (b.mode === 'recheck') {
+    switch (b.status) {
+      case 'QUEUED':  return 'Re-check queued…'
+      case 'RUNNING': return `Re-checking: ${b.processed}${of} contracts looked at, ${b.filled} changed`
+      case 'PAUSED':  return `Re-check paused after ${b.processed}${of} contracts (${b.error ?? 'paused'})`
+      case 'FAILED':  return `Re-check stopped after ${b.processed}${of} contracts`
+      default:        return run?.undone
+        ? 'The re-check was undone'
+        : `Re-checked ${b.read ?? b.processed} contract${(b.read ?? b.processed) === 1 ? '' : 's'}: ${b.filled} value${b.filled === 1 ? '' : 's'} changed${b.failed ? ` (${b.failed} could not be read)` : ''}`
+    }
+  }
   switch (b.status) {
-    case 'QUEUED':  return 'Backfill queued…'
+    case 'QUEUED':  return 'Fill-in queued…'
     case 'RUNNING': return `Filling in: ${b.processed}${of} contracts checked, ${b.filled} filled`
-    case 'PAUSED':  return `Paused after ${b.processed}${of} contracts (${b.error ?? 'paused'}) — press again to resume`
-    case 'FAILED':  return `Stopped after ${b.processed}${of} contracts — press again to resume`
-    default:        return `Filled in on ${b.filled} of ${b.processed} existing contracts${b.failed ? ` (${b.failed} could not be read)` : ''}`
+    case 'PAUSED':  return `Paused after ${b.processed}${of} contracts (${b.error ?? 'paused'})`
+    case 'FAILED':  return `Stopped after ${b.processed}${of} contracts`
+    default:        return run?.undone
+      ? `The fill-in on ${b.filled} contract${b.filled === 1 ? '' : 's'} was undone`
+      // docs/39 D1 — of those it read, as the dialog counted them ("7 without a value yet").
+      : b.read != null
+        ? `Filled in on ${b.filled} of ${b.read} contract${b.read === 1 ? '' : 's'} without a value${b.failed ? ` (${b.failed} could not be read)` : ''}`
+        : `Filled in on ${b.filled} of ${b.processed} existing contracts${b.failed ? ` (${b.failed} could not be read)` : ''}`
   }
 }
+
+/** docs/39 D1 — a field's last fill-in, while it can be undone. */
+interface FillRun { undoUntil: string; canUndo: boolean; undone: boolean; changed: number }
 
 interface NewField {
   fieldKey: string
@@ -118,7 +152,7 @@ const EMPTY_FIELD: NewField = {
 
 export function SettingsPage() {
   // Z2 — ?tab= opens a tab directly (the dashboard checklist links to packs).
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const requestedTab = searchParams.get('tab') as Tab | null
   const [activeTab, setActiveTab] = useState<Tab>(requestedTab && TAB_IDS.includes(requestedTab) ? requestedTab : 'custom-fields')
   const canInstallPacks = useCanRequest('POST /organization/install-industry-pack')
@@ -138,10 +172,34 @@ export function SettingsPage() {
     refetchInterval: q => ((q.state.data as any)?.data ?? []).some((d: any) => ['QUEUED', 'RUNNING'].includes(d.backfill?.status)) ? 4000 : false,
   })
 
-  // X2 — fill a field in on the contracts analysed before it existed.
+  // X2 — resume a fill-in that paused or stopped. A new one starts from the
+  // dialog (docs/39 D1): tried on a few contracts first, with its cost.
   const backfillField = useMutation({
     mutationFn: (id: string) => api.post(`/field-definitions/${id}/backfill`).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['field-definitions'] }),
+  })
+  const [fillDefId, setFillDefId] = useState<string | null>(null)
+  // ?field=<id> — "Fill it in on other contracts", from a field just added on a contract.
+  const requestedField = searchParams.get('field')
+  useEffect(() => {
+    if (requestedField && (defsData?.data ?? []).some((d: any) => d.id === requestedField)) setFillDefId(requestedField)
+  }, [requestedField, defsData])
+  const closeFill = () => {
+    setFillDefId(null)
+    if (requestedField) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('field')
+      setSearchParams(next, { replace: true })
+    }
+  }
+  const [pendingUndoFill, setPendingUndoFill] = useState<any | null>(null)
+  const undoFill = useMutation({
+    mutationFn: (runId: string) => api.post<{ restored: number; skipped: number }>(`/field-runs/${runId}/undo`).then(r => r.data),
+    onSuccess: r => {
+      qc.invalidateQueries({ queryKey: ['field-definitions'] })
+      setPendingUndoFill(null)
+      toast.success(`Took out ${r.restored} value${r.restored === 1 ? '' : 's'}`, r.skipped ? { description: `${r.skipped} someone changed or checked since stay as they are.` } : undefined)
+    },
   })
 
   const createField = useMutation({
@@ -216,6 +274,8 @@ export function SettingsPage() {
         <nav className="space-y-0.5">
           {[
             { id: 'custom-fields', icon: Layers, label: 'Custom Fields' },
+            // docs/39 E3 — clause types the organization teaches the AI.
+            { id: 'clause-types',  icon: BookMarked, label: 'Clause types' },
             { id: 'general',       icon: Settings, label: 'General' },
             { id: 'notifications', icon: Bell, label: 'Notifications' },
             ...(canInstallPacks ? [{ id: 'industry-packs', icon: Briefcase, label: 'Industry packs' }] : []),
@@ -257,6 +317,9 @@ export function SettingsPage() {
                 <Plus className="size-4" /> Add Field
               </Button>
             </div>
+
+            {/* docs/39 C3 — fields people asked for from a contract. */}
+            <FieldSuggestionsPanel />
 
             {/* Filter by type */}
             <div className="flex items-center gap-2">
@@ -464,20 +527,46 @@ export function SettingsPage() {
                             )}
                             {def.backfill && (
                               <p className="text-[11px] text-ink-500 mt-0.5 tabular-nums" data-testid={`backfill-status-${def.id}`}>
-                                {backfillLabel(def.backfill)}
+                                {backfillLabel(def.backfill, def.fillRun)}
+                                {def.backfill.status === 'DONE' && def.fillRun?.canUndo && def.fillRun.changed > 0 && (
+                                  <>
+                                    {' · '}
+                                    <Link to={`/review-queue?field=${encodeURIComponent(def.fieldKey)}&threshold=0.9`} className="text-ink-950 hover:underline underline-offset-2">
+                                      Check the unsure ones
+                                    </Link>
+                                    {' · '}
+                                    <button type="button" className="text-ink-950 hover:underline underline-offset-2" onClick={() => setPendingUndoFill(def)} data-testid={`undo-fill-${def.id}`}>
+                                      Undo
+                                    </button>
+                                    <span className="text-ink-400"> until {new Date(def.fillRun.undoUntil).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</span>
+                                  </>
+                                )}
                               </p>
                             )}
                           </div>
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={() => backfillField.mutate(def.id)}
-                            disabled={['QUEUED', 'RUNNING'].includes(def.backfill?.status) || (backfillField.isPending && backfillField.variables === def.id)}
-                            title="Extract this field from contracts analysed before it existed"
-                            data-testid={`backfill-field-${def.id}`}
-                          >
-                            Fill in existing contracts
-                          </Button>
+                          {['PAUSED', 'FAILED'].includes(def.backfill?.status) ? (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => backfillField.mutate(def.id)}
+                              disabled={backfillField.isPending && backfillField.variables === def.id}
+                              title="Carry on from the contract it stopped at"
+                              data-testid={`backfill-field-${def.id}`}
+                            >
+                              Resume
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="xs"
+                              onClick={() => setFillDefId(def.id)}
+                              disabled={['QUEUED', 'RUNNING'].includes(def.backfill?.status)}
+                              title="Try this field on a few contracts, then fill it in on those analysed before it existed"
+                              data-testid={`backfill-field-${def.id}`}
+                            >
+                              Try and fill in…
+                            </Button>
+                          )}
                           <button
                             onClick={() => setPendingDeleteField(def)}
                             aria-label={`Delete field ${def.fieldLabel}`}
@@ -494,8 +583,13 @@ export function SettingsPage() {
                 })}
               </div>
             )}
+            {/* docs/39 B3/I2 — how often the AI is right about each field, and when to check it. */}
+            <FieldRecords />
           </div>
         )}
+
+        {/* ─── Clause types (docs/39 E3) ─────────────────────────────────── */}
+        {activeTab === 'clause-types' && <div className="max-w-3xl"><ClauseTypesSection /></div>}
 
         {/* ─── General ───────────────────────────────────────────────────── */}
         {activeTab === 'general' && <GeneralTab />}
@@ -537,6 +631,31 @@ export function SettingsPage() {
         onCancel={() => {
           deleteField.reset()
           setPendingDeleteField(null)
+        }}
+      />
+
+      {/* docs/39 D1 — try a field on a few contracts, then fill it in. */}
+      {fillDefId && defs.find((d: any) => d.id === fillDefId) && (
+        <FieldFillDialog def={defs.find((d: any) => d.id === fillDefId)} onClose={closeFill} />
+      )}
+      <ConfirmDialog
+        open={pendingUndoFill != null}
+        testId="undo-fill-confirm"
+        tone="default"
+        title={`Undo the fill-in of ${pendingUndoFill?.fieldLabel ?? 'this field'}?`}
+        confirmLabel={undoFill.isPending ? 'Undoing…' : 'Undo the fill-in'}
+        isPending={undoFill.isPending}
+        error={undoFill.isError ? ((undoFill.error as any)?.response?.data?.detail ?? 'Could not undo the fill-in.') : null}
+        body={
+          <>
+            Takes out the {pendingUndoFill?.fillRun?.changed ?? ''} value{pendingUndoFill?.fillRun?.changed === 1 ? '' : 's'} it
+            filled in. A value someone has changed or checked since stays as it is. The field itself stays.
+          </>
+        }
+        onConfirm={() => pendingUndoFill?.backfill?.runId && undoFill.mutate(pendingUndoFill.backfill.runId)}
+        onCancel={() => {
+          undoFill.reset()
+          setPendingUndoFill(null)
         }}
       />
     </div>
@@ -855,6 +974,8 @@ function NotificationsTab() {
           ))}
         </div>
       </section>
+
+      <CalendarFeedSection />
     </div>
   )
 }

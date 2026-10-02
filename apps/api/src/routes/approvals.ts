@@ -18,13 +18,27 @@ import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { requireUser } from '../middleware/auth.js'
 import { requirePermission } from '../middleware/permissions.js'
-import { createAuditEvent } from '../lib/audit.js'
-import { advanceWorkflow } from '../lib/workflow-engine.js'
-import { fireWebhook } from '../lib/webhook-events.js'
-import { queueNotification, notificationQueue } from '../lib/queue.js'
-import { AuditAction, TriggerRulesSchema } from '@clm/types'
+import { roleIdsOf } from '../lib/workflow-engine.js'
+import { decideStep } from '../lib/approval-flow.js'
+import { TriggerRulesSchema, readResetRule, RESET_MODES } from '@clm/types'
 import { restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { clauseVersionId } from '../lib/clause-version.js'
+import { recommendationGuard, recommendationGuards, guardedLabel, type GuardResult } from '../lib/recommendation-guard.js'
+
+/**
+ * docs/41 P0.2 / P1 — the recommendation as shown while the approval is
+ * open: the policy over the contract's findings as it stands now (it may
+ * have changed since the summary was written), with its reasons. A decided
+ * approval keeps what it was decided on.
+ */
+function shownRecommendation(instance: { status: string; approvalRecommendation: string | null }, guard: GuardResult | undefined) {
+  const open = instance.status === 'PENDING' || instance.status === 'ESCALATED'
+  if (!open || !guard) return { approvalRecommendation: instance.approvalRecommendation, recommendationReasons: [] as string[] }
+  return {
+    approvalRecommendation: guardedLabel(instance.approvalRecommendation, guard),
+    recommendationReasons: guard.recommendation.reasons.map(r => r.text),
+  }
+}
 
 // Wave 3.8 — validate workflow step definitions at save time. Each step must
 // name at least one approver, and a parallel step's requiredApprovals must be
@@ -46,6 +60,17 @@ function validateWorkflowSteps(steps: unknown[]): string | null {
     const hasApprover = !!s.approverId || !!s.roleRequired || approverIds.length > 0 || roleRequireds.length > 0
     if (!hasApprover) {
       return `Step ${i + 1} ("${s.name || 'Untitled'}") has no approver — pick a user or role.`
+    }
+    // docs/41 Part 18 — when an approval at this step is asked for again after a change.
+    const resetOn = (steps[i] as { resetOn?: unknown }).resetOn
+    if (resetOn !== undefined && resetOn !== null) {
+      const mode = typeof resetOn === 'string' ? resetOn : (resetOn as { mode?: unknown }).mode
+      if (typeof mode !== 'string' || !(RESET_MODES as readonly string[]).includes(mode)) {
+        return `Step ${i + 1} ("${s.name || 'Untitled'}"): resetOn must be one of ${RESET_MODES.join(', ')}.`
+      }
+      if (mode === 'fields' && !(readResetRule(resetOn).fields ?? []).length) {
+        return `Step ${i + 1} ("${s.name || 'Untitled'}"): name the fields whose change asks for the approval again.`
+      }
     }
     if (s.executionMode === 'parallel') {
       const req = s.requiredApprovals ?? 1
@@ -88,14 +113,16 @@ export async function approvalRoutes(app: FastifyInstance) {
   app.get('/my-queue', { preHandler: requirePermission('view', 'workflow') }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
 
+    // docs/41 Part 6 — a role's pooled step is every holder's to see.
+    const roleIds = await roleIdsOf(userId, prisma)
     const steps = await prisma.approvalStep.findMany({
-      where:   { orgId, approverId: userId, status: 'PENDING' },
+      where:   { orgId, kind: 'approval', status: 'PENDING', approvalInstanceId: { not: null }, OR: [{ approverId: userId }, { approverId: null, approverRoleId: { in: roleIds } }] },
       orderBy: { createdAt: 'asc' },
     })
 
     if (steps.length === 0) return reply.send({ data: [], total: 0 })
 
-    const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId))]
+    const instanceIds = [...new Set(steps.map(s => s.approvalInstanceId).filter((x): x is string => !!x))]
     const instances = await prisma.approvalInstance.findMany({
       where: { id: { in: instanceIds } },
     })
@@ -111,7 +138,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     // instance.currentStepOrder (whichever indexing the seed uses).
     const currentByInstance = new Map(instances.map(i => [i.id, i.currentStepOrder]))
     const filteredSteps = steps.filter(s => {
-      const cur = currentByInstance.get(s.approvalInstanceId)
+      const cur = s.approvalInstanceId ? currentByInstance.get(s.approvalInstanceId) : undefined
       return cur !== undefined && s.stepOrder === cur
     })
     if (filteredSteps.length === 0) return reply.send({ data: [], total: 0 })
@@ -129,11 +156,12 @@ export async function approvalRoutes(app: FastifyInstance) {
     const instanceMap = new Map(instances.map(i => [i.id, i]))
     const contractMap = new Map(contracts.map(c => [c.id, c]))
     const submitterMap = new Map(submitters.map(u => [u.id, u]))
+    const guards = await recommendationGuards(contracts.map(c => ({ id: c.id, orgId })))
 
     // P7.2.1 — Build the response from the GATED step list, not the
     // raw query result.
     const data = filteredSteps.map(step => {
-      const instance = instanceMap.get(step.approvalInstanceId)
+      const instance = step.approvalInstanceId ? instanceMap.get(step.approvalInstanceId) : undefined
       const contract = instance ? contractMap.get(instance.contractId) : null
       const submitter = instance ? submitterMap.get(instance.submittedById) : null
       return {
@@ -142,6 +170,7 @@ export async function approvalRoutes(app: FastifyInstance) {
         stepOrder:   step.stepOrder,
         stepName:    step.stepName,
         status:      step.status,
+        pooled:      !step.approverId,
         escalateAt:  step.escalateAt,
         createdAt:   step.createdAt,
         contract,
@@ -153,7 +182,7 @@ export async function approvalRoutes(app: FastifyInstance) {
           aiSummary:             instance.aiSummary,
           keyRisks:              instance.keyRisks,
           nonStandardTerms:      instance.nonStandardTerms,
-          approvalRecommendation: instance.approvalRecommendation,
+          ...shownRecommendation(instance, guards.get(instance.contractId)),
         } : null,
       }
     })
@@ -173,8 +202,9 @@ export async function approvalRoutes(app: FastifyInstance) {
 
     // ESCALATED is included for oversight: older escalations with no target
     // parked instances in that state (C2), and an admin is who can unstick them.
+    // docs/41 Part 6 — not deleted contracts, nor a diligence room's.
     const instances = await prisma.approvalInstance.findMany({
-      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] } },
+      where:   { orgId, status: { in: ['PENDING', 'IN_PROGRESS', 'ESCALATED'] }, contract: { deletedAt: null, diligenceRoomId: null } },
       include: {
         steps: {
           where: { status: 'PENDING' },
@@ -191,7 +221,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     // Resolve contracts + approvers + submitters in batched lookups.
     const contractIds = [...new Set(instances.map(i => i.contractId))]
     const submitterIds = [...new Set(instances.map(i => i.submittedById))]
-    const approverIds  = [...new Set(instances.flatMap(i => i.steps.map(s => s.approverId).filter(Boolean)))]
+    const approverIds  = [...new Set(instances.flatMap(i => i.steps.map(s => s.approverId).filter((x): x is string => !!x)))]
 
     const [contracts, submitters, approvers] = await Promise.all([
       prisma.contract.findMany({
@@ -212,6 +242,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     const contractMap  = new Map(contracts.map(c => [c.id, c]))
     const submitterMap = new Map(submitters.map(u => [u.id, u]))
     const approverMap  = new Map(approvers.map(u => [u.id, u]))
+    const guards = await recommendationGuards(contracts.map(c => ({ id: c.id, orgId })))
 
     const data = instances.map(instance => {
       // Step orders are whatever the workflow definition uses — the builder
@@ -225,7 +256,7 @@ export async function approvalRoutes(app: FastifyInstance) {
       const position = defOrders.indexOf(instance.currentStepOrder)
       const submitter = submitterMap.get(instance.submittedById)
       const contract  = contractMap.get(instance.contractId)
-      const currentApprover = currentStep ? approverMap.get(currentStep.approverId) : null
+      const currentApprover = currentStep?.approverId ? approverMap.get(currentStep.approverId) : null
       const waitingDays = Math.round((Date.now() - instance.submittedAt.getTime()) / (24 * 60 * 60 * 1000))
 
       return {
@@ -243,7 +274,7 @@ export async function approvalRoutes(app: FastifyInstance) {
         currentApproverEmail: currentApprover?.email ?? null,
         waitingDays,
         totalSteps:        instance.steps.length,
-        approvalRecommendation: instance.approvalRecommendation,
+        ...shownRecommendation(instance, guards.get(instance.contractId)),
       }
     })
 
@@ -277,7 +308,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     })
 
     // Enrich steps with approver names
-    const approverIds = [...new Set(instance.steps.map(s => s.approverId).filter(Boolean))]
+    const approverIds = [...new Set(instance.steps.map(s => s.approverId).filter((x): x is string => !!x))]
     const approvers = approverIds.length
       ? await prisma.user.findMany({ where: { id: { in: approverIds } }, select: { id: true, name: true } })
       : []
@@ -285,7 +316,7 @@ export async function approvalRoutes(app: FastifyInstance) {
 
     const enrichedSteps = instance.steps.map(s => ({
       ...s,
-      approverName: approverMap.get(s.approverId)?.name ?? s.approverId,
+      approverName: s.approverId ? approverMap.get(s.approverId)?.name ?? s.approverId : null,
     }))
 
     const definition = await prisma.workflowDefinition.findUnique({
@@ -293,8 +324,10 @@ export async function approvalRoutes(app: FastifyInstance) {
       select: { id: true, name: true, steps: true },
     })
 
+    const guard = await recommendationGuard(instance.contractId, orgId)
     return reply.send({
       ...instance,
+      ...shownRecommendation(instance, guard),
       steps:      enrichedSteps,
       contract,
       submitter,
@@ -304,124 +337,57 @@ export async function approvalRoutes(app: FastifyInstance) {
 
 
   // ── POST /:instanceId/decide — make a decision on a step ─────────────────
+  // docs/41 Part 4 — approve, return for changes (back to the working stage,
+  // the owner's turn), decline (do not proceed) or delegate. A reason is
+  // required to return or decline, and may point at findings and clauses.
+  // `REJECTED` (older clients) is a return. The same decision as Slack, the
+  // bulk dialog and the assistant (lib/approval-flow.ts).
   app.post('/:instanceId/decide', { preHandler: requirePermission('approve', 'workflow') }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
     const { instanceId } = req.params as { instanceId: string }
-    const { stepId, decision, comment, delegateTo } = req.body as {
-      stepId:     string
-      decision:   'APPROVED' | 'REJECTED' | 'DELEGATED'
-      comment?:   string
+    const body = (req.body ?? {}) as {
+      stepId?:     string
+      decision?:   string
+      comment?:    string
       delegateTo?: string
+      findingIds?: string[]
+      clauseIds?:  string[]
+      via?:        string
     }
-
-    if (!stepId || !decision) return reply.status(400).send({ error: 'stepId and decision are required' })
-    if (!['APPROVED', 'REJECTED', 'DELEGATED'].includes(decision)) {
-      return reply.status(400).send({ error: 'decision must be APPROVED, REJECTED, or DELEGATED' })
-    }
-    if (decision === 'REJECTED' && !comment?.trim()) {
-      return reply.status(400).send({ error: 'comment is required when rejecting' })
-    }
-    if (decision === 'DELEGATED' && !delegateTo) {
-      return reply.status(400).send({ error: 'delegateTo is required when delegating' })
-    }
-
-    // Verify the step belongs to this instance and org, and this user is the approver
-    const step = await prisma.approvalStep.findFirst({
-      where: { id: stepId, approvalInstanceId: instanceId, orgId, approverId: userId, status: 'PENDING' },
+    if (!body.stepId || !body.decision) return reply.status(400).send({ error: 'stepId and decision are required' })
+    const r = await decideStep({
+      orgId, userId, instanceId, stepId: body.stepId, decision: body.decision, comment: body.comment,
+      delegateTo: body.delegateTo, linkedFindingIds: Array.isArray(body.findingIds) ? body.findingIds : [],
+      linkedClauseIds: Array.isArray(body.clauseIds) ? body.clauseIds : [], via: body.via === 'bulk' ? 'bulk' : 'web',
     })
-    if (!step) return reply.status(403).send({ error: 'Step not found or not assigned to you' })
-
-    const instance = await prisma.approvalInstance.findFirst({
-      where: { id: instanceId, orgId },
-    })
-    if (!instance) return reply.status(404).send({ error: 'Approval instance not found' })
-    if (instance.status !== 'PENDING' && instance.status !== 'ESCALATED') {
-      return reply.status(409).send({ error: 'Workflow is already closed' })
-    }
-
-    // Cancel escalation timer for this step
-    try { await notificationQueue.remove(`escalate-${stepId}`) } catch { /* no-op */ }
-
-    if (decision === 'DELEGATED') {
-      // Guarded at entry (line ~261), but TS doesn't carry that narrowing
-      // into this separate block — assert delegateTo is present.
-      if (!delegateTo) return reply.status(400).send({ error: 'delegateTo is required when delegating' })
-      // Mark current step DELEGATED, create new PENDING step for delegatee
-      const delegatee = await prisma.user.findFirst({ where: { id: delegateTo, orgId } })
-      if (!delegatee) return reply.status(400).send({ error: 'Delegatee user not found in this org' })
-
-      await prisma.$transaction([
-        prisma.approvalStep.update({
-          where: { id: stepId },
-          data:  { status: 'DELEGATED', decision: 'DELEGATED', comment: comment?.trim(), delegatedToId: delegateTo, decidedAt: new Date() },
-        }),
-        prisma.approvalStep.create({
-          data: {
-            approvalInstanceId: instanceId,
-            orgId,
-            stepOrder:  step.stepOrder,
-            stepName:   step.stepName,
-            approverId: delegateTo,
-            status:     'PENDING',
-            escalateAt: step.escalateAt, // preserve original deadline
-          },
-        }),
-      ])
-
-      const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
-      queueNotification({
-        orgId,
-        userId:       delegateTo,
-        type:         'DELEGATION',
-        title:        'Contract approval delegated to you',
-        body:         `"${contract?.title ?? 'Contract'}" approval has been delegated to you (${step.stepName}).`,
-        resourceType: 'approval_step',
-        resourceId:   stepId,
-        email:        delegatee.email,
-      })
-
-      createAuditEvent({
-        orgId,
-        userId,
-        action:       AuditAction.APPROVAL_DECIDED,
-        resourceType: 'approval_step',
-        resourceId:   stepId,
-        metadata:     { decision: 'DELEGATED', delegateTo, instanceId },
-      }).catch(() => {})
-
-      return reply.send({ stepId, decision: 'DELEGATED', delegatedTo: delegateTo })
-    }
-
-    // APPROVED or REJECTED
-    await prisma.approvalStep.update({
-      where: { id: stepId },
-      data:  { status: decision, decision, comment: comment?.trim() ?? null, decidedAt: new Date() },
-    })
-
-    createAuditEvent({
-      orgId,
-      userId,
-      action:       AuditAction.APPROVAL_DECIDED,
-      resourceType: 'approval_step',
-      resourceId:   stepId,
-      metadata:     { decision, instanceId },
-    }).catch(() => {})
-
-    // Run the state machine to advance or close the workflow
-    await advanceWorkflow(instanceId, prisma)
-
-    const updatedInstance = await prisma.approvalInstance.findUnique({ where: { id: instanceId } })
-    // H2 — advertised to subscribers since P10A, never emitted until now.
-    fireWebhook(orgId, 'approval.decided', {
-      instanceId, contractId: instance.contractId, stepId, decision,
-      instanceStatus: updatedInstance?.status ?? null, decidedBy: userId,
-    })
+    if (!r.ok) return reply.status(r.status).send({ error: r.error })
+    if (r.decision === 'DELEGATED') return reply.send({ stepId: r.stepId, decision: 'DELEGATED', delegatedTo: r.delegatedTo })
     return reply.send({
-      instanceId,
-      instanceStatus:     updatedInstance?.status,
-      stepId,
-      stepDecision:       decision,
+      instanceId:     r.instanceId,
+      contractId:     r.contractId,
+      instanceStatus: r.instanceStatus,
+      stepId:         r.stepId,
+      stepDecision:   r.decision,
     })
+  })
+
+
+  // ── POST /steps/:stepId/decide — a step by its id ─────────────────────────
+  // A clause exception (docs/41 Part 7) belongs to no request for approval;
+  // the inbox decides any step by its id. The same decision as above.
+  app.post('/steps/:stepId/decide', { preHandler: requirePermission('approve', 'workflow') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { stepId } = req.params as { stepId: string }
+    const body = (req.body ?? {}) as { decision?: string; comment?: string; delegateTo?: string; findingIds?: string[]; clauseIds?: string[]; via?: string }
+    if (!body.decision) return reply.status(400).send({ error: 'decision is required' })
+    const r = await decideStep({
+      orgId, userId, stepId, decision: body.decision, comment: body.comment, delegateTo: body.delegateTo,
+      linkedFindingIds: Array.isArray(body.findingIds) ? body.findingIds : [], linkedClauseIds: Array.isArray(body.clauseIds) ? body.clauseIds : [],
+      via: body.via === 'bulk' ? 'bulk' : 'web',
+    })
+    if (!r.ok) return reply.status(r.status).send({ error: r.error })
+    if (r.decision === 'DELEGATED') return reply.send({ stepId: r.stepId, decision: 'DELEGATED', delegatedTo: r.delegatedTo })
+    return reply.send({ instanceId: r.instanceId, contractId: r.contractId, instanceStatus: r.instanceStatus, stepId: r.stepId, stepDecision: r.decision })
   })
 
 
@@ -445,7 +411,7 @@ export async function approvalRoutes(app: FastifyInstance) {
     // round-trip tokens (GET /contracts/:id/clauses); put the values back.
     const instance = await prisma.approvalInstance.findFirst({
       where: { id: instanceId, ...(orgId ? { orgId } : {}) },
-      select: { contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
+      select: { orgId: true, contract: { select: { id: true, currentVersionId: true, keyTerms: true, summary: true } } },
     })
     if (!instance) return reply.status(404).send({ error: 'Approval not found' })
     let summary = req.body as Record<string, unknown>
@@ -476,13 +442,19 @@ export async function approvalRoutes(app: FastifyInstance) {
       approvalRecommendation?: string
     }
 
+    // docs/41 P1 — the model writes the explanation, from the findings; the
+    // label is the policy's over those findings, whatever the model sent.
+    const guard = await recommendationGuard(instance.contract.id, instance.orgId)
+    if (approvalRecommendation && approvalRecommendation !== guard.recommendation.label) {
+      req.log.info({ instanceId, label: guard.recommendation.label, modelLabel: approvalRecommendation }, 'approval recommendation is the policy\'s, not the model\'s')
+    }
     const updated = await prisma.approvalInstance.update({
       where: { id: instanceId },
       data:  {
         ...(aiSummary              !== undefined && { aiSummary }),
         ...(keyRisks               !== undefined && { keyRisks: keyRisks as never }),
         ...(nonStandardTerms       !== undefined && { nonStandardTerms }),
-        ...(approvalRecommendation !== undefined && { approvalRecommendation }),
+        approvalRecommendation: guardedLabel(approvalRecommendation, guard),
       },
     })
 

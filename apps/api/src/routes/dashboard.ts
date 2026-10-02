@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
+import { needsMyActionCount } from '../lib/inbox.js'
 import { requireUserOrAdminKey } from '../middleware/auth.js'
 import { permissionScopeFor } from '../middleware/permissions.js'
 
@@ -41,6 +42,10 @@ const VERB_BY_ACTION: Record<string, string> = {
   CONTRACT_UPDATED:         'edited',
   CONTRACT_UPLOADED:        'uploaded',
   CONTRACT_STATUS_CHANGED:  'changed status on',
+  STAGE_CHANGED:            'moved',
+  EXCEPTION_REQUESTED:      'asked for an exception on',
+  EXCEPTION_DECIDED:        'decided an exception on',
+  APPROVALS_RESET:          'reset approvals on',
   CONTRACT_DELETED:         'deleted',
   CONTRACT_RESTORED:        'restored',
   CONTRACT_ARCHIVED:        'archived',
@@ -148,18 +153,9 @@ export async function dashboardRoutes(app: FastifyInstance) {
       prisma.contractRequest.count({
         where: { orgId, deletedAt: null, ...ownRequests, status: { in: OPEN_REQUEST_STATUSES } },
       }),
-      // P7.2.3 — Per-user pending approvals: only steps assigned to me
-      // AND only the currently-active step (sequential gating). Without
-      // both filters the badge counts steps the user shouldn't see yet.
-      prisma.$queryRaw<Array<{ count: bigint }>>`
-        SELECT COUNT(*)::bigint AS count
-        FROM approval_steps s
-        JOIN approval_instances i ON i.id = s."approvalInstanceId"
-        WHERE s."orgId" = ${orgId}
-          AND s."approverId" = ${userId}
-          AND s.status = 'PENDING'
-          AND s."stepOrder" = i."currentStepOrder"
-      `.then(rows => Number(rows[0]?.count ?? 0)),
+      // docs/41 Part 6 — the sidebar badge: contracts that need my action,
+      // counted by the same query as the inbox's list (lib/inbox.ts).
+      needsMyActionCount(orgId, userId),
       prisma.contract.count({
         where: {
           orgId,
@@ -368,7 +364,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
         // Rich secondary context for specific actions
         let secondary: string | undefined
         const meta = (e.metadata ?? {}) as Record<string, unknown>
-        if (e.action === 'CONTRACT_STATUS_CHANGED') {
+        if (e.action === 'CONTRACT_STATUS_CHANGED' || e.action === 'STAGE_CHANGED') {
           const from = prettyStatus(meta.from)
           const to = prettyStatus(meta.to)
           if (from && to) secondary = `${from} → ${to}`

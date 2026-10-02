@@ -11,7 +11,7 @@ model is expected to follow up with contract_get for anything more detailed.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 from langchain_core.tools import StructuredTool
@@ -73,6 +73,35 @@ class ContractSearchArgs(BaseModel):
     effective_to: Optional[str] = Field(None, description="Only contracts effective on/before this date (YYYY-MM-DD).")
     value_min: Optional[float] = Field(None, description="Only contracts worth at least this much (contract value, in its own currency).")
     value_max: Optional[float] = Field(None, description="Only contracts worth at most this much.")
+    # docs/39 D3 — any field captured on contracts (standard, per contract
+    # type, or the org's own), in the words the user used.
+    field_conditions: Optional[list[str]] = Field(
+        None,
+        description=(
+            "Conditions on any contract field, one per item, written as '<field> <condition>': "
+            "'confidentiality period >= 3 years', 'payment terms > 45 days', 'governing law in Delaware, New York', "
+            "'auto-renews is yes', 'region is EMEA', 'contract value between USD 100k and 500k', "
+            "'expiry date before 2027-01-01', 'expense approver is empty', 'termination notice has a value'. "
+            "Conditions: is, is not, in (a, b), contains, >=, >, <=, <, between … and …, is empty, has a value. "
+            "Use the field's name as the user says it; if it isn't found, the reply names the fields that exist."
+        ),
+    )
+    fields: Optional[list[str]] = Field(
+        None,
+        description="Field values to include on each result (e.g. ['confidentiality period', 'payment terms']). Fields in field_conditions or sort_by_field are included anyway.",
+    )
+    sort_by_field: Optional[str] = Field(
+        None,
+        description="Sort by any field's value instead of sort_by (e.g. 'confidentiality period', 'payment terms'); empty values come last. Direction from sort_order.",
+    )
+    # docs/39 B3 — how much of each contract's data a person has checked.
+    checked: Optional[Literal["verified", "partly", "unverified"]] = Field(
+        None,
+        description=(
+            "Only contracts whose values a person has set or checked: 'verified' (all of them), 'partly' (some), "
+            "'unverified' (none — everything is still as the AI read it). Use for 'which contracts has nobody checked'."
+        ),
+    )
 
 
 def build_contract_search(org_id: str, user_id: str | None = None) -> StructuredTool:
@@ -91,6 +120,10 @@ def build_contract_search(org_id: str, user_id: str | None = None) -> Structured
         effective_to: Optional[str] = None,
         value_min: Optional[float] = None,
         value_max: Optional[float] = None,
+        field_conditions: Optional[list[str]] = None,
+        fields: Optional[list[str]] = None,
+        sort_by_field: Optional[str] = None,
+        checked: Optional[str] = None,
     ) -> str:
         url = f"{settings.api_url.rstrip('/')}/api/internal/ai/tools/contract_search"
         headers = {
@@ -113,6 +146,10 @@ def build_contract_search(org_id: str, user_id: str | None = None) -> Structured
         if effective_to      is not None: payload["effectiveDateTo"]   = effective_to
         if value_min         is not None: payload["valueMin"]          = value_min
         if value_max         is not None: payload["valueMax"]          = value_max
+        if field_conditions:                payload["fieldConditions"]   = field_conditions
+        if fields:                          payload["fields"]            = fields
+        if sort_by_field     is not None: payload["sortByField"]       = sort_by_field
+        if checked           is not None: payload["checked"]           = checked
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
             r = await client.post(url, json=payload, headers=headers)
         if r.status_code >= 400:
@@ -146,6 +183,13 @@ def build_contract_search(org_id: str, user_id: str | None = None) -> Structured
             "'lowest risk'). NEVER read 50 rows and sort them in your head: "
             "you will hallucinate values that aren't in the result set. "
             "Trust the database."
+            "\n\n"
+            "QUESTIONS ABOUT A TERM ('which SOWs keep things confidential for "
+            "more than 3 years', 'contracts with net 60 or longer', 'who has "
+            "no expense approver set') — use field_conditions, and read each "
+            "result's `fields` for the values. Answer counts from "
+            "totalMatching. If the reply has an `error`, tell the user what its "
+            "`note` says rather than guessing."
         ),
         args_schema=ContractSearchArgs,
     )

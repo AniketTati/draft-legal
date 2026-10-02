@@ -93,3 +93,30 @@ api.interceptors.response.use(
     return Promise.reject(error)
   }
 )
+
+/**
+ * docs/41 P0.7 — the message a failed request should show: the server's own
+ * words (`detail`, else `error`, else `message`), else a plain sentence.
+ */
+export function apiErrorMessage(err: unknown): string {
+  const res = (err as { response?: { status?: number; data?: { detail?: unknown; error?: unknown; message?: unknown } } })?.response
+  const said = [res?.data?.detail, res?.data?.error, res?.data?.message].find(v => typeof v === 'string' && v.trim()) as string | undefined
+  if (said) return said
+  if (!res) return 'The server could not be reached. Check your connection and try again.'
+  if ((res.status ?? 0) >= 500) return 'Something went wrong on our side. Try again in a moment.'
+  return 'That didn’t work. Try again.'
+}
+
+/**
+ * docs/41 P0.7 — whether a failed mutation is left for the global error toast:
+ * one whose screen shows nothing of it. A mutation that handles its own
+ * failure (an onError, or meta.errorHandled when it renders the error where
+ * it happened) is left alone, and so is a refusal the client made itself for
+ * a missing permission (already said where the action was offered).
+ */
+export function shouldToastMutationError(err: unknown, mutation: { options: { onError?: unknown; meta?: Record<string, unknown> } }): boolean {
+  if (mutation.options.onError) return false
+  if (mutation.options.meta?.errorHandled) return false
+  if ((err as { code?: string })?.code === 'ERR_CANCELED') return false
+  return true
+}

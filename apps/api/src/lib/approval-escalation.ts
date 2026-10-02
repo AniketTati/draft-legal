@@ -18,6 +18,7 @@ import { queueNotification } from './queue.js'
 import type { EscalationJob, NotificationJob } from './queue.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
+import { deciderIdsOf } from './workflow-engine.js'
 
 export async function handleEscalate(
   data: EscalationJob,
@@ -49,6 +50,8 @@ export async function handleEscalate(
         data: {
           approvalInstanceId: instanceId,
           orgId,
+          contractId: step.contractId,
+          kind:       step.kind,
           stepOrder:  step.stepOrder,
           stepName:   step.stepName,
           approverId: escalateTo,
@@ -72,31 +75,36 @@ export async function handleEscalate(
     })
   } else {
     // No escalation target: leave the step PENDING with its approver — still
-    // in their queue and still decidable — and chase both the approver and
-    // the people who can reassign it.
-    const approver = await prisma.user.findUnique({ where: { id: step.approverId } })
-    notify({
-      orgId,
-      userId:       step.approverId,
-      type:         'ESCALATION',
-      title:        'Approval overdue — action required',
-      body:         `"${contract?.title ?? 'A contract'}" is waiting on your approval and is overdue. Please review and decide.`,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
-      email:        approver?.email ?? undefined,
-    })
+    // in their queue and still decidable — and chase both the approver (or,
+    // for a role's pooled step, every holder of the role) and the people who
+    // can reassign it.
+    const deciders = await deciderIdsOf(step, prisma)
+    const people = await prisma.user.findMany({ where: { id: { in: deciders } }, select: { id: true, name: true, email: true } })
+    for (const p of people) {
+      notify({
+        orgId,
+        userId:       p.id,
+        type:         'ESCALATION',
+        title:        'Approval overdue — action required',
+        body:         `"${contract?.title ?? 'A contract'}" is waiting on your approval and is overdue. Please review and decide.`,
+        resourceType: 'approval_instance',
+        resourceId:   instanceId,
+        email:        p.email ?? undefined,
+      })
+    }
 
     const admins = await prisma.user.findMany({
       where: {
         orgId,
         deletedAt: null,
         status: 'ACTIVE',
-        id: { not: step.approverId },
+        id: { notIn: deciders },
         userRoles: { some: { role: { name: 'ADMIN' } } },
       },
       select: { id: true, email: true },
       take: 10,
     })
+    const approverName = people.length === 1 ? people[0].name : step.approverRoleId ? 'anyone holding the role' : null
     for (const admin of admins) {
       notify({
         orgId,
@@ -104,7 +112,7 @@ export async function handleEscalate(
         type:         'ESCALATION',
         title:        'Approval overdue — no escalation target',
         body:         `"${contract?.title ?? 'A contract'}" has waited past its deadline on step "${step.stepName}" `
-                    + `(${approver?.name ?? 'the assigned approver'}), and the workflow names no one to escalate to. `
+                    + `(${approverName ?? 'the assigned approver'}), and the workflow names no one to escalate to. `
                     + `The approver can still decide; delegate the step or set an escalation target on the workflow.`,
         resourceType: 'approval_instance',
         resourceId:   instanceId,

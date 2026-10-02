@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { recordAiSuggestions } from '../lib/ai-suggestion-events.js'
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
@@ -6,7 +7,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { computeVersionDiff, htmlDiff, DiffTooLargeError } from '../lib/diff.js'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { renderHtmlToPdf, renderHtmlToPdfAndStore } from '../lib/gotenberg.js'
+import { renderHtmlToPdf } from '../lib/gotenberg.js'
 import { RenderRefusedError } from '../lib/render-html.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
@@ -26,17 +27,34 @@ import { applyClauseProposal, escapeHtml as escapeText } from '../lib/clause-app
 import { restorePii, unresolvedPiiTokens, redactJson, withWholeTokens, valueLeftInMarkup, getOrgPiiMode, plainSpacesHtml, htmlTextForms, sliceOutsideTokens } from '../lib/pii-policy.js'
 import { storeClauseSegments, searchClauses, effectiveVersionsSql } from '../lib/embeddings.js'
 import { clauseVersionId } from '../lib/clause-version.js'
-import { afterEdit } from '../lib/version-refresh.js'
+import { createHtmlVersion } from '../lib/version-create.js'
 import { standingVersion } from '../lib/standing-version.js'
-import { queueParseDocument, queueClassifyDocument, queueExtractAi, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline } from '../lib/queue.js'
+import { queueParseDocument, queueClassifyDocument, queueChunkAndIndex, queueSplitBinder, queueEmbedContract, queueRedlineAnalysis, queueApprovalSummary, queueNotification, queueDraftContract, queuePlaybookRedline, queueExtractTypeFields, queueReadExhibit } from '../lib/queue.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { checkAutoApprove, resolveApprovers, type WorkflowStepDef } from '../lib/workflow-engine.js'
 import { checkUpload, servableContentType, CONTRACT_DOCUMENT_TYPES, ATTACHMENT_TYPES } from '../lib/file-type.js'
 import { SPLIT_REQUIRES_PDF, previousSplitChildren, resplitBlocker } from '../lib/binder-split.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
-import { manualStatusRefusal, setByWorkflow, statusAfterTermsChange } from '../lib/contract-status.js'
+import { manualRefusal, manualSource, manualTarget } from '../lib/contract-status.js'
+import { NOT_ANALYSED, analysisState } from '../lib/analysis-trigger.js'
+import { startRun, failOpenRuns } from '../lib/analysis-runs.js'
+import { contractPlaybook } from '../lib/playbooks.js'
+import { initialStage, positionOf, transition } from '../lib/lifecycle.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { submitForApproval } from '../lib/approval-flow.js'
+import { recommendationGuard } from '../lib/recommendation-guard.js'
+import { openChoices } from '../lib/open-choices.js'
 import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
+import {
+  applyExtraction, extractedFieldsFromPatch, personFieldsFromPatch, setFieldValues,
+  STORE_OWNED_PATCH_KEYS, STORE_OWNED_METADATA_KEYS, type ExtractionMode,
+} from '../lib/field-store.js'
+import { recordRun } from '../lib/field-runs.js'
+import { typeFieldsMark } from '../lib/type-fields-read.js'
+import { versionTrackedViews } from '../lib/tracked-changes.js'
+import { readExhibits, attachmentsOf, EXHIBIT_READABLE } from '../lib/exhibits.js'
+import { scanPagesOf, poorPageReader } from '../lib/scan-quality.js'
 import {
   CreateContractSchema,
   UpdateContractSchema,
@@ -44,7 +62,19 @@ import {
   AuditAction,
   normalizeRiskScore,
   pickWorkflow,
+  typeFieldsFor,
+  ContractType,
+  readContractType,
+  normaliseRelationshipType,
+  familyLabel,
+  type RelationshipType,
+  type AmendmentChangeSpec,
+  type AmendmentSpec,
 } from '@clm/types'
+import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml, closingAfterChanges, termChangeAsWritten, withReplacedBy } from '../lib/amendments.js'
+import { orgDateOrder } from '../lib/org-date-order.js'
+import { nextFamilyNumber, effectiveView } from '../lib/family.js'
+import { createChildContract } from '../lib/child-contract.js'
 import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
@@ -65,16 +95,6 @@ function versionForms(v: { plainText: string; htmlContent: string }): string[] {
 
 /** X33 — how much of each version's text the agents service's version list carries (the approval prompt reads 8,000). */
 const AGENT_TEXT_EXCERPT = 20_000
-
-/**
- * X47 — whether a saved HTML body is the document already stored. Line
- * breaks between tags don't count: the extractor writes them and the editor
- * never does. Any other difference is an edit, a single space included.
- */
-function sameDocumentHtml(stored: string, saved: string): boolean {
-  const norm = (html: string) => html.replace(/>\s*\n\s*</g, '><').trim()
-  return norm(stored) === norm(saved)
-}
 
 export async function contractRoutes(app: FastifyInstance) {
   // X7 — own-scope callers may only reach their own contracts by id.
@@ -101,6 +121,10 @@ export async function contractRoutes(app: FastifyInstance) {
           { counterpartyName: { contains: query.search, mode: 'insensitive' as const } },
         ],
       })
+    }
+
+    if (query.ids) {
+      andClauses.push({ id: { in: query.ids.split(',').map(s => s.trim()).filter(Boolean).slice(0, 300) } })
     }
 
     // U12 audit (2026-04-29). Numeric metadata facets — OTD and uptime
@@ -229,7 +253,6 @@ export async function contractRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: `Missing required column(s): ${missing.join(', ')}` })
     }
 
-    const ALLOWED_TYPES = new Set(['MSA', 'NDA', 'SOW', 'AMENDMENT', 'LICENSE', 'LEASE', 'EMPLOYMENT', 'VENDOR', 'CONSULTING', 'DPA', 'DISTRIBUTION', 'RESELLER', 'SETTLEMENT', 'ORDER_FORM', 'OTHER'])
     const ALLOWED_STATUS = new Set(['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION', 'PENDING_APPROVAL', 'APPROVED', 'PENDING_SIGNATURE', 'EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'])
 
     const results: Array<{ row: number; ok: boolean; id?: string; error?: string; title?: string }> = []
@@ -246,13 +269,15 @@ export async function contractRoutes(app: FastifyInstance) {
         results.push({ row: rowNo, ok: false, error: 'title is required' })
         continue
       }
-      const rawType = get('type').toUpperCase() || 'OTHER'
-      const type = ALLOWED_TYPES.has(rawType) ? rawType : 'OTHER'
+      // docs/39 A16 — the app's one type list, read as people write it ("DPA",
+      // "Vendor"): this route kept its own, which stored types nothing else
+      // knows and read DATA_PROCESSING, VENDOR_AGREEMENT, SLA as OTHER.
+      const type = readContractType(get('type'))?.type ?? 'OTHER'
       const rawStatus = get('status').toUpperCase() || 'DRAFT'
       const status = ALLOWED_STATUS.has(rawStatus) ? rawStatus : 'DRAFT'
       // X24 follow-up — approval statuses are the approval workflow's to set,
       // on import as by hand: a row marked APPROVED had no approval behind it.
-      if (setByWorkflow(status)) {
+      if (['PENDING_APPROVAL', 'APPROVED', 'PENDING_SIGNATURE'].includes(status)) {
         results.push({ row: rowNo, ok: false, title, error: `${status} is set by the approval workflow, not by import. Import the row as DRAFT (or EXECUTED if it is signed) and submit it for approval.` })
         continue
       }
@@ -271,7 +296,9 @@ export async function contractRoutes(app: FastifyInstance) {
         const created = await prisma.contract.create({
           data: {
             orgId, ownerId, createdBy: req.user.sub,   // X45 — for a key, the key; the owner is its maker
-            title, type, status,
+            title, type,
+            // docs/41 Part 18 — the stage the status stands for.
+            ...initialStage(status),
             counterpartyName: cp,
             value: value as never,
             currency: (get('currency') || 'USD').toUpperCase(),
@@ -281,8 +308,9 @@ export async function contractRoutes(app: FastifyInstance) {
             tags:          ['bulk-import'],
             // P27 audit (2026-05-02). Bulk-import has no file → no
             // parse pipeline → no worker advances analysisStatus past
-            // PENDING. Same fix as POST /contracts blank-create.
-            analysisStatus: 'DONE',
+            // PENDING. docs/41 P0.1 — and nothing was analysed, so it
+            // says so rather than DONE.
+            analysisStatus: NOT_ANALYSED,
           },
           select: { id: true, createdAt: true, tags: true },
         })
@@ -402,10 +430,11 @@ export async function contractRoutes(app: FastifyInstance) {
     // P27 audit (2026-05-02). Blank-create has no file → no parse
     // pipeline → no worker will ever advance analysisStatus past
     // PENDING. The contract page polls and sits at "Processing
-    // starting…" forever. Default to DONE so the row is immediately
-    // usable; uploads override this back to PENDING (see /upload).
+    // starting…" forever. docs/41 P0.1 — NOT_ANALYSED, not DONE: the row
+    // is usable, and says truthfully that nothing has been read (DONE made
+    // an unread contract look analysed and clean). Uploads set PENDING.
     const contract = await prisma.contract.create({
-      data: { ...body, orgId, ownerId, analysisStatus: 'DONE' } as Prisma.ContractUncheckedCreateInput,
+      data: { ...body, orgId, ownerId, analysisStatus: NOT_ANALYSED } as Prisma.ContractUncheckedCreateInput,
     })
 
     // P81 audit (2026-05-02). Index every fresh contract into ES so
@@ -463,6 +492,9 @@ export async function contractRoutes(app: FastifyInstance) {
     let counterpartyName = ''
     let parentContractId: string | undefined
     let relationshipType: string | undefined
+    // docs/39 G4 — a copy already signed: in force from upload (as bulk import allows),
+    // and read for its obligations once analysed.
+    let signed = false
 
     for await (const part of parts) {
       if (part.type === 'file') {
@@ -482,6 +514,7 @@ export async function contractRoutes(app: FastifyInstance) {
         if (part.fieldname === 'counterpartyName') counterpartyName = val
         if (part.fieldname === 'parentContractId' && val) parentContractId = val
         if (part.fieldname === 'relationshipType' && val) relationshipType = val
+        if (part.fieldname === 'signed') signed = val === 'true'
       }
     }
 
@@ -538,11 +571,13 @@ export async function contractRoutes(app: FastifyInstance) {
         ownerId,
         title: title || cleanFilename || filename.replace(/\.[^.]+$/, ''),
         type,
-        status: 'DRAFT',
+        status: signed ? 'EXECUTED' : 'DRAFT',
         analysisStatus: 'PENDING',  // parse worker sets ANALYZING when it starts
         counterpartyName: counterpartyName || undefined,
         parentContractId: parentContractId || undefined,
         relationshipType: relationshipType || undefined,
+        // docs/41 Part 13 — numbered per agreement ("Amendment No. 2").
+        amendmentNumber: parentContractId ? await nextFamilyNumber(orgId, parentContractId, relationshipType || null) ?? undefined : undefined,
         versions: {
           create: {
             versionNumber: 1,
@@ -591,7 +626,7 @@ export async function contractRoutes(app: FastifyInstance) {
       action: AuditAction.CONTRACT_UPLOADED,
       resourceType: 'contract',
       resourceId: contract.id,
-      metadata: { filename, mimeType, fileSize: fileBuffer.byteLength },
+      metadata: { filename, mimeType, fileSize: fileBuffer.byteLength, ...(signed && { signed: true }) },
       ipAddress: req.ip,
     })
     fireWebhook(orgId, 'contract.uploaded', {
@@ -613,6 +648,8 @@ export async function contractRoutes(app: FastifyInstance) {
         counterparty: true,
         versions: { orderBy: { versionNumber: 'desc' } },
         owner: { select: { id: true, name: true, email: true, avatarUrl: true } },
+        // docs/39 A12 — each attachment as read, without its text.
+        exhibits: { select: { s3Key: true, pageCount: true, ocrApplied: true, error: true, readAt: true } },
       },
     })
 
@@ -726,6 +763,8 @@ export async function contractRoutes(app: FastifyInstance) {
         // stored file; without the key here it never did. GET /:id already
         // returns it for every version.
         s3Key: true,
+        // A12 — a .doc or an image upload's PDF, which the page shows as its Original.
+        renderedPdfKey: true,
         changeNote: true, changeSummary: true, createdById: true, createdAt: true,
       },
     })
@@ -826,14 +865,20 @@ export async function contractRoutes(app: FastifyInstance) {
 
     await prisma.contract.update({
       where: { id },
-      // X42 — a new document on an approved contract needs approving again.
-      data: { currentVersionId: version.id, updatedAt: new Date(), status: statusAfterTermsChange(contract.status) },
+      data: { currentVersionId: version.id, updatedAt: new Date() },
     })
+    // X42, docs/41 Part 18 — a new document: approvals given are asked again as their reset rules say.
+    await onApprovalChange({ orgId, contractId: id, versionId: version.id, fromVersionId: lastVersion?.id, source: 'edit', userId })
 
     // Reset analysis state and queue the full pipeline (parse → classify → extract → embed)
+    // docs/39 G1 — a new document refreshes the values the AI owns (people's
+    // stay, and what the new document says lands as a suggestion), whatever
+    // mode an earlier re-analysis left behind.
+    const meta = { ...((contract.metadata as Record<string, unknown> | null) ?? {}) }
+    delete meta._extractionMode
     await prisma.contract.update({
       where: { id },
-      data: { analysisStatus: 'PENDING' },
+      data: { analysisStatus: 'PENDING', metadata: meta as never },
     })
 
     queueParseDocument({
@@ -857,95 +902,18 @@ export async function contractRoutes(app: FastifyInstance) {
   })
 
   // ── Save editor HTML as a new text version (no file upload) ─────────────
+  // docs/41 Part 16 (C1) — the web editor no longer calls this on every
+  // pause in typing: typing goes to the working copy (routes/working-copy.ts)
+  // and a version is made with a note. This stays for the callers that make
+  // one deliberate change (an applied redline, standard language inserted,
+  // an origin choice, Compare's merge).
   app.post('/:id/html-version', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { sub: userId, orgId } = req.user
     const { htmlContent, changeNote = 'Edited in browser' } = req.body as { htmlContent: string; changeNote?: string }
-
-    if (!htmlContent?.trim()) return reply.status(400).send({ detail: 'htmlContent is required' })
-
-    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null } })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    // BB3 — read-only while a Google Docs copy is out.
-    const lock = lockOf(contract.externalEdit)
-    if (lock) return reply.status(409).send(lockedBody(lock))
-
-    const lastVersion = await prisma.contractVersion.findFirst({
-      where: { contractId: id },
-      orderBy: { versionNumber: 'desc' },
-    })
-    // X47 — a save that changes nothing makes nothing. Opening a contract made
-    // the web editor report a change, and the page saves every change: each
-    // view added a version, moved the current version off the uploaded PDF,
-    // rendered a PDF and, since X42, sent an approved contract back to DRAFT.
-    // "Nothing" is judged against the version the contract stands on — the
-    // latest, unless an undo moved it back, when saving the latest again is
-    // a real change.
-    const standing = contract.currentVersionId && contract.currentVersionId !== lastVersion?.id
-      ? await prisma.contractVersion.findFirst({ where: { id: contract.currentVersionId, contractId: id } })
-      : lastVersion
-    if (standing && sameDocumentHtml(standing.htmlContent, htmlContent)) {
-      return reply.status(200).send(standing)
-    }
-
-    const plainText = htmlToText(htmlContent)
-
-    const version = await prisma.contractVersion.create({
-      data: {
-        contractId: id,
-        versionNumber: (lastVersion?.versionNumber ?? 0) + 1,
-        htmlContent,
-        plainText,
-        s3Key: null,
-        mimeType: 'text/html',
-        fileSize: Buffer.byteLength(htmlContent),
-        changeNote,
-        createdById: userId,
-      },
-    })
-
-    // A.5 — render a canonical PDF from this HTML and attach it to the
-    // version so approvers, signers, and counterparties see the latest
-    // edits. Fire-and-forget: a slow Gotenberg call must not block the save.
-    // The version exists without renderedPdfKey until Gotenberg finishes.
-    void (async () => {
-      try {
-        const { s3Key: pdfKey } = await renderHtmlToPdfAndStore({
-          html: htmlContent,
-          keyPrefix: `${orgId}/contracts/${id}/rendered`,
-          filename: `v${version.versionNumber}.pdf`,
-        })
-        await prisma.contractVersion.update({
-          where: { id: version.id },
-          data:  { renderedPdfKey: pdfKey, renderedAt: new Date() },
-        })
-        app.log.info({ contractId: id, versionId: version.id, pdfKey }, 'A.5: rendered canonical PDF')
-      } catch (err) {
-        app.log.warn({ err, contractId: id, versionId: version.id }, 'A.5: Gotenberg render failed — canonical will fall back to source')
-      }
-    })()
-
-    const status = statusAfterTermsChange(contract.status)
-    await prisma.contract.update({
-      where: { id },
-      // X42 — an edited document on an approved contract needs approving again.
-      data: { currentVersionId: version.id, updatedAt: new Date(), status },
-    })
-    // DD2 — the edit keeps the clauses of the version it was made on, and the
-    // search index follows the new text.
-    await afterEdit({ contractId: id, orgId, versionId: version.id, fromVersionId: standing?.id })
-    // X47 follow-up — the document changed, and perhaps its approval with it:
-    // on the record, as any other change to the contract is.
-    await createAuditEvent({
-      orgId, userId,
-      action: AuditAction.CONTRACT_UPDATED,
-      resourceType: 'contract',
-      resourceId: id,
-      metadata: { action: 'document_edited', versionNumber: version.versionNumber, ...(status && status !== contract.status && { statusFrom: contract.status, statusTo: status }) },
-      ipAddress: req.ip,
-    })
-
-    return reply.status(201).send(version)
+    const r = await createHtmlVersion({ orgId, userId, contractId: id, htmlContent, changeNote, ipAddress: req.ip, via: 'editor', log: app.log })
+    if (!r.ok) return reply.status(r.status).send(r.body)
+    return reply.status(r.created ? 201 : 200).send(r.version)
   })
 
   // ── Store clause segments (called by Review Agent) ───────────────────────
@@ -978,12 +946,15 @@ export async function contractRoutes(app: FastifyInstance) {
         interpretation?: string
         riskRating?: string
         sectionRef?: string
+        // docs/39 A4 — the clause's first and last words (PII restored above).
+        startsWith?: string
+        endsWith?: string
       }>
       clauseFlags?: Record<string, boolean>
     }
 
     if (clauseSegments?.length) {
-      await storeClauseSegments(versionId, clauseSegments)
+      await storeClauseSegments(versionId, clauseSegments, version.plainText)
       queueEmbedContract(versionId)
     }
 
@@ -1122,6 +1093,8 @@ export async function contractRoutes(app: FastifyInstance) {
         interpretation: true, riskRating: true, sectionRef: true,
         sortOrder: true,
         reviewState: true, reviewedAt: true, reviewedById: true,
+        // docs/39 E1 — ai, or user: tagged or corrected by a person.
+        source: true,
       },
     })
 
@@ -1183,10 +1156,14 @@ export async function contractRoutes(app: FastifyInstance) {
     }
     const select = { id: true, reviewState: true, reviewedAt: true, reviewedById: true }
     const updated = await prisma.contractClause.update({ where: { id: clauseId }, data, select })
-    if (target) {
-      const now = await prisma.contractClause.update({ where: { id: target.id }, data, select })
-      return reply.send({ ...now, requestedId: clauseId })
-    }
+    const marked = target ? await prisma.contractClause.update({ where: { id: target.id }, data, select }) : null
+    // docs/41 Part 4 — a clause marked "Not acceptable" (or acceptable again)
+    // is a decision, on the contract's record (it wrote none).
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.CLAUSE_REVIEWED, resourceType: 'contract', resourceId: clause.version.contract.id,
+      metadata: { clauseId: marked?.id ?? clauseId, clauseType: clause.clauseType, state, decision: state === 'rejected' ? 'not_acceptable' : state, versionId: currentVersionId ?? clause.versionId },
+    }).catch(err => req.log.warn({ err }, 'clause review not recorded'))
+    if (marked) return reply.send({ ...marked, requestedId: clauseId })
     return reply.send(updated)
   })
 
@@ -1203,8 +1180,14 @@ export async function contractRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'desc' },
       take: 100,
     })
+    // docs/41 P0.6 — who did it, by name (the Activity tab showed user ids).
+    const actorIds = [...new Set(events.map(e => e.userId).filter((u): u is string => !!u))]
+    const actors = actorIds.length
+      ? await prisma.user.findMany({ where: { id: { in: actorIds }, orgId }, select: { id: true, name: true, email: true } })
+      : []
+    const nameOf = new Map(actors.map(a => [a.id, a.name || a.email]))
 
-    return reply.send({ data: events })
+    return reply.send({ data: events.map(e => ({ ...e, userName: e.userId ? nameOf.get(e.userId) ?? null : null })) })
   })
 
   // ── Update metadata ──────────────────────────────────────────────────────
@@ -1239,7 +1222,9 @@ export async function contractRoutes(app: FastifyInstance) {
             select: { plainText: true, htmlContent: true },
           })
         : []
-      const source = [version ? version.plainText : '', ...compared.flatMap(versionForms)]
+      // A12 — the exhibits it read after the contract's own text.
+      const exhibits = (await readExhibits(existing.id)).map(e => e.text)
+      const source = [version ? version.plainText : '', ...exhibits, ...compared.flatMap(versionForms)]
       raw = restorePii(raw, source, existing.id)
       const left = unresolvedPiiTokens(raw, source).length
       if (left) req.log.warn({ contractId: existing.id, left }, 'PII placeholders left unresolved in an agents-service update')
@@ -1253,18 +1238,20 @@ export async function contractRoutes(app: FastifyInstance) {
       }
     }
     const body = UpdateContractSchema.parse(raw)
+    const bodyRec = body as Record<string, unknown>
+    const requestedKeys = Object.keys(body)
+    const isSystem = req.user.sub === 'system'
 
     // An analysis of a later version (the counterparty's return, a redline)
     // renamed the contract after the other side's document, and could retype
     // it. What the contract is called, what it is and who it's with are set
     // by the first version's analysis or by a person; later analyses leave them.
-    if (req.user.sub === 'system' && (body.title !== undefined || body.type !== undefined || body.counterpartyName !== undefined)) {
-      const versions = await prisma.contractVersion.count({ where: { contractId: existing.id } })
-      if (versions > 1) {
-        delete (body as Record<string, unknown>).title
-        delete (body as Record<string, unknown>).type
-        delete (body as Record<string, unknown>).counterpartyName
-      }
+    // (Who it's with is a field now: the field store keeps it and records what
+    // the later analysis read as a suggestion — docs/39 G1.)
+    const laterVersion = isSystem && (await prisma.contractVersion.count({ where: { contractId: existing.id } })) > 1
+    if (laterVersion) {
+      delete bodyRec.title
+      delete bodyRec.type
     }
 
     // X25 — a matter link must name a live matter of the contract's own org.
@@ -1275,37 +1262,41 @@ export async function contractRoutes(app: FastifyInstance) {
       if (!matter) return reply.status(404).send({ detail: 'Matter not found' })
     }
 
-    // Validate status transitions
+    // Validate status transitions. docs/41 Part 18 — a status names the
+    // stage it stands for, and the move is checked as one made by hand (X24:
+    // one table with the agent's set_status; approval is the workflow's).
+    const from = positionOf(existing)
+    const target = body.status && body.status !== existing.status ? manualTarget(body.status) : null
     if (body.status && body.status !== existing.status) {
-      // X24 — one table with the agent's set_status; approval statuses are the
-      // workflow's to set.
-      const refusal = manualStatusRefusal(existing.status, body.status)
+      if (!target) return reply.status(400).send({ detail: `Unknown status ${body.status}` })
+      const refusal = manualRefusal({ stage: from.stage, state: from.stageState }, target)
       if (refusal) return reply.status(409).send({ detail: refusal })
     }
 
     // X42 — a user changing an approved contract's type, value or currency
-    // changes what was approved: it goes back to DRAFT for approval again.
-    // (The agents service's extraction writes these from the document, whose
-    // own changes reset approval where a version is saved.)
+    // changes what was approved: the approval's reset rules decide what is
+    // asked again (after the write). (The agents service's extraction writes
+    // these from the document, whose own changes reset approval where a
+    // version is saved.)
     const num = (v: unknown) => (v == null ? null : Number(v))
-    const termsChanged = req.user.sub !== 'system' && !!statusAfterTermsChange(existing.status) && (
-      (body.type !== undefined && body.type !== existing.type)
-      || (body.value !== undefined && num(body.value) !== num(existing.value))
-      || (body.currency !== undefined && body.currency !== existing.currency))
-    if (termsChanged && body.status && body.status !== existing.status) {
-      return reply.status(409).send({ detail: 'Changing the type, value or currency of an approved contract returns it to DRAFT for approval again. Change the status separately.' })
+    const day = (v: unknown) => (v == null || v === '' ? null : new Date(v as string).toISOString().slice(0, 10))
+    const changedTerms = req.user.sub === 'system' ? [] : [
+      ...(body.type !== undefined && body.type !== existing.type ? ['type'] : []),
+      ...(body.value !== undefined && num(body.value) !== num(existing.value) ? ['value'] : []),
+      ...(body.currency !== undefined && body.currency !== existing.currency ? ['currency'] : []),
+      ...(body.effectiveDate !== undefined && day(body.effectiveDate) !== day(existing.effectiveDate) ? ['effectiveDate'] : []),
+      ...(body.expiryDate !== undefined && day(body.expiryDate) !== day(existing.expiryDate) ? ['expiryDate'] : []),
+      ...(body.counterpartyName !== undefined && (body.counterpartyName ?? null) !== existing.counterpartyName ? ['counterpartyName'] : []),
+      ...(body.jurisdiction !== undefined && (body.jurisdiction ?? null) !== existing.jurisdiction ? ['jurisdiction'] : []),
+    ]
+    const termsChanged = changedTerms.length > 0 && from.stage === 'approve'
+    if (termsChanged && target) {
+      return reply.status(409).send({ detail: 'Changing the type, value or currency of a contract in approval asks for its approval again. Change the stage separately.' })
     }
 
     // Use the contract's real orgId (internal calls come in with orgId='system')
     const effectiveOrgId = existing.orgId
 
-    // C4 — metadata is MERGED into what is stored, never replaced. Several
-    // writers own different keys (extraction, compliance, playbook review,
-    // binder split, redline); a JSON column update replaces the whole object,
-    // so re-analysis used to erase every report it did not itself produce.
-    // A null value deletes its key (JSON merge patch, top level).
-    const data: Record<string, unknown> = { ...body }
-    if (termsChanged) data.status = statusAfterTermsChange(existing.status)
     // X26 follow-up — _splitInto is written by the binder split itself
     // (lib/binder-split.ts), never changed through here, not even by the
     // agents service, whose writes follow a model that read the document.
@@ -1317,7 +1308,7 @@ export async function contractRoutes(app: FastifyInstance) {
         return reply.status(400).send({ detail: 'Metadata key "_splitInto" is set by the binder split only' })
       }
     }
-    if (body.metadata && req.user.sub !== 'system') {
+    if (body.metadata && !isSystem) {
       // X26 — `_` keys are server state (analysis reports, the binder split's
       // _splitInto). A user who wrote _splitInto made the next re-split
       // soft-delete whatever it named. Only the agents service writes them.
@@ -1326,8 +1317,73 @@ export async function contractRoutes(app: FastifyInstance) {
         return reply.status(400).send({ detail: `Metadata keys starting with "_" are set by the server: ${reserved.join(', ')}` })
       }
     }
+
+    // docs/39 B1/G1/B5 — field values go through the field store. Extraction
+    // may fill or refresh only what the AI owns: a value a person set or
+    // checked keeps, and what the AI read lands beside it as a suggestion
+    // (re-analysis used to overwrite corrections wholesale). A person's edit
+    // through the API is recorded as theirs, verified, and re-indexes search.
+    const customKeys = new Set((await prisma.contractFieldDefinition.findMany({
+      where: { orgId: effectiveOrgId, deletedAt: null }, select: { fieldKey: true },
+    })).map(d => d.fieldKey))
+    let storeWrote = false
+    if (isSystem) {
+      const extracted = extractedFieldsFromPatch(bodyRec, customKeys)
+      if (extracted.length) {
+        const storedMeta = (existing.metadata as Record<string, unknown> | null) ?? {}
+        const mode: ExtractionMode = storedMeta._extractionMode === 'fill_blanks' ? 'fill_blanks' : 'replace_ai'
+        const { versionId } = req.query as { versionId?: string }
+        // A9 — a Word file with tracked changes: values keep what's agreed, their changes' proposals beside them.
+        const tracked = versionId ? await versionTrackedViews(existing.id, versionId) : null
+        // A7 — a scan: a value from a page the OCR engine was unsure of asks to be checked against it.
+        const readFrom = versionId ? await prisma.contractVersion.findFirst({ where: { id: versionId, contractId: existing.id }, select: { plainText: true, metadata: true } }) : null
+        const pages = readFrom ? scanPagesOf(readFrom.metadata) : null
+        const poorPageOf = pages && readFrom ? poorPageReader(readFrom.plainText, pages) : null
+        const outcome = await applyExtraction(existing.id, extracted, { mode, versionId: versionId ?? null, protectKeys: laterVersion ? ['counterpartyName'] : [], tracked, poorPageOf })
+        // G1 — a re-analysis that changed values the contract already had can be undone for 30 days.
+        if (outcome?.changes.length) {
+          await recordRun({
+            orgId: existing.orgId, kind: 'reanalysis', contractId: existing.id,
+            changes: outcome.changes.map(ch => ({ ...ch, contractId: existing.id })),
+          }).catch(err => req.log.warn({ err }, '[contracts] re-analysis run not recorded'))
+        }
+        storeWrote = true
+        // The mode a re-analysis asked for applies to this one write.
+        body.metadata = { ...(body.metadata ?? {}), _extractionMode: null }
+      }
+    } else {
+      const values = personFieldsFromPatch(bodyRec, customKeys)
+      if (values.length) {
+        const r = await setFieldValues({
+          orgId: effectiveOrgId, contractId: existing.id, userId, values,
+          audit: { source: 'api', ipAddress: req.ip },
+          // X42 is decided above, with the status check that goes with it.
+          skipApprovalReset: true,
+        })
+        if (!r.ok) return reply.status(r.status).send({ detail: r.detail })
+        storeWrote = true
+      }
+    }
+    for (const k of STORE_OWNED_PATCH_KEYS) delete bodyRec[k]
     if (body.metadata) {
-      const merged: Record<string, unknown> = { ...((existing.metadata as Record<string, unknown> | null) ?? {}) }
+      for (const k of STORE_OWNED_METADATA_KEYS) delete body.metadata[k]
+      for (const k of customKeys) delete body.metadata[k]
+    }
+
+    // C4 — metadata is MERGED into what is stored, never replaced. Several
+    // writers own different keys (extraction, compliance, playbook review,
+    // binder split, redline); a JSON column update replaces the whole object,
+    // so re-analysis used to erase every report it did not itself produce.
+    // A null value deletes its key (JSON merge patch, top level).
+    const data: Record<string, unknown> = { ...body }
+    // The stage moves through lib/lifecycle.ts, after the other changes.
+    delete data.status
+    if (body.metadata) {
+      // The field store may just have rewritten metadata: merge onto what is stored now.
+      const base = storeWrote
+        ? (await prisma.contract.findUnique({ where: { id: existing.id }, select: { metadata: true } }))?.metadata
+        : existing.metadata
+      const merged: Record<string, unknown> = { ...((base as Record<string, unknown> | null) ?? {}) }
       for (const [k, v] of Object.entries(body.metadata)) {
         if (v === null) delete merged[k]
         else merged[k] = v
@@ -1335,13 +1391,29 @@ export async function contractRoutes(app: FastifyInstance) {
       data.metadata = merged
     }
 
-    const updated = await prisma.contract.update({ where: { id }, data: data as Prisma.ContractUncheckedUpdateInput })
+    let updated = await prisma.contract.update({ where: { id }, data: data as Prisma.ContractUncheckedUpdateInput })
+    if (target) {
+      const moved = await transition({
+        orgId: effectiveOrgId, contractId: id, to: { stage: target.stage, state: target.state },
+        source: manualSource({ stage: from.stage, state: from.stageState }, target),
+        userId: userId === 'system' ? null : userId, versionId: existing.currentVersionId,
+      })
+      if (!moved.ok) return reply.status(moved.status).send({ detail: moved.refusal })
+      updated = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    }
+    // X42 — what an approval judged changed: its reset rules decide.
+    if (termsChanged) {
+      await onApprovalChange({ orgId: effectiveOrgId, contractId: id, fields: changedTerms, source: 'edit', userId: userId === 'system' ? null : userId })
+      updated = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    }
 
     // Re-index if searchable fields changed. indexContract is a full-document
     // overwrite (elasticsearch.ts), so we must carry the existing full text and
     // the other searchable fields through — otherwise a metadata-only PATCH
     // (e.g. a title edit) would wipe plainText and blank the BM25 body. (Wave 3.1)
-    if (body.title || body.status || body.counterpartyName || body.tags) {
+    // docs/39 B5 — a changed field value (dates, value, custom fields) is
+    // searchable too: the assistant's portfolio answers read the index.
+    if (body.title || body.status || body.tags || storeWrote) {
       const currentVersion = existing.currentVersionId
         ? await prisma.contractVersion.findUnique({
             where: { id: existing.currentVersionId },
@@ -1370,21 +1442,21 @@ export async function contractRoutes(app: FastifyInstance) {
     // H2 — advertised to subscribers since P10A, never emitted until now.
     fireWebhook(effectiveOrgId, 'contract.updated', {
       contractId: id, title: updated.title, status: updated.status,
-      changes: Object.keys(body), source: userId === 'system' ? 'system' : 'user',
+      changes: requestedKeys, source: userId === 'system' ? 'system' : 'user',
     })
 
-    await createAuditEvent({
-      orgId: effectiveOrgId,
-      userId: userId === 'system' ? undefined : userId,
-      action: body.status && body.status !== existing.status
-        ? AuditAction.CONTRACT_STATUS_CHANGED
-        : AuditAction.CONTRACT_UPDATED,
-      resourceType: 'contract',
-      resourceId: id,
-      metadata: body.status && body.status !== existing.status
-        ? { from: existing.status, to: body.status }
-        : { changes: Object.keys(body) },
-    })
+    // docs/41 P0.10 — a stage move is recorded as one (lib/lifecycle.ts);
+    // anything else as an update.
+    if (!target) {
+      await createAuditEvent({
+        orgId: effectiveOrgId,
+        userId: userId === 'system' ? undefined : userId,
+        action: AuditAction.CONTRACT_UPDATED,
+        resourceType: 'contract',
+        resourceId: id,
+        metadata: { changes: requestedKeys },
+      })
+    }
 
     return reply.send(withNormalizedRisk(updated))
   })
@@ -1424,11 +1496,23 @@ export async function contractRoutes(app: FastifyInstance) {
         contractType:      (draftCtx?.contractType as string) ?? contract.type,
         counterpartyName:  (draftCtx?.counterpartyName as string) ?? contract.counterpartyName ?? undefined,
         estimatedValue:    (draftCtx?.estimatedValue as number) ?? (contract.value != null ? Number(contract.value) : undefined),
+        extractedTerms:    draftCtx?.extractedTerms as Record<string, unknown> | undefined,
+        templateId:        draftCtx?.templateId as string | undefined,
+        slotChoices:       draftCtx?.slotChoices as Record<string, string> | undefined,
       })
       return reply.send({ status: 'queued', contractId: id, analysisStatus: 'DRAFTING', mode: 'draft' })
     }
 
     const { full } = req.query as { full?: string }
+    // docs/41 P1 — a person asked again: a run of its own.
+    await startRun({ orgId, contractId: id, versionId: version.id, reason: 'retry' })
+    // docs/39 G1 — what the new analysis may write: `replace_ai` refreshes the
+    // values the AI owns, `fill_blanks` only fills empty ones. Neither touches
+    // a value a person set or checked (the field store keeps those and records
+    // what the AI read as a suggestion). The extraction's write reads it once.
+    const requested = (req.body as { fields?: unknown } | undefined)?.fields ?? (req.query as { fields?: unknown }).fields
+    const fieldsMode: ExtractionMode = requested === 'fill_blanks' ? 'fill_blanks' : 'replace_ai'
+    const withMode = { ...((contract.metadata as Record<string, unknown> | null) ?? {}), _extractionMode: fieldsMode }
 
     if ((full === 'true' || !version.plainText) && version.s3Key) {
       // Full reprocess — re-parse from S3 and run the entire pipeline
@@ -1441,9 +1525,11 @@ export async function contractRoutes(app: FastifyInstance) {
       // Reset AI metadata so the UI shows fresh in-progress state.
       // Do NOT clear plainText/htmlContent — stale queued jobs read from the DB
       // and would fail with "No plainText" if we clear it before parse finishes.
+      // docs/39 G1 — nor the field values: they emptied keyTerms and
+      // fieldConfidence here, so every correction and verification was lost.
       await prisma.contract.update({
         where: { id },
-        data: { analysisStatus: 'PENDING', keyTerms: {}, riskScore: null, summary: null, fieldConfidence: {} },
+        data: { analysisStatus: 'PENDING', riskScore: null, summary: null, metadata: withMode as never },
       })
 
       queueParseDocument({
@@ -1455,18 +1541,18 @@ export async function contractRoutes(app: FastifyInstance) {
         filename,
       })
 
-      return reply.send({ status: 'queued', contractId: id, analysisStatus: 'PENDING', mode: 'full' })
+      return reply.send({ status: 'queued', contractId: id, analysisStatus: 'PENDING', mode: 'full', fields: fieldsMode })
 
     } else {
       // Smart resume — re-classify + re-extract (keeps parsed text, re-runs AI from scratch)
       await prisma.contract.update({
         where: { id },
-        data: { analysisStatus: 'CLASSIFYING' },
+        data: { analysisStatus: 'CLASSIFYING', metadata: withMode as never },
       })
 
       queueClassifyDocument({ contractId: id, versionId: version.id, orgId })
 
-      return reply.send({ status: 'queued', contractId: id, analysisStatus: 'CLASSIFYING', mode: 'smart' })
+      return reply.send({ status: 'queued', contractId: id, analysisStatus: 'CLASSIFYING', mode: 'smart', fields: fieldsMode })
     }
   })
 
@@ -1484,6 +1570,7 @@ export async function contractRoutes(app: FastifyInstance) {
       where: { id },
       data: { analysisStatus: 'FAILED', analysisError: 'Analysis cancelled by user.' },
     })
+    await failOpenRuns([id], 'Analysis cancelled by user.')
 
     return reply.send({ status: 'cancelled', contractId: id, analysisStatus: 'FAILED' })
   })
@@ -1492,9 +1579,12 @@ export async function contractRoutes(app: FastifyInstance) {
   app.post('/:id/retype', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
-    const { contractType } = req.body as { contractType: string }
+    const { contractType, reread } = req.body as { contractType: string; reread?: boolean }
 
     if (!contractType) return reply.status(400).send({ detail: 'contractType is required' })
+    if (!(Object.values(ContractType) as string[]).includes(contractType)) {
+      return reply.status(400).send({ detail: `Unknown contract type: ${contractType}` })
+    }
 
     const contract = await prisma.contract.findFirst({
       where: { id, orgId, deletedAt: null },
@@ -1511,27 +1601,32 @@ export async function contractRoutes(app: FastifyInstance) {
     // changes what was approved, so an approved contract goes back to DRAFT
     // for approval again, and the change is on the record.
     const retyped = contractType !== contract.type
-    const status = retyped ? statusAfterTermsChange(contract.status) : undefined
+    // docs/39 A13 — a person's type: a re-analysis keeps it, and an AI's
+    // opinion that it's another type is settled. Only the new type's own
+    // fields are read (lib/type-fields-read.ts), not the whole contract again
+    // — or read again (`reread`), after a read that failed.
+    const toRead = (retyped || !!reread) && typeFieldsFor(contractType).length > 0
+    const { _typeOpinion: _settled, _typeFieldsRead: _earlier, ...rest } = (contract.metadata as Record<string, unknown> | null) ?? {}
+    const md = { ...rest, _typeSource: 'person', ...(toRead && { _typeFieldsRead: typeFieldsMark(contractType) }) }
     await prisma.contract.update({
       where: { id },
-      data: { type: contractType, analysisStatus: 'ANALYZING', ...(status && { status }) },
+      data: { type: contractType, metadata: md as never, ...(toRead && { analysisStatus: 'ANALYZING' }) },
     })
+    // X42/X56, docs/41 Part 18 — a new type: the approval's reset rules decide what is asked again.
+    const statusMove = async () => {
+      await onApprovalChange({ orgId, contractId: id, fields: ['type'], source: 'edit', userId: req.user.sub })
+      const now = (await prisma.contract.findUnique({ where: { id }, select: { status: true } }))?.status
+      return now && now !== contract.status ? { statusFrom: contract.status, statusTo: now } : {}
+    }
     if (retyped) {
       await createAuditEvent({
         orgId, userId: req.user.sub, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: id,
-        metadata: { action: 'retype', typeFrom: contract.type, typeTo: contractType, ...(status && { statusFrom: contract.status, statusTo: status }) },
+        metadata: { action: 'retype', typeFrom: contract.type, typeTo: contractType, ...(await statusMove()) },
       })
     }
+    if (toRead) queueExtractTypeFields({ contractId: id, orgId, contractType })
 
-    queueExtractAi({
-      contractId: id,
-      versionId:  standing.id,
-      orgId,
-      contractType,
-      triggeredBy: 'retype',
-    })
-
-    return reply.send({ status: 'queued', contractId: id, contractType, analysisStatus: 'ANALYZING' })
+    return reply.send({ status: toRead ? 'queued' : 'done', contractId: id, contractType, analysisStatus: toRead ? 'ANALYZING' : contract.analysisStatus })
   })
 
   // ── Internal: trigger chunk-and-index (called by agents after clauses stored) ─
@@ -1768,12 +1863,13 @@ export async function contractRoutes(app: FastifyInstance) {
         id: true,
         parentContractId: true,
         relationshipType: true,
+        amendmentNumber: true,
         parentContract: {
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true, metadata: true },
         },
         amendments: {
           where: { deletedAt: null, orgId, ...ownContractWhere(req) },
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, amendmentNumber: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1801,10 +1897,22 @@ export async function contractRoutes(app: FastifyInstance) {
         })
       : []
 
+    // docs/41 P0.9 — carved out of a scanned bundle by the binder split (the
+    // parent lists it in _splitInto, lib/binder-split.ts), as opposed to an
+    // amendment, an exhibit or a contract linked by hand.
+    const splitInto = (p?.metadata as { _splitInto?: unknown } | null)?._splitInto
+    const splitFromParent = !!parent && (contract.relationshipType === 'split_part' || contract.relationshipType === 'exhibit')
+      && Array.isArray(splitInto) && splitInto.includes(contract.id)
+
     return reply.send({
       parent,
       children: contract.amendments,
       siblings,
+      relationshipType: contract.relationshipType,
+      // docs/41 Part 13 — "Amendment No. 2", for the banner.
+      amendmentNumber: contract.amendmentNumber,
+      label: familyLabel(contract.relationshipType, contract.amendmentNumber),
+      splitFromParent,
     })
   })
 
@@ -1852,6 +1960,10 @@ export async function contractRoutes(app: FastifyInstance) {
       expiryDate?:       string
       value?:            number | string
       currency?:         string
+      // docs/41 Part 13 — what changes, the template, and its number.
+      changes?:          unknown
+      templateId?:       string | null
+      amendmentNumber?:  number
     }
 
     const parent = await prisma.contract.findFirst({
@@ -1859,7 +1971,7 @@ export async function contractRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyId: true, counterpartyName: true,
-        currency: true, matterId: true, diligenceRoomId: true,
+        currency: true, matterId: true, diligenceRoomId: true, effectiveDate: true,
       },
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
@@ -1867,18 +1979,50 @@ export async function contractRoutes(app: FastifyInstance) {
     const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
-    const relationshipType = (body.relationshipType ?? 'amendment').toLowerCase()
-    const ALLOWED = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit_only']
-    if (!ALLOWED.includes(relationshipType)) {
+    // docs/41 Part 13 — one of the family's relationships; older spellings
+    // (`exhibit_only`) read as the one they meant.
+    const relationshipType = normaliseRelationshipType(body.relationshipType ?? 'amendment')
+    const ALLOWED: RelationshipType[] = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit', 'nda', 'other']
+    if (!relationshipType || !ALLOWED.includes(relationshipType)) {
       return reply.status(400).send({ detail: `relationshipType must be one of ${ALLOWED.join(', ')}` })
     }
+    const parsedChanges = AmendmentChangesSchema.safeParse(body.changes ?? [])
+    if (!parsedChanges.success) return reply.status(400).send({ detail: 'Invalid changes', issues: parsedChanges.error.issues })
+    const amendmentNumber = body.amendmentNumber != null && Number.isInteger(Number(body.amendmentNumber)) && Number(body.amendmentNumber) > 0
+      ? Number(body.amendmentNumber)
+      : await nextFamilyNumber(orgId, parent.id, relationshipType)
+    // The parent's words for each clause that changes: the evidence, as in
+    // effect now (an earlier signed amendment's words, when one changed it).
+    const changes: AmendmentChangeSpec[] = []
+    const effective = parsedChanges.data.some(ch => ch.kind === 'clause') ? await effectiveView(orgId, parent.id) : null
+    // Money and dates as the document writes them ("USD 300,000", not "300000").
+    const style = { dateOrder: await orgDateOrder(orgId), currency: parent.currency }
+    for (const ch of parsedChanges.data) {
+      if (ch.kind === 'term') { changes.push({ ...termChangeAsWritten({ ...ch, from: ch.from ?? null }, style), source: 'user' }); continue }
+      if (ch.action === 'replace' && !ch.newText?.trim()) return reply.status(400).send({ detail: 'Write the new words for each clause that is replaced' })
+      const clause = await prisma.contractClause.findFirst({
+        where: { id: ch.clauseId, version: { contractId: parent.id, contract: { orgId } } },
+        select: { id: true, clauseType: true, sectionRef: true, content: true },
+      })
+      if (!clause) return reply.status(400).send({ detail: 'A clause picked to change isn’t in the agreement' })
+      const inEffect = effective?.sections.find(x => x.clauseId === clause.id)
+      changes.push({
+        kind: 'clause', clauseId: clause.id, clauseType: clause.clauseType, sectionRef: clause.sectionRef, parentText: inEffect?.text || clause.content,
+        newText: ch.action === 'delete' ? '' : ch.newText ?? '', action: ch.action, source: ch.source, instruction: ch.instruction ?? null,
+      })
+    }
+    const template = body.templateId
+      ? await prisma.template.findFirst({ where: { id: body.templateId, orgId, deletedAt: null }, include: { sections: true } })
+      : null
+    if (body.templateId && !template) return reply.status(404).send({ detail: 'Template not found' })
 
     // X25 — inherit the parent's matter only if it is a live matter of this
     // org: a link stored before the fix could name another org's.
     const matterId = parent.matterId && await prisma.matter.count({ where: { id: parent.matterId, orgId, deletedAt: null } })
       ? parent.matterId : null
 
-    const title = (body.title?.trim()) || `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`
+    const label = familyLabel(relationshipType, amendmentNumber)
+    const title = (body.title?.trim()) || (label ? `${label} to ${parent.title}` : `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`)
     // Default type by relationship: amendments inherit parent type;
     // SOWs/order-forms get their own type so users can set it later.
     const type = body.type ?? (relationshipType === 'amendment' ? parent.type : 'OTHER')
@@ -1892,84 +2036,50 @@ export async function contractRoutes(app: FastifyInstance) {
     // worker is about to pick this up" — but no worker is enqueued for an
     // amendment (no file uploaded, no template materialised). Result: the
     // contract page sat at "Processing starting…" forever. An empty
-    // amendment draft has nothing to analyse, so mark it DONE up-front;
+    // amendment draft has nothing to analyse, so it is NOT_ANALYSED up
+    // front (docs/41 P0.1: never DONE unread);
     // the user's upload / paste flow will re-queue parse if/when a real
     // document attaches. We also create an empty initial ContractVersion
     // so the editor + risks panels have a row to write into.
     const escapeHtml = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-    const created = await prisma.contract.create({
-      data: {
-        orgId, ownerId,
-        title,
-        type,
-        status: 'DRAFT',
-        analysisStatus: 'DONE',
-        parentContractId: parent.id,
-        relationshipType,
-        counterpartyId:   parent.counterpartyId,
-        counterpartyName: parent.counterpartyName,
-        currency:         body.currency ?? parent.currency ?? 'USD',
-        value:            value != null && !isNaN(value) ? value : null,
-        effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
-        expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
-        matterId:         matterId ?? undefined,
-        // C11 — an amendment to a diligence-room document stays in that room.
-        diligenceRoomId:  parent.diligenceRoomId ?? undefined,
-        metadata:         body.description ? { amendmentDescription: body.description } : {},
-        versions: {
-          create: {
-            versionNumber: 1,
-            htmlContent:   body.description
-              ? `<p>${escapeHtml(body.description)}</p>`
-              : '<p></p>',
-            plainText:     body.description ?? '',
-            changeNote:    `Initial ${relationshipType} draft`,
-            createdById:   userId,
-          },
-        },
+    // docs/41 Part 13 — drafted from what changes: the operative words built
+    // around the changes, in the org's amendment template when one was chosen.
+    const effectiveDay = body.effectiveDate ? String(body.effectiveDate).slice(0, 10) : null
+    const drafted = changes.length || template
+      ? (template
+        ? amendmentFromTemplate(template as never, {
+          parent_title: parent.title, counterparty_name: parent.counterpartyName, amendment_label: label ?? 'Amendment',
+          effective_date: effectiveDay, parent_effective_date: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
+        }, changes, style)
+        : amendmentHtml({
+          label: label ?? 'Amendment', parentTitle: parent.title, parentEffectiveDate: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
+          counterpartyName: parent.counterpartyName, effectiveDate: effectiveDay, changes, dateOrder: style.dateOrder,
+        }))
+      : null
+    const draftedText = drafted ? htmlToText(drafted) : null
+    const amendmentSpec: AmendmentSpec | null = drafted
+      ? { parentId: parent.id, number: amendmentNumber, effectiveDate: effectiveDay, templateId: template?.id ?? null, changes, endsBefore: closingAfterChanges(drafted, changes) }
+      : null
+    // Created through the one child path (lib/child-contract.ts): its stage on
+    // the record, a drafted amendment read like any draft (P0.1), indexed, announced.
+    const created = await createChildContract({
+      orgId, userId, ownerId, parent, title, type, relationshipType, amendmentNumber, matterId,
+      currency:      body.currency ?? null,
+      value:         value != null && !isNaN(value) ? value : null,
+      effectiveDate: body.effectiveDate ? new Date(body.effectiveDate) : null,
+      expiryDate:    body.expiryDate ? new Date(body.expiryDate) : null,
+      metadata: {
+        ...(body.description ? { amendmentDescription: body.description } : {}),
+        ...(amendmentSpec ? { _amendment: amendmentSpec } : {}),
       },
-      include: { versions: true },
-    })
-    // Set currentVersionId now that the version row has an id.
-    if (created.versions[0]) {
-      await prisma.contract.update({
-        where: { id: created.id },
-        data:  { currentVersionId: created.versions[0].id },
-      })
-    }
-
-    // P81 audit (2026-05-02). Index amendments in ES so they
-    // surface in portfolio_search when users ask about the changed
-    // contract family. Was previously skipped — every "find me the
-    // amendment that adjusted SLAs" query missed.
-    indexContract(created.id, {
-      orgId,
-      title:            created.title,
-      type:             created.type,
-      status:           created.status,
-      counterpartyName: created.counterpartyName ?? undefined,
-      plainText:        body.description ?? '',
-      tags:             [],
-      createdAt:        created.createdAt.toISOString(),
-      effectiveDate:    created.effectiveDate?.toISOString(),
-      expiryDate:       created.expiryDate?.toISOString(),
-    }).catch(err => app.log.warn({ err }, 'ES index on amendment failed'))
-
-    await createAuditEvent({
-      orgId, userId,
-      action: AuditAction.CONTRACT_CREATED,
-      resourceType: 'contract', resourceId: created.id,
-      metadata: { relationshipType, parentContractId: parent.id, source: 'amendment_flow' },
+      html:      drafted ?? (body.description ? `<p>${escapeHtml(body.description)}</p>` : '<p></p>'),
+      plainText: draftedText ?? body.description ?? '',
+      drafted:   !!drafted,
+      source:    'amendment_flow',
       ipAddress: req.ip,
-    })
-    // H2 — `amendment.created` was advertised but never emitted. This route
-    // creates every related document (amendment, SOW, order form, renewal,
-    // exhibit); the event names the relationship so subscribers can filter.
-    fireWebhook(orgId, 'amendment.created', {
-      contractId: created.id, parentContractId: parent.id, relationshipType,
-      title: created.title, type: created.type,
+      log:       app.log,
     })
 
     return reply.status(201).send({
@@ -1979,6 +2089,8 @@ export async function contractRoutes(app: FastifyInstance) {
       status:           created.status,
       parentContractId: parent.id,
       relationshipType,
+      amendmentNumber,
+      label,
     })
   })
 
@@ -2029,7 +2141,7 @@ export async function contractRoutes(app: FastifyInstance) {
     const current = (existing.attachments as any[]) ?? []
     const updated = [
       ...current,
-      { filename, s3Key, mimeType, size: fileBuffer.byteLength, label: label || filename },
+      { filename, s3Key, mimeType, size: fileBuffer.byteLength, label: label || filename, attachedAt: new Date().toISOString() },
     ]
 
     await prisma.contract.update({
@@ -2045,6 +2157,8 @@ export async function contractRoutes(app: FastifyInstance) {
       metadata: { action: 'attach', filename, mimeType, size: fileBuffer.byteLength },
       ipAddress: req.ip,
     })
+    // docs/39 A12 — read as part of the contract.
+    queueReadExhibit({ orgId, contractId: id, s3Key })
 
     return reply.send({ attachments: updated })
   })
@@ -2068,8 +2182,24 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const updated = current.filter((_, i) => i !== idx)
     await prisma.contract.update({ where: { id }, data: { attachments: updated } })
+    // docs/39 A12 — no longer part of the contract: its text isn't read with it.
+    const removed = current[idx] as { s3Key?: unknown } | undefined
+    if (typeof removed?.s3Key === 'string') await prisma.contractExhibit.deleteMany({ where: { contractId: id, orgId, s3Key: removed.s3Key } })
 
     return reply.send({ attachments: updated })
+  })
+
+  // ── docs/39 A12 — read an attachment as part of the contract (one from before attachments were read) ──
+  app.post('/:id/attachments/:index/read', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, index } = req.params as { id: string; index: string }
+    const { orgId } = req.user
+    const existing = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { attachments: true } })
+    if (!existing) return reply.status(404).send({ detail: 'Contract not found' })
+    const att = attachmentsOf(existing.attachments)[parseInt(index, 10)]
+    if (!att) return reply.status(400).send({ detail: 'Attachment index out of range' })
+    if (!EXHIBIT_READABLE.has(att.mimeType)) return reply.status(422).send({ detail: 'A spreadsheet isn’t read as part of the contract.' })
+    queueReadExhibit({ orgId, contractId: id, s3Key: att.s3Key })
+    return reply.status(202).send({ status: 'queued' })
   })
 
   // ── Download attachment ────────────────────────────────────────────────────
@@ -2337,11 +2467,23 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { id: true, currentVersionId: true, metadata: true },
+      select: { id: true, currentVersionId: true, metadata: true, analysisStatus: true, analysisError: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-    if (!contract.currentVersionId) {
-      return reply.status(400).send({ detail: 'Contract has no current version to redline' })
+    // docs/41 P0.7 — the redline reads the clauses the analysis found, of the
+    // version the contract stands on. Without them it answered 400 (no
+    // current version) with nothing shown, or ran over zero clauses and said
+    // "No clause deviated from the playbook".
+    const state = analysisState(contract)
+    if (!contract.currentVersionId || state.kind !== 'done') {
+      return reply.status(409).send({
+        code: 'NOT_ANALYSED',
+        analysis: state,
+        detail: state.kind === 'running' ? 'This contract is still being analysed. The redline can run once it is done.'
+          : state.kind === 'stale' ? 'The document changed after it was analysed. Analyse this version first, then run the redline.'
+          : state.kind === 'failed' ? 'This contract’s analysis failed. Analyse it again, then run the redline.'
+          : 'This contract hasn’t been analysed yet. Analyse it first, then run the redline.',
+      })
     }
 
     const meta = (contract.metadata as Record<string, unknown> | null) ?? {}
@@ -2440,6 +2582,13 @@ export async function contractRoutes(app: FastifyInstance) {
       },
     })
 
+    // docs/41 Part 16 — "Fix all fixable": each staged rewrite taken or passed over.
+    const taken = new Set(changes.map(c => c.clauseId))
+    void recordAiSuggestions([...byId.keys()].map(clauseId => ({
+      orgId, userId, contractId, versionId: result.data.newVersionId ?? null, feature: 'fix_all' as const,
+      outcome: taken.has(clauseId) ? 'accepted' as const : 'dismissed' as const, suggestionId: clauseId,
+    })))
+
     return reply.send(result.data)
   })
 
@@ -2454,7 +2603,7 @@ export async function contractRoutes(app: FastifyInstance) {
 
     const contract = await prisma.contract.findFirst({
       where:  { id: contractId, orgId, deletedAt: null },
-      select: { metadata: true, type: true, currentVersionId: true },
+      select: { id: true, metadata: true, type: true, currentVersionId: true, playbookId: true },
     })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
@@ -2462,9 +2611,9 @@ export async function contractRoutes(app: FastifyInstance) {
       { findings?: Array<Record<string, unknown>>; versionId?: string } | undefined
     if (!review) {
       // V1 — say WHY there is no review: the job skips contracts whose type
-      // has no playbook positions (same filter as handlePlaybookReview).
-      const positions = await prisma.playbookPosition.findMany({ where: { orgId }, select: { contractTypes: true } })
-      const playbookPositionCount = positions.filter(p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type)).length
+      // has no playbook positions (same playbook as handlePlaybookReview).
+      const { where: positionScope } = await contractPlaybook(orgId, contract)
+      const playbookPositionCount = positionScope ? await prisma.playbookPosition.count({ where: positionScope }) : 0
       return reply.status(404).send({
         detail: playbookPositionCount === 0
           ? `No playbook positions apply to ${contract.type} contracts, so this contract has not been reviewed against a playbook.`
@@ -2518,6 +2667,61 @@ export async function contractRoutes(app: FastifyInstance) {
     return reply.send({ ...review, findings: ordered })
   })
 
+  // ── GET /:id/playbook (docs/41 P1, Part 3) ─────────────────────────────
+  // The playbook this contract is reviewed against, and why: chosen on it,
+  // the default for its type, the only one, or "choose one" — never a guess.
+  app.get('/:id/playbook', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id } = req.params as { id: string }
+    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, type: true, playbookId: true } })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const { resolution, where } = await contractPlaybook(orgId, contract)
+    const positionCount = where ? await prisma.playbookPosition.count({ where }) : 0
+    return reply.send({ ...resolution, positionCount, contractType: contract.type })
+  })
+
+  // ── PUT /:id/playbook — choose this contract's playbook (null: the default again)
+  app.put('/:id/playbook', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId, sub: userId } = req.user
+    const { id } = req.params as { id: string }
+    const { playbookId } = (req.body ?? {}) as { playbookId?: string | null }
+    const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, type: true, playbookId: true } })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    if (playbookId && !await prisma.playbook.findFirst({ where: { id: playbookId, orgId, deletedAt: null }, select: { id: true } })) {
+      return reply.status(404).send({ detail: 'Playbook not found' })
+    }
+    await prisma.contract.update({ where: { id }, data: { playbookId: playbookId ?? null } })
+    createAuditEvent({ orgId, userId, action: AuditAction.PLAYBOOK_CHANGED, resourceType: 'contract', resourceId: id, metadata: { from: contract.playbookId, to: playbookId ?? null } }).catch(() => {})
+    const { resolution } = await contractPlaybook(orgId, { ...contract, playbookId: playbookId ?? null })
+    return reply.send(resolution)
+  })
+
+  // ── GET /:id/checks (docs/41 P0.2/P0.3) ────────────────────────────────────
+  // The deterministic checks on the version the contract stands on: what its
+  // analysis describes, the presence findings (required clauses not detected,
+  // clauses deleted or cut since the version analysed before), and whether
+  // the approval recommendation may say "Ready to approve" — with the reasons
+  // it may not. No model is called.
+  app.get('/:id/checks', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id } = req.params as { id: string }
+    const contract = await prisma.contract.findFirst({
+      where: { id, orgId, deletedAt: null },
+      select: { id: true, analysisStatus: true, analysisError: true, currentVersionId: true, metadata: true },
+    })
+    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+    const [guard, choices] = await Promise.all([recommendationGuard(id, orgId), openChoices(id)])
+    return reply.send({
+      analysis: analysisState(contract),
+      ready: guard.passes,
+      reasons: guard.reasons,
+      // The clause review's findings: drafting and compliance ones are the Review panel's groups.
+      findings: guard.findings.filter(f => f.kind !== 'drafting' && f.kind !== 'compliance'),
+      // docs/41 P0.4 — terms the draft left to choose; it can't be sent until they are.
+      openChoices: choices,
+    })
+  })
+
   app.post('/:id/redline', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
     const { id: contractId } = req.params as { id: string }
@@ -2541,223 +2745,32 @@ export async function contractRoutes(app: FastifyInstance) {
 
 
   // ── Submit contract for approval — Phase 06 ───────────────────────────────
+  // docs/41 Parts 4, 6 — one implementation with the assistant's
+  // approval_route (lib/approval-flow.ts): a request for approval of the
+  // version the contract stands on. A resubmission after a return is a new
+  // request; the history keeps both.
   app.post('/:id/submit-approval', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
     const { orgId, sub: userId } = req.user
     const { id: contractId } = req.params as { id: string }
-    const { workflowDefinitionId, comment } = req.body as {
-      workflowDefinitionId?: string
-      comment?:              string
-    }
-
-    const contract = await prisma.contract.findFirst({
-      where: { id: contractId, orgId, deletedAt: null },
-    })
-    if (!contract) return reply.status(404).send({ error: 'Contract not found' })
-    if (!['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract.status)) {
-      return reply.status(409).send({ error: `Cannot submit a contract with status ${contract.status} for approval` })
-    }
-
-    // Prevent duplicate in-flight approval instances
-    const existingInstance = await prisma.approvalInstance.findFirst({
-      where: { contractId, status: { in: ['PENDING', 'ESCALATED'] } },
-    })
-    if (existingInstance) {
-      return reply.status(409).send({ error: 'Contract already has an active approval workflow', instanceId: existingInstance.id })
-    }
-
-    // Find workflow definition
-    let workflow = workflowDefinitionId
-      ? await prisma.workflowDefinition.findFirst({ where: { id: workflowDefinitionId, orgId, deletedAt: null, isActive: true } })
-      : null
-    // Z3 — the workflow the sender chose, or none: never another in its place.
-    if (workflowDefinitionId && !workflow) {
-      return reply.status(422).send({ error: 'That workflow is inactive or no longer exists. Choose another.' })
-    }
-
-    const routed = { type: contract.type, value: contract.value != null ? Number(contract.value) : null, currency: contract.currency }
-    if (!workflow) {
-      // Z3 — the workflow whose rules fit this contract most closely, by the
-      // rule the Send for review dialog shows the sender.
-      const candidates = await prisma.workflowDefinition.findMany({
-        where: { orgId, isActive: true, deletedAt: null },
-      })
-      workflow = pickWorkflow(candidates, routed)
-    }
-
-    if (!workflow) {
-      return reply.status(422).send({
-        error: 'No active approval workflow found for this org. Create one in Approvals → Manage Workflows.',
-      })
-    }
-
-    const stepDefs: WorkflowStepDef[] = Array.isArray(workflow.steps)
-      ? (workflow.steps as unknown as WorkflowStepDef[])
-      : []
-    if (stepDefs.length === 0) {
-      return reply.status(422).send({ error: 'Workflow has no steps configured' })
-    }
-
-    const firstStepDef = stepDefs.sort((a, b) => a.order - b.order)[0]
-    const triggerRules = (workflow.triggerRules as Record<string, unknown>) ?? {}
-
-    // ── Auto-approval check ──────────────────────────────────────────────────
-    if (checkAutoApprove(contract.type, routed.value, triggerRules, contract.currency)) {
-      // Instantly approve without creating pending steps
-      const instance = await prisma.approvalInstance.create({
-        data: {
-          orgId,
-          contractId,
-          workflowDefinitionId: workflow.id,
-          status:           'AUTO_APPROVED',
-          currentStepOrder: 0,
-          submittedById:    userId,
-          decidedAt:        new Date(),
-          aiSummary:        'Auto-approved based on org rules.',
-          approvalRecommendation: 'approve',
-        },
-      })
-
-      await prisma.contract.update({ where: { id: contractId }, data: { status: 'APPROVED' } })
-
-      createAuditEvent({
-        orgId, userId,
-        action:       AuditAction.APPROVAL_SUBMITTED,
-        resourceType: 'contract',
-        resourceId:   contractId,
-        metadata:     { instanceId: instance.id, autoApproved: true },
-      }).catch(() => {})
-
-      queueNotification({
-        orgId, userId,
-        type:         'APPROVAL_DECIDED',
-        title:        'Contract auto-approved',
-        body:         `"${contract.title}" was auto-approved based on your org's rules.`,
-        resourceType: 'approval_instance',
-        resourceId:   instance.id,
-      })
-
-      return reply.status(201).send({ instanceId: instance.id, status: 'AUTO_APPROVED', autoApproved: true })
-    }
-
-    // ── Normal flow: create instance + first step(s) ──────────────────────────
-    // Wave 3.8 — a `parallel` first step fans out to all its approvers at once;
-    // a sequential step resolves to a single approver.
-    const firstApproverIds = await resolveApprovers(firstStepDef, orgId, prisma)
-    if (firstApproverIds.length === 0) {
-      return reply.status(422).send({
-        error: `Cannot resolve approver for step "${firstStepDef.name}". Check the workflow configuration.`,
-      })
-    }
-
-    const escalateAt = new Date(Date.now() + (firstStepDef.dueSoonHours ?? 48) * 60 * 60 * 1000)
-
-    const instance = await prisma.$transaction(async (tx) => {
-      const inst = await tx.approvalInstance.create({
-        data: {
-          orgId,
-          contractId,
-          workflowDefinitionId: workflow!.id,
-          status:           'PENDING',
-          currentStepOrder: firstStepDef.order,
-          submittedById:    userId,
-        },
-      })
-
-      const steps = await Promise.all(firstApproverIds.map(approverId =>
-        tx.approvalStep.create({
-          data: {
-            approvalInstanceId: inst.id,
-            orgId,
-            stepOrder:  firstStepDef.order,
-            stepName:   firstStepDef.name,
-            approverId,
-            status:     'PENDING',
-            escalateAt,
-          },
-        }),
-      ))
-
-      await tx.contract.update({ where: { id: contractId }, data: { status: 'PENDING_APPROVAL' } })
-
-      return { inst, steps }
-    })
-
-    // Queue an escalation timer per concurrent approver step.
-    const delayMs = (firstStepDef.dueSoonHours ?? 48) * 60 * 60 * 1000
-    await Promise.all(instance.steps.map(async (step) => {
-      const escalationJob = await queueEscalation_({ instanceId: instance.inst.id, stepId: step.id, orgId, escalateTo: firstStepDef.escalateTo }, delayMs)
-      await prisma.approvalStep.update({ where: { id: step.id }, data: { escalationJobId: escalationJob.id?.toString() } })
-    }))
-
-    // Queue AI summary generation, of the version the contract stands on
-    // (DD4: after an undo, the newest is the undone one).
-    const latestVersion = await standingVersion(contractId, contract.currentVersionId)
-    if (latestVersion) {
-      queueApprovalSummary({
-        instanceId:  instance.inst.id,
-        contractId,
-        versionId:   latestVersion.id,
-        orgId,
-        approverIds: firstApproverIds,
-      })
-    }
-
-    // Notify every first-step approver.
-    const approvers = await prisma.user.findMany({
-      where: { id: { in: firstApproverIds } },
-      select: { id: true, email: true },
-    })
-    const emailById = new Map(approvers.map(u => [u.id, u.email]))
-    instance.steps.forEach((step) => {
-      queueNotification({
-        orgId,
-        userId:       step.approverId,
-        type:         'APPROVAL_REQUEST',
-        title:        'Contract awaiting your approval',
-        body:         `"${contract.title}" has been submitted for approval (${firstStepDef.name}).`,
-        resourceType: 'approval_step',
-        resourceId:   step.id,
-        email:        emailById.get(step.approverId) ?? undefined,
-      })
-    })
-
-    createAuditEvent({
-      orgId, userId,
-      action:       AuditAction.APPROVAL_SUBMITTED,
-      resourceType: 'contract',
-      resourceId:   contractId,
-      metadata:     { instanceId: instance.inst.id, workflowId: workflow.id, approverCount: firstApproverIds.length },
-    }).catch(() => {})
-
-    // Phase 10 — Slack/webhook subscribers get an actionable card with
-    // Approve/Reject buttons (slack-formatter adds them for type=slack). The
-    // card points at the first approver/step of the (possibly parallel) batch.
-    fireWebhook(orgId, 'approval.submitted', {
-      contractId,
-      title:      contract.title,
-      type:       contract.type,
-      value:      contract.value != null ? Number(contract.value) : null,
-      currency:   contract.currency,
-      instanceId: instance.inst.id,
-      stepId:     instance.steps[0].id,
-      stepName:   firstStepDef.name,
-      approverId: instance.steps[0].approverId,
-    }).catch(() => {})
-
+    const { workflowDefinitionId, comment } = (req.body ?? {}) as { workflowDefinitionId?: string; comment?: string }
+    const r = await submitForApproval({ orgId, contractId, userId, workflowDefinitionId, comment })
+    if (!r.ok) return reply.status(r.status).send({ error: r.error, ...(r.instanceId && { instanceId: r.instanceId }) })
+    if (r.autoApproved) return reply.status(201).send({ instanceId: r.instanceId, status: 'AUTO_APPROVED', autoApproved: true })
     return reply.status(201).send({
-      instanceId:           instance.inst.id,
+      instanceId:           r.instanceId,
       contractId,
       status:               'PENDING',
       autoApproved:         false,
-      workflowDefinitionId: workflow.id,
-      currentStepOrder:     firstStepDef.order,
-      steps: instance.steps.map(step => ({
-        id:          step.id,
-        stepOrder:   firstStepDef.order,
-        stepName:    firstStepDef.name,
-        approverId:  step.approverId,
-        status:      'PENDING',
-        escalateAt,
+      workflowDefinitionId: r.workflowDefinitionId,
+      currentStepOrder:     r.currentStepOrder,
+      steps: r.steps.map(step => ({
+        id:             step.id,
+        stepOrder:      r.currentStepOrder,
+        stepName:       r.stepName,
+        approverId:     step.approverId,
+        approverRoleId: step.approverRoleId,
+        status:         'PENDING',
+        escalateAt:     r.escalateAt,
       })),
     })
   })
@@ -2817,12 +2830,14 @@ export async function contractRoutes(app: FastifyInstance) {
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
     const items = await prisma.obligation.findMany({
-      where: { contractId: id },
+      // docs/39 G4 — suggestions and confirmed ones; a dismissed suggestion is gone.
+      where: { contractId: id, reviewState: { not: 'DISMISSED' } },
       orderBy: [{ dueDate: 'asc' }, { createdAt: 'asc' }],
     })
     const md = (contract.metadata ?? {}) as Record<string, unknown>
     return reply.send({
-      data: items,
+      // Fix-up 13 — one an amendment replaced says which ("Replaced by Amendment No. 2").
+      data: await withReplacedBy(orgId, items),
       summary:     (md.obligationsSummary as string | null) ?? null,
       extractedAt: (md.obligationsExtractedAt as string | null) ?? null,
     })
@@ -2862,6 +2877,9 @@ export async function contractRoutes(app: FastifyInstance) {
       if (!result.ok || !result.report) {
         return reply.status(502).send({ detail: 'compliance agent failed', upstream: result.error })
       }
+      // docs/41 Part 9 — the review's compliance findings, from the new results.
+      const { storeComplianceFindings } = await import('../lib/compliance-findings.js')
+      await storeComplianceFindings(orgId, id)
       return reply.send({ ok: true, report: result.report })
     } catch (err) {
       if (err instanceof CostCapExceededError) {
@@ -3003,35 +3021,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
   })
 
-  // ── POST /:id/renewal-decision (P5.3) ────────────────────────────────────
-  // Records the owner's decision ("renew"/"renegotiate"/"let_expire"/"pause")
-  // so the renewal scanner stops pinging this contract.
-  app.post('/:id/renewal-decision', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const { orgId } = req.user
-    const body = req.body as { decision?: string; note?: string } | undefined
-    const decision = body?.decision
-    if (!decision || !['renew', 'renegotiate', 'let_expire', 'pause', 'unknown'].includes(decision)) {
-      return reply.status(400).send({ detail: 'invalid decision' })
-    }
-
-    const contract = await prisma.contract.findFirst({
-      where: { id, orgId, deletedAt: null },
-      select: { id: true, metadata: true },
-    })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-
-    const md = (contract.metadata ?? {}) as Record<string, unknown>
-    const nextMeta: Record<string, unknown> = {
-      ...md,
-      renewalDecision:   decision,
-      renewalDecisionAt: new Date().toISOString(),
-      renewalDecisionNote: body?.note ?? null,
-    }
-    await prisma.contract.update({ where: { id }, data: { metadata: nextMeta as never } })
-
-    return reply.send({ ok: true, decision })
-  })
+  // POST /:id/renewal-decision lives in routes/contract-renewal.ts (docs/41 Part 14).
 }
 
 // Local alias to avoid naming collision with the imported queueEscalation

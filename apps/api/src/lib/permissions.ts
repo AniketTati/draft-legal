@@ -127,6 +127,13 @@ export const API_SCOPE_PERMISSIONS: Record<string, Permission[]> = {
   'templates:read':   [p(A.VIEW, R.TEMPLATE)],
   'templates:write':  [p(A.VIEW, R.TEMPLATE), p(A.CREATE, R.TEMPLATE), p(A.EDIT, R.TEMPLATE)],
   'reports:read':     [p(A.VIEW, R.REPORT)],
+  // docs/41 Part 17 — Salesforce's own key (its Named Credential): start
+  // requests (and convert self-serve ones), read contract status. Its calls
+  // must also carry the connected Salesforce org id (routes/salesforce.ts).
+  'salesforce':       [p(A.VIEW, R.REQUEST), p(A.CREATE, R.REQUEST), p(A.EDIT, R.REQUEST), p(A.VIEW, R.CONTRACT), p(A.CREATE, R.CONTRACT)],
+  // docs/41 Part 20 — Zapier / Make: subscribe and unsubscribe webhooks
+  // (REST Hooks, routes/hooks.ts), and nothing else.
+  'hooks':            [p(A.CONFIGURE, R.INTEGRATION)],
   // Explicit full access — opt-in only. Empty scopes no longer grant this.
   'admin':            [p('*', '*', S.ORG)],
 }
@@ -239,4 +246,28 @@ export function invalidatePermissionCache(orgId: string): void {
  */
 export function clearPermissionCache(): void {
   cache.clear()
+}
+
+/**
+ * The org's active people who may do action:resource, as their roles grant it
+ * — who to tell when something needs someone with that right (docs/39 C3:
+ * a suggested field, for whoever can add fields).
+ */
+export async function usersWhoCan(
+  orgId: string, action: string, resource: string,
+  opts: { exclude?: string; take?: number } = {},
+): Promise<Array<{ id: string; email: string; name: string }>> {
+  const users = await prisma.user.findMany({
+    where: { orgId, deletedAt: null, status: 'ACTIVE', ...(opts.exclude ? { id: { not: opts.exclude } } : {}) },
+    select: { id: true, email: true, name: true, userRoles: { select: { role: { select: { name: true } } } } },
+    orderBy: { createdAt: 'asc' },
+    take: 500,
+  })
+  const out: Array<{ id: string; email: string; name: string }> = []
+  for (const u of users) {
+    const perms = await getPermissionsForRoles(orgId, u.userRoles.map(r => r.role.name))
+    if (evaluatePermission(perms, action, resource).granted) out.push({ id: u.id, email: u.email, name: u.name })
+    if (out.length >= (opts.take ?? 20)) break
+  }
+  return out
 }

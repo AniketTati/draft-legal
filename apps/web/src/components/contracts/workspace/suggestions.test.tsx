@@ -1,0 +1,180 @@
+// @vitest-environment happy-dom
+/**
+ * docs/41 Part 16 (C4) — suggestions in the workspace: the popover a click
+ * opens (who, when, what, Accept / Reject), the header's count and Accept all
+ * / Reject all, suggestion authors in "Document discussion", AI wording put
+ * in as a suggestion, and "edited" logged for AI wording changed before a save.
+ */
+import { describe, it, expect, vi } from 'vitest'
+import { renderToString } from 'react-dom/server'
+import { createRoot } from 'react-dom/client'
+import { act } from 'react'
+import { Editor } from '@tiptap/core'
+import StarterKit from '@tiptap/starter-kit'
+import { SuggestionPopover } from '../SuggestionPopover'
+import { SuggestionsBar, suggestingByDefault, suggestionPeople } from './SuggestionsBar'
+import { mergePeople } from './CommentsView'
+import { TrackChanges, suggestionsIn } from '@/components/editor/TrackChanges'
+import { aiEditsAtSave, insertAsTrackedChange, insertCounter } from '@/lib/tracked-insert'
+import { changesOf, counterAnchor } from '@/lib/changes'
+
+const change = { id: 'c1', kind: 'insertion' as const, authorName: 'Asha', at: '2026-10-02T09:05:00.000Z', text: 'twenty', rect: { left: 10, bottom: 20 } }
+
+describe('the suggestion popover', () => {
+  it('says who suggested what, with Accept and Reject', () => {
+    const html = renderToString(<SuggestionPopover change={change} canDecide onAccept={() => {}} onReject={() => {}} onClose={() => {}} />)
+    expect(html).toContain('Asha')
+    expect(html).toContain('Suggested adding')
+    expect(html).toContain('twenty')
+    expect(html).toContain('data-testid="suggestion-accept"')
+    expect(html).toContain('data-testid="suggestion-reject"')
+  })
+
+  it('a reader sees the suggestion without the buttons', () => {
+    const html = renderToString(<SuggestionPopover change={{ ...change, kind: 'deletion' }} canDecide={false} onAccept={() => {}} onReject={() => {}} onClose={() => {}} />)
+    expect(html).toContain('Suggested removing')
+    expect(html).not.toContain('suggestion-accept')
+  })
+
+  it('Accept and Reject call back with the change, Escape closes', () => {
+    const onAccept = vi.fn(), onReject = vi.fn(), onClose = vi.fn()
+    const box = document.createElement('div')
+    document.body.appendChild(box)
+    const root = createRoot(box)
+    act(() => root.render(<SuggestionPopover change={change} canDecide onAccept={onAccept} onReject={onReject} onClose={onClose} />))
+    act(() => (box.querySelector('[data-testid="suggestion-accept"]') as HTMLButtonElement).click())
+    act(() => (box.querySelector('[data-testid="suggestion-reject"]') as HTMLButtonElement).click())
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
+    expect(onAccept).toHaveBeenCalledWith('c1')
+    expect(onReject).toHaveBeenCalledWith('c1')
+    expect(onClose).toHaveBeenCalled()
+    act(() => root.unmount())
+  })
+})
+
+describe('the suggestions bar', () => {
+  it('while negotiating, suggesting is on and not a toggle', () => {
+    expect(suggestingByDefault('negotiate')).toBe(true)
+    expect(suggestingByDefault('draft')).toBe(false)
+    const html = renderToString(<SuggestionsBar editor={null} count={2} suggesting forced canEdit onToggle={() => {}} />).replace(/<!-- -->/g, '')
+    expect(html).toContain('data-testid="suggesting-on"')
+    expect(html).not.toContain('suggesting-toggle')
+    expect(html).toContain('2 suggestions')
+    expect(html).toContain('Accept all')
+    expect(html).toContain('Reject all')
+  })
+
+  it('otherwise a toggle, and no Accept all without suggestions', () => {
+    const html = renderToString(<SuggestionsBar editor={null} count={0} suggesting={false} forced={false} canEdit onToggle={() => {}} />)
+    expect(html).toContain('data-testid="suggesting-toggle"')
+    expect(html).not.toContain('Accept all')
+  })
+})
+
+describe('Document discussion', () => {
+  it('lists suggestion authors with commenters, the counterparty as one person', () => {
+    const people = suggestionPeople([
+      { id: 'a', kind: 'insertion', authorId: 'u1', authorName: 'Asha', at: null, from: 1, to: 2, text: 'x' },
+      { id: 'b', kind: 'deletion', authorId: 'portal:link1', authorName: 'Acme legal', at: null, from: 3, to: 4, text: 'y' },
+    ])
+    expect(people).toEqual([{ id: 'u1', name: 'Asha', count: 1 }, { id: 'portal', name: 'Counterparty', count: 1 }])
+    expect(mergePeople([{ id: 'u1', name: 'Asha', count: 2 }], people)).toEqual([{ id: 'u1', name: 'Asha', count: 3 }, { id: 'portal', name: 'Counterparty', count: 1 }])
+  })
+})
+
+describe('AI wording as a suggestion', () => {
+  const editorWith = (html: string) => {
+    const editor = new Editor({ extensions: [StarterKit, TrackChanges], content: html })
+    editor.commands.setSuggesting(false, { id: 'u1', name: 'Asha' })
+    return editor
+  }
+
+  it('goes in as a suggestion by the person, even outside suggestion mode', () => {
+    const editor = editorWith('<p>Liability is unlimited.</p>')
+    const from = editor.state.doc.textContent.indexOf('unlimited') + 1
+    const placed = insertAsTrackedChange(editor as never, { from, to: from + 9 }, 'capped at fees', { contractId: 'k1', feature: 'ask_ai', suggestionId: 'sg1' })
+    expect(suggestionsIn(editor.state.doc).map(c => [c.kind, c.text, c.authorName])).toEqual([['deletion', 'unlimited', 'Asha'], ['insertion', 'capped at fees', 'Asha']])
+    expect(editor.state.doc.textBetween(placed!.from, placed!.to)).toBe('capped at fees')
+    // Not left in suggestion mode afterwards.
+    expect(editor.storage.trackChanges.enabled).toBe(false)
+    expect(aiEditsAtSave('k1', editor.state.doc)).toEqual([])
+    editor.destroy()
+  })
+
+  it('logs "edited" at save when the person changed the AI wording', () => {
+    const editor = editorWith('<p>Liability is unlimited.</p>')
+    const from = editor.state.doc.textContent.indexOf('unlimited') + 1
+    insertAsTrackedChange(editor as never, { from, to: from + 9 }, 'capped at fees', { contractId: 'k2', feature: 'ask_ai', suggestionId: 'sg2' })
+    editor.commands.setContent('<p>Liability is capped at twice the fees.</p>')
+    expect(aiEditsAtSave('k2', editor.state.doc)).toEqual([{ contractId: 'k2', versionId: null, feature: 'ask_ai', outcome: 'edited', suggestionId: 'sg2' }])
+    // Logged once: forgotten after the save.
+    expect(aiEditsAtSave('k2', editor.state.doc)).toEqual([])
+    editor.destroy()
+  })
+})
+
+describe("Changes mode's Counter as a suggestion (fix-up 20)", () => {
+  const editorWith = (html: string) => {
+    const editor = new Editor({ extensions: [StarterKit, TrackChanges], content: html })
+    editor.commands.setSuggesting(false, { id: 'u1', name: 'Asha' })
+    return editor
+  }
+
+  it('replaces their words with the counter, tracked, and remembers it for the save', () => {
+    const diff = '<p>Liability is <del>capped at fees</del><ins>unlimited</ins>.</p>'
+    const anchor = counterAnchor(diff, changesOf(diff)[0])!
+    expect(anchor).toEqual({ quote: 'unlimited', at: 'replace' })
+    const editor = editorWith('<p>Liability is unlimited.</p>')
+    const placed = insertCounter(editor as never, anchor, 'capped at twice the fees', { contractId: 'k3', suggestionId: 'sg3' })
+    expect(placed).not.toBeNull()
+    expect(suggestionsIn(editor.state.doc).map(c => [c.kind, c.text])).toEqual([['deletion', 'unlimited'], ['insertion', 'capped at twice the fees']])
+    editor.commands.setContent('<p>Liability is capped at fees.</p>')
+    expect(aiEditsAtSave('k3', editor.state.doc)).toEqual([{ contractId: 'k3', versionId: null, feature: 'counter', outcome: 'edited', suggestionId: 'sg3' }])
+    editor.destroy()
+  })
+
+  it('where they only removed words, goes in after the words before the gap', () => {
+    const diff = '<p>One.</p><p>The supplier shall pay <del>all costs</del> promptly.</p>'
+    const anchor = counterAnchor(diff, changesOf(diff)[0])!
+    expect(anchor).toEqual({ quote: 'The supplier shall pay', at: 'after' })
+    const editor = editorWith('<p>One.</p><p>The supplier shall pay promptly.</p>')
+    insertCounter(editor as never, anchor, 'reasonable costs', { contractId: 'k4' })
+    expect(suggestionsIn(editor.state.doc).map(c => [c.kind, c.text])).toEqual([['insertion', ' reasonable costs']])
+    editor.destroy()
+  })
+
+  it('at the start of a paragraph, goes in before the words after the gap', () => {
+    const diff = '<p><del>Subject to clause 4,</del> the fee is due.</p>'
+    expect(counterAnchor(diff, changesOf(diff)[0])).toEqual({ quote: 'the fee is due.', at: 'before' })
+  })
+
+  it('puts nothing in when their words are not in the document', () => {
+    const editor = editorWith('<p>Something else entirely.</p>')
+    expect(insertCounter(editor as never, { quote: 'unlimited', at: 'replace' }, 'capped', { contractId: 'k5' })).toBeNull()
+    expect(suggestionsIn(editor.state.doc)).toEqual([])
+    editor.destroy()
+  })
+})
+
+describe('"Only this person" in the document (fix-up 22)', () => {
+  it("mutes everyone else's suggestions and highlights the person's", () => {
+    const editor = new Editor({ extensions: [StarterKit, TrackChanges], content: '<p>Liability is unlimited.</p>' })
+    editor.commands.setSuggesting(true, { id: 'u1', name: 'Asha' })
+    const at = editor.state.doc.textContent.indexOf('unlimited') + 1
+    editor.chain().setTextSelection(at).insertContent('not ').run()
+    editor.commands.setSuggesting(true, { id: 'u2', name: 'Ravi' })
+    editor.chain().setTextSelection(editor.state.doc.content.size - 1).insertContent(' Ever').run()
+    editor.commands.setSuggestionFocus('u1', true)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(true)
+    expect(editor.view.dom.querySelectorAll('.suggestion--focus')).toHaveLength(1)
+    expect(editor.view.dom.querySelector('.suggestion--focus')?.textContent).toBe('not ')
+    // Highlighting without "only": everyone's suggestions keep their colours.
+    editor.commands.setSuggestionFocus('u1', false)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(false)
+    expect(editor.view.dom.querySelectorAll('.suggestion--focus')).toHaveLength(1)
+    // Nobody picked: "only" means nothing.
+    editor.commands.setSuggestionFocus(null, true)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(false)
+    editor.destroy()
+  })
+})

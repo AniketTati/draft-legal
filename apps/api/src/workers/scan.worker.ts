@@ -20,6 +20,7 @@ import { Worker } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { scanQueue } from '../lib/queue.js'
 import { scanObligations, scanRenewals } from '../lib/obligation-scanner.js'
+import { scanStageDates } from '../lib/lifecycle-dates.js'
 import { sendDueDigests } from '../lib/notification-digest.js'
 
 const OBLIGATION_PATTERN = process.env.OBLIGATION_SCAN_PATTERN ?? '0 9 * * *'   // 09:00 UTC daily
@@ -73,6 +74,9 @@ export const scanWorker = new Worker(
       return result
     }
     if (job.name === 'renewal-scan-daily') {
+      // docs/41 Part 18 — dates move contracts first (Expiring, Expired), then renewals are noticed.
+      const dates = await scanStageDates()
+      console.info('[scan-worker] stage dates · scanned=%d moved=%j errors=%d', dates.scanned, dates.moved, dates.errors.length)
       const result = await scanRenewals({ leadDays: 90 })
       console.info(
         '[scan-worker] renewal-scan-daily · %dms · scanned=%d notified=%d skippedCooldown=%d errors=%d',

@@ -50,14 +50,17 @@ afterAll(async () => {
 
 describe('PATCH /contracts/:id merges metadata', () => {
   it('a re-extraction keeps every stored report and updates its own keys', async () => {
+    // docs/39 — contract-type fields go through the field store: an NDA's
+    // own fields are kept with their evidence, a key no NDA has is dropped.
     const res = await app.inject({
       method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: agentHeaders(),
-      payload: { summary: 'Re-analysed', metadata: { _typeFields: { term: { value: '24 months' } }, costCenter: 'CC-9' } },
+      payload: { summary: 'Re-analysed', metadata: { _typeFields: { permitted_use: { value: 'Evaluating a merger', confidence: 0.9, label: 'Permitted Use' } }, costCenter: 'CC-9' } },
     })
     expect(res.statusCode).toBe(200)
     const m = await meta()
     expect(m).toMatchObject(REPORTS)
-    expect(m._typeFields).toEqual({ term: { value: '24 months' } })
+    expect(Object.keys(m._typeFields as object)).toEqual(['permitted_use'])
+    expect(m._typeFields).toMatchObject({ permitted_use: { value: 'Evaluating a merger', confidence: 0.9, source: 'ai' } })
     expect(m.costCenter).toBe('CC-9')
   })
 

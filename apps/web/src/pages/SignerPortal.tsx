@@ -88,6 +88,8 @@ export function SignerPortal() {
   })
 
   const sign = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => axios.post(`/api/v1/sign/${token}/sign`, { signedName, consent }),
     onSuccess: () => {
       // Do NOT refetch — once signing completes the request flips to
@@ -102,6 +104,8 @@ export function SignerPortal() {
   })
 
   const decline = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (reason: string) => axios.post(`/api/v1/sign/${token}/decline`, { reason }),
     onSuccess: () => {
       // Same reason — declining voids the request server-side; refetch

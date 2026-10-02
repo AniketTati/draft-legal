@@ -8,12 +8,16 @@
 import { Client } from '@opensearch-project/opensearch'
 import { normalizeRiskScore } from '@clm/types'
 import { prisma } from './prisma.js'
+import { withExhibits } from './exhibit-text.js'
 
 export const es = new Client({
   node: process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200',
 })
 
-export const CONTRACT_INDEX = 'contracts'
+// ES_INDEX_PREFIX lets a second local stack share one Elasticsearch without
+// writing into the other stack's indexes. Unset everywhere else.
+export const ES_INDEX_PREFIX = process.env.ES_INDEX_PREFIX ?? ''
+export const CONTRACT_INDEX = `${ES_INDEX_PREFIX}contracts`
 
 // ─── Index mapping ────────────────────────────────────────────────────────────
 
@@ -117,13 +121,15 @@ export interface ContractDoc {
  * version's, else the latest one's — and diligenceRoomId decides whether the
  * doc belongs in ordinary search at all (C11).
  */
-async function docExtrasFor(contractId: string): Promise<{ clauseFlags?: Record<string, boolean>; diligenceRoomId?: string }> {
+async function docExtrasFor(contractId: string): Promise<{ clauseFlags?: Record<string, boolean>; diligenceRoomId?: string; exhibits?: Array<{ label: string; text: string }> }> {
   const c = await prisma.contract.findUnique({
     where:  { id: contractId },
     select: {
       currentVersionId: true,
       diligenceRoomId: true,
       versions: { orderBy: { versionNumber: 'desc' }, take: 1, select: { id: true, clauseFlags: true } },
+      // docs/39 A12 — its exhibits' words are found with it.
+      exhibits: { where: { text: { not: '' } }, select: { label: true, text: true } },
     },
   })
   if (!c) return {}
@@ -134,6 +140,7 @@ async function docExtrasFor(contractId: string): Promise<{ clauseFlags?: Record<
   return {
     ...(flags && typeof flags === 'object' && !Array.isArray(flags) ? { clauseFlags: flags as Record<string, boolean> } : {}),
     ...(c.diligenceRoomId ? { diligenceRoomId: c.diligenceRoomId } : {}),
+    ...(c.exhibits.length ? { exhibits: c.exhibits } : {}),
   }
 }
 
@@ -170,6 +177,8 @@ export async function indexContract(id: string, doc: ContractDoc) {
     id,
     body: {
       ...doc,
+      // docs/39 A12 — the contract's text, then its exhibits'.
+      ...(extras.exhibits && { plainText: withExhibits(doc.plainText ?? '', extras.exhibits) }),
       ...(clauseFlags ? { clauseFlags } : {}),
       ...(diligenceRoomId ? { diligenceRoomId } : {}),
       keyTerms: scalarize(doc.keyTerms),

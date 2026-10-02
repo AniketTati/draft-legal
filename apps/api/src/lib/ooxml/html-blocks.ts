@@ -7,6 +7,7 @@
  * text) are left out: Word keeps notes in their own part, not in the body.
  */
 import { parseFragment } from 'parse5'
+import { acceptedHtml } from '../suggestions.js'
 
 type Node = {
   nodeName: string
@@ -78,7 +79,8 @@ export function htmlBlocks(html: string): TextBlock[] {
       flush(k, t)
     }
   }
-  walk(parseFragment(html) as unknown as Node, 'p', false)
+  // C4 — the document's text with its pending suggestions accepted (lib/suggestions).
+  walk(parseFragment(acceptedHtml(html)) as unknown as Node, 'p', false)
   flush('p', false)
   return out
 }

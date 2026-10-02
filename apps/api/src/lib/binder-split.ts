@@ -142,7 +142,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
 
     // P2.3 — schema-aligned: Contract uses `createdBy` (not `uploadedBy`),
     // ContractVersion has no `filename` column. Parent-child link via
-    // parentContractId; relationshipType='exhibit_only' marks it as a
+    // parentContractId; relationshipType='split_part' marks it as a
     // binder slice rather than an amendment.
     const child = await prisma.contract.create({
       data: {
@@ -153,7 +153,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
         type:             slice.type,
         analysisStatus:   'PENDING',
         parentContractId: contractId,
-        relationshipType: 'exhibit_only',
+        relationshipType: 'split_part',
         diligenceRoomId,
         versions: {
           create: {
@@ -164,7 +164,7 @@ export async function splitBinder(data: SplitBinderJob): Promise<void> {
             mimeType: 'application/pdf',
             fileSize: slice.pdfBytes.byteLength,
             createdById: userId,
-            changeNote:  `Split from binder (pages ${slice.pageStart}-${slice.pageEnd})`,
+            changeNote:  `Split from scanned file (pages ${slice.pageStart}-${slice.pageEnd})`,
           },
         },
       },

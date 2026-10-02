@@ -29,7 +29,7 @@
  * The mechanism behind several is one auth fact: middleware/auth.ts accepts
  * only `Authorization: Bearer`, and only the axios client attaches it. So any
  * window.open, bare <a href="/api/...">, or plain fetch() against a guarded
- * route is an automatic 401. CompareMode's own comment already named
+ * route is an automatic 401. CompareMode's own comment (now ChangesView, the workspace Changes mode) named
  * ContractEditor as the anti-pattern, without anyone fixing it.
  *
  * Run BEFORE: no catch-all, the bell drops its most important notification

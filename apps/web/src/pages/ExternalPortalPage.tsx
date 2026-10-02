@@ -94,6 +94,8 @@ export function ExternalPortalPage() {
 
   // B.5.14 — upload a revised version mutation (multipart).
   const uploadRevision = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append('file', file)

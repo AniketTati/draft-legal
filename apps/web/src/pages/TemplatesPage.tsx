@@ -3,21 +3,28 @@
  * Browse, create, and manage contract templates.
  * Template builder with TipTap section editor + variable definition panel.
  */
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { sanitizeHtml } from '@/lib/sanitize'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload } from 'lucide-react'
-import { api } from '@/lib/api'
-import { ContractEditor } from '@/components/editor/ContractEditor'
+import { Plus, Edit2, Trash2, Eye, FileText, Globe, Lock, Loader2, Search, Upload, Layers, Star } from 'lucide-react'
+import { api, apiErrorMessage } from '@/lib/api'
+import { useClauseFamilies } from '@/components/clauses/ClauseFamiliesView'
+import { SlotSectionPanel } from '@/components/templates/SlotSectionPanel'
+import { TemplateChecks, type LintWarning } from '@/components/templates/TemplateChecks'
+import { toast } from '@/components/common/Toaster'
+import { ContractEditor, type VariableSelection } from '@/components/editor/ContractEditor'
+import { FieldSelect, MakeVariablePopover, SuggestedVariables, type MadeVariable } from '@/components/templates/TemplateVariables'
+import { useFieldCatalog } from '@/lib/field-catalog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { EmptyState } from '@/components/ui/primitives'
 import { StatusPill } from '@/components/ui/status-pill'
-import type { Template, VariableDef } from '@clm/types'
+import { ContractType, applyTemplateVariables, countInTemplate, replaceInTemplate, type CatalogField, type SuggestedVariable, type Template, type VariableDef } from '@clm/types'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const CONTRACT_TYPES = ['NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT', 'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'ORDER_FORM', 'OTHER']
+// docs/39 A3 — the one list of contract types (this copy had lost DATA_PROCESSING).
+const CONTRACT_TYPES: string[] = Object.values(ContractType)
 const VARIABLE_TYPES = ['text', 'number', 'date', 'boolean', 'select'] as const
 
 // The contract type — a category, not a state — so it carries no meaning color.
@@ -118,6 +125,15 @@ function TemplateCard({
             <Lock className="size-3" /> Draft — not usable yet
           </StatusPill>
         )}
+        {/* docs/41 Part 1 — the type's default, and edits drafts don't use yet. */}
+        {template.isDefaultForType && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-ink-700" data-testid={`template-default-${template.id}`}>
+            <Star className="size-3" /> Default for {template.contractType}
+          </span>
+        )}
+        {template.hasUnpublishedChanges && (
+          <StatusPill meaning="inflight">Changes not published</StatusPill>
+        )}
         {usageCount >= 5 && (
           <span
             data-testid={`template-most-used-${template.id}`}
@@ -155,15 +171,30 @@ function TemplateCard({
 function VariableEditor({
   variables,
   onChange,
+  catalog,
+  usage,
+  onRename,
 }: {
   variables: VariableDef[]
   onChange: (vars: VariableDef[]) => void
+  /** docs/39 H1 — the fields a variable can fill. */
+  catalog: CatalogField[]
+  /** docs/39 H1 — how many times each {{key}} is in the text. */
+  usage: Record<string, number>
+  /** docs/39 H1 — a key renamed: its {{key}} in the text follows. */
+  onRename: (from: string, to: string) => void
 }) {
   const addVar = () =>
     onChange([...variables, { key: '', label: '', type: 'text', required: false }])
 
-  const updateVar = (i: number, patch: Partial<VariableDef>) =>
+  const updateVar = (i: number, patch: Partial<VariableDef>) => {
+    const before = variables[i]
+    // The text's tokens follow a rename, unless the new key is another variable's.
+    if (patch.key !== undefined && before.key && patch.key && patch.key !== before.key && !variables.some((v, j) => j !== i && v.key === patch.key)) {
+      onRename(before.key, patch.key)
+    }
     onChange(variables.map((v, idx) => (idx === i ? { ...v, ...patch } : v)))
+  }
 
   const removeVar = (i: number) =>
     onChange(variables.filter((_, idx) => idx !== i))
@@ -209,6 +240,15 @@ function VariableEditor({
               <X className="size-3.5" />
             </button>
           </div>
+          {/* Row 3 (docs/39 H1): the field it fills, and where it is in the text. */}
+          <div className="flex gap-1.5 items-center">
+            <FieldSelect value={v.field} onChange={field => updateVar(i, { field })} catalog={catalog} className="flex-1 min-w-0" label={`Field ${v.label || v.key || i + 1} fills`} />
+            {v.key && (
+              <span className={`shrink-0 text-[10.5px] tabular-nums ${usage[v.key] ? 'text-ink-500' : 'text-attention-700'}`} title={usage[v.key] ? undefined : 'No {{' + v.key + '}} in the text: the draft has nowhere to put it'}>
+                {usage[v.key] ? `used ${usage[v.key]}×` : 'not in the text'}
+              </span>
+            )}
+          </div>
         </div>
       ))}
     </div>
@@ -233,13 +273,14 @@ function TemplateBuilderModal({
 }: {
   template?: Template
   onClose: () => void
-  onSave: (data: any) => void
+  /** docs/41 Part 1 — saving keeps a draft revision; publishing is what drafts use. */
+  onSave: (data: any, publish: boolean) => Promise<unknown>
   onPreview?: () => void
 }) {
   const [name, setName] = useState(template?.name ?? '')
   const [description, setDescription] = useState(template?.description ?? '')
   const [contractType, setContractType] = useState(template?.contractType ?? '')
-  const [isPublished, setIsPublished] = useState(template?.isPublished ?? false)
+  const { data: families = [] } = useClauseFamilies()
   const [variables, setVariables] = useState<VariableDef[]>(
     (template?.variables as VariableDef[]) ?? [],
   )
@@ -247,26 +288,70 @@ function TemplateBuilderModal({
   const [sections, setSections] = useState<any[]>(
     template?.sections ?? [{ title: 'Section 1', content: '', sortOrder: 0, clauseRefs: [], conditionalLogic: null }],
   )
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState<null | 'save' | 'publish'>(null)
+  // docs/39 H1 — the fields a variable can fill; words being made a variable.
+  const { data: catalog = [] } = useFieldCatalog()
+  const [makeVar, setMakeVar] = useState<VariableSelection | null>(null)
+  const sectionHtml = useMemo(() => sections.map(sec => (sec.content ?? '') as string), [sections])
+  const usage = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const html of sectionHtml) for (const m of html.matchAll(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g)) counts[m[1]] = (counts[m[1]] ?? 0) + 1
+    return counts
+  }, [sectionHtml])
 
   const updateSectionContent = (idx: number, html: string) => {
     setSections(s => s.map((sec, i) => (i === idx ? { ...sec, content: html } : sec)))
   }
+
+  /** H1 — the placeholders the author took, made variables in every section, and listed. */
+  const applySuggestions = (picks: SuggestedVariable[]) => {
+    setSections(s => s.map(sec => ({ ...sec, content: applyTemplateVariables(sec.content ?? '', picks) })))
+    setVariables(vs => [
+      ...vs,
+      ...picks.filter(p => !p.listed && !vs.some(v => v.key === p.key)).map(p => ({ key: p.key, label: p.label, type: p.type, required: false, field: p.field })),
+    ])
+  }
+
+  /** H1 — selected words made a variable: here, or everywhere they are (other sections too). */
+  const makeVariable = (made: MadeVariable) => {
+    if (!makeVar) return
+    const token = `{{${made.key}}}`
+    const text = makeVar.text
+    makeVar.replace(token, made.everywhere)
+    if (made.everywhere) setSections(s => s.map((sec, i) => (i === activeSectionIdx ? sec : { ...sec, content: replaceInTemplate(sec.content ?? '', text, made.key) })))
+    if (made.def && !variables.some(v => v.key === made.def!.key)) setVariables(vs => [...vs, made.def!])
+    setMakeVar(null)
+  }
+
+  /** H1 — a variable's key renamed: its tokens in every section follow. */
+  const renameKey = (from: string, to: string) =>
+    setSections(s => s.map(sec => ({ ...sec, content: String(sec.content ?? '').split(`{{${from}}}`).join(`{{${to}}}`) })))
 
   const addSection = () => {
     setSections(s => [...s, { title: `Section ${s.length + 1}`, content: '', sortOrder: s.length, clauseRefs: [], conditionalLogic: null }])
     setActiveSectionIdx(sections.length)
   }
 
-  const handleSave = async () => {
+  /** docs/41 Part 1 — a clause slot: its words are the option of a clause family drafting picks. */
+  const addSlot = () => {
+    const f = families[0]
+    setSections(s => [...s, { title: f?.name ?? 'Clause', content: '', sortOrder: s.length, clauseRefs: [], conditionalLogic: null, slotFamilyId: f?.id ?? null }])
+    setActiveSectionIdx(sections.length)
+  }
+
+  const handleSave = async (publish: boolean) => {
     if (!name.trim()) return
-    setSaving(true)
+    setSaving(publish ? 'publish' : 'save')
     try {
-      await onSave({ name, description, contractType: contractType || null, isPublished, variables, sections })
+      await onSave({
+        name, description, contractType: contractType || null, variables,
+        sections: sections.map((sec, i) => ({ ...sec, sortOrder: i, slotFamilyId: sec.slotFamilyId ?? null })),
+      }, publish)
     } finally {
-      setSaving(false)
+      setSaving(null)
     }
   }
+  const active = sections[activeSectionIdx]
 
   return (
     <div className="fixed inset-0 z-50 flex items-stretch bg-ink-950/40">
@@ -277,23 +362,30 @@ function TemplateBuilderModal({
             {template ? 'Edit Template' : 'New Template'}
           </h2>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1.5 text-dense text-ink-700">
-              <input type="checkbox" checked={isPublished} onChange={e => setIsPublished(e.target.checked)} className="accent-ink-950" />
-              Published
-            </label>
             {onPreview && (
               <Button variant="outline" onClick={onPreview}>
                 <Eye />
                 Preview
               </Button>
             )}
+            {/* docs/41 Part 1 — a save is a draft revision; drafts use what is published. */}
             <Button
-              onClick={handleSave}
-              disabled={saving || !name.trim()}
+              variant="outline"
+              onClick={() => handleSave(false)}
+              disabled={!!saving || !name.trim()}
               data-testid="template-save-btn"
+              title={template?.isPublished ? 'Saves your changes; drafts keep using the published version until you publish' : undefined}
             >
-              {saving && <Loader2 className="animate-spin" />}
-              Save Template
+              {saving === 'save' && <Loader2 className="animate-spin" />}
+              {template?.isPublished ? 'Save changes' : 'Save draft'}
+            </Button>
+            <Button
+              onClick={() => handleSave(true)}
+              disabled={!!saving || !name.trim()}
+              data-testid="template-publish-btn"
+            >
+              {saving === 'publish' && <Loader2 className="animate-spin" />}
+              Publish
             </Button>
             <button onClick={onClose} className="text-ink-400 hover:text-ink-700"><X className="size-4" /></button>
           </div>
@@ -302,6 +394,7 @@ function TemplateBuilderModal({
         <div className="flex flex-1 min-h-0">
           {/* Left panel: metadata + variables */}
           <div className="w-72 shrink-0 border-r border-paper-200 p-4 overflow-y-auto space-y-4">
+            {template?.id && <TemplateChecks templateId={template.id} onPublish={() => handleSave(true)} publishing={saving === 'publish'} />}
             <div className="space-y-3">
               <div>
                 <label className="text-[11px] font-medium text-ink-700 mb-1 block">Template Name *</label>
@@ -338,7 +431,16 @@ function TemplateBuilderModal({
             <div>
               <div className="flex items-center justify-between mb-1">
                 <p className="text-eyebrow uppercase text-ink-700">Sections</p>
-                <Button variant="outline" size="xs" onClick={addSection}>+ Add</Button>
+                <div className="flex gap-1">
+                  <Button variant="outline" size="xs" onClick={addSection}>+ Text</Button>
+                  <Button
+                    variant="outline" size="xs" onClick={addSlot} disabled={!families.length}
+                    title={families.length ? 'A section whose words are the option of a clause family drafting picks' : 'Create a clause family on the Clauses page first'}
+                    data-testid="add-clause-slot"
+                  >
+                    + Clause slot
+                  </Button>
+                </div>
               </div>
               <div className="space-y-0.5">
                 {sections.map((s, i) => (
@@ -348,14 +450,18 @@ function TemplateBuilderModal({
                     // Active section is the rail's nav selection — ink.
                     className={`w-full text-left text-[12.5px] px-2 py-1.5 rounded-md truncate transition-colors ${i === activeSectionIdx ? 'bg-ink-950 text-white font-medium' : 'text-ink-700 hover:bg-paper-100'}`}
                   >
+                    {s.slotFamilyId && <Layers className="inline size-3 mr-1 -mt-0.5" aria-label="Clause slot" />}
                     {s.title || `Section ${i + 1}`}
                   </button>
                 ))}
               </div>
             </div>
 
+            {/* docs/39 H1 — the text's placeholders, offered as variables. */}
+            <SuggestedVariables sections={sectionHtml} variables={variables} catalog={catalog} onApply={applySuggestions} />
+
             {/* Variable definitions */}
-            <VariableEditor variables={variables} onChange={setVariables} />
+            <VariableEditor variables={variables} onChange={setVariables} catalog={catalog} usage={usage} onRename={renameKey} />
           </div>
 
           {/* Right panel: section editor */}
@@ -368,12 +474,33 @@ function TemplateBuilderModal({
                   className="text-section text-ink-950 border-0 border-b border-paper-200 pb-2 mb-3 w-full outline-none placeholder:text-ink-400 focus:border-brand-700"
                   placeholder="Section title..."
                 />
+                {active?.slotFamilyId !== undefined && active?.slotFamilyId !== null ? (
+                  <SlotSectionPanel
+                    family={families.find(f => f.id === active.slotFamilyId)}
+                    families={families}
+                    onChangeFamily={id => setSections(s => s.map((sec, i) => i === activeSectionIdx ? { ...sec, slotFamilyId: id, title: sec.title || families.find(f => f.id === id)?.name } : sec))}
+                  />
+                ) : (
                 <div className="flex-1 min-h-0">
                   <ContractEditor
+                    key={activeSectionIdx}
                     initialContent={sections[activeSectionIdx].content}
                     onChange={(html) => updateSectionContent(activeSectionIdx, html)}
+                    variableKeys={variables.map(v => v.key)}
+                    onMakeVariable={setMakeVar}
                   />
+                  {makeVar && (
+                    <MakeVariablePopover
+                      selection={makeVar}
+                      variables={variables.filter(v => v.key)}
+                      catalog={catalog}
+                      elsewhere={sectionHtml.reduce((n, html, i) => (i === activeSectionIdx ? n : n + countInTemplate(html, makeVar.text)), 0)}
+                      onMake={makeVariable}
+                      onClose={() => setMakeVar(null)}
+                    />
+                  )}
                 </div>
+                )}
               </>
             )}
           </div>
@@ -458,23 +585,49 @@ export function TemplatesPage() {
       }).then(r => r.data),
   })
 
+  /**
+   * docs/41 Part 1 — saving keeps a draft revision; publishing snapshots the
+   * template (its clause slots' options pinned) and lints it against the
+   * playbook. Sections are saved before anything is published, in order, so
+   * the snapshot is of what was saved.
+   */
+  const afterSave = async (id: string, publish: boolean) => {
+    qc.invalidateQueries({ queryKey: ['templates'] })
+    qc.invalidateQueries({ queryKey: ['template', id] })
+    qc.invalidateQueries({ queryKey: ['template-lint', id] })
+    if (!publish) { setShowBuilder(false); setEditTemplate(undefined); return }
+    const r = await api.post<{ template: Template; version: number; lint: LintWarning[] }>(`/templates/${id}/publish`)
+    if (r.data.lint.length) {
+      // Kept open: the builder lists what the playbook says about it.
+      toast.info(`Published as version ${r.data.version}, with ${r.data.lint.length} ${r.data.lint.length === 1 ? 'thing' : 'things'} to look at`, { description: r.data.lint[0].message, durationMs: 9000 })
+      setEditTemplate(r.data.template)
+      qc.invalidateQueries({ queryKey: ['template', id] })
+    } else {
+      toast.success(`Published as version ${r.data.version}`)
+      setShowBuilder(false)
+      setEditTemplate(undefined)
+    }
+  }
+
   const createMutation = useMutation({
-    mutationFn: (body: any) => {
+    meta: { errorHandled: true },
+    mutationFn: async ({ body, publish }: { body: any; publish: boolean }) => {
       const { sections, ...templateData } = body
-      return api.post('/templates', { ...templateData, sections })
+      const created = (await api.post<Template>('/templates', { ...templateData, sections })).data
+      await afterSave(created.id, publish)
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); setShowBuilder(false) },
+    onError: e => toast.error('Not saved', { description: apiErrorMessage(e) }),
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: any }) => {
+    meta: { errorHandled: true },
+    mutationFn: async ({ id, body, publish }: { id: string; body: any; publish: boolean }) => {
       const { sections, ...templateData } = body
-      return Promise.all([
-        api.patch(`/templates/${id}`, templateData),
-        api.put(`/templates/${id}/sections`, { sections }),
-      ])
+      await api.patch(`/templates/${id}`, templateData)
+      await api.put(`/templates/${id}/sections`, { sections })
+      await afterSave(id, publish)
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['templates'] }); setShowBuilder(false); setEditTemplate(undefined) },
+    onError: e => toast.error('Not saved', { description: apiErrorMessage(e) }),
   })
 
   const deleteMutation = useMutation({
@@ -682,12 +835,13 @@ export function TemplatesPage() {
       {/* Template Builder Modal */}
       {showBuilder && (
         <TemplateBuilderModal
+          key={editTemplate ? `${editTemplate.id}:${editTemplate.version}` : 'new'}
           template={editTemplate}
           onClose={() => { setShowBuilder(false); setEditTemplate(undefined) }}
-          onSave={(data) =>
-            editTemplate
-              ? updateMutation.mutateAsync({ id: editTemplate.id, body: data })
-              : createMutation.mutateAsync(data)
+          onSave={(data, publish) =>
+            (editTemplate
+              ? updateMutation.mutateAsync({ id: editTemplate.id, body: data, publish })
+              : createMutation.mutateAsync({ body: data, publish })).catch(() => {})
           }
           onPreview={editTemplate ? () => setPreviewId(editTemplate.id) : undefined}
         />

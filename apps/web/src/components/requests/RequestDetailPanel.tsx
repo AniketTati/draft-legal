@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/lib/api'
+import { api, apiErrorMessage } from '@/lib/api'
+import { RequestDraftPlan } from './RequestDraftPlan'
 import { Button } from '@/components/ui/button'
 import { StatusPill } from '@/components/ui/status-pill'
 import { Chip, Eyebrow } from '@/components/ui/primitives'
 import { AssistMark, AssistCard } from '@/components/ui/assist'
+import { ReasonDialog } from '@/components/common/ReasonDialog'
+import { serverMessage } from '@/lib/approval-keys'
 import {
   X, Loader2, CheckCircle, XCircle, MessageSquare, User,
   ChevronRight, AlertTriangle,
@@ -19,7 +22,9 @@ const STATUS_LABEL: Record<string, string> = {
   SUBMITTED:        'Submitted',
   IN_REVIEW:        'In Review',
   ACCEPTED:         'Accepted',
-  REJECTED:         'Rejected',
+  // docs/41 Part 4: a request is declined, with a reason; "Rejected" is not
+  // a word requests use any more.
+  REJECTED:         'Declined',
   MORE_INFO_NEEDED: 'More Info Needed',
   COMPLETED:        'Completed',
 }
@@ -69,6 +74,8 @@ interface Request {
   assignedToId:    string | null
   createdAt:       string
   metadata:        Record<string, unknown>
+  /** Why it was declined; set with REJECTED, cleared when it is reopened. */
+  rejectionReason?: string | null
 }
 
 interface Props {
@@ -76,19 +83,25 @@ interface Props {
   onClose: () => void
 }
 
-export function RequestDetailPanel({ request, onClose }: Props) {
+export function RequestDetailPanel({ request: opened, onClose }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  // The page hands over the row as it was when clicked. A status change made
+  // here comes back from the PATCH, so the panel shows it at once (a declined
+  // request shows its reason) instead of the stale row.
+  const [saved, setSaved] = useState<Partial<Request> | null>(null)
+  const request: Request = saved ? { ...opened, ...saved } : opened
   const [selectedAssignee, setSelectedAssignee] = useState(request.assignedToId ?? '')
   /*
-   * Rejection used to be one unguarded click on a red button: no confirm, no
+   * Declining used to be one unguarded click on a red button: no confirm, no
    * reason captured, no undo, and — because the mutation had no `onError` —
    * no feedback at all when the PATCH failed. A colleague's intake request
-   * would be marked Rejected, they'd never learn why, and half the time the
-   * reviewer wouldn't know whether it had even saved. It is now a two-step
-   * that states the consequence, and every mutation reports its failure.
+   * would be marked Rejected and they'd never learn why. It now asks for a
+   * reason, which the API requires and keeps, and the requester is told it
+   * (docs/41 Part 4).
    */
-  const [rejecting, setRejecting] = useState(false)
+  const [declining, setDeclining] = useState(false)
+  const [declineError, setDeclineError] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -96,12 +109,13 @@ export function RequestDetailPanel({ request, onClose }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (rejecting) { setRejecting(false); return }
+      // The decline dialog handles its own Escape.
+      if (declining) return
       onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, rejecting])
+  }, [onClose, declining])
 
   // Move focus into the panel so keyboard users aren't left behind the backdrop.
   useEffect(() => { panelRef.current?.focus() }, [])
@@ -114,13 +128,14 @@ export function RequestDetailPanel({ request, onClose }: Props) {
 
   const aiClassification = request.metadata?._aiClassification as AiClassification | undefined
 
-  const failed = (e: unknown) =>
-    setActionError((e as Error)?.message ?? 'That did not save. The request is unchanged.')
+  // The server's own words (docs/41: "pick a template first" says which).
+  const failed = (e: unknown) => setActionError(apiErrorMessage(e))
 
   const patch = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
       api.patch(`/requests/${request.id}`, body).then(r => r.data),
-    onSuccess: () => {
+    onSuccess: (data: Partial<Request>) => {
+      setSaved(data)
       setActionError(null)
       queryClient.invalidateQueries({ queryKey: ['requests'] })
       queryClient.invalidateQueries({ queryKey: ['requests-counts'] })
@@ -147,19 +162,23 @@ export function RequestDetailPanel({ request, onClose }: Props) {
 
   const handleStatus = (status: string) => patch.mutate({ status })
 
-  /*
-   * No reason field here, deliberately.
-   *
-   * `UpdateRequestSchema` is a plain (non-strict) Zod object over
-   * {assignedToId, status, priority}, so any extra key — `rejectionReason`,
-   * `metadata`, anything — is silently stripped by `.parse()` and never
-   * reaches Prisma. A textarea wired to that would look like it recorded the
-   * reviewer's reasoning and record nothing, which is worse than not asking.
-   * The confirmation step is the part that can be honest today; persisting
-   * the reason needs a schema + column change on the API side.
-   */
-  const confirmReject = () =>
-    patch.mutate({ status: 'REJECTED' }, { onSuccess: () => setRejecting(false) })
+  // The reason is stored on the request and sent to the requester. Its
+  // failure shows in the dialog, where the reason still is.
+  const decline = useMutation({
+    mutationFn: (reason: string) =>
+      api.patch(`/requests/${request.id}`, { status: 'REJECTED', rejectionReason: reason }).then(r => r.data),
+    onSuccess: (data: Partial<Request>) => {
+      setSaved(data)
+      setDeclining(false)
+      setDeclineError(null)
+      setActionError(null)
+      queryClient.invalidateQueries({ queryKey: ['requests'] })
+      queryClient.invalidateQueries({ queryKey: ['requests-counts'] })
+      queryClient.invalidateQueries({ queryKey: ['request', request.id] })
+    },
+    onError: (e: unknown) => setDeclineError(serverMessage(e, 'The request could not be declined. Try again.')),
+  })
+  const openDecline = () => { setDeclineError(null); setDeclining(true) }
 
   const isActionable = !['ACCEPTED', 'REJECTED', 'COMPLETED', 'CANCELLED'].includes(request.status)
   const pri = PRIORITY[request.priority] ?? PRIORITY.MEDIUM
@@ -290,6 +309,9 @@ export function RequestDetailPanel({ request, onClose }: Props) {
             <p className="text-body text-ink-700 whitespace-pre-wrap">{request.description}</p>
           </div>
 
+          {/* docs/41 Part 1 — the template and clause choices drafting will use. */}
+          {isActionable && <RequestDraftPlan requestId={request.id} editable={isActionable} />}
+
           {/* Assignee */}
           <div>
             <Eyebrow className="mb-1.5">Assignee</Eyebrow>
@@ -324,83 +346,53 @@ export function RequestDetailPanel({ request, onClose }: Props) {
               </div>
             )}
 
-            {rejecting ? (
-              /* Two-step reject. The reason is the whole point: a requester
-                 who gets "Rejected" and nothing else has to come and ask. */
-              <div className="space-y-2" data-testid="request-reject-confirm">
-                <Eyebrow>Reject this request?</Eyebrow>
-                <p className="text-dense text-ink-500">
-                  “{request.title}” closes and leaves the queue. The requester
-                  is not told why — follow up with them directly.
-                </p>
-                <div className="flex gap-2">
+            <>
+              {/* Accepting a request commits it — this is the decision surface
+                  where brand and danger are allowed to sit on buttons. */}
+              <Button
+                variant="brand"
+                className="w-full"
+                size="sm"
+                onClick={() => convert.mutate()}
+                disabled={convert.isPending || patch.isPending}
+              >
+                {convert.isPending ? (
+                  <><Loader2 className="animate-spin" /> Creating contract…</>
+                ) : (
+                  <><CheckCircle /> Accept &amp; Create Contract <ChevronRight className="ml-auto" /></>
+                )}
+              </Button>
+              <div className="flex gap-2">
+                {request.status !== 'MORE_INFO_NEEDED' && (
+                  // Asking for more info is a hand-back, not a verdict — neutral.
                   <Button
-                    variant="ghost" size="sm" className="flex-1"
-                    onClick={() => setRejecting(false)}
-                    disabled={patch.isPending}
-                    autoFocus
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    variant="danger" size="sm" className="flex-1"
-                    onClick={confirmReject}
-                    disabled={patch.isPending}
-                    data-testid="request-reject-confirm-btn"
-                  >
-                    {patch.isPending ? <><Loader2 className="animate-spin" /> Rejecting…</> : <><XCircle /> Reject request</>}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* Accepting a request commits it — this is the decision surface
-                    where brand and danger are allowed to sit on buttons. */}
-                <Button
-                  variant="brand"
-                  className="w-full"
-                  size="sm"
-                  onClick={() => convert.mutate()}
-                  disabled={convert.isPending || patch.isPending}
-                >
-                  {convert.isPending ? (
-                    <><Loader2 className="animate-spin" /> Creating contract…</>
-                  ) : (
-                    <><CheckCircle /> Accept &amp; Create Contract <ChevronRight className="ml-auto" /></>
-                  )}
-                </Button>
-                <div className="flex gap-2">
-                  {request.status !== 'MORE_INFO_NEEDED' && (
-                    // Asking for more info is a hand-back, not a verdict — neutral.
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => handleStatus('MORE_INFO_NEEDED')}
-                      disabled={patch.isPending}
-                    >
-                      <MessageSquare /> Need More Info
-                    </Button>
-                  )}
-                  <Button
-                    variant="danger"
+                    variant="outline"
                     size="sm"
                     className="flex-1"
-                    onClick={() => setRejecting(true)}
+                    onClick={() => handleStatus('MORE_INFO_NEEDED')}
                     disabled={patch.isPending}
-                    data-testid="request-reject-btn"
                   >
-                    <XCircle /> Reject
+                    <MessageSquare /> Need More Info
                   </Button>
-                </div>
-                {request.status === 'MORE_INFO_NEEDED' && (
-                  <div className="flex items-center gap-1.5 text-dense text-attention-700 bg-attention-50 px-3 py-2 rounded-md">
-                    <AlertTriangle className="size-3.5 flex-shrink-0" />
-                    Awaiting additional information from requester
-                  </div>
                 )}
-              </>
-            )}
+                <Button
+                  variant="danger"
+                  size="sm"
+                  className="flex-1"
+                  onClick={openDecline}
+                  disabled={patch.isPending || decline.isPending}
+                  data-testid="request-reject-btn"
+                >
+                  <XCircle /> Decline request
+                </Button>
+              </div>
+              {request.status === 'MORE_INFO_NEEDED' && (
+                <div className="flex items-center gap-1.5 text-dense text-attention-700 bg-attention-50 px-3 py-2 rounded-md">
+                  <AlertTriangle className="size-3.5 flex-shrink-0" />
+                  Awaiting additional information from requester
+                </div>
+              )}
+            </>
           </div>
         ) : (
           /*
@@ -415,25 +407,45 @@ export function RequestDetailPanel({ request, onClose }: Props) {
                 <span className="min-w-0 break-words">{actionError}</span>
               </div>
             )}
-            <p className="text-dense text-ink-500">
-              This request is settled ({STATUS_LABEL[request.status] ?? request.status.toLowerCase()}).
-              {typeof request.metadata?.rejectionReason === 'string' && request.metadata.rejectionReason
-                ? ` Reason given: “${request.metadata.rejectionReason}”`
-                : ''}
-            </p>
-            {['REJECTED', 'CANCELLED'].includes(request.status) && (
+            {request.status === 'REJECTED' ? (
+              <p className="text-dense text-ink-700" data-testid="request-declined-reason">
+                {request.rejectionReason ? `Declined: ${request.rejectionReason}` : 'Declined.'}
+              </p>
+            ) : (
+              <p className="text-dense text-ink-500">
+                This request is settled ({STATUS_LABEL[request.status] ?? request.status.toLowerCase()}).
+              </p>
+            )}
+            {/* A declined request reopens as submitted (the only way back the
+                API allows); reopening clears the reason. */}
+            {request.status === 'REJECTED' && (
               <Button
                 variant="outline" size="sm" className="w-full"
-                onClick={() => handleStatus('IN_REVIEW')}
+                onClick={() => handleStatus('SUBMITTED')}
                 disabled={patch.isPending}
                 data-testid="request-reopen-btn"
               >
-                {patch.isPending ? <><Loader2 className="animate-spin" /> Reopening…</> : 'Reopen for review'}
+                {patch.isPending ? <><Loader2 className="animate-spin" /> Reopening…</> : 'Reopen request'}
               </Button>
             )}
           </div>
         )}
       </div>
+
+      <ReasonDialog
+        open={declining}
+        title="Decline request"
+        intro={<>“{request.title}” closes and leaves the queue. The requester is told why.</>}
+        label="Why are you declining it?"
+        placeholder="For example: we already have an NDA with this company."
+        confirmLabel="Decline request"
+        pendingLabel="Declining…"
+        pending={decline.isPending}
+        error={declineError}
+        onConfirm={reason => decline.mutate(reason)}
+        onClose={() => setDeclining(false)}
+        testId="request-decline"
+      />
     </div>
   )
 }

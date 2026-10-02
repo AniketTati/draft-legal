@@ -75,7 +75,9 @@ describe('Z3 — approval routing the builder can set', () => {
     expect(web('components/approvals/WorkflowDefinitionList.tsx')).toContain('triggerRules: rulesFromDraft(draftRules)')
     const dialog = web('components/contracts/SendForReviewDialog.tsx')
     expect(dialog).toContain('pickWorkflow(workflows, routed)')
-    for (const route of ['routes/contracts.ts', 'routes/internal-ai.ts']) expect(api(route)).toMatch(/pickWorkflow\(candidates, /)
+    // docs/41 — the REST route and the assistant's tool submit through one function.
+    expect(api('lib/approval-flow.ts')).toMatch(/pickWorkflow\(candidates, /)
+    for (const route of ['routes/contracts.ts', 'routes/internal-ai.ts']) expect(api(route)).toContain('submitForApproval(')
     const at = (d: string) => new Date(d).toISOString()
     const general = { id: 'g', isDefault: true, createdAt: at('2026-01-01'), triggerRules: {} }
     const ndas = { id: 'n', isDefault: false, createdAt: at('2026-02-01'), triggerRules: { contractTypes: ['NDA'] } }

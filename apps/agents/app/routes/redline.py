@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 
-from ..agents.redline_agent import run_redline
+from ..agents.redline_agent import run_redline, counter_change, NOT_COVERED_NOTE
 from ..config import settings
 
 router = APIRouter()
@@ -92,7 +92,8 @@ async def _process_redline(
             if pb_res.is_success:
                 playbook_positions = pb_res.json().get("data", [])
                 if not playbook_positions:
-                    playbook_note = "No playbook positions apply to this contract type, so changes were scored on general market practice."
+                    # docs/41 P0.5 — said as it is: nothing was compared with a market.
+                    playbook_note = NOT_COVERED_NOTE
             else:
                 playbook_note = f"The playbook could not be loaded ({pb_res.status_code}), so changes were scored without it."
                 logger.warning("[redline] playbook fetch returned %s: %s", pb_res.status_code, pb_res.text[:200])
@@ -213,3 +214,48 @@ async def analyze_redlines(body: RedlineRequest, background: BackgroundTasks):
         body.contractType,
     )
     return {"status": "queued", "contractId": body.contractId}
+
+
+class ScoreRequest(BaseModel):
+    diffHtml:          str
+    orgId:             str
+    contractType:      Optional[str] = None
+    playbookPositions: list[dict] = []
+
+
+@router.post("/redline/score")
+async def score_redlines(body: ScoreRequest):
+    """docs/41 Part 15 — the change scoring as a findings stage: the API sends
+    the diff and the playbook and stores the advice on the version's findings
+    itself (lib/change-advice.ts), so nothing is written back from here."""
+    if not body.diffHtml.strip() or ("<ins" not in body.diffHtml and "<del" not in body.diffHtml):
+        return {"changes": [], "summary": "", "error": None}
+    result = await run_redline(
+        diff_html=body.diffHtml,
+        contract_type=body.contractType or "general commercial",
+        playbook_positions=body.playbookPositions,
+        org_id=body.orgId,
+    )
+    return {"changes": result["changes"], "summary": result["summary"], "error": result.get("error")}
+
+
+class CounterRequest(BaseModel):
+    ourText:           str
+    theirText:         str
+    orgId:             str
+    contractType:      Optional[str] = None
+    clauseType:        Optional[str] = None
+    playbookPositions: list[dict] = []
+
+
+@router.post("/redline/counter")
+async def counter_redline(body: CounterRequest):
+    """docs/41 Part 15 — Counter… on one change: counter wording with its rationale."""
+    return await counter_change(
+        our_text=body.ourText,
+        their_text=body.theirText,
+        contract_type=body.contractType or "general commercial",
+        playbook_positions=body.playbookPositions,
+        clause_type=body.clauseType,
+        org_id=body.orgId,
+    )

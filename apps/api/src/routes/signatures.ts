@@ -41,6 +41,49 @@ import { queueSigningReminder, queueSealSignedPdf } from '../lib/queue.js'
 import { extractObligationsForContract, CostCapExceededError } from '../lib/obligation-extract.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { guardOwnScopeContractRoutes, ownsContract } from '../lib/own-scope-guard.js'
+import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
+import { positionOf, transition, workingStageBefore } from '../lib/lifecycle.js'
+import { openExceptions } from '../lib/approval-flow.js'
+
+const RevertSchema = z.object({
+  reason: z.string().trim().min(3).max(2000),
+  // docs/41 Part 18 — where it goes back to: Approve (the approval still
+  // stands), Negotiate or Draft. The stage it was worked in when omitted.
+  to: z.enum(['approve', 'negotiate', 'draft']).optional(),
+})
+
+/**
+ * docs/41 P0.8, Part 18 — why a contract can't be sent for signature yet, or
+ * null. Approved — on the version it stands on — passes, and so does a
+ * contract already out for signature (to resend); so does Draft or Negotiate
+ * when the org allows signing without approval (settings.allowSignWithoutApproval,
+ * off unless an admin turns it on). Open clause exceptions block it either way
+ * (docs/41 Part 7).
+ */
+export async function signingGate(orgId: string, contract: { id: string; stage: string; stageState: string; turn: string; status: string; currentVersionId: string | null }): Promise<{ code: string; detail: string } | null> {
+  const exceptions = await openExceptions(orgId, contract.id)
+  if (exceptions.length) {
+    return { code: 'OPEN_EXCEPTIONS', detail: `${exceptions.length === 1 ? 'An exception is' : `${exceptions.length} exceptions are`} still waiting for a decision (${exceptions.map(e => e.stepName.replace(/^Exception: /, '')).slice(0, 3).join('; ')}). It can be sent for signature once ${exceptions.length === 1 ? 'it is' : 'they are'} decided.` }
+  }
+  const p = positionOf(contract)
+  if (p.stage === 'sign') return null
+  if (p.stage === 'approve' && p.stageState === 'approved') {
+    // The approval is of one version (ApprovalInstance.versionId).
+    const approved = await prisma.approvalInstance.findFirst({
+      where: { orgId, contractId: contract.id, status: { in: ['APPROVED', 'AUTO_APPROVED'] } },
+      orderBy: { submittedAt: 'desc' }, select: { versionId: true },
+    })
+    if (approved?.versionId && contract.currentVersionId && approved.versionId !== contract.currentVersionId) {
+      return { code: 'APPROVAL_REQUIRED', detail: 'The document changed after it was approved. Submit it for approval again.' }
+    }
+    return null
+  }
+  if (p.stage === 'active' || p.stage === 'closed') return { code: 'NOT_SIGNABLE', detail: p.stage === 'active' ? 'Contract already executed' : 'A closed contract is not sent for signature.' }
+  const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { settings: true } })
+  if ((p.stage === 'draft' || p.stage === 'negotiate') && (org?.settings as { allowSignWithoutApproval?: unknown } | null)?.allowSignWithoutApproval === true) return null
+  if (p.stage === 'approve' && p.stageState === 'pending') return { code: 'APPROVAL_REQUIRED', detail: 'This contract is still waiting for approval. It can be sent for signature once it is approved.' }
+  return { code: 'APPROVAL_REQUIRED', detail: 'This contract needs approval before it can be sent for signature. Send it for approval first.' }
+}
 
 const SignersSchema = z.object({
   signers: z.array(z.object({
@@ -132,16 +175,15 @@ export async function signatureRoutes(app: FastifyInstance) {
 
       const contract = await prisma.contract.findFirst({
         where: { id, orgId, deletedAt: null },
-        select: { id: true, currentVersionId: true, status: true, title: true, type: true },
+        select: { id: true, currentVersionId: true, status: true, stage: true, stageState: true, turn: true, title: true, type: true },
       })
       if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
       if (!contract.currentVersionId) {
         return reply.status(400).send({ detail: 'Contract has no version to sign' })
       }
-      if (contract.status === 'EXECUTED') {
+      if (contract.stage === 'active') {
         return reply.status(409).send({ detail: 'Contract already executed' })
       }
-
       // X21 — a signer linked to a user must be that user: an active member of
       // this org whose address is the signer's. The list's Sign link trusts the
       // link, so a row naming one person's email and another's id handed the
@@ -155,6 +197,17 @@ export async function signatureRoutes(app: FastifyInstance) {
         const emailOf = new Map(members.map(m => [m.id, m.email.toLowerCase()]))
         const bad = body.signers.find(s => s.userId && emailOf.get(s.userId) !== s.email.toLowerCase())
         if (bad) return reply.status(400).send({ detail: `Signer ${bad.email} is linked to a user who is not an active member with that email` })
+      }
+
+      // docs/41 P0.8 — a contract is signed after it is approved, unless the
+      // org has chosen to allow signing without approval.
+      const gate = await signingGate(orgId, contract)
+      if (gate) return reply.status(409).send(gate)
+      // docs/41 P0.4 — a term left as a choice (governing law nobody named)
+      // is chosen before anyone signs.
+      const open = await openChoices(id)
+      if (open.length) {
+        return reply.status(409).send({ code: 'OPEN_CHOICES', detail: openChoicesMessage(open, 'sending it for signature'), choices: open })
       }
 
       const expiresAt = new Date(Date.now() + body.expiresInDays * 86_400_000)
@@ -196,12 +249,12 @@ export async function signatureRoutes(app: FastifyInstance) {
             userAgent: req.headers['user-agent'] ?? null,
           },
         })
-        // Move the contract into PENDING_SIGNATURE so the dashboard reflects it.
-        await tx.contract.update({
-          where: { id },
-          data: { status: 'PENDING_SIGNATURE' },
-        })
         return sr
+      })
+      // docs/41 Part 18 — out for signature: the signers' turn.
+      await transition({
+        orgId, contractId: id, to: { stage: 'sign', state: 'out_for_signature' }, source: 'signature', userId,
+        versionId: contract.currentVersionId, extra: { signatureRequestId: created.id },
       })
 
       const fresh = await prisma.signatureRequest.findUnique({
@@ -553,7 +606,6 @@ export async function signatureRoutes(app: FastifyInstance) {
           data: { status: 'COMPLETED', completedAt },
         })
         if (flipped.count === 0) return false
-        await tx.contract.update({ where: { id: sr.contractId }, data: { status: 'EXECUTED' } })
         await tx.signatureEvent.create({
           data: { signatureRequestId: sr.id, kind: 'COMPLETED', metadata: { signerCount: fresh!.signers.length } },
         })
@@ -570,6 +622,11 @@ export async function signatureRoutes(app: FastifyInstance) {
         }
       }
       if (completed) {
+        // docs/41 P0.10, Part 18 — the last signature: Active, and executed when.
+        await transition({
+          orgId: sr.orgId, contractId: sr.contractId, to: { stage: 'active', state: 'active' }, source: 'signature',
+          at: completedAt, versionId: sr.versionId, extra: { signatureRequestId: sr.id },
+        })
         await createAuditEvent({
           orgId: sr.orgId,
           userId: sr.createdById,
@@ -729,6 +786,11 @@ export async function signatureRoutes(app: FastifyInstance) {
         resourceId: sr.contractId,
         metadata: { signatureRequestId: sr.id, declinedBy: signer.email, reason: body.reason },
       })
+      // docs/41 Part 18 — still in Sign, declined: the owner's turn to take it back.
+      await transition({
+        orgId: sr.orgId, contractId: sr.contractId, to: { stage: 'sign', state: 'declined' }, source: 'signature',
+        onlyFrom: ['sign'], reason: body.reason ?? null, versionId: sr.versionId, extra: { signatureRequestId: sr.id, declinedBy: signer.email },
+      })
       // H2 — a decline voids the request; subscribers were promised this event.
       fireWebhook(sr.orgId, 'signature.voided', {
         contractId: sr.contractId, signatureRequestId: sr.id,
@@ -775,6 +837,56 @@ export async function signatureRoutes(app: FastifyInstance) {
     },
   )
 
+  // ── POST /contracts/:id/revert-signature (docs/41 P0.8, Part 18) ─────
+  // A voided or declined signature request left the contract in Sign with no
+  // way out. This takes it back, with a reason, on the record: to Approve
+  // when its approval still stands (nothing changed since), or to the stage
+  // it was worked in (Negotiate or Draft), where it is submitted again.
+  // Signed copies and the voided request stay in the history.
+  app.post<{ Params: { id: string } }>(
+    '/contracts/:id/revert-signature',
+    { preHandler: requirePermission('sign', 'contract') },
+    async (req, reply) => {
+      const { id } = req.params
+      const { orgId, sub: userId } = req.user
+      const body = RevertSchema.safeParse(req.body ?? {})
+      if (!body.success) return reply.status(400).send({ detail: 'Say why it goes back (a reason of at least 3 characters).' })
+      const contract = await prisma.contract.findFirst({
+        where: { id, orgId, deletedAt: null },
+        select: { id: true, status: true, stage: true, stageState: true, turn: true, currentVersionId: true },
+      })
+      if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
+      if (contract.stage !== 'sign') {
+        return reply.status(409).send({ detail: 'Only a contract out for signature can be taken back.' })
+      }
+      const open = await prisma.signatureRequest.findFirst({ where: { contractId: id, orgId, status: 'PENDING' }, select: { id: true } })
+      if (open) return reply.status(409).send({ code: 'SIGNATURE_PENDING', detail: 'Its signature request is still open. Void it first, then take the contract back.' })
+
+      const working = await workingStageBefore(orgId, id)
+      const to = body.data.to ?? working
+      if (to === 'approve') {
+        const approved = await prisma.approvalInstance.findFirst({
+          where: { orgId, contractId: id, status: { in: ['APPROVED', 'AUTO_APPROVED'] } },
+          orderBy: { submittedAt: 'desc' }, select: { versionId: true },
+        })
+        if (!approved || (approved.versionId && approved.versionId !== contract.currentVersionId)) {
+          return reply.status(409).send({ code: 'NO_STANDING_APPROVAL', detail: 'Its approval no longer stands for this version. Take it back to Negotiate or Draft and submit it again.' })
+        }
+      }
+      const last = await prisma.signatureRequest.findFirst({ where: { contractId: id, orgId }, orderBy: { createdAt: 'desc' }, select: { id: true, status: true } })
+      const moved = await transition({
+        orgId, contractId: id, source: 'revert', userId, reason: body.data.reason,
+        to: to === 'approve' ? { stage: 'approve', state: 'approved' } : to === 'draft' ? { stage: 'draft', state: 'drafting' } : { stage: 'negotiate', state: 'with_us' },
+        onlyFrom: ['sign'], versionId: contract.currentVersionId,
+        extra: { approvalsReset: to !== 'approve', ...(last && { signatureRequestId: last.id, signatureRequestStatus: last.status }) },
+      })
+      if (!moved.ok) return reply.status(moved.status).send({ detail: moved.refusal })
+      if (!moved.changed) return reply.status(409).send({ detail: 'The contract changed meanwhile. Reload the page.' })
+      fireWebhook(orgId, 'contract.updated', { contractId: id, status: moved.to.status, changes: ['status'], source: 'user' })
+      return reply.send({ ok: true, status: moved.to.status, stage: moved.to.stage, stageState: moved.to.stageState })
+    },
+  )
+
   // ── POST /contracts/:id/signature-requests/:srId/void ─────────────────
   app.post<{ Params: { id: string; srId: string } }>(
     '/contracts/:id/signature-requests/:srId/void',
@@ -809,6 +921,11 @@ export async function signatureRoutes(app: FastifyInstance) {
         metadata: { signatureRequestId: srId },
       })
       fireWebhook(orgId, 'signature.voided', { contractId: id, signatureRequestId: srId, reason: 'Voided by sender' })
+      // docs/41 Part 18 — still in Sign, voided: the owner's turn to take it back.
+      await transition({
+        orgId, contractId: id, to: { stage: 'sign', state: 'voided' }, source: 'signature', userId,
+        onlyFrom: ['sign'], versionId: sr.versionId, extra: { signatureRequestId: srId },
+      })
 
       return reply.send({ ok: true })
     },

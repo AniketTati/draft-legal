@@ -1,0 +1,1185 @@
+{
+  "dataset": "draftlegal-extraction-fields",
+  "description": "docs/39 I1 — field-level accuracy of the upload extraction (agents /review, via /review/preview). Each case is a short contract with hand-checked labels for the fields it states; a labelled null means the contract does not state that field and the model must say so. Cases target the known weak spots: day-first and numbers-only dates, the non-renewal vs termination notice split (F1), calendar-month notice, non-USD amounts, amounts in words, initial vs renewal terms, venue vs governing law, signed vs effective dates, and fields a contract leaves out (a percentage share or a price list is no value). Grow to 30–50 cases; every correction users make in the Fields panel is a candidate (docs/39 I2).",
+  "metadata": {
+    "capability": "extraction",
+    "owner": "agents",
+    "seam": "agents-service HTTP"
+  },
+  "items": [
+    {
+      "id": "fld-saas-msa-us",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "MASTER SUBSCRIPTION AGREEMENT\n\nThis Master Subscription Agreement (the \"Agreement\") is made effective as of January 15, 2025 (the \"Effective Date\") between Brightwave Software Ltd., a Delaware corporation (\"Provider\"), and Acme Corp, a New York corporation (\"Customer\").\n\n1. SUBSCRIPTION. Provider grants Customer a non-exclusive right to access the Services during the Term.\n\n2. FEES. Customer shall pay Provider total subscription fees of USD 120,000 for the Initial Term. Invoices are payable within thirty (30) days of the invoice date.\n\n3. TERM AND RENEWAL. The initial term is twelve (12) months from the Effective Date. Thereafter this Agreement renews automatically for successive twelve (12) month terms unless either party gives written notice of non-renewal at least sixty (60) days before the end of the then-current term.\n\n4. TERMINATION FOR CONVENIENCE. Either party may terminate this Agreement for convenience on thirty (30) days' prior written notice.\n\n5. CONFIDENTIALITY. Each party shall keep the other's Confidential Information confidential.\n\n6. GOVERNING LAW. This Agreement is governed by the laws of the State of Delaware."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-01-15",
+          "value": 120000,
+          "currency": "USD",
+          "paymentTermsDays": 30,
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 60,
+            "unit": "days"
+          },
+          "terminationNotice": {
+            "value": 30,
+            "unit": "days"
+          },
+          "governingLaw": "Delaware",
+          "confidentiality": true
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:value",
+        "field_ok:autoRenew",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "field_ok:governingLaw",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "both notices stated separately"
+      }
+    },
+    {
+      "id": "fld-uk-services-dayfirst",
+      "target": "review",
+      "input": {
+        "contractType": "VENDOR_AGREEMENT",
+        "plainText": "SERVICES AGREEMENT\n\nThis agreement is dated 01/02/2025 and is made between Harbourline Consulting Limited, a company incorporated in England and Wales (the \"Supplier\"), and Northgate Retail plc (the \"Client\").\n\n1. COMMENCEMENT AND TERM. This agreement commences on the date above and continues for an initial period of two (2) years. It shall renew automatically for further periods of one (1) year unless either party gives the other not less than three (3) months' written notice before the end of the initial period or any renewal period.\n\n2. CHARGES. The Client shall pay the Supplier charges of £250,000 in each contract year. Invoices are due within 45 days.\n\n3. TERMINATION. The Client may terminate this agreement at any time without cause by giving the Supplier ninety (90) days' written notice.\n\n4. LIABILITY. The Supplier's total liability shall not exceed £500,000.\n\n5. GOVERNING LAW. This agreement is governed by the law of England and Wales.",
+        "dateOrder": "DMY"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-02-01",
+          "value": 250000,
+          "currency": "GBP",
+          "paymentTermsDays": 45,
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 3,
+            "unit": "months"
+          },
+          "terminationNotice": {
+            "value": 90,
+            "unit": "days"
+          },
+          "liabilityCapAmount": 500000,
+          "governingLaw": "England and Wales"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:currency",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "field_ok:liabilityCapAmount",
+        "field_ok:governingLaw",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "day-first date (1 February, not 2 January); notice in calendar months"
+      }
+    },
+    {
+      "id": "fld-mutual-nda-absent-terms",
+      "target": "review",
+      "input": {
+        "contractType": "NDA",
+        "plainText": "MUTUAL NON-DISCLOSURE AGREEMENT\n\nThis Mutual Non-Disclosure Agreement is entered into as of 3 March 2025 by and between Tailspin Toys Inc. (\"Tailspin\") and Wide World Importers LLC (\"Wide World\").\n\n1. Each party may disclose Confidential Information to the other solely to evaluate a potential business relationship.\n2. The receiving party shall protect the disclosing party's Confidential Information with at least reasonable care and shall not disclose it to any third party.\n3. The obligations in this Agreement continue for three (3) years from the date of disclosure.\n4. This Agreement is governed by the laws of the State of New York."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-03-03",
+          "governingLaw": "New York",
+          "confidentiality": true,
+          "value": null,
+          "autoRenew": null,
+          "nonRenewalNotice": null,
+          "liabilityCapAmount": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:value",
+        "field_ok:nonRenewalNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "terms the NDA leaves out must come back empty"
+      }
+    },
+    {
+      "id": "fld-order-form-eur",
+      "target": "review",
+      "input": {
+        "contractType": "ORDER_FORM",
+        "plainText": "ORDER FORM No. OF-2025-118\n\nCustomer: Fabrikam GmbH, Munich, Germany\nProvider: Contoso Cloud Inc.\nOrder Effective Date: 1 July 2025\nSubscription Term: 24 months from the Order Effective Date\nSubscription Fees: EUR 48,000 per year, EUR 96,000 in total for the Subscription Term\nPayment Terms: net 45 days from invoice\n\nRenewal: This Order Form renews automatically for successive 12-month terms unless Customer notifies Provider in writing of its intent not to renew at least ninety (90) days prior to the end of the current term.\n\nThis Order Form is governed by the Master Services Agreement between the parties and by the laws of Germany."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-07-01",
+          "expiryDate": "2027-06-30",
+          "value": 96000,
+          "currency": "EUR",
+          "paymentTermsDays": 45,
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 90,
+            "unit": "days"
+          },
+          "governingLaw": "Germany"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:value",
+        "field_ok:currency",
+        "field_ok:expiryDate",
+        "field_ok:nonRenewalNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "total value vs annual fee; end date implied by a 24-month term"
+      }
+    },
+    {
+      "id": "fld-sow-fixed-fee-no-renewal",
+      "target": "review",
+      "input": {
+        "contractType": "SOW",
+        "plainText": "STATEMENT OF WORK No. 7\n\nThis Statement of Work is issued under the Master Services Agreement dated 10 June 2024 between Northwind Analytics LLC (\"Consultant\") and Adventure Works Cycles (\"Client\").\n\nStart Date: September 1, 2025\nEnd Date: December 31, 2025\n\nDeliverables: a data-quality monitoring pipeline and weekly status reports.\n\nFees: a fixed fee of eighty-five thousand US dollars (USD 85,000), invoiced in two milestones and payable within thirty (30) days of each invoice.\n\nThis Statement of Work does not renew. Client may end this Statement of Work early on fifteen (15) days' written notice.\n\nGoverning law: the State of Washington."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-09-01",
+          "expiryDate": "2025-12-31",
+          "value": 85000,
+          "currency": "USD",
+          "paymentTermsDays": 30,
+          "autoRenew": false,
+          "nonRenewalNotice": null,
+          "terminationNotice": {
+            "value": 15,
+            "unit": "days"
+          },
+          "governingLaw": "Washington"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:expiryDate",
+        "field_ok:autoRenew",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "the only notice is to end early; a SOW's effective date is its start date, not the MSA's"
+      }
+    },
+    {
+      "id": "fld-license-cap-renewal",
+      "target": "review",
+      "input": {
+        "contractType": "LICENSE",
+        "plainText": "SOFTWARE LICENSE AGREEMENT\n\nThis Software License Agreement is effective as of April 1, 2025 between Vertex Imaging Corp. (\"Licensor\") and Lumen Bio Inc. (\"Licensee\").\n\n1. LICENSE. Licensor grants Licensee a non-exclusive, non-transferable license to use the Software.\n2. FEES. Licensee shall pay a license fee of $300,000.\n3. TERM. The initial term is three (3) years. The license renews for successive one (1) year terms unless either party provides written notice of non-renewal at least ninety (90) days prior to the expiration of the then-current term.\n4. LIMITATION OF LIABILITY. In no event shall either party's aggregate liability exceed one million dollars ($1,000,000).\n5. GOVERNING LAW. This Agreement shall be governed by the laws of the State of California."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-04-01",
+          "expiryDate": "2028-03-31",
+          "value": 300000,
+          "currency": "USD",
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 90,
+            "unit": "days"
+          },
+          "terminationNotice": null,
+          "liabilityCapAmount": 1000000,
+          "governingLaw": "California"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:liabilityCapAmount",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "amount in words and figures; no termination-for-convenience right"
+      }
+    },
+    {
+      "id": "fld-vendor-termination-only",
+      "target": "review",
+      "input": {
+        "contractType": "VENDOR_AGREEMENT",
+        "plainText": "VENDOR SERVICES AGREEMENT\n\nEffective Date: February 10, 2025.\nParties: Beacon Logistics Inc. (\"Company\") and Swift Carriers LLC (\"Vendor\").\n\n1. SERVICES. Vendor shall provide freight transportation services as ordered by Company.\n2. PAYMENT. Company shall pay undisputed invoices within sixty (60) days of receipt.\n3. TERM. This Agreement remains in effect until terminated. Either party may terminate this Agreement for any reason upon thirty (30) days' written notice to the other party.\n4. NOTICES. All notices under this Agreement must be in writing and delivered by courier or email to the addresses above.\n5. GOVERNING LAW. Illinois law governs this Agreement."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-02-10",
+          "paymentTermsDays": 60,
+          "autoRenew": null,
+          "nonRenewalNotice": null,
+          "terminationNotice": {
+            "value": 30,
+            "unit": "days"
+          },
+          "expiryDate": null,
+          "governingLaw": "Illinois"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "field_ok:expiryDate",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "an evergreen contract: the 30-day notice ends it early and is not a renewal notice; the notices clause is about delivery"
+      }
+    },
+    {
+      "id": "fld-india-inr-dayfirst",
+      "target": "review",
+      "input": {
+        "contractType": "VENDOR_AGREEMENT",
+        "plainText": "SERVICE AGREEMENT\n\nThis Service Agreement is executed at Bengaluru on 15/03/2025 between Docuflow Technologies Private Limited, a company incorporated under the Companies Act, 2013 (the \"Service Provider\"), and Meridian Finance Limited (the \"Client\").\n\n1. TERM. This Agreement shall be valid for a period of one (1) year from the date of execution and shall be renewed automatically for a further period of one (1) year unless either party informs the other in writing of its intention not to renew at least thirty (30) days before expiry.\n\n2. CONSIDERATION. The Client shall pay the Service Provider a total fee of INR 18,00,000 (Rupees Eighteen Lakhs only), payable within thirty (30) days of each invoice.\n\n3. GOVERNING LAW AND JURISDICTION. This Agreement shall be governed by the laws of India and the courts at Bengaluru shall have exclusive jurisdiction.",
+        "dateOrder": "DMY"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-03-15",
+          "expiryDate": "2026-03-14",
+          "value": 1800000,
+          "currency": "INR",
+          "paymentTermsDays": 30,
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 30,
+            "unit": "days"
+          },
+          "governingLaw": "India"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:value",
+        "field_ok:currency",
+        "field_ok:nonRenewalNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "day-first date; lakh digit grouping (18,00,000 = 1.8M)"
+      }
+    },
+    {
+      "id": "fld-dpa-no-commercials",
+      "target": "review",
+      "input": {
+        "contractType": "DATA_PROCESSING",
+        "plainText": "DATA PROCESSING ADDENDUM\n\nThis Data Processing Addendum (\"DPA\") forms part of the Services Agreement between Caldera Health Inc. (\"Controller\") and Pinnacle Cloud Ltd (\"Processor\") and is effective from 20 May 2025.\n\n1. The Processor shall process Personal Data only on documented instructions from the Controller.\n2. The Processor shall notify the Controller of a Personal Data Breach without undue delay and in any event within forty-eight (48) hours.\n3. This DPA remains in force for as long as the Processor processes Personal Data on behalf of the Controller.\n4. This DPA is governed by the laws of Ireland."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-05-20",
+          "governingLaw": "Ireland",
+          "value": null,
+          "autoRenew": null,
+          "nonRenewalNotice": null,
+          "terminationNotice": null,
+          "confidentiality": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:value",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "a DPA states almost no commercial terms"
+      }
+    },
+    {
+      "id": "fld-msa-monthly-fee",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "MANAGED SERVICES AGREEMENT\n\nThis Managed Services Agreement is entered into on October 1, 2025 by Ironbridge Industrial Corp. (\"Customer\") and Summit Managed IT LLC (\"Provider\").\n\n1. TERM. This Agreement begins on October 1, 2025 and ends on September 30, 2027, unless terminated earlier.\n2. FEES. Customer shall pay a monthly fee of USD 15,000. Provider shall invoice monthly in arrears and Customer shall pay within fifteen (15) days.\n3. RENEWAL. This Agreement does not renew automatically; any extension requires a written amendment signed by both parties.\n4. LIABILITY. Provider's liability is capped at the fees paid by Customer in the twelve (12) months before the claim.\n5. GOVERNING LAW. The laws of the State of Ohio govern this Agreement."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-10-01",
+          "expiryDate": "2027-09-30",
+          "currency": "USD",
+          "paymentTermsDays": 15,
+          "autoRenew": false,
+          "nonRenewalNotice": null,
+          "governingLaw": "Ohio"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:expiryDate",
+        "field_ok:autoRenew",
+        "field_ok:paymentTermsDays",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "explicitly no auto-renewal; the cap is a formula, not an amount"
+      }
+    },
+    {
+      "id": "fld-sla-weeks-notice",
+      "target": "review",
+      "input": {
+        "contractType": "SLA",
+        "plainText": "SERVICE LEVEL AGREEMENT\n\nThis Service Level Agreement is effective as of the 5th day of June, 2025 between Contoso Logistics (\"Customer\") and Fabrikam Systems (\"Provider\").\n\n1. AVAILABILITY. Provider shall make the Platform available 99.9% of each calendar month.\n2. SERVICE CREDITS. If availability falls below the target, Customer receives a credit of 5% of the monthly fee for each 0.1% below target, up to 25% of the monthly fee.\n3. TERM. This SLA runs for twelve (12) months and then renews automatically for successive twelve (12) month periods unless either party gives six (6) weeks' written notice of non-renewal before the end of the current period.\n4. This SLA is governed by the laws of the State of Texas."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-06-05",
+          "expiryDate": "2026-06-04",
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 6,
+            "unit": "weeks"
+          },
+          "governingLaw": "Texas"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:nonRenewalNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "ordinal date ('5th day of June'); notice in weeks"
+      }
+    },
+    {
+      "id": "fld-employment-individual",
+      "target": "review",
+      "input": {
+        "contractType": "EMPLOYMENT",
+        "orgName": "Vertex Cloud Inc.",
+        "plainText": "EMPLOYMENT AGREEMENT\n\nThis Employment Agreement is made on August 18, 2025 between Vertex Cloud Inc. (the \"Company\") and Priya Raman (the \"Employee\").\n\n1. POSITION. The Employee is employed as Senior Counsel, starting on September 2, 2025.\n2. COMPENSATION. The Company shall pay the Employee a base salary of USD 185,000 per year.\n3. AT-WILL. Employment is at will. Either party may end the employment at any time with two (2) weeks' written notice.\n4. CONFIDENTIALITY. The Employee shall keep the Company's confidential information confidential during and after employment.\n5. GOVERNING LAW. This Agreement is governed by the laws of the State of California."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-09-02",
+          "counterpartyName": "Priya Raman",
+          "autoRenew": null,
+          "terminationNotice": {
+            "value": 2,
+            "unit": "weeks"
+          },
+          "confidentiality": true,
+          "governingLaw": "California"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "signed on one date, starts on another: the effective date is the start date"
+      }
+    },
+    {
+      "id": "fld-french-services",
+      "target": "review",
+      "input": {
+        "contractType": "SOW",
+        "language": "fr",
+        "dateOrder": "DMY",
+        "orgName": "Acme Corp",
+        "plainText": "CONTRAT DE PRESTATION DE SERVICES\n\nLe présent contrat (le « Contrat ») est conclu le 1er mars 2025 (la « Date d’effet ») entre Lumière Conseil SAS, société par actions simplifiée immatriculée au RCS de Paris (le « Prestataire »), et Acme Corp, une société du Delaware (le « Client »).\n\n1. OBJET. Le Prestataire fournit au Client les services de conseil décrits en annexe 1.\n\n2. PRIX. Le Client paie au Prestataire des honoraires de 48 000 EUR hors taxes par an. Les factures sont payables à trente (30) jours de leur date d’émission.\n\n3. DURÉE. Le Contrat est conclu pour une durée initiale de douze (12) mois à compter de la Date d’effet. Il se renouvelle ensuite tacitement par périodes successives de douze (12) mois, sauf dénonciation par l’une des parties au moins trois (3) mois avant son échéance.\n\n4. RÉSILIATION. Chaque partie peut résilier le Contrat pour convenance moyennant un préavis écrit de soixante (60) jours.\n\n5. DROIT APPLICABLE. Le Contrat est régi par le droit français. Tout litige relève de la compétence exclusive des tribunaux de Paris."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-03-01",
+          "value": 48000,
+          "currency": "EUR",
+          "paymentTermsDays": 30,
+          "autoRenew": true,
+          "initialTerm": {
+            "value": 12,
+            "unit": "months"
+          },
+          "nonRenewalNotice": {
+            "value": 3,
+            "unit": "months"
+          },
+          "terminationNotice": {
+            "value": 60,
+            "unit": "days"
+          },
+          "terminationForConvenience": true,
+          "governingLaw": "France",
+          "venue": "Paris",
+          "counterpartyName": "Lumière Conseil SAS"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:value",
+        "field_ok:nonRenewalNotice",
+        "field_ok:terminationNotice",
+        "field_ok:governingLaw",
+        "field_ok:counterpartyName",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a French contract: French quotes, values in one format, a written-out date (docs/39 A11)"
+      }
+    },
+    {
+      "id": "fld-msa-venue-vs-law",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "MASTER SERVICES AGREEMENT\n\nThis Master Services Agreement (the \"Agreement\") is entered into as of June 1, 2025 (the \"Effective Date\") by and between Proseware, Inc., a Delaware corporation (\"Provider\"), and Litware Health Systems, LLC (\"Client\").\n\n1. TERM. The initial term of this Agreement is thirty-six (36) months from the Effective Date. Thereafter it renews automatically for successive twelve (12) month renewal terms unless either party gives written notice of non-renewal at least sixty (60) days before the end of the then-current term.\n\n2. FEES. Client shall pay Provider an annual fee of USD 180,000, invoiced annually in advance and payable within thirty (30) days of the invoice date.\n\n3. GOVERNING LAW AND VENUE. This Agreement is governed by the laws of the State of New York, without regard to its conflict-of-laws rules. Each party submits to the exclusive jurisdiction of the state and federal courts located in Wilmington, Delaware.\n\n4. TERMINATION. Neither party may terminate this Agreement for convenience.",
+        "orgName": "Litware Health Systems"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-06-01",
+          "initialTerm": {
+            "value": 36,
+            "unit": "months"
+          },
+          "renewalTerm": {
+            "value": 12,
+            "unit": "months"
+          },
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 60,
+            "unit": "days"
+          },
+          "value": 180000,
+          "valueBasis": "Annual",
+          "currency": "USD",
+          "paymentTermsDays": 30,
+          "paymentFrequency": "Annually",
+          "governingLaw": "New York",
+          "venue": "Delaware",
+          "terminationForConvenience": false,
+          "terminationNotice": null,
+          "counterpartyName": "Proseware"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:governingLaw",
+        "field_ok:venue",
+        "field_ok:initialTerm",
+        "field_ok:renewalTerm",
+        "field_ok:terminationForConvenience",
+        "field_ok:counterpartyName",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "one state's law, another's courts (the venue is not the governing law); initial vs renewal term; no right to end for convenience"
+      }
+    },
+    {
+      "id": "fld-license-exclusive-quarterly",
+      "target": "review",
+      "input": {
+        "contractType": "LICENSE",
+        "plainText": "EXCLUSIVE DISTRIBUTION AND LICENSE AGREEMENT\n\nEffective Date: 15 September 2025\n\nLicensor: Adatum Pharmaceuticals AG, Basel, Switzerland\nLicensee: Lamna Healthcare Company Ltd., Singapore\n\n1. GRANT. Licensor grants Licensee an exclusive license to market and distribute the Products in the Territory (Singapore, Malaysia and Indonesia). Licensor shall not appoint any other distributor in the Territory during the Term.\n\n2. LICENSE FEE. Licensee shall pay an annual license fee of CHF 400,000, payable in four equal quarterly instalments, each within 60 days of its invoice.\n\n3. TERM. This Agreement has an initial term of five (5) years and shall not renew unless the parties agree otherwise in writing.\n\n4. GOVERNING LAW. This Agreement is governed by the laws of Switzerland. Disputes shall be settled by arbitration seated in Zurich."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-09-15",
+          "exclusivity": true,
+          "value": 400000,
+          "valueBasis": "Annual",
+          "currency": "CHF",
+          "paymentFrequency": "Quarterly",
+          "paymentTermsDays": 60,
+          "initialTerm": {
+            "value": 5,
+            "unit": "years"
+          },
+          "autoRenew": false,
+          "governingLaw": "Switzerland",
+          "venue": "Zurich"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:exclusivity",
+        "field_ok:paymentFrequency",
+        "field_ok:autoRenew",
+        "field_ok:currency",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "an exclusive grant; a yearly fee paid quarterly (the value is the yearly amount); a term that expressly doesn't renew; CHF"
+      }
+    },
+    {
+      "id": "fld-sow-milestones-convenience",
+      "target": "review",
+      "input": {
+        "contractType": "SOW",
+        "plainText": "STATEMENT OF WORK No. 7\n\nThis Statement of Work is issued under the Master Services Agreement dated 3 February 2023 between Fourth Coffee Corporation (\"Customer\") and Relecloud Consulting LLP (\"Consultant\").\n\nProject: Data platform migration\nStart Date: 10 November 2025\nCompletion Date: 30 April 2026\n\nFees: a fixed fee of USD 85,000 for the whole project, payable on completion of the following milestones: 30% on sign-off of the design, 40% on cut-over, and 30% on acceptance.\n\nInvoices are payable within fifteen (15) days of receipt.\n\nCustomer may terminate this SOW for convenience at any time on fifteen (15) days' written notice, paying for work performed to the date of termination."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-11-10",
+          "expiryDate": "2026-04-30",
+          "value": 85000,
+          "valueBasis": "Total",
+          "currency": "USD",
+          "paymentFrequency": "Milestones",
+          "paymentTermsDays": 15,
+          "terminationForConvenience": true,
+          "terminationNotice": {
+            "value": 15,
+            "unit": "days"
+          },
+          "autoRenew": null,
+          "nonRenewalNotice": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:expiryDate",
+        "field_ok:paymentFrequency",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a SOW's own start and completion dates, not the MSA's; milestone payments; payment terms and convenience notice both 15 days"
+      }
+    },
+    {
+      "id": "fld-nda-one-way-ordinal",
+      "target": "review",
+      "input": {
+        "contractType": "NDA",
+        "plainText": "NON-DISCLOSURE AGREEMENT (ONE-WAY)\n\nTHIS AGREEMENT is made the 1st day of April, 2025, between Coho Winery, Inc., a California corporation (\"Discloser\"), and Alpine Ski House LLC (\"Recipient\").\n\n1. Recipient shall hold all Confidential Information in strict confidence and use it only to evaluate a possible acquisition of Discloser's assets.\n2. These obligations survive indefinitely, including after any end of the parties' discussions.\n3. No license or other right is granted by this Agreement.\n4. This Agreement shall be governed by and construed in accordance with the laws of the State of California."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-04-01",
+          "confidentiality": true,
+          "governingLaw": "California",
+          "value": null,
+          "autoRenew": null,
+          "expiryDate": null,
+          "initialTerm": null,
+          "terminationNotice": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:expiryDate",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "an ordinal written date ('the 1st day of April, 2025'); obligations with no end date are no expiry"
+      }
+    },
+    {
+      "id": "fld-partnership-revenue-share",
+      "target": "review",
+      "input": {
+        "contractType": "PARTNERSHIP",
+        "plainText": "RESELLER PARTNERSHIP AGREEMENT\n\nDated: 20 January 2025\n\nBetween: Trey Research Inc., Toronto, Ontario (\"Vendor\") and Northwind Traders Canada Ltd. (\"Partner\")\n\n1. APPOINTMENT. Vendor appoints Partner as a non-exclusive reseller of the Vendor Software in Canada.\n2. REVENUE SHARE. Partner shall retain thirty percent (30%) of the net revenue from each sale and remit the balance to Vendor within forty-five (45) days after the end of each calendar quarter. There is no minimum commitment and no fixed fee.\n3. TERM. The term of this Agreement is two (2) years, renewing automatically for successive one-year periods unless either party gives ninety (90) days' notice of non-renewal.\n4. GOVERNING LAW. This Agreement is governed by the laws of the Province of Ontario and the federal laws of Canada applicable therein.",
+        "orgName": "Northwind Traders Canada"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-01-20",
+          "exclusivity": false,
+          "value": null,
+          "currency": null,
+          "paymentFrequency": "Quarterly",
+          "initialTerm": {
+            "value": 2,
+            "unit": "years"
+          },
+          "renewalTerm": {
+            "value": 1,
+            "unit": "years"
+          },
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 90,
+            "unit": "days"
+          },
+          "governingLaw": "Ontario",
+          "counterpartyName": "Trey Research"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:value",
+        "field_ok:exclusivity",
+        "field_ok:renewalTerm",
+        "field_ok:nonRenewalNotice",
+        "field_ok:counterpartyName",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "a percentage share is no contract value (value and currency empty); non-exclusive, said so; the renewal term apart from the first"
+      }
+    },
+    {
+      "id": "fld-sla-coterminous",
+      "target": "review",
+      "input": {
+        "contractType": "SLA",
+        "plainText": "SERVICE LEVEL AGREEMENT\n\nThis Service Level Agreement forms part of the Cloud Services Agreement between Contoso Hosting Ltd (\"Provider\") and Woodgrove Bank plc (\"Customer\") and takes effect on 1 October 2025.\n\n1. AVAILABILITY. Provider will make the Services available 99.95% of each calendar month, excluding scheduled maintenance.\n2. SERVICE CREDITS. If availability falls below the target, Customer is entitled to a service credit of 5% of the monthly fees for each 0.1% shortfall, capped at 25% of the monthly fees.\n3. TERM. This SLA is co-terminous with the Cloud Services Agreement and ends when that agreement ends.\n4. This SLA is governed by the laws of England and Wales."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-10-01",
+          "expiryDate": null,
+          "value": null,
+          "autoRenew": null,
+          "liabilityCapAmount": null,
+          "governingLaw": "England and Wales"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:expiryDate",
+        "field_ok:liabilityCapAmount",
+        "field_ok:value",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a co-terminous term has no end date of its own; a percentage cap on service credits is no liability cap amount"
+      }
+    },
+    {
+      "id": "fld-dpa-breach-hours",
+      "target": "review",
+      "input": {
+        "contractType": "DATA_PROCESSING",
+        "plainText": "DATA PROCESSING ADDENDUM\n\nThis Data Processing Addendum (\"DPA\") is entered into on 12 May 2025 between Tailwind Analytics Ltd (\"Processor\") and Graphic Design Institute (\"Controller\") and supplements the Subscription Agreement between them.\n\n1. Processor shall process Personal Data only on documented instructions from Controller and shall ensure that persons authorised to process the Personal Data are bound by confidentiality.\n2. Processor shall notify Controller without undue delay, and in any event within 48 hours, after becoming aware of a Personal Data Breach.\n3. This DPA remains in force for as long as Processor processes Personal Data on behalf of Controller.\n4. This DPA is governed by the laws of Ireland."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-05-12",
+          "confidentiality": true,
+          "governingLaw": "Ireland",
+          "value": null,
+          "expiryDate": null,
+          "autoRenew": null,
+          "paymentTermsDays": null,
+          "terminationNotice": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:governingLaw",
+        "field_ok:paymentTermsDays",
+        "field_ok:terminationNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "a 48-hour breach notice is no payment term or notice period; a DPA lasts as long as the processing"
+      }
+    },
+    {
+      "id": "fld-order-form-monthly-total",
+      "target": "review",
+      "input": {
+        "contractType": "ORDER_FORM",
+        "plainText": "ORDER FORM #10442\n\nCustomer: Blue Yonder Airlines, Inc.\nVendor: Adventure Works Cycles Software, Inc.\nOrder Start Date: March 1, 2025\nTerm: 12 months\nFees: USD 2,400 per month (USD 28,800 in total for the Term), billed monthly in arrears.\nPayment: net 60 days from the invoice date.\nAuto-renewal: None. This Order Form expires at the end of the Term unless the parties sign a new Order Form.",
+        "orgName": "Blue Yonder Airlines"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-03-01",
+          "expiryDate": "2026-02-28",
+          "initialTerm": {
+            "value": 12,
+            "unit": "months"
+          },
+          "value": 28800,
+          "valueBasis": "Total",
+          "currency": "USD",
+          "paymentFrequency": "Monthly",
+          "paymentTermsDays": 60,
+          "autoRenew": false,
+          "nonRenewalNotice": null,
+          "counterpartyName": "Adventure Works"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:value",
+        "field_ok:paymentTermsDays",
+        "field_ok:autoRenew",
+        "field_ok:expiryDate",
+        "field_ok:counterpartyName",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "the total over the term, not the monthly fee; no auto-renewal, said so; an end date implied by a 12-month term"
+      }
+    },
+    {
+      "id": "fld-msa-signed-before-effective",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "MASTER AGREEMENT\n\nThis Master Agreement is signed on 15 March 2025 and takes effect on 1 April 2025 (the \"Effective Date\").\n\nParties: Wingtip Toys Ltd (\"Buyer\") and Fabrikam Manufacturing Inc. (\"Seller\").\n\n1. The Agreement runs for three (3) years from the Effective Date and then ends; it does not renew automatically.\n2. The Buyer shall pay each invoice within thirty (30) days.\n3. The Seller's aggregate liability under this Agreement is limited to two million US dollars (USD 2,000,000).\n4. Governing law: the State of Texas.\n\nSigned on 15 March 2025 by the authorised representatives of both parties."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-04-01",
+          "executionDate": "2025-03-15",
+          "initialTerm": {
+            "value": 3,
+            "unit": "years"
+          },
+          "expiryDate": "2028-03-31",
+          "autoRenew": false,
+          "paymentTermsDays": 30,
+          "liabilityCapAmount": 2000000,
+          "value": null,
+          "governingLaw": "Texas"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:executionDate",
+        "field_ok:expiryDate",
+        "field_ok:liabilityCapAmount",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "signed on one date, in effect from another; a fixed three-year term ends 31 March 2028; a cap in words and figures"
+      }
+    },
+    {
+      "id": "fld-msa-yen",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "MASTER SERVICES AGREEMENT\n\nEffective Date: 1 August 2025\nBetween: Nod Publishers K.K., Tokyo, Japan (\"Client\") and Humongous Insurance Services K.K. (\"Contractor\")\n\n1. SERVICES AND FEES. Contractor shall provide the services in Exhibit A for a total fee of ¥12,000,000 (twelve million yen), payable in two equal instalments.\n2. PAYMENT. Each instalment is payable by the end of the month following the month of invoice.\n3. TERM. One (1) year from the Effective Date, renewing for further one-year terms unless either party objects in writing at least one (1) month before expiry.\n4. GOVERNING LAW. The laws of Japan govern this Agreement. The Tokyo District Court has exclusive jurisdiction."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-08-01",
+          "value": 12000000,
+          "valueBasis": "Total",
+          "currency": "JPY",
+          "initialTerm": {
+            "value": 1,
+            "unit": "years"
+          },
+          "renewalTerm": {
+            "value": 1,
+            "unit": "years"
+          },
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 1,
+            "unit": "months"
+          },
+          "governingLaw": "Japan",
+          "venue": "Tokyo"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:value",
+        "field_ok:currency",
+        "field_ok:nonRenewalNotice",
+        "field_ok:venue",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "yen by its sign and in words; notice in months; the court named apart from the law"
+      }
+    },
+    {
+      "id": "fld-license-perpetual-onetime",
+      "target": "review",
+      "input": {
+        "contractType": "LICENSE",
+        "plainText": "PERPETUAL SOFTWARE LICENSE AGREEMENT\n\nThis Agreement is made on 22 July 2025 between Lucerne Publishing GmbH (\"Licensee\") and Southridge Video Systems B.V. (\"Licensor\").\n\n1. LICENSE. Licensor grants Licensee a perpetual, non-exclusive, non-transferable license to use the Software for its internal business purposes.\n2. FEE. Licensee shall pay a one-time license fee of EUR 75,000 within thirty (30) days of delivery of the Software.\n3. SUPPORT. Support and maintenance are not included and may be purchased separately.\n4. GOVERNING LAW. This Agreement is governed by the laws of the Netherlands."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-07-22",
+          "value": 75000,
+          "currency": "EUR",
+          "paymentFrequency": "One-time",
+          "paymentTermsDays": 30,
+          "exclusivity": false,
+          "expiryDate": null,
+          "autoRenew": null,
+          "governingLaw": "Netherlands"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:paymentFrequency",
+        "field_ok:exclusivity",
+        "field_ok:expiryDate",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a perpetual licence has no end date; a one-time fee; non-exclusive, said so"
+      }
+    },
+    {
+      "id": "fld-employment-scotland",
+      "target": "review",
+      "input": {
+        "contractType": "EMPLOYMENT",
+        "plainText": "CONTRACT OF EMPLOYMENT\n\nEmployer: Margie's Travel Limited, Edinburgh\nEmployee: Ms. Rachel Adams\n\n1. START. Your employment begins on 6 January 2026. Your continuous employment starts on that date.\n2. SALARY. Your salary is £68,000 per year, paid monthly in arrears on the last working day of each month.\n3. NOTICE. After the probationary period, either you or the Employer may end your employment by giving one (1) month's written notice.\n4. LAW. This contract is governed by the law of Scotland.\n\nSigned 12 November 2025."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2026-01-06",
+          "executionDate": "2025-11-12",
+          "terminationNotice": {
+            "value": 1,
+            "unit": "months"
+          },
+          "currency": "GBP",
+          "paymentFrequency": "Monthly",
+          "autoRenew": null,
+          "governingLaw": "Scotland"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:executionDate",
+        "field_ok:terminationNotice",
+        "field_ok:governingLaw",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "employment starts after it is signed; notice to end it in calendar months; Scots law"
+      }
+    },
+    {
+      "id": "fld-nda-german",
+      "target": "review",
+      "input": {
+        "contractType": "NDA",
+        "plainText": "GEHEIMHALTUNGSVEREINBARUNG\n\nzwischen der Fabrikam Deutschland GmbH, Berlin (\"Fabrikam\")\nund der Contoso Beratung AG, München (\"Contoso\"),\n\ngeschlossen am 15. Januar 2025.\n\n1. Die Parteien verpflichten sich, alle vertraulichen Informationen der jeweils anderen Partei geheim zu halten und nur zur Prüfung einer möglichen Zusammenarbeit zu verwenden.\n2. Diese Verpflichtung gilt für einen Zeitraum von fünf (5) Jahren ab dem Datum dieser Vereinbarung.\n3. Diese Vereinbarung unterliegt dem Recht der Bundesrepublik Deutschland. Gerichtsstand ist Berlin.",
+        "language": "de",
+        "dateOrder": "DMY"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-01-15",
+          "confidentiality": true,
+          "governingLaw": "Germany",
+          "venue": "Berlin",
+          "value": null,
+          "autoRenew": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:governingLaw",
+        "field_ok:venue",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a German contract (docs/39 A11): a written-out German date; the law and the court named in German"
+      }
+    },
+    {
+      "id": "fld-sow-period-of-performance",
+      "target": "review",
+      "input": {
+        "contractType": "SOW",
+        "plainText": "STATEMENT OF WORK — Website Redesign\n\nThis SOW is entered into on 20 January 2025 under the Master Services Agreement between Tailspin Toys Inc. (\"Client\") and Proseware Studio LLC (\"Agency\").\n\nPeriod of performance: from 1 February 2025 through 31 December 2025.\nFees: time and materials at USD 150 per hour.\nInvoices: issued monthly and due within 30 days."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-02-01",
+          "expiryDate": "2025-12-31",
+          "currency": "USD",
+          "paymentFrequency": "Monthly",
+          "paymentTermsDays": 30,
+          "autoRenew": null
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:expiryDate",
+        "field_ok:paymentFrequency",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "a SOW's period of performance gives its start and end (not the day it was entered into); monthly time-and-materials invoices"
+      }
+    },
+    {
+      "id": "fld-vendor-us-numeric-date",
+      "target": "review",
+      "input": {
+        "contractType": "VENDOR_AGREEMENT",
+        "plainText": "VENDOR SUPPLY AGREEMENT\n\nEffective 03/04/2025, this Agreement is between Wide World Importers Corp. (\"Buyer\"), Seattle, Washington, and Litware Components Inc. (\"Vendor\").\n\n1. Vendor shall supply the Products listed in Schedule 1 at the prices stated there.\n2. Buyer shall pay undisputed invoices within thirty (30) days of receipt.\n3. Either party may end this Agreement at any time on thirty (30) days' written notice.\n4. This Agreement is governed by the laws of the State of Washington.",
+        "dateOrder": "MDY"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-03-04",
+          "paymentTermsDays": 30,
+          "terminationForConvenience": true,
+          "terminationNotice": {
+            "value": 30,
+            "unit": "days"
+          },
+          "autoRenew": null,
+          "nonRenewalNotice": null,
+          "governingLaw": "Washington"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:terminationNotice",
+        "field_ok:nonRenewalNotice",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "medium",
+        "signal": "a numbers-only date read month first for a US org (4 March); an evergreen contract's only notice ends it early"
+      }
+    },
+    {
+      "id": "fld-subscription-anniversary-notice",
+      "target": "review",
+      "input": {
+        "contractType": "MSA",
+        "plainText": "SUBSCRIPTION AGREEMENT\n\nThis Subscription Agreement is made as of 1 December 2024 between Northwind Health Partners LLC (\"Subscriber\") and Fabrikam Analytics Inc. (\"Provider\").\n\n1. TERM. The Subscription Term begins on the date of this Agreement and continues for one year. It then renews for successive one-year periods unless Subscriber cancels by written notice received no later than 45 days before the anniversary of the start date.\n2. FEES. Annual subscription fee: USD 36,000, payable annually in advance.\n3. PRICE INCREASES. Provider may increase fees on renewal by up to 5%.\n4. LAW. Delaware law governs this Agreement."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2024-12-01",
+          "initialTerm": {
+            "value": 1,
+            "unit": "years"
+          },
+          "renewalTerm": {
+            "value": 1,
+            "unit": "years"
+          },
+          "autoRenew": true,
+          "nonRenewalNotice": {
+            "value": 45,
+            "unit": "days"
+          },
+          "value": 36000,
+          "valueBasis": "Annual",
+          "currency": "USD",
+          "paymentFrequency": "Annually",
+          "governingLaw": "Delaware"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:nonRenewalNotice",
+        "field_ok:renewalTerm",
+        "field_ok:valueBasis",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "cancelling before the anniversary is the notice to stop renewal; a 5% price-increase cap is no amount"
+      }
+    },
+    {
+      "id": "fld-consulting-day-rate",
+      "target": "review",
+      "input": {
+        "contractType": "OTHER",
+        "plainText": "CONSULTING AGREEMENT\n\nDate: 2 June 2025\nConsultant: Dr. Alan Brewer\nClient: Trey Research Ltd\n\nThe Consultant will advise the Client on regulatory strategy for a fee of £1,200 per day, for no more than 20 days in total. Invoices are payable within 14 days. Either party may end this agreement on 7 days' notice. This agreement is governed by the laws of England and Wales."
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-06-02",
+          "currency": "GBP",
+          "paymentTermsDays": 14,
+          "terminationForConvenience": true,
+          "terminationNotice": {
+            "value": 7,
+            "unit": "days"
+          },
+          "autoRenew": null,
+          "governingLaw": "England and Wales"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:paymentTermsDays",
+        "field_ok:terminationNotice",
+        "field_ok:currency",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "easy",
+        "signal": "a day rate capped by days, with no total stated; short notice in days"
+      }
+    },
+    {
+      "id": "fld-supply-later-signature",
+      "target": "review",
+      "input": {
+        "contractType": "VENDOR_AGREEMENT",
+        "plainText": "SUPPLY AGREEMENT\n\nSupplier: Coho Vineyard & Winery Inc.\nCustomer: Alpine Ski House Corporation\n\n1. COMMENCEMENT. This Agreement commences on the date it has been signed by both parties and continues for two (2) years.\n2. PRICES. Prices are as set out in the Supplier's price list in force at the date of each order.\n3. PAYMENT. Each order is invoiced on delivery.\n4. GOVERNING LAW. This Agreement is governed by the laws of the Commonwealth of Massachusetts.\n\nSigned for the Supplier on 3 September 2025.\nSigned for the Customer on 5 September 2025.",
+        "orgName": "Alpine Ski House"
+      },
+      "expectedOutput": {
+        "keyTerms": {
+          "effectiveDate": "2025-09-05",
+          "initialTerm": {
+            "value": 2,
+            "unit": "years"
+          },
+          "expiryDate": "2027-09-04",
+          "value": null,
+          "governingLaw": "Massachusetts",
+          "counterpartyName": "Coho Vineyard"
+        }
+      },
+      "scorers": [
+        "fields_match:*",
+        "field_ok:effectiveDate",
+        "field_ok:expiryDate",
+        "field_ok:value",
+        "field_ok:counterpartyName",
+        "latency_ms"
+      ],
+      "metadata": {
+        "addedAt": "2026-09-27",
+        "source": "handwritten",
+        "difficulty": "hard",
+        "signal": "in effect from the later signature; prices from a price list give no contract value"
+      }
+    }
+  ]
+}

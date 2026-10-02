@@ -14,14 +14,16 @@ import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { requirePermission } from '../middleware/permissions.js'
+import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { resolveRevisionAuthors } from '../lib/revision-author.js'
 import { generatePlainDocx } from '../lib/docx-export.js'
 import { checkUpload, MIME } from '../lib/file-type.js'
 import { extractDocument } from '../lib/document.js'
-import { statusAfterTermsChange } from '../lib/contract-status.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { onSentToCounterparty } from '../lib/lifecycle.js'
+import { saveDraftChangesBefore } from '../lib/working-copy.js'
 import { queueParseDocument } from '../lib/queue.js'
 import { DocxError, readDocxReview, type RedlineStats } from '../lib/ooxml/docx-redline.js'
 import { likeness, wordBag } from '../lib/ooxml/sequence-diff.js'
@@ -184,7 +186,7 @@ export async function externalEditRoutes(app: FastifyInstance) {
     let extracted: Awaited<ReturnType<typeof extractDocument>>
     let review: Awaited<ReturnType<typeof readDocxReview>>
     try {
-      ;[extracted, review] = await Promise.all([extractDocument(file, MIME.DOCX, filename), readDocxReview(file)])
+      ;[extracted, review] = await Promise.all([extractDocument(file, MIME.DOCX, filename, { suggestions: true }), readDocxReview(file)])
     } catch (err) {
       return reply.status(422).send({ code: 'WORD_FILE_UNREADABLE', detail: err instanceof DocxError ? err.message : 'That Word file could not be read.' })
     }
@@ -262,7 +264,6 @@ export async function externalEditRoutes(app: FastifyInstance) {
           where: { id },
           data:  {
             currentVersionId: version.id, updatedAt: new Date(), analysisStatus: 'PENDING',
-            ...(statusAfterTermsChange(contract.status) && { status: statusAfterTermsChange(contract.status) }),
           },
         })
         // Their comments, kept internal: threads and resolutions as they were.
@@ -292,6 +293,8 @@ export async function externalEditRoutes(app: FastifyInstance) {
       throw err
     }
 
+    // X42, docs/41 Part 18 — approvals given are asked again as their reset rules say.
+    await onApprovalChange({ orgId, contractId: id, versionId: created.id, source: 'edit', userId })
     // The same pipeline as any new file: text, clauses, review.
     queueParseDocument({ contractId: id, versionId: created.id, s3Key, mimeType: MIME.DOCX, orgId, filename })
     await createAuditEvent({
@@ -321,6 +324,13 @@ export async function externalEditRoutes(app: FastifyInstance) {
         ...lockedBody(lock),
         detail: `${lock.startedByName} has this contract open in Google Docs. Publish that copy back first, so the counterparty gets your latest changes.`,
       })
+    }
+    // docs/41 Part 16 (C1) — draft changes still unsaved in the editor are
+    // part of what is sent: a version first, made by someone who may edit.
+    if ((await permissionScopeFor(req, 'edit', 'contract')) !== null) {
+      const saved = await saveDraftChangesBefore({ orgId, contractId: id, userId, reason: 'send', ipAddress: req.ip })
+      if (!saved.ok) return reply.status(saved.status).send(saved.body)
+      if (saved.version) contract.currentVersionId = saved.version.id
     }
     const version = await standing(contract)
     if (!version) return reply.status(409).send({ code: 'VERSION_NOT_READY', detail: 'The document is still being prepared. Try again in a moment.' })
@@ -356,6 +366,8 @@ export async function externalEditRoutes(app: FastifyInstance) {
       },
       ipAddress: req.ip,
     })
+    // docs/41 Part 18 — downloaded for the counterparty: their turn.
+    await onSentToCounterparty({ orgId, contractId: id, userId, via: 'redline_download' })
     return sendDocx(reply, docx, fileName(contract.title, `our changes to their v${theirs.versionNumber}`), stats)
   })
 }

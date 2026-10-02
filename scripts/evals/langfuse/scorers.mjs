@@ -29,6 +29,70 @@ const norm = (v) => String(v ?? '').trim().toLowerCase()
 /** Langfuse renders BOOLEAN as 0/1; keep pass/fail scores numeric and binary. */
 const bool = (name, ok, comment) => ({ name, value: ok ? 1 : 0, dataType: 'BOOLEAN', comment })
 
+// ─── field comparison (docs/39 I1) ───────────────────────────────────────────
+
+const isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)
+const UNITS = { day: 'days', days: 'days', week: 'weeks', weeks: 'weeks', month: 'months', months: 'months', year: 'years', years: 'years' }
+const WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, forty: 40, 'forty-five': 45, fifty: 50, sixty: 60, ninety: 90 }
+
+const MULT = { k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, bn: 1e9, billion: 1e9 }
+
+function asNumber(v) {
+  if (typeof v === 'number') return v
+  if (typeof v !== 'string') return null
+  // "thirty (30)", "one million dollars ($1,000,000)": the figures in brackets.
+  const paren = v.match(/\(\s*(?:[A-Z]{2,3}\s*)?[$€£¥₹]?\s*([\d.,]+)\s*\)/)
+  if (paren) { const n = Number(paren[1].replace(/,/g, '')); return Number.isFinite(n) ? n : null }
+  // A multiplier counts only right after its number: "1.2M", not "million" elsewhere.
+  const m = v.match(/(-?\d[\d,]*(?:\.\d+)?)\s*(k|mm|m|million|thousand|bn|billion)?\b/i)
+  if (!m) return WORDS[v.trim().toLowerCase()] ?? null
+  const n = Number(m[1].replace(/,/g, '')) * (m[2] ? MULT[m[2].toLowerCase()] ?? 1 : 1)
+  return Number.isFinite(n) ? n : null
+}
+
+function asDuration(v) {
+  if (v && typeof v === 'object' && 'value' in v) return { value: Number(v.value), unit: UNITS[String(v.unit).toLowerCase()] ?? String(v.unit) }
+  if (typeof v === 'number') return { value: v, unit: 'days' }
+  if (typeof v !== 'string') return null
+  const unit = v.toLowerCase().match(/\b(days?|weeks?|months?|years?)\b/)?.[1]
+  const n = asNumber(v.replace(/\b(days?|weeks?|months?|years?)\b.*/i, ''))
+  return n == null ? null : { value: n, unit: unit ? UNITS[unit] : 'days' }
+}
+
+function asBool(v) {
+  if (typeof v === 'boolean') return v
+  const t = String(v ?? '').trim().toLowerCase()
+  if (['true', 'yes', 'y', '1'].includes(t)) return true
+  if (['false', 'no', 'n', '0'].includes(t)) return false
+  return null
+}
+
+const text = (v) => String(v ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+/** Does an extracted value mean what the label says? */
+export function sameFieldValue(want, got) {
+  if (want === undefined) return { ok: true }
+  if (isEmpty(want)) return { ok: isEmpty(got) }
+  if (isEmpty(got)) return { ok: false }
+  if (typeof want === 'boolean') return { ok: asBool(got) === want }
+  if (typeof want === 'number') {
+    const n = asNumber(got)
+    return { ok: n != null && Math.abs(n - want) <= Math.abs(want) * 0.005 }
+  }
+  if (Array.isArray(want)) {
+    // Parties: every labelled name is among the extracted ones.
+    const names = (Array.isArray(got) ? got : []).map(p => text(typeof p === 'object' ? p?.name : p))
+    return { ok: want.every(w => { const n = text(typeof w === 'object' ? w.name : w); return names.some(g => g.includes(n) || n.includes(g)) }) }
+  }
+  if (typeof want === 'object' && 'value' in want && 'unit' in want) {
+    const g = asDuration(got)
+    return { ok: !!g && g.value === Number(want.value) && g.unit === (UNITS[want.unit] ?? want.unit) }
+  }
+  if (typeof want === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(want)) return { ok: String(got).slice(0, 10) === want }
+  const a = text(want), b = text(got)
+  return { ok: a === b || (a.length >= 4 && b.includes(a)) || (b.length >= 4 && a.includes(b)) }
+}
+
 // ─── deterministic scorers ───────────────────────────────────────────────────
 
 const DETERMINISTIC = {
@@ -91,6 +155,38 @@ const DETERMINISTIC = {
   no_tool(_arg, { output }) {
     const tools = output?.tools ?? []
     return bool('no_tool', tools.length === 0, tools.length ? `called ${tools.length} tool(s)` : 'answered directly')
+  },
+
+  /**
+   * fields_match:<a,b,c|*> — docs/39 I1: the share of extracted fields that
+   * match the labelled ones (output.keyTerms vs expectedOutput.keyTerms),
+   * compared by what the value means rather than how it is written: dates by
+   * day, numbers within 0.5%, "3 months" = { value: 3, unit: 'months' },
+   * booleans from "yes"/"true", parties by name. `*` = every labelled field.
+   * A labelled null means the contract doesn't state it: the model must say so.
+   */
+  fields_match(arg, { output, expectedOutput }) {
+    const want = at(expectedOutput, 'keyTerms') ?? {}
+    const got = at(output, 'keyTerms') ?? {}
+    const keys = !arg || arg === '*' ? Object.keys(want) : arg.split(',').map(s => s.trim()).filter(Boolean)
+    const misses = []
+    for (const k of keys) {
+      const r = sameFieldValue(want[k], got[k])
+      if (!r.ok) misses.push(`${k}: expected ${JSON.stringify(want[k])}, got ${JSON.stringify(got[k])}`)
+    }
+    const value = keys.length ? (keys.length - misses.length) / keys.length : 1
+    return {
+      name: 'fields_match', value, dataType: 'NUMERIC',
+      comment: misses.length ? `${keys.length - misses.length}/${keys.length} — ${misses.slice(0, 6).join('; ')}` : `${keys.length}/${keys.length} fields matched`,
+    }
+  },
+
+  /** field_ok:<field> — one field right or wrong, so accuracy can be charted per field across the corpus. */
+  field_ok(arg, { output, expectedOutput }) {
+    const want = at(expectedOutput, `keyTerms.${arg}`)
+    const got = at(output, `keyTerms.${arg}`)
+    const r = sameFieldValue(want, got)
+    return bool(`field_ok:${arg}`, r.ok, r.ok ? `matched ${JSON.stringify(want)}` : `expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`)
   },
 
   /**

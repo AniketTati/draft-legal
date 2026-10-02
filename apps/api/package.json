@@ -53,6 +53,7 @@
     "node-forge": "^1.4.0",
     "node-htmldiff": "^0.9.4",
     "nodemailer": "^6.9.14",
+    "openid-client": "^6.8.0",
     "parse5": "^8.0.1",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "1",

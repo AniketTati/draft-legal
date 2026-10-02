@@ -67,7 +67,7 @@ const ASSIST_ALLOWED = [
   'components/ui/button.tsx', // where the assist / assistOutline variants are defined
   'components/contracts/BubbleAiPopover.tsx',
   'components/contracts/ClauseDeviationPopover.tsx',
-  'components/contracts/DefinedTermsRailSection.tsx',
+  'components/contracts/DefinedTermsGlossary.tsx',
   'components/contracts/PlaybookRedlineRailSection.tsx',
   'components/contracts/RedlinePanel.tsx',
   'components/contracts/RenewalAdviceRailSection.tsx',

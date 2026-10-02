@@ -22,6 +22,8 @@ export default tseslint.config(
       '**/.venv/**',
       '**/build/**',
       '**/coverage/**',
+      // The Salesforce package: LWC decorators and Apex, linted by the Salesforce CLI.
+      'integrations/salesforce/**',
     ],
   },
   {

@@ -81,17 +81,27 @@ describe('checkUpload', () => {
   })
 
   it('refuses a detected type the path does not allow', () => {
-    const r = checkUpload(png, MIME.PNG, CONTRACT_DOCUMENT_TYPES)
+    const r = checkUpload(png, MIME.PNG, PDF_OR_DOCX)
     expect(r).toMatchObject({ ok: false, status: 415 })
+    expect(checkUpload(xlsx, MIME.XLSX, CONTRACT_DOCUMENT_TYPES).ok).toBe(false)
     expect(checkUpload(xlsx, MIME.XLSX, PDF_OR_DOCX).ok).toBe(false)
     expect(checkUpload(zip, MIME.DOCX, PDF_OR_DOCX).ok).toBe(false)
   })
 
   it('keeps the friendly legacy .doc refusal where .doc is not allowed, and accepts it where it is', () => {
-    const r = checkUpload(doc, MIME.DOC, CONTRACT_DOCUMENT_TYPES)
+    const r = checkUpload(doc, MIME.DOC, PDF_OR_DOCX)
     expect(r).toMatchObject({ ok: false, status: 415 })
     expect(!r.ok && r.detail).toMatch(/save it as \.docx/)
     expect(checkUpload(doc, MIME.DOC, ATTACHMENT_TYPES)).toEqual({ ok: true, mimeType: MIME.DOC })
+  })
+
+  it('takes a legacy .doc and a scan kept as an image as a contract (docs/39 A12)', () => {
+    expect(checkUpload(doc, MIME.DOC, CONTRACT_DOCUMENT_TYPES)).toEqual({ ok: true, mimeType: MIME.DOC })
+    expect(checkUpload(png, 'application/octet-stream', CONTRACT_DOCUMENT_TYPES)).toEqual({ ok: true, mimeType: MIME.PNG })
+    expect(checkUpload(Buffer.from('ffd8ffe000104a464946', 'hex'), MIME.JPEG, CONTRACT_DOCUMENT_TYPES)).toEqual({ ok: true, mimeType: MIME.JPEG })
+    expect(checkUpload(Buffer.from('49492a0008000000', 'hex'), MIME.TIFF, CONTRACT_DOCUMENT_TYPES)).toEqual({ ok: true, mimeType: MIME.TIFF })
+    // A phone photo stays a photo: HEIC isn't read.
+    expect(checkUpload(Buffer.concat([Buffer.from('00000018', 'hex'), Buffer.from('ftypheic')]), MIME.HEIC, CONTRACT_DOCUMENT_TYPES).ok).toBe(false)
   })
 
   it('accepts text only where allowed, only when declared as text, and never binary', () => {

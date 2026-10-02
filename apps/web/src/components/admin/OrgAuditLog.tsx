@@ -64,6 +64,8 @@ export function OrgAuditLog() {
   const events = (pages ?? []).flatMap(p => p.events)
 
   const verify = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () => api.get<ChainCheck>('/admin/audit/verify').then(r => r.data),
   })
 

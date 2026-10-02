@@ -9,7 +9,7 @@
  *   - PLAYBOOK GAP — only for deviations, not risks
  *   - AI SUGGESTION — proposed replacement text (when available)
  *   - PLAYBOOK REFERENCE
- *   - Four actions: Accept · Edit manually · Reject · Mark Reviewed
+ *   - Four actions: Accept · Edit manually · Not acceptable · Mark reviewed
  *   - Inline comments
  *   - Prev / Next navigation across risky clauses in severity order
  *
@@ -152,6 +152,8 @@ export function FocusedReviewDrawer({
   // On demand rather than automatic: each call is an LLM round-trip, and the
   // reviewer clicks through many clauses that need no rewrite.
   const suggest = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (clauseId: string) => {
       const r = await api.post(`/contracts/${contractId}/clauses/${clauseId}/suggest`, {})
       return r.data as {
@@ -166,6 +168,8 @@ export function FocusedReviewDrawer({
   // "apply" always should have meant — the old Accept button only marked the
   // clause resolved and wrote no text at all.
   const applyVariant = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (v: {
       aggression: string; proposedText: string; rationale: string
       changes?: Array<{ before: string; after: string; reason?: string }>
@@ -512,11 +516,14 @@ export function FocusedReviewDrawer({
               size="md"
               onClick={() => onReject(clause.id)}
               disabled={state === 'rejected'}
-              title="Reject the clause as written. It leaves the queue as rejected."
+              title="The clause can't stay as written. It leaves the queue marked not acceptable."
               className="flex-1"
               data-testid="review-reject"
             >
-              <XCircle className="size-4" /> Reject
+              {/* docs/41 Part 4: an approver returns or declines a whole
+                  version. This is a verdict on one clause, so it says so. */}
+              <XCircle className="size-4" />
+              {state === 'rejected' ? 'Marked not acceptable' : 'Not acceptable'}
             </Button>
             <Button
               variant="outline"
@@ -534,7 +541,7 @@ export function FocusedReviewDrawer({
         </div>
       ) : (
         <div className="px-5 py-4 border-b border-paper-200 text-dense text-ink-500" data-testid="review-read-only">
-          Read-only: accepting, rejecting or changing this clause needs edit access to the contract.
+          Read-only: deciding on or changing this clause needs edit access to the contract.
         </div>
       )}
 

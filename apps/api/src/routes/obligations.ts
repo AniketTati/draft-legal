@@ -19,7 +19,9 @@
  *     by the page header.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { z } from 'zod'
+import { queueExtractObligations } from '../lib/queue.js'
 import { PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { prisma } from '../lib/prisma.js'
@@ -28,12 +30,13 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { buildCsv } from '../lib/csv.js'
+import { withReplacedBy, replacedStatus } from '../lib/amendments.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { checkUpload, servableContentType, EVIDENCE_TYPES } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const ListSchema = z.object({
-  status:     z.enum(['OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
+  status:     z.enum(['PROPOSED', 'OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
   type:       z.string().optional(),
   severity:   z.enum(['low', 'medium', 'high']).optional(),
   contractId: z.string().optional(),
@@ -45,7 +48,46 @@ const ListSchema = z.object({
   order:      z.enum(['asc', 'desc']).default('asc'),
   limit:      z.coerce.number().int().min(1).max(100).default(50),
   offset:     z.coerce.number().int().min(0).default(0),
+  // docs/39 G4 — the AI's suggestions, the confirmed ones, or both (never the dismissed, unless asked).
+  review:     z.enum(['all', 'suggested', 'confirmed', 'dismissed']).default('all'),
 })
+
+/** G4 — which review state a list shows: a dismissed suggestion is gone unless asked for. */
+/**
+ * Fix-up 13 — an obligation an amendment replaced stays on the record (the
+ * full list shows it as "Replaced by Amendment No. N") but isn't owed: the
+ * open, due-soon and overdue views and counts leave it out.
+ */
+function owedWhere(q: { bucket: string; status: string }): { supersededAt?: null } {
+  return ['open', 'due_soon', 'overdue'].includes(q.bucket) || ['OPEN', 'OVERDUE'].includes(q.status) ? { supersededAt: null } : {}
+}
+
+function reviewWhere(review: 'all' | 'suggested' | 'confirmed' | 'dismissed'): { reviewState: string | { not: string } } {
+  if (review === 'suggested') return { reviewState: 'SUGGESTED' }
+  if (review === 'confirmed') return { reviewState: 'CONFIRMED' }
+  if (review === 'dismissed') return { reviewState: 'DISMISSED' }
+  return { reviewState: { not: 'DISMISSED' } }
+}
+
+/** G4 — what a person may change as they confirm a suggestion. */
+const ConfirmSchema = z.object({
+  description: z.string().trim().min(1).max(4000).optional(),
+  dueDate:     z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  owner:       z.enum(['customer', 'provider', 'either', 'unknown']).optional(),
+  severity:    z.enum(['low', 'medium', 'high']).optional(),
+  recurrence:  z.string().max(40).optional(),
+}).default({})
+
+/** G4 — the org's signed contracts never read for obligations (and with text to read). */
+function unreadSignedSql(orgId: string, ownerId?: string): Prisma.Sql {
+  return Prisma.sql`c."orgId" = ${orgId} AND c."deletedAt" IS NULL AND c."diligenceRoomId" IS NULL
+    AND c.status = 'EXECUTED' AND (c.metadata->>'obligationsExtractedAt') IS NULL
+    ${ownerId ? Prisma.sql`AND c."ownerId" = ${ownerId}` : Prisma.empty}
+    AND EXISTS (SELECT 1 FROM contract_versions v WHERE v."contractId" = c.id AND COALESCE(v."plainText", '') <> '')`
+}
+
+/** At most this many contracts queued for obligations per press. */
+const FIND_MAX = 500
 
 /**
  * X7 — own-scope callers see only the obligations of contracts they own.
@@ -75,8 +117,11 @@ export async function obligationRoutes(app: FastifyInstance) {
     }
     const { orgId } = req.user
 
-    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId) }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId), ...reviewWhere(q.review) }
     if (q.status !== 'all') where.status = q.status
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: they
+    // show on their contract, or when asked for, not in the org's list.
+    else if (!q.contractId) where.status = { not: 'PROPOSED' }
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
     if (q.contractId)       where.contractId = q.contractId
@@ -95,6 +140,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     } else if (q.bucket === 'completed') {
       where.status = 'COMPLETED'
     }
+    Object.assign(where, owedWhere(q))
 
     if (q.dueWithin != null) {
       const horizon = new Date(now.getTime() + q.dueWithin * 24 * 60 * 60 * 1000)
@@ -138,7 +184,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     ])
 
     return reply.send({
-      data: items,
+      data: await withReplacedBy(orgId, items),
       total,
       limit: q.limit,
       offset: q.offset,
@@ -157,8 +203,11 @@ export async function obligationRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'Invalid query', issues: (err as { issues?: unknown }).issues })
     }
     const { orgId } = req.user
-    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId) }
+    const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId), ...reviewWhere(q.review) }
     if (q.status !== 'all') where.status = q.status
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: they
+    // show on their contract, or when asked for, not in the org's list.
+    else if (!q.contractId) where.status = { not: 'PROPOSED' }
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
     if (q.contractId)       where.contractId = q.contractId
@@ -174,6 +223,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     } else if (q.bucket === 'completed') {
       where.status = 'COMPLETED'
     }
+    Object.assign(where, owedWhere(q))
 
     const items = await prisma.obligation.findMany({
       where: where as never,
@@ -185,15 +235,16 @@ export async function obligationRoutes(app: FastifyInstance) {
       },
     })
 
+    const marked = await withReplacedBy(orgId, items)
     const headers = [
       'Type', 'Description', 'Owner', 'Severity', 'Recurrence', 'Section',
       'Due Date', 'Status', 'Contract', 'Counterparty', 'Contract Type',
       'Completed At', 'Completed By', 'Completion Note', 'Has Evidence',
     ]
-    const rows = items.map(o => [
+    const rows = marked.map(o => [
       o.type, o.description, o.owner, o.severity, o.recurrence, o.sectionRef ?? '',
       o.dueDate?.toISOString().slice(0, 10) ?? '',
-      o.status,
+      replacedStatus(o.replacedBy, o.status),
       o.contract?.title ?? '',
       o.contract?.counterpartyName ?? '',
       o.contract?.type ?? '',
@@ -218,20 +269,58 @@ export async function obligationRoutes(app: FastifyInstance) {
 
     const own = ownObligationWhere(req)
 
-    const [open, dueSoon, overdue, completedRecent] = await Promise.all([
-      prisma.obligation.count({ where: { orgId, ...own, status: 'OPEN' } }),
+    // G4 — a dismissed suggestion isn't an obligation: it counts nowhere.
+    // Fix-up 13 — nor is one an amendment replaced: it is on the record, not owed.
+    const live = { reviewState: { not: 'DISMISSED' }, supersededAt: null }
+    const [open, dueSoon, overdue, completedRecent, suggested, unread] = await Promise.all([
+      prisma.obligation.count({ where: { orgId, ...own, ...live, status: 'OPEN' } }),
       prisma.obligation.count({
-        where: { orgId, ...own, status: 'OPEN', dueDate: { gte: now, lte: dueSoonHorizon } },
+        where: { orgId, ...own, ...live, status: 'OPEN', dueDate: { gte: now, lte: dueSoonHorizon } },
       }),
       prisma.obligation.count({
-        where: { orgId, ...own, status: 'OPEN', dueDate: { lt: now, not: null } },
+        where: { orgId, ...own, ...live, status: 'OPEN', dueDate: { lt: now, not: null } },
       }),
       prisma.obligation.count({
-        where: { orgId, ...own, status: 'COMPLETED', completedAt: { gte: recentCompletedSince } },
+        where: { orgId, ...own, ...live, status: 'COMPLETED', completedAt: { gte: recentCompletedSince } },
       }),
+      prisma.obligation.count({ where: { orgId, ...own, reviewState: 'SUGGESTED', supersededAt: null, status: { in: ['OPEN', 'OVERDUE'] } } }),
+      prisma.$queryRaw<Array<{ n: number }>>`SELECT COUNT(*)::int AS n FROM contracts c WHERE ${unreadSignedSql(orgId, req.permissionScope === 'own' ? req.user.sub : undefined)}`,
     ])
 
-    return reply.send({ open, dueSoon, overdue, completedRecent })
+    return reply.send({ open, dueSoon, overdue, completedRecent, suggested, unreadSigned: unread[0]?.n ?? 0 })
+  })
+
+  // ── POST /find — docs/39 G4: read signed contracts for their obligations ──
+  // The org's signed contracts never read (or those named), queued in the
+  // background; what's found arrives as suggestions.
+  app.post('/find', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const body = z.object({ contractIds: z.array(z.string().min(1).max(64)).max(FIND_MAX).optional() }).parse(req.body ?? {})
+    const { orgId } = req.user
+    const ownerId = req.permissionScope === 'own' ? req.user.sub : undefined
+    const rows = await prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT c.id FROM contracts c WHERE ${unreadSignedSql(orgId, ownerId)}
+      ${body.contractIds ? Prisma.sql`AND c.id IN (${Prisma.join(body.contractIds.length ? body.contractIds : [''])})` : Prisma.empty}
+      ORDER BY c."updatedAt" DESC LIMIT ${FIND_MAX + 1}`
+    const ids = rows.slice(0, FIND_MAX).map(r => r.id)
+    let queued = 0
+    for (const contractId of ids) if (await queueExtractObligations({ orgId, contractId })) queued++
+    return reply.status(202).send({ queued, more: rows.length > FIND_MAX })
+  })
+
+  // ── POST /review — docs/39 G4: confirm or dismiss suggestions in bulk ──
+  app.post('/review', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const body = z.object({ ids: z.array(z.string().min(1).max(64)).min(1).max(200), action: z.enum(['confirm', 'dismiss']) }).parse(req.body)
+    const { orgId, sub: userId } = req.user
+    const r = await prisma.obligation.updateMany({
+      // X7 — own-scope callers review only their own contracts' obligations.
+      where: { id: { in: body.ids }, orgId, reviewState: 'SUGGESTED', ...(req.permissionScope === 'own' ? { contract: { is: { ownerId: req.user.sub } } } : {}) },
+      data: { reviewState: body.action === 'confirm' ? 'CONFIRMED' : 'DISMISSED', reviewedAt: new Date(), reviewedById: userId.startsWith('apikey:') ? null : userId },
+    })
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.OBLIGATION_REVIEWED, resourceType: 'obligation', resourceId: 'bulk',
+      metadata: { action: body.action, count: r.count, ids: body.ids.slice(0, 50) },
+    }).catch(() => {})
+    return reply.send({ ok: true, count: r.count })
   })
 
   // ── GET /:id — single obligation with contract context ────────────────
@@ -246,7 +335,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       },
     })
     if (!o) return reply.status(404).send({ detail: 'Obligation not found' })
-    return reply.send(o)
+    return reply.send((await withReplacedBy(orgId, [o]))[0])
   })
 
   // ── POST /:id/complete (P8 Step 4) ────────────────────────────────────
@@ -264,6 +353,9 @@ export async function obligationRoutes(app: FastifyInstance) {
     if (!existing) return reply.status(404).send({ detail: 'Obligation not found' })
     if (existing.status === 'COMPLETED') {
       return reply.status(409).send({ detail: 'Already completed' })
+    }
+    if (existing.status === 'PROPOSED') {
+      return reply.status(409).send({ detail: 'This obligation is proposed: it is owed once the contract is signed.' })
     }
     // X45 — who completed it is a user, and a key is none: a key's completion
     // records no one here (its audit event names the key).
@@ -372,6 +464,50 @@ export async function obligationRoutes(app: FastifyInstance) {
     }), { expiresIn: 600 })
 
     return reply.send({ url, filename: o.evidenceFilename, mimeType: o.evidenceMimeType })
+  })
+
+  // ── POST /:id/confirm, /:id/dismiss — docs/39 G4 ───────────────────────
+  // A suggestion the AI made becomes an obligation (as it stands, or as a
+  // person corrected it), or is dismissed and not suggested again.
+  app.post('/:id/confirm', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId, sub: userId } = req.user
+    const edits = ConfirmSchema.parse(req.body ?? {})
+    const existing = await prisma.obligation.findFirst({ where: { id, orgId }, select: { id: true, contractId: true, reviewState: true } })
+    if (!existing) return reply.status(404).send({ detail: 'Obligation not found' })
+    const updated = await prisma.obligation.update({
+      where: { id },
+      data: {
+        ...(edits.description !== undefined && { description: edits.description }),
+        ...(edits.dueDate !== undefined && { dueDate: edits.dueDate ? new Date(`${edits.dueDate}T00:00:00Z`) : null }),
+        ...(edits.owner !== undefined && { owner: edits.owner }),
+        ...(edits.severity !== undefined && { severity: edits.severity }),
+        ...(edits.recurrence !== undefined && { recurrence: edits.recurrence }),
+        reviewState: 'CONFIRMED', reviewedAt: new Date(), reviewedById: userId.startsWith('apikey:') ? null : userId,
+      },
+    })
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.OBLIGATION_REVIEWED, resourceType: 'contract', resourceId: existing.contractId,
+      metadata: { obligationId: id, action: 'confirm', from: existing.reviewState, edited: Object.keys(edits) },
+    }).catch(() => {})
+    return reply.send(updated)
+  })
+
+  app.post('/:id/dismiss', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId, sub: userId } = req.user
+    const existing = await prisma.obligation.findFirst({ where: { id, orgId }, select: { id: true, contractId: true, status: true, reviewState: true } })
+    if (!existing) return reply.status(404).send({ detail: 'Obligation not found' })
+    if (existing.status === 'COMPLETED') return reply.status(409).send({ detail: 'A completed obligation can’t be dismissed: reopen it first' })
+    const updated = await prisma.obligation.update({
+      where: { id },
+      data: { reviewState: 'DISMISSED', reviewedAt: new Date(), reviewedById: userId.startsWith('apikey:') ? null : userId },
+    })
+    await createAuditEvent({
+      orgId, userId, action: AuditAction.OBLIGATION_REVIEWED, resourceType: 'contract', resourceId: existing.contractId,
+      metadata: { obligationId: id, action: 'dismiss', from: existing.reviewState },
+    }).catch(() => {})
+    return reply.send(updated)
   })
 
   // ── POST /:id/reopen — undo completion (admins/owners) ────────────────

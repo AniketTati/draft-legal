@@ -21,6 +21,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { requirePermission } from '../middleware/permissions.js'
 import { scanObligations, scanRenewals } from '../lib/obligation-scanner.js'
+import { scanStageDates } from '../lib/lifecycle-dates.js'
 
 const ObligationsScanSchema = z.object({
   leadDays: z.number().int().min(1).max(365).optional(),
@@ -87,6 +88,8 @@ export async function cronRoutes(app: FastifyInstance) {
         ? undefined
         : req.user.orgId
 
+      // docs/41 Part 18 — dates move contracts first (Expiring, Expired).
+      const stageDates = await scanStageDates({ orgId })
       const result = await scanRenewals({
         orgId,
         leadDays: body.leadDays,
@@ -96,6 +99,7 @@ export async function cronRoutes(app: FastifyInstance) {
       return reply.send({
         ok:     true,
         result,
+        stageDates,
         ranAt:  new Date().toISOString(),
       })
     },

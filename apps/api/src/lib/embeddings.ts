@@ -26,6 +26,7 @@ import { redactJson } from './pii-policy.js'
 import { modelFetch, type ModelCall } from './model-boundary.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
+import { normalizeForSearch, findQuote, findSpan } from './text-span.js'
 
 // ─── Provider routing ───────────────────────────────────────────────────────
 
@@ -256,30 +257,143 @@ export interface ClauseSegment {
   interpretation?: string
   riskRating?: string
   sectionRef?: string
+  /** docs/39 A4 — the clause's first and last words, to cut its full text from the document. */
+  startsWith?: string
+  endsWith?: string
+}
+
+/**
+ * docs/39 A4/B2 — each clause's whole text and where it sits in the version.
+ * The extraction copies at most 800 characters of a clause, so a long
+ * indemnity or liability clause was stored — and searched, reviewed against
+ * the playbook and redlined — as its opening. With the clause's first and
+ * last words it is cut from the document whole; failing that, the excerpt is
+ * at least placed. Offsets are into `plainText`.
+ */
+export function placeClauses<T extends ClauseSegment>(segments: T[], plainText: string | null | undefined): Array<T & { docStart?: number; docEnd?: number }> {
+  if (!plainText) return segments
+  const text = normalizeForSearch(plainText)
+  let cursor = 0
+  return segments.map(s => {
+    const span = (s.startsWith && s.endsWith)
+      ? findSpan(text, s.startsWith, s.endsWith, { from: cursor }) ?? findSpan(text, s.startsWith, s.endsWith)
+      : null
+    if (span) {
+      cursor = span.start
+      return { ...s, content: plainText.slice(span.start, span.end), docStart: span.start, docEnd: span.end }
+    }
+    // No boundaries (an older agents service) or they didn't match: place the excerpt.
+    const whole = findQuote(text, s.content, cursor) ?? findQuote(text, s.content)
+    const opening = whole ? null : findQuote(text, s.content.slice(0, 200), cursor) ?? findQuote(text, s.content.slice(0, 200))
+    const at = whole ?? (opening ? { start: opening.start, end: Math.min(plainText.length, opening.start + s.content.length) } : null)
+    if (!at) return s
+    cursor = at.start
+    return { ...s, docStart: at.start, docEnd: at.end }
+  })
+}
+
+/** Clause text compared as words: case, spacing and punctuation don't count. */
+export function clauseKey(text: string): string {
+  return text.toLowerCase().replace(/[‘’“”"'`]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+/** The same clause in two analyses: the same words, or the same opening and nearly the same length. */
+export function sameClauseText(a: string, b: string): boolean {
+  const x = clauseKey(a), y = clauseKey(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  const shorter = Math.min(x.length, y.length), longer = Math.max(x.length, y.length)
+  return shorter >= 200 && x.slice(0, 200) === y.slice(0, 200) && shorter / longer >= 0.9
+}
+
+/** A new AI clause that repeats a clause a person tagged (one holds the other). */
+export function coversClause(tagged: string, candidate: string): boolean {
+  const t = clauseKey(tagged), c = clauseKey(candidate)
+  if (t.length < 40 || c.length < 40) return t === c
+  return t.includes(c.slice(0, 160)) || c.includes(t.slice(0, 160))
+}
+
+/** E1 — a clause a person dismissed ("not a clause"), remembered on its version. */
+interface DismissedClause { clauseType: string; text: string }
+
+function isDismissed(dismissed: DismissedClause[], clause: { clauseType: string; content: string }): boolean {
+  return dismissed.some(d => d.clauseType === clause.clauseType && (coversClause(d.text, clause.content) || coversClause(clause.content, d.text)))
 }
 
 export async function storeClauseSegments(
   versionId: string,
-  segments: ClauseSegment[],
+  incoming: ClauseSegment[],
+  /** The version's text: clauses are cut from it whole and placed (A4/B2). */
+  plainText?: string | null,
 ): Promise<void> {
-  if (!segments.length) return
+  if (!incoming.length) return
+  const segments = placeClauses(incoming, plainText)
 
   // Atomic upsert — delete + insert in a single transaction so a failed
-  // insert never leaves the version with zero clauses
-  await prisma.$transaction([
-    prisma.contractClause.deleteMany({ where: { versionId } }),
-    prisma.contractClause.createMany({
-      data: segments.map(s => ({
-        versionId,
-        clauseType: s.clauseType,
-        content: s.content,
-        sortOrder: s.sortOrder,
-        interpretation: s.interpretation ?? null,
-        riskRating: s.riskRating ?? null,
-        sectionRef: s.sectionRef ?? null,
-      })),
-    }),
-  ])
+  // insert never leaves the version with zero clauses.
+  //
+  // docs/39 E2 — only the AI's own rows are replaced. A clause a person
+  // tagged stays (and a new AI clause that repeats it is left out), and a
+  // clause whose words are unchanged keeps the review it had: re-analysis
+  // used to delete every row, so every "reviewed" mark went with it.
+  await prisma.$transaction(async tx => {
+    const previous = await tx.contractClause.findMany({
+      where: { versionId, isSubChunk: false },
+      select: { content: true, clauseType: true, source: true, reviewState: true, reviewedAt: true, reviewedById: true },
+    })
+    const tagged = previous.filter(p => p.source !== 'ai')
+    const reviewed = previous.filter(p => p.source === 'ai' && p.reviewState !== 'unreviewed')
+    // E1 — what a person said is not a clause stays out.
+    const md = (await tx.contractVersion.findUnique({ where: { id: versionId }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null
+    const dismissed = Array.isArray(md?._dismissedClauses) ? md._dismissedClauses as DismissedClause[] : []
+    await tx.contractClause.deleteMany({ where: { versionId, source: 'ai' } })
+    const kept = segments.filter(s => !tagged.some(t => coversClause(t.content, s.content)) && !isDismissed(dismissed, s))
+    if (!kept.length) return
+    await tx.contractClause.createMany({
+      data: kept.map(s => {
+        const prior = reviewed.find(p => p.clauseType === s.clauseType && sameClauseText(p.content, s.content))
+        return {
+          versionId,
+          clauseType: s.clauseType,
+          content: s.content,
+          sortOrder: s.sortOrder,
+          interpretation: s.interpretation ?? null,
+          riskRating: s.riskRating ?? null,
+          sectionRef: s.sectionRef ?? null,
+          source: 'ai',
+          docStart: s.docStart ?? null,
+          docEnd: s.docEnd ?? null,
+          ...(prior ? { reviewState: prior.reviewState, reviewedAt: prior.reviewedAt, reviewedById: prior.reviewedById } : {}),
+        }
+      }),
+    })
+  })
+}
+
+/**
+ * docs/39 E1 — one clause a person tagged or corrected, embedded for clause
+ * search. Best effort: unlike the upload pipeline's embedding, a failure is
+ * logged and never marks the contract's analysis FAILED (a person's edit
+ * mustn't fail the contract).
+ */
+export async function embedClauseQuietly(clauseId: string): Promise<void> {
+  try {
+    const clause = await prisma.contractClause.findUnique({
+      where: { id: clauseId },
+      select: { content: true, version: { select: { contractId: true, plainText: true, contract: { select: { orgId: true } } } } },
+    })
+    if (!clause) return
+    const { contractId, plainText } = clause.version
+    const orgId = clause.version.contract.orgId
+    const [outbound] = await redactJson(orgId, [clause.content], {
+      surface: 'embeddings', contractId, roundTrip: contractId, valuesFrom: [[clause.content], plainText ?? ''],
+    }) as string[]
+    const [vec] = await embedTexts([outbound], { orgId, surface: 'embeddings' })
+    const literal = `[${vec.join(',')}]`
+    await prisma.$executeRaw`UPDATE contract_clauses SET embedding = ${literal}::vector, "embeddedAt" = NOW() WHERE id = ${clauseId}`
+  } catch (err) {
+    console.warn('[embeddings] clause %s not embedded (clause search will miss it until the next analysis): %s', clauseId, (err as Error).message)
+  }
 }
 
 // ─── Embed all clauses for a version (BullMQ job body) ───────────────────────

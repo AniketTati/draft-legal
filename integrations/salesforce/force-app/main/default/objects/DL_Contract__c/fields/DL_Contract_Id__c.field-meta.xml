@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DL_Contract_Id__c</fullName>
+    <description>draftLegal's id for the contract; the sync upserts by it.</description>
+    <label>draftLegal Contract Id</label>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+    <externalId>true</externalId>
+    <unique>true</unique>
+    <caseSensitive>true</caseSensitive>
+</CustomField>

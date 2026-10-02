@@ -15,12 +15,32 @@
  *
  *   GET /api/v1/analytics/top-counterparties
  *     Top N counterparties by total executed value (default 10).
+ *
+ *   GET /api/v1/analytics/by-field?key=&contractType=&currency=
+ *     docs/39 D3 — one field's values across the portfolio, as bars that
+ *     each open their contracts.
+ *
+ *   GET /api/v1/analytics/{speed|bottlenecks|workload|negotiation|risk|renewals|ai}
+ *       ?from=&to=&type=&ownerId=&paperSource=ours|theirs[&format=csv]
+ *     docs/41 Part 19 — one section of the decision-led page (see
+ *     lib/analytics-sections.ts for what each holds and what the period means).
+ *
+ *   GET /api/v1/analytics/drilldown?metric=section.part.chart&key=&<filters>
+ *     The contracts behind one bar, for the contract list.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { portfolioWhere } from '../lib/own-scope-guard.js'
+import { totalsByCurrency, type CurrencyTotal } from '@clm/types'
+import { catalogField, fieldCatalog } from '../lib/field-query.js'
+import { CHARTABLE_TYPES, fieldDistribution } from '../lib/field-distribution.js'
+import { loadDirectory } from '../lib/counterparty-directory.js'
+import { compactKey } from '../lib/company-names.js'
+import { permissionScopeFor } from '../middleware/permissions.js'
+import { SECTIONS, loadSection, flatten, drilldown, type AnalyticsContext, type AnalyticsFilters } from '../lib/analytics-sections.js'
+import { sectionCsv, withoutIds, DAY_MS } from '../lib/analytics-metrics.js'
 
 const TimeRangeSchema = z.object({
   // Lookback in days for cycle-time + acceptance KPIs. Defaults to 90.
@@ -35,9 +55,10 @@ interface KpiSummary {
   expiringSoon:      number       // next 90 days
   highRiskOpen:      number       // riskScore > 60 + not EXECUTED/EXPIRED/TERMINATED
 
-  // Currency
-  executedTotalValue: number      // sum(value) EXECUTED
-  executedTotalCurrency: string   // dominant currency in EXECUTED set
+  // Currency — docs/39 D4: one total per currency, never a sum across them.
+  executedTotals: CurrencyTotal[]  // EXECUTED contracts' value, per currency, most common first
+  executedTotalValue: number      // the most common currency's total only
+  executedTotalCurrency: string   // that currency
 
   // Time-based KPIs
   cycleTimeAvgDays:    number | null    // contracts EXECUTED in window
@@ -48,6 +69,21 @@ interface KpiSummary {
 
   windowDays: number
 }
+
+const DEFAULT_PERIOD_DAYS = 180
+/** The contract list takes the ids in its query string; more than this would not fit. */
+const DRILL_LIMIT = 300
+
+const SectionQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  type: z.string().min(1).optional(),
+  ownerId: z.string().min(1).optional(),
+  paperSource: z.enum(['ours', 'theirs']).optional(),
+  format: z.enum(['json', 'csv']).optional(),
+  metric: z.string().optional(),
+  key: z.string().optional(),
+})
 
 export async function analyticsRoutes(app: FastifyInstance) {
   // ── GET /summary ─────────────────────────────────────────────────────
@@ -96,10 +132,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
       // For cycle time: contracts that EXECUTED inside the window.
       prisma.contract.findMany({
         where: {
-          orgId, deletedAt: null, ...own, status: 'EXECUTED',
-          updatedAt: { gte: windowStart },
+          orgId, deletedAt: null, ...own,
+          executedAt: { gte: windowStart },
         },
-        select: { id: true, createdAt: true, updatedAt: true },
+        select: { id: true, createdAt: true, executedAt: true },
         take: 5_000,
       }),
       // Approvals decided in the window — for acceptance rate.
@@ -110,32 +146,20 @@ export async function analyticsRoutes(app: FastifyInstance) {
       }),
     ])
 
-    // Total executed value + dominant currency.
-    let executedTotalValue = 0
-    const currencyCounts = new Map<string, number>()
-    for (const c of executedAggregate) {
-      if (c.value) {
-        const n = Number(c.value.toString())
-        if (!isNaN(n)) executedTotalValue += n
-      }
-      const cur = c.currency ?? 'USD'
-      currencyCounts.set(cur, (currencyCounts.get(cur) ?? 0) + 1)
-    }
-    let dominantCurrency = 'USD'
-    let dominantCount = 0
-    for (const [cur, count] of currencyCounts.entries()) {
-      if (count > dominantCount) { dominantCount = count; dominantCurrency = cur }
-    }
+    // Total executed value, per currency (docs/39 D4). The single figure kept
+    // for older readers is the most common currency's own total: it summed
+    // every currency's amounts under that one label.
+    const executedTotals = totalsByCurrency(executedAggregate.map(c => ({ value: c.value?.toString(), currency: c.currency })))
+    const executedTotalValue = executedTotals[0]?.amount ?? 0
+    const dominantCurrency = executedTotals[0]?.currency ?? 'USD'
 
-    // Cycle time — using updatedAt as a proxy for the EXECUTED transition.
-    // signatures.ts hits prisma.contract.update() right when `allSigned` flips
-    // to EXECUTED, so for any contract whose terminal state is EXECUTED the
-    // updatedAt is the execution timestamp (within sub-second precision).
-    // This avoids needing a schema-level executedAt + a migration.
+    // Cycle time — created to executed (docs/41 Part 19). It was measured to
+    // updatedAt, which any later edit moved; executedAt is set once, when the
+    // last signer signs (or the record is marked executed).
     const days: number[] = []
     let withinTarget = 0
     for (const c of executedRecent) {
-      const ms = c.updatedAt.getTime() - c.createdAt.getTime()
+      const ms = c.executedAt!.getTime() - c.createdAt.getTime()
       const d = ms / (24 * 60 * 60 * 1000)
       if (d >= 0) {
         days.push(d)
@@ -164,6 +188,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       pendingApprovals,
       expiringSoon,
       highRiskOpen,
+      executedTotals,
       executedTotalValue,
       executedTotalCurrency: dominantCurrency,
       cycleTimeAvgDays:    avg != null ? Number(avg.toFixed(1)) : null,
@@ -224,6 +249,25 @@ export async function analyticsRoutes(app: FastifyInstance) {
     })
   })
 
+  // ── GET /by-field — docs/39 D3 ───────────────────────────────────────
+  // How one field's values spread across the portfolio, each bar with the
+  // filters that list its contracts (lib/field-distribution.ts).
+  app.get('/by-field', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const q = z.object({
+      key: z.string().min(1).max(64),
+      contractType: z.string().max(64).optional(),
+      currency: z.string().regex(/^[A-Za-z]{3}$/).optional(),
+    }).parse(req.query)
+    const catalog = await fieldCatalog(req.user.orgId)
+    const field = catalogField(catalog, q.key)
+    if (!field) return reply.status(404).send({ detail: `No field named “${q.key}”` })
+    if (!CHARTABLE_TYPES.has(field.type)) return reply.status(400).send({ detail: `${field.label} is written out in words: it can be read, not charted` })
+    return reply.send(await fieldDistribution({
+      orgId: req.user.orgId, contractType: q.contractType, currency: q.currency,
+      ownerId: req.permissionScope === 'own' ? req.user.sub : undefined,   // X7
+    }, field))
+  })
+
   // ── GET /timeseries ──────────────────────────────────────────────────
   // Contracts created per month, last 12 months. Fills empty months
   // with zero so the chart line is continuous.
@@ -273,34 +317,91 @@ export async function analyticsRoutes(app: FastifyInstance) {
       take:   5_000,
     })
 
-    const totals = new Map<string, { count: number; value: number; currency: string; counterpartyId: string | null }>()
+    // docs/39 A14 — one row per company: the directory entry a contract links
+    // to, else its name as a company ("ACME CORP" and "Acme Corp." together).
+    // D4 — and totals per currency: they used to add euros to dollars.
+    const entries = new Map((await loadDirectory(prisma, orgId)).map(e => [e.id, e]))
+    const groups = new Map<string, { entry: { id: string; name: string } | null; names: Map<string, number>; rows: typeof contracts }>()
     for (const c of contracts) {
-      if (!c.counterpartyName) continue
-      const k = c.counterpartyName.trim()
-      if (!k) continue
-      if (!totals.has(k)) {
-        totals.set(k, { count: 0, value: 0, currency: c.currency ?? 'USD', counterpartyId: c.counterpartyId ?? null })
-      }
-      const entry = totals.get(k)!
-      entry.count++
-      // Prefer the most-recently-seen non-null id.
-      if (c.counterpartyId) entry.counterpartyId = c.counterpartyId
-      if (c.value) {
-        const n = Number(c.value.toString())
-        if (!isNaN(n)) entry.value += n
-      }
+      const name = c.counterpartyName?.trim()
+      if (!name) continue
+      const entry = c.counterpartyId ? entries.get(c.counterpartyId) : undefined
+      const k = entry ? `id:${entry.id}` : `name:${compactKey(name) || name.toLowerCase()}`
+      const g = groups.get(k) ?? { entry: entry ? { id: entry.id, name: entry.name } : null, names: new Map<string, number>(), rows: [] }
+      g.names.set(name, (g.names.get(name) ?? 0) + 1)
+      g.rows.push(c)
+      groups.set(k, g)
     }
-    const ranked = Array.from(totals.entries())
-      .map(([name, v]) => ({
-        counterparty:   name,
-        counterpartyId: v.counterpartyId,
-        count:          v.count,
-        value:          v.value,
-        currency:       v.currency,
-      }))
-      .sort((a, b) => b.value - a.value)
+    // Ranked by what they come to in the portfolio's main currency: amounts in
+    // different currencies can't be compared without a rate.
+    const main = totalsByCurrency(contracts.map(c => ({ value: c.value?.toString(), currency: c.currency })))[0]?.currency ?? 'USD'
+    const ranked = [...groups.values()]
+      .map(g => {
+        const names = [...g.names.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n)
+        const totals = totalsByCurrency(g.rows.map(c => ({ value: c.value?.toString(), currency: c.currency })))
+        return {
+          counterparty:   g.entry?.name ?? names[0],
+          counterpartyId: g.entry?.id ?? null,
+          // How its contracts spell it, for a list filtered to them when it isn't in the directory.
+          names,
+          count:          g.rows.length,
+          totals,
+          // The largest currency's total, for older readers.
+          value:          totals[0]?.amount ?? 0,
+          currency:       totals[0]?.currency ?? main,
+        }
+      })
+      .sort((a, b) =>
+        (b.totals.find(t => t.currency === main)?.amount ?? 0) - (a.totals.find(t => t.currency === main)?.amount ?? 0)
+        || b.count - a.count
+        || a.counterparty.localeCompare(b.counterparty))
       .slice(0, limit)
 
     return reply.send({ data: ranked })
+  })
+
+  // ── docs/41 Part 19: sections organised by decision ────────────────────
+  const parseFilters = (q: Record<string, unknown>): AnalyticsFilters | { error: unknown } => {
+    const r = SectionQuerySchema.safeParse(q)
+    if (!r.success) return { error: r.error.issues }
+    const to = r.data.to ?? new Date()
+    const from = r.data.from ?? new Date(to.getTime() - DEFAULT_PERIOD_DAYS * DAY_MS)
+    if (from > to) return { error: [{ message: 'from is after to' }] }
+    return { from, to, type: r.data.type, ownerId: r.data.ownerId, paperSource: r.data.paperSource }
+  }
+  const contextOf = async (req: import('fastify').FastifyRequest): Promise<AnalyticsContext> => ({
+    orgId: req.user.orgId, userId: req.user.sub, scope: portfolioWhere(req),   // X7, X17
+    canTeam: (await permissionScopeFor(req, 'configure', 'workflow')) === 'org',
+    now: new Date(),
+  })
+
+  for (const name of SECTIONS) {
+    app.get(`/${name}`, { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+      const q = req.query as Record<string, unknown>
+      const f = parseFilters(q)
+      if ('error' in f) return reply.status(400).send({ detail: 'Invalid query', issues: f.error })
+      const parts = await loadSection(name, await contextOf(req), f)
+      if (q.format === 'csv') {
+        return reply
+          .header('Content-Type', 'text/csv; charset=utf-8')
+          .header('Content-Disposition', `attachment; filename="analytics-${name}-${f.from.toISOString().slice(0, 10)}-to-${f.to.toISOString().slice(0, 10)}.csv"`)
+          .send(sectionCsv(flatten(parts)))
+      }
+      return reply.send({
+        section: name,
+        filters: { from: f.from.toISOString(), to: f.to.toISOString(), type: f.type ?? null, ownerId: f.ownerId ?? null, paperSource: f.paperSource ?? null },
+        parts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, withoutIds(v)])),
+      })
+    })
+  }
+
+  app.get('/drilldown', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const q = req.query as Record<string, unknown>
+    if (typeof q.metric !== 'string' || typeof q.key !== 'string') return reply.status(400).send({ detail: 'metric and key are required' })
+    const f = parseFilters(q)
+    if ('error' in f) return reply.status(400).send({ detail: 'Invalid query', issues: f.error })
+    const r = await drilldown(q.metric, q.key, await contextOf(req), f)
+    if (!r) return reply.status(404).send({ detail: `No chart ${q.metric}` })
+    return reply.send({ metric: q.metric, key: q.key, label: r.label, total: r.ids.length, ids: r.ids.slice(0, DRILL_LIMIT) })
   })
 }

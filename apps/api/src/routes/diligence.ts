@@ -17,6 +17,16 @@
  *   GET    /diligence/:id/export?format=csv — CSV download
  *   PATCH  /diligence/:id                   — rename / archive
  *   DELETE /diligence/:id                   — soft delete (cascades to contracts)
+ *
+ * docs/39 D6 — the room's own columns (lib/diligence-columns.ts):
+ *   POST   /diligence/:id/columns                                  — a field, or a question asked of every document
+ *   PATCH  /diligence/:id/columns/:columnId                        — rename; reword a question (asked again)
+ *   DELETE /diligence/:id/columns/:columnId
+ *   POST   /diligence/:id/columns/:columnId/run                    — ask the rest ({ scope: 'missing' }) or all again
+ *   POST   /diligence/:id/columns/:columnId/undo                   — a field column's fill, taken back
+ *   PUT    /diligence/:id/columns/:columnId/cells/:contractId      — a person's answer
+ *   POST   /diligence/:id/columns/:columnId/cells/:contractId/check — confirm (or un-confirm) the AI's
+ *   GET    /diligence/:id/ask-estimate                             — asking a question: how many documents, what it costs
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -31,6 +41,15 @@ import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, CONTRACT_DOCUMENT_TYPES } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
+import { queueAnswerDiligenceColumn } from '../lib/queue.js'
+import { catalogField, fieldCatalog, fieldCells } from '../lib/field-query.js'
+import { verifyFieldValue } from '../lib/field-store.js'
+import { undoRun } from '../lib/field-runs.js'
+import {
+  ANSWER_TYPES, MAX_ANSWER_OPTIONS, MAX_ROOM_COLUMNS, TABLE_CONTRACT,
+  appendColumn, checkAnswer, estimateAsk, freshRun, labelFromQuestion, newColumnId, patchColumn, removeColumn,
+  roomColumns, roomTable, runUnderWay, setAnswer, type QuestionColumnDef, type RoomColumn,
+} from '../lib/diligence-columns.js'
 
 const CreateRoomSchema = z.object({
   name:        z.string().min(1).max(200),
@@ -46,6 +65,33 @@ const PatchRoomSchema = z.object({
 // Cap a single multipart upload at 50 files — protects the API from
 // 500-file uploads that would block the request thread.
 const MAX_FILES_PER_UPLOAD = 50
+
+// docs/39 D6 — a room's own columns.
+const ColumnLabel = z.string().trim().min(1).max(80)
+const Question = z.string().trim().min(3).max(1000)
+const Choices = z.array(z.string().trim().min(1).max(100)).max(MAX_ANSWER_OPTIONS)
+const AddColumnSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('field'), key: z.string().min(1).max(100), label: ColumnLabel.optional() }),
+  z.object({ kind: z.literal('question'), question: Question, label: ColumnLabel.optional(), answerType: z.enum(ANSWER_TYPES), options: Choices.optional() }),
+])
+const PatchColumnSchema = z.object({
+  label: ColumnLabel.optional(), question: Question.optional(), answerType: z.enum(ANSWER_TYPES).optional(), options: Choices.nullable().optional(),
+})
+const RunColumnSchema = z.object({ scope: z.enum(['missing', 'all']).default('missing') })
+const CheckCellSchema = z.object({ checked: z.boolean() })
+
+/** A choice list's distinct entries, as first typed. */
+function choicesOf(options: string[] | null | undefined): string[] {
+  const seen = new Map<string, string>()
+  for (const o of options ?? []) if (!seen.has(o.toLowerCase())) seen.set(o.toLowerCase(), o)
+  return [...seen.values()]
+}
+
+/** The standard terms the table and its export read from the field store (they read old key spellings before). */
+const STANDARD_TERMS = ['autoRenew', 'terminationNotice', 'governingLaw', 'paymentTermsDays'] as const
+
+/** A column whose run is still under way (lib/diligence-columns runUnderWay). */
+const underWay = (c: RoomColumn) => runUnderWay(c.run)
 
 export async function diligenceRoutes(app: FastifyInstance) {
   // X7 — an own-scope caller (view:contract at `own`) sees only the rooms it
@@ -341,7 +387,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const room = await prisma.diligenceRoom.findFirst({
       where: { id, orgId, deletedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, columns: true },
     })
     if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
 
@@ -350,17 +396,23 @@ export async function diligenceRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'asc' },
       take: 1_000,
       select: {
-        id: true, title: true, type: true, status: true,
-        counterpartyName: true, value: true, currency: true,
-        effectiveDate: true, expiryDate: true, jurisdiction: true,
+        ...TABLE_CONTRACT,
+        title: true, status: true,
         riskScore: true, riskFactors: true, overallConfidence: true,
-        keyTerms: true, summary: true, tags: true,
-        analysisStatus: true,
+        summary: true, tags: true,
       },
     })
 
+    // docs/39 D6 — the room's own columns, each cell with the words it came from.
+    const columns = roomColumns(room.columns)
+    const [table, standard] = await Promise.all([
+      roomTable(orgId, room.id, columns, docs),
+      fieldCells(docs, [...STANDARD_TERMS], await fieldCatalog(orgId)),
+    ])
+
     const rows = docs.map(d => {
-      const kt = (d.keyTerms ?? {}) as Record<string, unknown>
+      const terms = standard.get(d.id) ?? {}
+      const shown = (key: typeof STANDARD_TERMS[number]) => terms[key]?.value != null ? terms[key].display : null
       return {
         id:               d.id,
         title:            d.title,
@@ -377,19 +429,196 @@ export async function diligenceRoutes(app: FastifyInstance) {
         overallConfidence: d.overallConfidence,
         summary:          d.summary,
         analysisStatus:   d.analysisStatus,
-        // Surface a few common keyTerms as columns so users can compare.
-        autoRenew:        kt.auto_renew ?? kt.autoRenew ?? null,
-        terminationNotice: kt.termination_notice_days ?? kt.terminationNoticeDays ?? null,
-        governingLaw:     kt.governing_law ?? kt.governingLaw ?? null,
-        paymentTerms:     kt.payment_terms ?? kt.paymentTerms ?? null,
+        // A few standard terms to compare, as the field store holds them (these
+        // read old key spellings — auto_renew, governing_law — and were always empty).
+        autoRenew:        shown('autoRenew'),
+        terminationNotice: shown('terminationNotice'),
+        governingLaw:     shown('governingLaw'),
+        paymentTerms:     shown('paymentTermsDays'),
+        cells:            table.cells.get(d.id) ?? {},
       }
     })
 
     return reply.send({
-      data:  rows,
-      total: rows.length,
-      room:  { id: room.id, name: room.name },
+      data:    rows,
+      total:   rows.length,
+      room:    { id: room.id, name: room.name },
+      columns: table.columns,
     })
+  })
+
+  // ── docs/39 D6 — the room's own columns ─────────────────────────────
+  // Changing them (and the AI spend asking a question means) needs edit
+  // rights; an own-scope caller only reaches rooms it created (the guard above).
+
+  /** The room and one of its columns (either null when not found). */
+  const columnOf = async (orgId: string, roomId: string, columnId: string) => {
+    const room = await prisma.diligenceRoom.findFirst({ where: { id: roomId, orgId, deletedAt: null }, select: { id: true, columns: true } })
+    return { room, column: room ? roomColumns(room.columns).find(c => c.id === columnId) ?? null : null }
+  }
+  const auditColumn = (req: { user: { orgId: string; sub: string }; ip: string }, roomId: string, metadata: Record<string, unknown>) =>
+    createAuditEvent({
+      orgId: req.user.orgId, userId: req.user.sub, action: AuditAction.CONTRACT_UPDATED,
+      resourceType: 'diligence_room', resourceId: roomId, metadata: { source: 'diligence_column', ...metadata }, ipAddress: req.ip,
+    }).catch(() => {})
+
+  app.post('/:id/columns', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId, sub: userId } = req.user
+    const parsed = AddColumnSchema.safeParse(req.body)
+    if (!parsed.success) return reply.status(400).send({ detail: 'Invalid request', issues: parsed.error.issues })
+    const body = parsed.data
+    const room = await prisma.diligenceRoom.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, columns: true } })
+    if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
+    const existing = roomColumns(room.columns)
+    const full = `A room holds up to ${MAX_ROOM_COLUMNS} columns of its own. Remove one to add another.`
+    if (existing.length >= MAX_ROOM_COLUMNS) return reply.status(422).send({ detail: full })
+    const base = { id: newColumnId(), addedAt: new Date().toISOString(), addedById: userId }
+    let column: RoomColumn
+    if (body.kind === 'field') {
+      const field = catalogField(await fieldCatalog(orgId), body.key)
+      if (!field) return reply.status(422).send({ detail: 'There is no field by that name.' })
+      if (existing.some(c => c.kind === 'field' && c.key === field.key)) return reply.status(409).send({ detail: `The room already shows ${field.label}.` })
+      column = { ...base, kind: 'field', key: field.key, label: body.label ?? field.label, run: null }
+    } else {
+      const options = body.answerType === 'select' ? choicesOf(body.options) : null
+      if (options && options.length < 2) return reply.status(400).send({ detail: 'Give at least two choices to pick from.' })
+      column = {
+        ...base, kind: 'question', question: body.question, label: body.label ?? labelFromQuestion(body.question),
+        answerType: body.answerType, options, run: freshRun('missing', userId),
+      }
+    }
+    if (!await appendColumn(room.id, column)) return reply.status(422).send({ detail: full })
+    // A question is asked of every document read so far; each one read later is asked when it is.
+    if (column.kind === 'question') queueAnswerDiligenceColumn({ orgId, roomId: room.id, columnId: column.id, token: column.run!.token })
+    await auditColumn(req, room.id, { action: 'added', kind: column.kind, columnId: column.id, label: column.label })
+    return reply.status(201).send({ column })
+  })
+
+  app.patch('/:id/columns/:columnId', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId } = req.params as { id: string; columnId: string }
+    const { orgId, sub: userId } = req.user
+    const parsed = PatchColumnSchema.safeParse(req.body)
+    if (!parsed.success) return reply.status(400).send({ detail: 'Invalid request', issues: parsed.error.issues })
+    const body = parsed.data
+    const { room, column } = await columnOf(orgId, id, columnId)
+    if (!room || !column) return reply.status(404).send({ detail: 'Column not found' })
+    const patch: Record<string, unknown> = {}
+    if (body.label) patch.label = body.label
+    let reask = false
+    if (column.kind === 'question') {
+      const answerType = body.answerType ?? column.answerType
+      const options = answerType === 'select' ? choicesOf(body.options === undefined ? column.options : body.options) : null
+      if (options && options.length < 2) return reply.status(400).send({ detail: 'Give at least two choices to pick from.' })
+      const reworded = body.question !== undefined && body.question !== column.question
+      const reformed = answerType !== column.answerType || JSON.stringify(options ?? []) !== JSON.stringify(column.options ?? [])
+      if (reworded || reformed) {
+        Object.assign(patch, { question: body.question ?? column.question, answerType, options, run: freshRun('all', userId) })
+        // Answers to the old question go; a person's stay while the form of the answer is the same.
+        await prisma.diligenceCell.deleteMany({ where: { roomId: room.id, columnId, ...(reformed ? {} : { source: 'ai', checkedAt: null }) } })
+        reask = true
+      }
+    } else if (body.question !== undefined || body.answerType !== undefined || body.options !== undefined) {
+      return reply.status(400).send({ detail: 'A field column shows the field as it is: only its name can change.' })
+    }
+    if (!Object.keys(patch).length) return reply.send({ ok: true, asked: false })
+    if (!await patchColumn(room.id, columnId, patch)) return reply.status(404).send({ detail: 'Column not found' })
+    if (reask) queueAnswerDiligenceColumn({ orgId, roomId: room.id, columnId, token: (patch.run as { token: string }).token })
+    await auditColumn(req, room.id, { action: reask ? 'reworded' : 'renamed', columnId, label: body.label ?? column.label })
+    return reply.send({ ok: true, asked: reask })
+  })
+
+  app.delete('/:id/columns/:columnId', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId } = req.params as { id: string; columnId: string }
+    const { room, column } = await columnOf(req.user.orgId, id, columnId)
+    if (!room || !column || !await removeColumn(room.id, columnId)) return reply.status(404).send({ detail: 'Column not found' })
+    await auditColumn(req, room.id, { action: 'removed', kind: column.kind, columnId, label: column.label })
+    return reply.status(204).send()
+  })
+
+  app.post('/:id/columns/:columnId/run', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId } = req.params as { id: string; columnId: string }
+    const { orgId, sub: userId } = req.user
+    const parsed = RunColumnSchema.safeParse(req.body ?? {})
+    if (!parsed.success) return reply.status(400).send({ detail: 'Invalid request', issues: parsed.error.issues })
+    const { scope } = parsed.data
+    const { room, column } = await columnOf(orgId, id, columnId)
+    if (!room || !column) return reply.status(404).send({ detail: 'Column not found' })
+    if (column.kind === 'field' && scope === 'all') return reply.status(400).send({ detail: 'A field column only reads the documents without a value.' })
+    if (underWay(column)) return reply.status(409).send({ detail: 'This column is being answered already.' })
+    // A paused run (or one that failed part-way) carries on where it stopped,
+    // its field fills still one run to undo.
+    const prior = column.run
+    const resume = prior && prior.scope === scope && (prior.status === 'PAUSED' || prior.status === 'FAILED') ? prior : null
+    const run = freshRun(scope, userId, resume)
+    if (!await patchColumn(room.id, columnId, { run })) return reply.status(404).send({ detail: 'Column not found' })
+    queueAnswerDiligenceColumn({ orgId, roomId: room.id, columnId, token: run.token })
+    await auditColumn(req, room.id, { action: 'asked', kind: column.kind, columnId, scope, resumed: !!resume })
+    return reply.status(202).send({ run })
+  })
+
+  app.post('/:id/columns/:columnId/undo', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId } = req.params as { id: string; columnId: string }
+    const { orgId, sub: userId } = req.user
+    const { room, column } = await columnOf(orgId, id, columnId)
+    if (!room || !column) return reply.status(404).send({ detail: 'Column not found' })
+    const runId = column.run?.fieldRunId
+    if (column.kind !== 'field' || !runId) return reply.status(409).send({ detail: 'There is nothing to undo.' })
+    if (underWay(column)) return reply.status(409).send({ detail: 'Wait for the documents to be read, then undo.' })
+    const r = await undoRun({ orgId, runId, userId })
+    if (!r.ok) return reply.status(r.status).send({ detail: r.detail })
+    // As if never filled: its empty cells can be looked for again.
+    await patchColumn(room.id, columnId, { run: null })
+    await auditColumn(req, room.id, { action: 'undone', columnId, restored: r.restored, skipped: r.skipped })
+    return reply.send(r)
+  })
+
+  /** A document of the room, or null. */
+  const roomDocument = (orgId: string, roomId: string, contractId: string) =>
+    prisma.contract.findFirst({ where: { id: contractId, orgId, diligenceRoomId: roomId, deletedAt: null }, select: { id: true } })
+
+  app.put('/:id/columns/:columnId/cells/:contractId', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId, contractId } = req.params as { id: string; columnId: string; contractId: string }
+    const { orgId, sub: userId } = req.user
+    const { room, column } = await columnOf(orgId, id, columnId)
+    if (!room || !column) return reply.status(404).send({ detail: 'Column not found' })
+    // A field's value is the contract's: it's set where the contract's fields are.
+    if (column.kind !== 'question') return reply.status(400).send({ detail: 'Set a field on the contract itself.' })
+    if (!await roomDocument(orgId, room.id, contractId)) return reply.status(404).send({ detail: 'Document not found' })
+    const value = (req.body as { value?: unknown } | undefined)?.value
+    const r = await setAnswer({ orgId, roomId: room.id, column: column as QuestionColumnDef, contractId, userId, value })
+    if (!r.ok) return reply.status(400).send({ detail: r.detail })
+    await auditColumn(req, room.id, { action: 'answered', columnId, contractId })
+    return reply.send({ ok: true })
+  })
+
+  app.post('/:id/columns/:columnId/cells/:contractId/check', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id, columnId, contractId } = req.params as { id: string; columnId: string; contractId: string }
+    const { orgId, sub: userId } = req.user
+    const parsed = CheckCellSchema.safeParse(req.body ?? {})
+    if (!parsed.success) return reply.status(400).send({ detail: 'Invalid request', issues: parsed.error.issues })
+    const { room, column } = await columnOf(orgId, id, columnId)
+    if (!room || !column) return reply.status(404).send({ detail: 'Column not found' })
+    if (!await roomDocument(orgId, room.id, contractId)) return reply.status(404).send({ detail: 'Document not found' })
+    if (column.kind === 'field') {
+      // A field is checked on the contract, as the Fields panel checks it.
+      if (!parsed.data.checked) return reply.status(400).send({ detail: 'Change the value on the contract instead.' })
+      const r = await verifyFieldValue({ orgId, contractId, key: column.key, userId, audit: { source: 'diligence_room', ipAddress: req.ip } })
+      if (!r.ok) return reply.status(r.status).send({ detail: r.detail })
+      return reply.send({ ok: true })
+    }
+    if (!await checkAnswer({ roomId: room.id, columnId, contractId, userId, checked: parsed.data.checked })) {
+      return reply.status(409).send({ detail: 'There is no answer to confirm yet.' })
+    }
+    await auditColumn(req, room.id, { action: parsed.data.checked ? 'confirmed' : 'unconfirmed', columnId, contractId })
+    return reply.send({ ok: true })
+  })
+
+  app.get('/:id/ask-estimate', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const room = await prisma.diligenceRoom.findFirst({ where: { id, orgId: req.user.orgId, deletedAt: null }, select: { id: true } })
+    if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
+    return reply.send(await estimateAsk(req.user.orgId, room.id))
   })
 
   // ── GET /:id/export?format=csv — CSV download ────────────────────────
@@ -402,7 +631,7 @@ export async function diligenceRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const room = await prisma.diligenceRoom.findFirst({
       where: { id, orgId, deletedAt: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, columns: true },
     })
     if (!room) return reply.status(404).send({ detail: 'Diligence room not found' })
 
@@ -411,28 +640,43 @@ export async function diligenceRoutes(app: FastifyInstance) {
       orderBy: { createdAt: 'asc' },
       take: 5_000,
       select: {
-        title: true, type: true, status: true,
-        counterpartyName: true, value: true, currency: true,
-        effectiveDate: true, expiryDate: true, jurisdiction: true,
-        riskScore: true, summary: true, keyTerms: true, analysisStatus: true,
+        ...TABLE_CONTRACT,
+        title: true, status: true, riskScore: true, summary: true,
       },
     })
+
+    // docs/39 D6 — the room's own columns follow the standard ones, each
+    // answer beside the words it came from, as a memo cites them.
+    const columns = roomColumns(room.columns)
+    const [table, standard] = await Promise.all([
+      roomTable(orgId, room.id, columns, docs),
+      fieldCells(docs, [...STANDARD_TERMS], await fieldCatalog(orgId)),
+    ])
 
     const headers = [
       'Title', 'Type', 'Status', 'Counterparty', 'Value', 'Currency',
       'Effective Date', 'Expiry Date', 'Jurisdiction', 'Risk Score',
       'Auto Renew', 'Termination Notice', 'Governing Law', 'Payment Terms',
       'Analysis Status', 'Summary',
+      ...columns.flatMap(c => [c.label, `${c.label} (source)`]),
     ]
+    // A cell starting = + - @ is text, not a formula a spreadsheet runs (as the contracts export, D3).
     const escape = (v: unknown): string => {
       if (v == null) return ''
-      const s = String(v)
+      let s = String(v)
+      if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
       if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
       return s
     }
+    /** What the export says for a cell with no value. */
+    const unanswered: Record<string, string> = {
+      none: 'Not stated', asking: 'Being asked', unasked: 'Not asked yet', waiting: 'Still being read', unread: 'Could not be read', failed: 'Could not ask',
+    }
     const lines: string[] = [headers.join(',')]
     for (const d of docs) {
-      const kt = (d.keyTerms ?? {}) as Record<string, unknown>
+      const terms = standard.get(d.id) ?? {}
+      const term = (key: typeof STANDARD_TERMS[number]) => terms[key]?.value != null ? terms[key].display : ''
+      const cells = table.cells.get(d.id) ?? {}
       lines.push([
         escape(d.title),
         escape(d.type),
@@ -444,12 +688,18 @@ export async function diligenceRoutes(app: FastifyInstance) {
         escape(d.expiryDate?.toISOString().slice(0, 10)),
         escape(d.jurisdiction),
         escape(d.riskScore != null ? Math.round(d.riskScore * 100) : ''),
-        escape(kt.auto_renew ?? kt.autoRenew),
-        escape(kt.termination_notice_days ?? kt.terminationNoticeDays),
-        escape(kt.governing_law ?? kt.governingLaw),
-        escape(kt.payment_terms ?? kt.paymentTerms),
+        escape(term('autoRenew')),
+        escape(term('terminationNotice')),
+        escape(term('governingLaw')),
+        escape(term('paymentTermsDays')),
         escape(d.analysisStatus),
         escape(d.summary),
+        ...columns.flatMap(c => {
+          const cell = cells[c.id]
+          if (!cell) return ['', '']
+          const answer = cell.state === 'answered' ? cell.display : c.kind === 'field' && cell.state === 'none' ? '' : unanswered[cell.state] ?? ''
+          return [escape(answer), escape(cell.state === 'answered' ? cell.quote : '')]
+        }),
       ].join(','))
     }
     const csv = lines.join('\n')

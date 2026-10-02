@@ -928,3 +928,49 @@ export async function readDocxReview(file: Buffer): Promise<DocxReview> {
   }
   return { comments, revisions }
 }
+
+// ─── Tracked changes as suggestions (docs/41 C4) ────────────────────────────
+
+/** A run of a paragraph's text: unchanged, or inserted / deleted by someone. */
+export interface TrackedSegment { text: string; kind: 'ins' | 'del' | null; author: string; date: string; id: string }
+export interface TrackedParagraph {
+  /** The paragraph as it reads with every change accepted (as mammoth reads it). */
+  accepted: string
+  segments: TrackedSegment[]
+}
+
+/**
+ * The body's paragraphs that carry tracked changes, each as its text in runs
+ * marked inserted or deleted with the change's author, date and id. Read so
+ * an upload's changes can be shown as suggestions (lib/ooxml/docx-suggestions).
+ */
+export async function docxTrackedParagraphs(file: Buffer): Promise<TrackedParagraph[]> {
+  const { doc } = await openDocx(file)
+  const out: TrackedParagraph[] = []
+  for (const { el: p } of bodyParagraphs(doc)) {
+    const segments: TrackedSegment[] = []
+    const add = (text: string, rev: Element | null, kind: 'ins' | 'del' | null) => {
+      if (!text) return
+      const author = rev ? attrW(rev, 'author') || 'Unknown' : ''
+      const date = rev ? attrW(rev, 'date') : ''
+      const id = rev ? attrW(rev, 'id') : ''
+      const last = segments[segments.length - 1]
+      if (last && last.kind === kind && last.author === author && last.id === id) last.text += text
+      else segments.push({ text, kind, author, date, id })
+    }
+    const walk = (node: Element, rev: Element | null, kind: 'ins' | 'del' | null) => {
+      for (const c of children(node)) {
+        if (c.namespaceURI !== W) continue
+        const name = c.localName
+        if (name === 'r') { for (const k of children(c)) add(charOf(k), rev, kind) }
+        else if (name === 'ins' || name === 'moveTo') walk(c, c, kind === 'del' ? 'del' : 'ins')
+        else if (name === 'del' || name === 'moveFrom') walk(c, c, 'del')
+        else if (CONTAINERS.has(name) || name === 'fldSimple') walk(c, rev, kind)
+      }
+    }
+    walk(p, null, null)
+    if (!segments.some(s => s.kind)) continue
+    out.push({ accepted: segments.filter(s => s.kind !== 'del').map(s => s.text).join(''), segments })
+  }
+  return out
+}

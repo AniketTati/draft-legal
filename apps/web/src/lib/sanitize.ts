@@ -13,7 +13,7 @@ import DOMPurify from 'dompurify'
 // Preserve the diff/redline markup (<ins>/<del> + our data-* hooks) and clause
 // anchors while DOMPurify strips <script>, event handlers, <iframe>, etc.
 const CONFIG = {
-  ADD_ATTR: ['data-change-id', 'data-clause-id'],
+  ADD_ATTR: ['data-change-id', 'data-clause-id', 'data-author', 'data-author-id', 'data-time', 'data-color'],
   FORBID_TAGS: ['style', 'form'],
   FORBID_ATTR: ['style'],
 }

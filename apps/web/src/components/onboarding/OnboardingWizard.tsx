@@ -63,6 +63,8 @@ export function OnboardingWizard() {
   const [picked, setPicked] = useState<IndustryPackId>(null)
 
   const installIndustryPack = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: (packId: Exclude<IndustryPackId, null>) =>
       api.post('/organization/install-industry-pack', { packId }).then(r => r.data),
     onSuccess: () => {
@@ -73,6 +75,8 @@ export function OnboardingWizard() {
   })
 
   const finish = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: () =>
       api.patch('/organization', { settings: { onboardingCompleted: true } }).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['organization'] }),
@@ -221,6 +225,8 @@ function Step2FirstContract({
   const firstContractId = contracts?.data?.[0]?.id ?? null
 
   const uploadMut = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (file: File) => {
       const form = new FormData()
       form.append('file', file)
@@ -252,8 +258,11 @@ function Step2FirstContract({
     accept: {
       'application/pdf': ['.pdf'],
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-      // No legacy .doc — the extraction pipeline can't read OLE, so the server
-      // rejects it. Don't let onboarding offer a format that always fails.
+      // docs/39 A12 — a legacy .doc, and a scan kept as an image: read as the PDF they're made into.
+      'application/msword': ['.doc'],
+      'image/png': ['.png'],
+      'image/jpeg': ['.jpg', '.jpeg'],
+      'image/tiff': ['.tif', '.tiff'],
       'text/plain': ['.txt'],
     },
   })
@@ -301,7 +310,7 @@ function Step2FirstContract({
         <div className="mt-3 text-body font-medium text-ink-950">
           {uploading ? 'Uploading…' : 'Drop a contract here, or click to browse'}
         </div>
-        <div className="mt-1 text-dense text-ink-500">PDF, DOCX, or TXT</div>
+        <div className="mt-1 text-dense text-ink-500">PDF, Word, a scan (JPG, PNG or TIFF), or TXT</div>
       </div>
 
       <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-between">

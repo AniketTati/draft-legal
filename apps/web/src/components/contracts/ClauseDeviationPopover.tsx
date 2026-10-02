@@ -39,9 +39,12 @@ interface DeviationDetail {
  * (risk). "Off playbook" says nothing about severity, so it stays neutral.
  */
 const POS_HEADLINE: Record<string, { label: string; cls: string; tone: string }> = {
-  market:     { label: 'In line with market practice',   cls: 'bg-brand-50 border-brand-200 text-brand-800',           tone: 'binding' },
+  // docs/41 P1 — "market" had no definition and no benchmark behind it. This
+  // popover is behind a flag (lib/feature-flags.ts); while it exists it says
+  // what it is: an AI opinion, not a check against your playbook.
+  market:     { label: 'No issue seen (AI opinion)',     cls: 'bg-brand-50 border-brand-200 text-brand-800',           tone: 'binding' },
   aggressive: { label: 'Aggressive — review before send', cls: 'bg-risk-50 border-risk-200 text-risk-900',             tone: 'risk' },
-  weak:       { label: 'Weaker than market',             cls: 'bg-attention-50 border-attention-200 text-attention-700', tone: 'turn' },
+  weak:       { label: 'Weak for you (AI opinion)',      cls: 'bg-attention-50 border-attention-200 text-attention-700', tone: 'turn' },
   off:        { label: 'Off the standard playbook',      cls: 'bg-paper-50 border-paper-300 text-ink-950',             tone: 'neutral' },
 }
 
@@ -138,7 +141,7 @@ export function ClauseDeviationPopover({
               }}
               data-testid="clause-deviation-rewrite"
             >
-              <Sparkles className="size-3" /> Rewrite to market
+              <Sparkles className="size-3" /> Suggest a rewrite
             </Button>
           )}
           <Button

@@ -23,12 +23,34 @@ import { requestRoutes } from './routes/requests.js'
 import { userRoutes } from './routes/users.js'
 import { agentRoutes } from './routes/agents.js'
 import { fieldDefinitionRoutes } from './routes/field-definitions.js'
+import { fieldSuggestionRoutes } from './routes/field-suggestions.js'
+import { fieldRunRoutes } from './routes/field-runs.js'
 import { templateRoutes } from './routes/templates.js'
 import { clauseRoutes } from './routes/clauses.js'
+import { clauseFamilyRoutes } from './routes/clause-families.js'
+import { draftOriginRoutes } from './routes/draft-origin.js'
 import { playbookRoutes } from './routes/playbook.js'
+import { aiSuggestionEventRoutes } from './routes/ai-suggestion-events.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
 import { externalEditRoutes } from './routes/external-edit.js'
+import { contractFieldRoutes } from './routes/contract-fields.js'
+import { contractImportRoutes } from './routes/contract-import.js'
+import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
+import { contractFamilyRoutes } from './routes/contract-family.js'
+import { contractApprovalRoutes } from './routes/contract-approval.js'
+import { contractLifecycleRoutes } from './routes/contract-lifecycle.js'
+import { contractRenewalRoutes } from './routes/contract-renewal.js'
+import { calendarFeedRoutes } from './routes/calendar.js'
+import { inboxRoutes } from './routes/inbox.js'
+import { analysisHealthRoutes, contractAnalysisRunRoutes } from './routes/analysis-health.js'
+import { reviewRoutes } from './routes/review.js'
+import { workingCopyRoutes } from './routes/working-copy.js'
+import { workspaceChangesRoutes } from './routes/workspace-changes.js'
+import { clauseTagRoutes } from './routes/clause-tags.js'
+import { clauseTypeRoutes } from './routes/clause-types.js'
+import { contractQueryRoutes } from './routes/contract-query.js'
+import { savedViewRoutes } from './routes/saved-views.js'
 import { portalRoutes } from './routes/portal.js'
 import { approvalRoutes } from './routes/approvals.js'
 import { dashboardRoutes } from './routes/dashboard.js'
@@ -59,6 +81,14 @@ import { inboundEmailRoutes } from './routes/inbound-email.js'
 import { marketingRoutes } from './routes/marketing.js'
 import { telemetryRoutes } from './routes/telemetry.js'
 import { slackRoutes } from './routes/slack.js'
+// docs/41 Parts 17 and 20 — Salesforce, REST hooks, SSO and SCIM
+import { salesforceAdminRoutes, salesforcePublicRoutes, contractIntegrationConflictRoutes, embedRoutes } from './routes/salesforce.js'
+import { hookRoutes } from './routes/hooks.js'
+import { authSsoRoutes, adminSsoRoutes } from './routes/sso.js'
+import { scimRoutes } from './routes/scim.js'
+import { draftingRoutes } from './routes/drafting.js'
+import { complianceApplicabilityRoutes, compliancePolicyRoutes } from './routes/compliance-applicability.js'
+import { syncOnAuditEvent } from './lib/integrations/sync-queue.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { assertRouterConfigured } from './lib/aiRouter.js'
 import { assertSecretsConfigured } from './lib/secrets.js'
@@ -246,23 +276,49 @@ export async function buildApp() {
   await app.register(healthRoutes)
   await app.register(authRoutes,         { prefix: '/api/v1/auth' })
   await app.register(contractRoutes,     { prefix: '/api/v1/contracts' })
+  // docs/41 Part 1 — a draft's origin, and a clause choice made in it.
+  await app.register(draftOriginRoutes,  { prefix: '/api/v1/contracts' })
   await app.register(searchRoutes,       { prefix: '/api/v1/search' })
   await app.register(counterpartyRoutes, { prefix: '/api/v1/counterparties' })
   await app.register(requestRoutes,      { prefix: '/api/v1/requests' })
   await app.register(userRoutes,         { prefix: '/api/v1/users' })
   await app.register(agentRoutes,        { prefix: '/api/v1/agent' })
   await app.register(fieldDefinitionRoutes, { prefix: '/api/v1/field-definitions' })
+  await app.register(fieldSuggestionRoutes, { prefix: '/api/v1/field-suggestions' })
+  await app.register(fieldRunRoutes, { prefix: '/api/v1/field-runs' })
   await app.register(templateRoutes,        { prefix: '/api/v1/templates' })
   await app.register(clauseRoutes,          { prefix: '/api/v1/clauses' })
+  await app.register(clauseFamilyRoutes,    { prefix: '/api/v1/clause-families' })
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
+  // docs/41 Part 16 — what became of each AI suggestion.
+  await app.register(aiSuggestionEventRoutes, { prefix: '/api/v1/ai-suggestion-events' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })
   await app.register(externalEditRoutes,    { prefix: '/api/v1/contracts' })
+  await app.register(contractFieldRoutes,   { prefix: '/api/v1/contracts' })
+  // docs/39 A16 — contracts from a spreadsheet, with their documents.
+  await app.register(contractImportRoutes,  { prefix: '/api/v1/contracts' })
+  await app.register(contractCounterpartyRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractApprovalRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractLifecycleRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractRenewalRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(inboxRoutes,           { prefix: '/api/v1/inbox' })
+  await app.register(contractAnalysisRunRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(reviewRoutes,          { prefix: '/api/v1/contracts' })
+  await app.register(workingCopyRoutes,     { prefix: '/api/v1/contracts' })
+  await app.register(workspaceChangesRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(clauseTagRoutes,       { prefix: '/api/v1/contracts' })
+  // docs/39 E3 — clause types the organization adds
+  await app.register(clauseTypeRoutes,      { prefix: '/api/v1/clause-types' })
+  await app.register(contractQueryRoutes,   { prefix: '/api/v1/contracts' })
+  await app.register(savedViewRoutes,       { prefix: '/api/v1/saved-views' })
   await app.register(portalRoutes,          { prefix: '/api/v1/portal' })
   await app.register(approvalRoutes,        { prefix: '/api/v1/approvals' })
   await app.register(dashboardRoutes,      { prefix: '/api/v1/dashboard' })
   await app.register(adminUserRoutes,      { prefix: '/api/v1/admin/users' })
   await app.register(adminAuditRoutes,     { prefix: '/api/v1/admin/audit' })
+  await app.register(analysisHealthRoutes, { prefix: '/api/v1/admin/analysis' })
   await app.register(metricsRoutes,        { prefix: '/api/v1/metrics' })
   await app.register(teamRoutes,           { prefix: '/api/v1/team' })
   await app.register(organizationRoutes,   { prefix: '/api/v1/organization' })
@@ -274,6 +330,7 @@ export async function buildApp() {
   await app.register(reviewQueueRoutes,    { prefix: '/api/v1/review-queue' })
   await app.register(obligationRoutes,     { prefix: '/api/v1/obligations' })
   await app.register(renewalRoutes,        { prefix: '/api/v1/renewals' })
+  await app.register(calendarFeedRoutes,   { prefix: '/api/v1' })
   await app.register(invoiceRoutes,        { prefix: '/api/v1/invoices' })
   await app.register(analyticsRoutes,      { prefix: '/api/v1/analytics' })
   await app.register(diligenceRoutes,      { prefix: '/api/v1/diligence' })
@@ -293,6 +350,24 @@ export async function buildApp() {
   // Phase 10 — Slack slash command + interactive buttons (public; signed
   // by the org's Slack signing secret rather than a user JWT).
   await app.register(slackRoutes,          { prefix: '/api/v1/slack' })
+
+  // docs/41 Parts 17 and 20 — the integration layer. Salesforce (admin, its
+  // own API-key calls, the embedded preview), Zapier REST hooks, OIDC sign-in
+  // and SCIM provisioning (authorised by the org's SCIM token).
+  await app.register(salesforceAdminRoutes,  { prefix: '/api/v1/admin/integrations/salesforce' })
+  await app.register(contractIntegrationConflictRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(salesforcePublicRoutes, { prefix: '/api/v1/integrations/salesforce' })
+  await app.register(embedRoutes,            { prefix: '/api/v1/embed' })
+  await app.register(hookRoutes,             { prefix: '/api/v1/hooks' })
+  await app.register(authSsoRoutes,          { prefix: '/api/v1/auth/sso' })
+  await app.register(adminSsoRoutes,         { prefix: '/api/v1/admin/sso' })
+  await app.register(scimRoutes,             { prefix: '/scim/v2' })
+  // docs/41 Parts 9 and 10 — defined terms of a version; which compliance
+  // frameworks apply, from facts and the org's policy.
+  await app.register(draftingRoutes,                { prefix: '/api/v1/contracts' })
+  await app.register(complianceApplicabilityRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(compliancePolicyRoutes,        { prefix: '/api/v1/compliance-policy' })
+  afterAuditEvent(syncOnAuditEvent)
 
   // Wave 1.1 — fail closed at boot if JWT_SECRET / PORTAL_JWT_SECRET are
   // missing or a known-insecure placeholder in production (no more silent

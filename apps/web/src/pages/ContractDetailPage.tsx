@@ -1,10 +1,12 @@
+import { useClauseTypes } from '@/lib/clause-types'
+import { AnalysisFailedBanner } from '@/components/contracts/AnalysisFailedBanner'
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 // B.5.2 — PDF viewer re-enabled as the "Original" view via the
 // [Styled | Original] toggle. Styled (TipTap / DocumentCanvas) remains the
 // default; Legal users typically flip to Original for pixel fidelity.
-import { Worker, Viewer, type RenderPageProps } from '@react-pdf-viewer/core'
+import { Worker, Viewer, type RenderPageProps, type DocumentLoadEvent } from '@react-pdf-viewer/core'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { defaultLayoutPlugin } from '@react-pdf-viewer/default-layout'
 import { api } from '@/lib/api'
@@ -14,13 +16,13 @@ import { MEANING_CLASS, RISK_BAND_CLASS, normalizeRisk, riskBand } from '@/lib/s
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
-  ArrowLeft, Copy, Download, FileText, Clock, Tag, User,
+  ArrowLeft, Copy, Download, FileText, Tag,
   AlertCircle, Sparkles, Loader2,
   CheckCircle2, AlertTriangle, XCircle, Shield, TrendingUp,
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
-  Link, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
+  Link, Link2, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
-  PanelRightClose, PanelRightOpen, FileDown,
+  PanelRightClose, PanelRightOpen, FileDown, LocateFixed, FileDiff, Maximize2,
 } from 'lucide-react'
 import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
@@ -29,22 +31,21 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { UploadModal } from '@/components/contracts/UploadModal'
-import { DiffViewer } from '@/components/contracts/DiffViewer'
-import { CommentsPanel } from '@/components/contracts/CommentsPanel'
+import { CommentsReadList } from '@/components/contracts/workspace/CommentsView'
+import { useSelectionActions } from '@/components/contracts/workspace/useSelectionActions'
 import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
 import { ComplianceRailSection } from '@/components/contracts/ComplianceRailSection'
-import { PlaybookReviewRailSection } from '@/components/contracts/PlaybookReviewRailSection'
-import { PlaybookRedlineRailSection } from '@/components/contracts/PlaybookRedlineRailSection'
+import { ReviewPanel } from '@/components/contracts/review/ReviewPanel'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RenewalAdviceRailSection, type RenewalAdvice } from '@/components/contracts/RenewalAdviceRailSection'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
-import { DefinedTermsRailSection } from '@/components/contracts/DefinedTermsRailSection'
+import { DefinedTermsGlossary, useDefinedTerms } from '@/components/contracts/DefinedTermsGlossary'
+import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
+import { OriginRailSection } from '@/components/contracts/OriginRailSection'
+import { SalesforceConflictsSection } from '@/components/contracts/SalesforceConflictsSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
-import { RedlinePanel } from '@/components/contracts/RedlinePanel'
-import { ApprovalTimeline } from '@/components/approvals/ApprovalTimeline'
-import { ApprovalCard } from '@/components/approvals/ApprovalCard'
 import { StatusPill } from '@/components/contracts/StatusPill'
 import { RailSection } from '@/components/contracts/RailSection'
 import { DocumentCanvas, type CanvasState } from '@/components/contracts/DocumentCanvas'
@@ -58,17 +59,28 @@ import {
 import { classifyRisk } from '@/components/contracts/RiskDecorations'
 // U.4.1 — AiCommandPalette deleted. ⌘K now focuses the rail composer.
 import { DecisionStrip } from '@/components/contracts/DecisionStrip'
-import { NegotiationStatusStrip } from '@/components/contracts/NegotiationStatusStrip'
-import { CompareMode } from '@/components/contracts/CompareMode'
+import { StatusBanner } from '@/components/contracts/StatusBanner'
+import { HistoryDrawer } from '@/components/contracts/HistoryDrawer'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { CreateAmendmentDialog } from '@/components/contracts/CreateAmendmentDialog'
-import { CollabStatusBadge } from '@/components/contracts/CollabStatusBadge'
 import { SignatureStatusRailSection } from '@/components/contracts/SignatureStatusRailSection'
 import { CoachMarks } from '@/components/contracts/CoachMarks'
 import { useMediaQuery, BREAKPOINTS } from '@/hooks/useMediaQuery'
 import { track } from '@/lib/telemetry'
-import { useCanRequest } from '@/lib/permissions'
+import { useCanRequest, usePermission } from '@/lib/permissions'
+import { FieldsPanel, type ContractField } from '@/components/contracts/FieldsPanel'
+import { revealInCanvas, pdfSearchPattern, viewOf } from '@/components/contracts/SourceHighlight'
+import { SelectionMenu, PdfSelectionMenu, type TextSelection } from '@/components/contracts/SelectionMenu'
+import { pageTextOf } from '@/components/contracts/pdf-selection'
+import { FieldPicker } from '@/components/contracts/FieldPicker'
+import { NewFieldPopover } from '@/components/contracts/NewFieldPopover'
+import { useFieldCatalog } from '@/lib/field-catalog'
+import { ClauseTagPicker } from '@/components/contracts/ClauseTagPicker'
+import { SaveToLibraryPopover } from '@/components/contracts/SaveToLibraryPopover'
+import { AgreementPanel } from '@/components/contracts/AgreementPanel'
+import { FamilyPanel } from '@/components/contracts/FamilyPanel'
+import { AssistMark } from '@/components/ui/assist'
 import { Can } from '@/components/auth/Can'
 import {
   ExternalEditBanner, GoogleDocsStartDialog, RedlineNoticeBanner, downloadForCounterparty,
@@ -76,6 +88,14 @@ import {
 } from '@/components/contracts/GoogleDocsEdit'
 
 import { currentVersionOf } from '@/lib/current-version'
+import { analysisLine } from '@/lib/analysis-state'
+import { familyLine } from '@/lib/family-banner'
+import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { useWorkingCopy } from '@/hooks/useWorkingCopy'
+import { workspacePath } from '@/lib/workspace'
+import { type SaveVersionBody } from '@/lib/working-copy'
+import { followUpSend } from '@/components/contracts/sendAfterSave'
+import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
 import '@react-pdf-viewer/default-layout/lib/styles/index.css'
@@ -101,8 +121,32 @@ const TYPE_COLORS: Record<string, string> = {
 
 const CONTRACT_TYPES = [
   'NDA', 'MSA', 'SOW', 'SLA', 'VENDOR_AGREEMENT',
-  'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'OTHER',
+  'EMPLOYMENT', 'PARTNERSHIP', 'LICENSE', 'DATA_PROCESSING', 'ORDER_FORM', 'OTHER',
 ]
+
+/** GET /contracts/:id/approval (docs/41 P0.6). */
+interface ApprovalView {
+  id: string
+  status: string
+  outcome: 'pending' | 'approved' | 'auto_approved' | 'returned' | 'cancelled'
+  workflowName: string | null
+  submittedAt: string
+  decidedAt: string | null
+  submittedBy: { id: string; name: string }
+  currentStepOrder: number
+  currentStepName: string | null
+  waitingOn: Array<{ id: string; name: string }>
+  returnedBy: { id: string; name: string } | null
+  reason: string | null
+  approvalRecommendation: string | null
+  recommendationReasons: string[]
+  steps: Array<{ id: string; stepOrder: number; stepName: string; approverId: string; approverName: string; status: string; decision: string | null; comment: string | null; decidedAt: string | null }>
+}
+interface ContractApproval {
+  current: ApprovalView | null
+  history: ApprovalView[]
+  awaitingMe: any
+}
 
 const IN_PROGRESS_STATUSES = ['PENDING', 'PARSING', 'SPLITTING', 'CLASSIFYING', 'EXTRACTING', 'INDEXING', 'ANALYZING', 'DRAFTING']
 
@@ -112,12 +156,21 @@ const STUCK_DETECTABLE = ['PENDING', 'DRAFTING', 'PARSING', 'SPLITTING', 'CLASSI
 const STATUS_BANNER: Record<string, { message: string; sub: string }> = {
   PENDING:     { message: 'Processing starting…',                     sub: '' },
   PARSING:     { message: 'Extracting document text…',                sub: '' },
-  SPLITTING:   { message: 'Splitting binder into separate contracts…', sub: '' },
+  SPLITTING:   { message: 'Splitting the scanned file into separate contracts…', sub: '' },
   CLASSIFYING: { message: 'Identifying contract type…',               sub: '' },
   EXTRACTING:  { message: 'Routing to AI agent…',                     sub: '' },
   ANALYZING:   { message: 'AI extracting clauses, key terms & risk…', sub: '(~30–60 seconds)' },
   INDEXING:    { message: 'Building search index…',                   sub: '' },
 }
+
+// docs/39 A1 — the extraction's own steps, inside EXTRACTING (metadata._extraction).
+const EXTRACTION_STEP_BANNER: Record<string, { message: string; sub: string }> = {
+  reading:    { message: 'Reading the document…',            sub: '' },
+  extracting: { message: 'AI reading fields and clauses…',   sub: '(~30–60 seconds)' },
+  saving:     { message: 'Saving what was read…',            sub: '' },
+}
+
+interface ExtractionMark { step: string; attempt: number; of: number; error?: string; at?: string }
 
 // Ordered pipeline steps — used for the step indicator in the progress banner
 const PIPELINE_STEPS = [
@@ -146,72 +199,15 @@ const CLAUSE_FLAG_LABELS: Record<string, string> = {
 }
 
 // U.4.4 — 'ask' removed; the rail handles per-contract Q&A.
-type Tab = 'overview' | 'document' | 'clauses' | 'versions' | 'activity' | 'negotiate' | 'comments' | 'approval'
+// docs/41 Part 12 — Versions, Activity and Approval are in the History drawer now.
+type Tab = 'overview' | 'document' | 'clauses' | 'comments'
 
-// ─── Valid status transitions for manual user actions ─────────────────────────
-//
-// A.3 — The DRAFT → PENDING_REVIEW manual button was removed. It was a
-// workflow bypass that let users flip status without assigning a reviewer,
-// workflow, or deadline. "Send for Review" now always goes through
-// /submit-approval (the real workflow engine), producing PENDING_APPROVAL.
-// PENDING_REVIEW remains reachable via the workflow engine's rejection-to-
-// review path (wired in B.5).
-const STATUS_TRANSITIONS: Record<string, Array<{ to: string; label: string; variant?: 'default' | 'outline' }>> = {
-  // Start Negotiation is outlined, not ink: in PENDING_REVIEW the header also
-  // renders "Send for Review", and only one ink-filled primary is allowed per
-  // view. Send-for-Review is the recommended path, so it keeps the fill.
-  PENDING_REVIEW:     [{ to: 'UNDER_NEGOTIATION', label: 'Start Negotiation', variant: 'outline' },
-                       { to: 'DRAFT', label: 'Return to Draft', variant: 'outline' }],
-  UNDER_NEGOTIATION:  [{ to: 'PENDING_REVIEW', label: 'Back to Review', variant: 'outline' }],
-  APPROVED:           [{ to: 'EXECUTED', label: 'Mark as Executed' }],
-  EXECUTED:           [{ to: 'ARCHIVED', label: 'Archive', variant: 'outline' }],
-  EXPIRED:            [{ to: 'ARCHIVED', label: 'Archive', variant: 'outline' }],
-}
+// ─── Moves by hand ─────────────────────────────────────────────────────────────
+// docs/41 Part 18 — the moves a person makes by hand (start negotiating,
+// archive, mark signed outside the app, cancel) are offered by the status
+// banner (components/contracts/StatusBanner.tsx), from GET /contracts/:id/stage.
 
 // ─── Clause type → human-readable label ───────────────────────────────────────
-const CLAUSE_TYPE_LABELS: Record<string, string> = {
-  limitation_of_liability:       'Limitation of Liability',
-  uncapped_liability:             'Uncapped Liability',
-  indemnification:                'Indemnification',
-  liquidated_damages:             'Liquidated Damages',
-  payment:                        'Payment Terms',
-  price_adjustment:               'Price Adjustment',
-  minimum_commitment:             'Minimum Commitment',
-  volume_restriction:             'Volume Restriction',
-  ip_ownership:                   'IP Ownership',
-  ip_license_back:                'IP License-Back',
-  license_grant:                  'License Grant',
-  joint_ip:                       'Joint IP Ownership',
-  source_code_escrow:             'Source Code Escrow',
-  termination:                    'Termination',
-  post_termination_services:      'Post-Termination Services',
-  confidentiality:                'Confidentiality',
-  confidential_info_definition:   'Definition of Confidential Information',
-  non_compete:                    'Non-Compete',
-  non_solicitation:               'Non-Solicitation',
-  non_disparagement:              'Non-Disparagement',
-  covenant_not_to_sue:            'Covenant Not to Sue',
-  governing_law:                  'Governing Law',
-  dispute_resolution:             'Dispute Resolution',
-  notice:                         'Notice',
-  auto_renewal:                   'Auto-Renewal',
-  renewal_term:                   'Renewal Terms',
-  exclusivity:                    'Exclusivity',
-  warranty:                       'Warranty',
-  warranty_duration:              'Warranty Duration',
-  representations_warranties:     'Representations & Warranties',
-  force_majeure:                  'Force Majeure',
-  assignment:                     'Assignment',
-  change_of_control:              'Change of Control',
-  mfn:                            'Most Favoured Nation',
-  audit_rights:                   'Audit Rights',
-  rofr:                           'Right of First Refusal/Offer',
-  insurance:                      'Insurance',
-  acceptance:                     'Acceptance',
-  data_protection:                'Data Protection',
-  third_party_beneficiary:        'Third-Party Beneficiary',
-  general:                        'General',
-}
 
 // Clause ratings ride the same five meanings as every other state: unfavorable
 // is exposure, unusual is "a human has to look at this", and favorable is the
@@ -226,16 +222,19 @@ const RISK_RATING_BADGE: Record<string, { label: string; cls: string }> = {
   neutral:     { label: 'Neutral',     cls: 'bg-paper-100 text-ink-500 border border-paper-200' },
 }
 
-interface FieldDef {
-  id: string; fieldKey: string; fieldLabel: string
-  fieldType: string; contractType: string | null; options: string[]
-}
 interface AiFinding {
   key: string; label: string; value: unknown; confidence: number; quote?: string
 }
-interface TypeField {
-  value: unknown; confidence: number; label: string; quote?: string
+
+/** A finding's value as words, for the new field made from it (C4). */
+function findingText(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  if (Array.isArray(v)) return v.map(String).join(', ')
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
 }
+
+/** The org already tracks it as a field: same name, or same key (C4). */
+const sameFieldName = (a: string, b: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, '') === b.toLowerCase().replace(/[^a-z0-9]+/g, '')
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -292,7 +291,8 @@ function formatTermValue(_key: string, v: unknown): string {
 }
 
 function ClauseCard({
-  typeLabel, sectionRef, badge, interpretation, content, onReview,
+  typeLabel, sectionRef, badge, interpretation, content, onReview, onShowInDocument,
+  clauseType, source, onRetype, onDismiss, busy,
 }: {
   typeLabel: string
   sectionRef?: string | null
@@ -301,8 +301,19 @@ function ClauseCard({
   content: string
   /** Opens the clause in the review drawer: playbook, alternative language, comments. */
   onReview?: () => void
+  /** docs/39 B2 — highlights the clause in the document. */
+  onShowInDocument?: () => void
+  /** docs/39 E1 — who made it (a person's clauses survive re-analysis), and correcting it. */
+  clauseType?: string
+  source?: string
+  onRetype?: (clauseType: string) => void
+  onDismiss?: () => void
+  busy?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
+  const [confirmDismiss, setConfirmDismiss] = useState(false)
+  // docs/39 E3 — the organization's own clause types too.
+  const { types: clauseTypes } = useClauseTypes()
   return (
     <div className="bg-card border border-paper-200 rounded-card p-4 shadow-e1 hover:border-paper-300 transition-colors">
       <div className="flex items-start justify-between gap-3 mb-2">
@@ -313,6 +324,11 @@ function ClauseCard({
             </span>
           )}
           <span className="text-body font-semibold text-ink-950">{typeLabel}</span>
+          {source === 'user' && (
+            <span className="text-[10.5px] font-medium text-ink-500 border border-paper-200 rounded-chip px-1.5 py-px" title="Tagged or corrected by a person: a re-analysis keeps it">
+              Tagged
+            </span>
+          )}
         </div>
         {sectionRef && (
           <span className="text-dense font-mono text-ink-400 flex-shrink-0 mt-0.5">{sectionRef}</span>
@@ -331,10 +347,43 @@ function ClauseCard({
           {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
           {expanded ? 'Hide' : 'View'} verbatim text
         </button>
+        {onShowInDocument && (
+          <button onClick={onShowInDocument} className="flex items-center gap-1 text-dense text-ink-700 hover:text-ink-950 font-medium" data-testid="clause-card-show">
+            <LocateFixed className="size-3.5" /> Show in document
+          </button>
+        )}
         {onReview && (
           <button onClick={onReview} className="text-dense text-ink-700 hover:text-ink-950 font-medium underline underline-offset-2" data-testid="clause-card-review">
             Review and suggest changes
           </button>
+        )}
+        {(onRetype || onDismiss) && (
+          <div className="ml-auto flex items-center gap-2">
+            {onRetype && clauseType && (
+              <select
+                value={clauseType}
+                disabled={busy}
+                onChange={e => onRetype(e.target.value)}
+                aria-label="Clause type"
+                title="Wrong type? Pick the right one"
+                className="h-7 max-w-[11rem] rounded-md border border-input bg-card px-1.5 text-[11.5px] text-ink-700"
+                data-testid="clause-card-type"
+              >
+                {clauseTypes.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+              </select>
+            )}
+            {onDismiss && (confirmDismiss ? (
+              <span className="flex items-center gap-1.5 text-dense text-ink-700">
+                Not a clause?
+                <button className="font-medium text-risk-700 hover:underline" disabled={busy} onClick={() => { setConfirmDismiss(false); onDismiss() }} data-testid="clause-card-dismiss-confirm">Remove</button>
+                <button className="text-ink-500 hover:underline" onClick={() => setConfirmDismiss(false)}>Keep</button>
+              </span>
+            ) : (
+              <button onClick={() => setConfirmDismiss(true)} disabled={busy} className="text-dense text-ink-500 hover:text-risk-700" data-testid="clause-card-dismiss">
+                Not a clause
+              </button>
+            ))}
+          </div>
         )}
       </div>
       {expanded && (
@@ -372,6 +421,37 @@ function DetailRow({ label, value, hideIfEmpty = true, evidence }: {
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
+
+/** docs/39 A13 — a contract type as a sentence says it. */
+const TYPE_AS: Record<string, string> = {
+  NDA: 'an NDA', MSA: 'an MSA', SOW: 'a statement of work', SLA: 'a service level agreement',
+  VENDOR_AGREEMENT: 'a vendor agreement', EMPLOYMENT: 'an employment agreement', PARTNERSHIP: 'a partnership agreement',
+  LICENSE: 'a license', DATA_PROCESSING: 'a data processing agreement', ORDER_FORM: 'an order form', OTHER: 'another kind of contract',
+}
+const typeAs = (t: string) => TYPE_AS[t] ?? t.replace(/_/g, ' ').toLowerCase()
+/** docs/39 A12 — attachments read as part of the contract (API lib/exhibits.ts EXHIBIT_READABLE). */
+const EXHIBIT_READABLE = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword', 'text/plain', 'text/csv', 'image/png', 'image/jpeg', 'image/tiff'])
+/** How long an attachment not read yet counts as being read (then: not read, with a way to read it). */
+const READING_WINDOW_MS = 10 * 60_000
+/** docs/39 A12 — uploads read as the PDF they're made into (API lib/document.ts TO_PDF). */
+const CONVERTED_TO_PDF = new Set(['application/msword', 'image/png', 'image/jpeg', 'image/tiff'])
+/** docs/39 A7 — below this the OCR engine was unsure of a page (API lib/scan-quality.ts POOR_SCAN). */
+const POOR_SCAN = 0.6
+/** The most pages of a scan that are read (API lib/ocr-batches.ts OCR_MAX_PAGES). */
+const OCR_MAX_PAGES = 1000
+/** Pages as people write them: "3, 7–9 and 12". */
+function pageList(pages: number[]): string {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b)
+  const runs: string[] = []
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++
+    runs.push(j > i ? `${sorted[i]}–${sorted[j]}` : String(sorted[i]))
+    i = j
+  }
+  return runs.length > 1 ? `${runs.slice(0, -1).join(', ')} and ${runs[runs.length - 1]}` : runs[0] ?? ''
+}
+const typeNoun = (t: string) => typeAs(t).replace(/^an? /, '')
 
 export function ContractDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -423,6 +503,10 @@ export function ContractDetailPage() {
 
   const qc = useQueryClient()
   const layoutPlugin = defaultLayoutPlugin()
+  // The viewer's search state lives in each render's plugin instance: a
+  // deferred call ("show in document", B2) must reach the newest one.
+  const layoutPluginRef = useRef(layoutPlugin)
+  layoutPluginRef.current = layoutPlugin
 
   // B.5.2 — Styled | Original document view.
   const [docView, setDocView] = useState<'styled' | 'original'>(() => {
@@ -459,11 +543,13 @@ export function ContractDetailPage() {
   // Shared by the approver DecisionStrip and the playbook review rail.
   const jumpToClause = (clauseId: string) => {
     const el = document.querySelector(`[data-clause-id="${clauseId}"]`) as HTMLElement | null
+    // docs/39 B2 — a clause the risk layer doesn't mark is found by its words.
+    const content = (clausesData?.data ?? []).find((c: { id: string }) => c.id === clauseId)?.content as string | undefined
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
       el.classList.add('ring-2', 'ring-attention-600')
       setTimeout(() => el.classList.remove('ring-2', 'ring-attention-600'), 1500)
-    } else {
+    } else if (!(content && revealInCanvas(canvasEditorRef.current, content))) {
       setFocusedClauseId(clauseId)
     }
   }
@@ -480,9 +566,38 @@ export function ContractDetailPage() {
   // X75, Y3 — each action is offered only to a user who may make the request
   // it sends, by the permission the server's route for it needs: a viewer was
   // let into Edit mode, and every save failed (403) behind "Save failed".
-  const mayEdit = useCanRequest('POST /contracts/:id/html-version')
+  // docs/41 Part 16 — typing saves to the draft changes, so that is the request edit mode needs.
+  const mayEdit = useCanRequest('PUT /contracts/:id/working-copy')
+  // Save as version's "Send to counterparty" by link or email, and its "Reset approvals".
+  const canShare = useCanRequest('POST /contracts/:id/share')
+  const canResetApprovals = usePermission('configure', 'workflow')
   const canChangeStatus = useCanRequest('PATCH /contracts/:id')
-  const canSendForReview = useCanRequest('POST /contracts/:id/submit-approval')
+  const canEditFields = useCanRequest('PUT /contracts/:id/fields/:key')
+  // docs/39 C3 — add a field from a highlight, or suggest one to whoever can.
+  const canCreateFields = useCanRequest('POST /field-definitions')
+  const canSuggestFields = useCanRequest('POST /field-suggestions')
+  // docs/39 E1 — tag, retype or dismiss clauses.
+  const canTagClauses = useCanRequest('POST /contracts/:id/clauses/tag')
+  // docs/39 E3 — clause types' names, the organization's own included.
+  const { labelOf: clauseLabelOf } = useClauseTypes()
+  // docs/39 E4 — wording saved to the clause library from here.
+  const canSaveWording = useCanRequest('POST /clauses/from-contract')
+  const retypeClause = useMutation({
+    mutationFn: (a: { clauseId: string; clauseType: string }) => api.patch(`/contracts/clauses/${a.clauseId}/type`, { clauseType: a.clauseType }).then(r => r.data),
+    onSuccess: (_d, a) => {
+      toast.success(`Now a ${clauseLabelOf(a.clauseType).toLowerCase()} clause`, { description: 'A re-analysis keeps it.' })
+      qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error("Couldn't change the type", { description: err.response?.data?.detail ?? 'Try again.' }),
+  })
+  const dismissClause = useMutation({
+    mutationFn: (a: { clauseId: string }) => api.post(`/contracts/clauses/${a.clauseId}/dismiss`).then(r => r.data),
+    onSuccess: () => {
+      toast.success('Removed', { description: 'It won\u2019t come back when the contract is analysed again.' })
+      qc.invalidateQueries({ queryKey: ['contract-clauses', id] })
+    },
+    onError: (err: { response?: { data?: { detail?: string } } }) => toast.error("Couldn't remove it", { description: err.response?.data?.detail ?? 'Try again.' }),
+  })
   const canSign = useCanRequest('POST /contracts/:id/send-for-signature')
   const canUpload = useCanRequest('POST /contracts/upload')
 
@@ -500,6 +615,8 @@ export function ContractDetailPage() {
   // POST /contracts/:id/send-for-signature flow that was previously
   // reachable only via API.
   const [sendForSignatureOpen, setSendForSignatureOpen] = useState(false)
+  // docs/41 Part 12 — the History drawer (versions, approvals, signatures, moves).
+  const [historyOpen, setHistoryOpen] = useState(false)
   const [createAmendmentOpen, setCreateAmendmentOpen]   = useState(false)
   // P6.3 — streaming bubble AI popover
   const [aiPopoverOpen, setAiPopoverOpen] = useState(false)
@@ -508,7 +625,10 @@ export function ContractDetailPage() {
 
   // B.5.13 — Compare Versions mode (full-screen overlay).
   // Elevated from a buried tab to a first-class mode per docs/26 State 9.
-  const [compareOpen, setCompareOpen] = useState(false)
+  // docs/41 Part 15 (C2) — Compare, Review their changes and the history's
+  // compare open the workspace's Changes mode (it replaced the Compare
+  // overlay, the Negotiate tab and the redline panel).
+  const openChanges = () => navigate(workspacePath(id!, { changes: true }))
 
   // B.5.16 — Responsive rail behaviour.
   //   xl+   (≥1280)  → static two-column layout (rail visible).
@@ -518,6 +638,8 @@ export function ContractDetailPage() {
   const isXl = useMediaQuery(BREAKPOINTS.xl)
   const isMd = useMediaQuery(BREAKPOINTS.md)
   const [railOpen, setRailOpen] = useState(false)
+  // Fix-up 15 — bumped by the family banner's "View family": the rail's family section opens and scrolls into view.
+  const [familyReveal, setFamilyReveal] = useState(0)
 
   // Esc closes the mobile/tablet rail.
   useEffect(() => {
@@ -607,27 +729,14 @@ export function ContractDetailPage() {
   }, [highlightSection])
   const canvasEditorRef = useRef<import('@tiptap/react').Editor | null>(null)
   // Mirror the ref into state so rail sections that need the editor
-  // (P6.4 DefinedTermsRailSection, P6.3 BubbleAiPopover) re-render
+  // (the defined-terms glossary, P6.3 BubbleAiPopover) re-render
   // when the editor remounts on Edit-mode toggle.
   const [canvasEditor, setCanvasEditor] = useState<import('@tiptap/react').Editor | null>(null)
-  const dirtyHtmlRef = useRef<string | null>(null)
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [saveState, setSaveState] = useState<'idle' | 'dirty' | 'saving' | 'saved' | 'error'>('idle')
-
-  const saveHtmlVersion = useMutation({
-    mutationFn: (html: string) =>
-      api.post(`/contracts/${id}/html-version`, {
-        htmlContent: html,
-        changeNote: 'Edited in-place',
-      }).then(r => r.data),
-    onMutate: () => setSaveState('saving'),
-    onSuccess: () => {
-      setSaveState('saved')
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contract-versions', id] })
-    },
-    onError: (err) => {
-      setSaveState('error')
+  // docs/41 Part 16 (C1) — typing autosaves to the draft changes (the
+  // working copy), not to a version: a version is made only with a note
+  // (Save as version), on submit or send, or after a long pause (the server's).
+  const draft = useWorkingCopy(id, {
+    onSaveError: (err) => {
       // BB4 — someone took a Google Docs copy while this was open for editing.
       const data = (err as { response?: { data?: { code?: string; detail?: string } } })?.response?.data
       if (data?.code === 'EDITING_IN_GOOGLE_DOCS') {
@@ -636,38 +745,138 @@ export function ContractDetailPage() {
       }
     },
   })
+  const saveState = draft.saveState
+  const [saveVersionOpen, setSaveVersionOpen] = useState(false)
+  const [savingVersion, setSavingVersion] = useState(false)
+  const [saveVersionError, setSaveVersionError] = useState<string | null>(null)
+  // Leaving the editor with draft changes: where to go once the person chooses.
+  const [leaving, setLeaving] = useState<null | { then: () => void }>(null)
+  const [leaveBusy, setLeaveBusy] = useState<LeaveChoice | null>(null)
+  const afterSaveVersion = useRef<(() => void) | null>(null)
 
-  const flushPendingSave = () => {
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-    }
-    const html = dirtyHtmlRef.current
-    if (html != null) {
-      dirtyHtmlRef.current = null
-      saveHtmlVersion.mutate(html)
+  /**
+   * docs/39 H2 — what a command just changed in the document (a variable
+   * changed everywhere it appears), or typing before the server changes the
+   * draft itself, becomes a version now with its own note. Through the
+   * draft changes, like every other version made in the editor.
+   */
+  const saveDocumentNow = async (note?: string): Promise<boolean> => {
+    if (!await draft.flush()) throw new Error('Your latest changes could not be saved.')
+    if (!draft.hasDraft()) return false
+    try {
+      await draft.saveVersion({ note: note ?? 'Draft changes saved before a change to the draft' })
+      return true
+    } catch (err) {
+      if ((err as { response?: { data?: { code?: string } } })?.response?.data?.code === 'NO_WORKING_COPY') return false
+      throw err
     }
   }
 
-  const enterEdit = () => {
+  const saveAsVersion = async (body: SaveVersionBody) => {
+    if (!id) return
+    setSavingVersion(true)
+    setSaveVersionError(null)
+    try {
+      const r = await draft.saveVersion(body)
+      setSaveVersionOpen(false)
+      invalidateApproval(qc, id)
+      toast.success(r.created ? `Saved as v${r.version.versionNumber}` : 'No changes to save', { description: body.note })
+      if (r.send) await followUpSend(id, r, { onRedline: setRedlineNotice })
+      const then = afterSaveVersion.current
+      afterSaveVersion.current = null
+      then?.()
+    } catch (err) {
+      setSaveVersionError(serverMessage(err, (err as Error).message || 'Not saved. Try again.'))
+    } finally {
+      setSavingVersion(false)
+    }
+  }
+
+  /** Done, Esc or a link while editing: ask first when there are draft changes. */
+  const leaveEdit = (then: () => void = () => {}) => {
+    if (!draft.hasDraft()) { setIsEditing(false); then(); return }
+    setLeaving({ then })
+  }
+  const chooseLeave = async (choice: LeaveChoice) => {
+    const then = leaving?.then ?? (() => {})
+    if (choice === 'save') {
+      setLeaving(null)
+      afterSaveVersion.current = () => { setIsEditing(false); then() }
+      setSaveVersionOpen(true)
+      return
+    }
+    setLeaveBusy(choice)
+    try {
+      if (choice === 'keep') await draft.flush()
+      else {
+        await draft.discard()
+        qc.invalidateQueries({ queryKey: ['contract', id] })
+      }
+      setLeaving(null)
+      setIsEditing(false)
+      track('edit_exited', { leave: choice })
+      then()
+    } catch (err) {
+      toast.error(choice === 'discard' ? 'Not discarded' : 'Not saved', { description: serverMessage(err, 'Try again.') })
+    } finally {
+      setLeaveBusy(null)
+    }
+  }
+  // docs/39 H2 — a variable clicked in the document, for the Variables panel to show.
+  const [focusVariable, setFocusVariable] = useState<string | null>(null)
+
+  // The draft changes the editor opens on, when there are any (else the version).
+  const [draftHtml, setDraftHtml] = useState<string | null>(null)
+  const enterEdit = async () => {
     if (!canEdit) return   // the button, ⌘E and a clause's "Edit manually"
     // Edit requires Styled view (can't edit a PDF).
     if (docView !== 'styled') setDocView('styled')
+    let html: string | null = null
+    try {
+      const copy = await draft.load(contract?.currentVersionId ?? null)
+      html = copy?.html ?? null
+      if (copy?.stale) {
+        toast.info('These draft changes were started on an older version', {
+          description: `They were made on v${copy.baseVersionNumber ?? '?'}; a newer version was saved since. Check them before saving them as a version.`, durationMs: 9000,
+        })
+      }
+    } catch { /* opens on the version; the next save says what's wrong */ }
+    setDraftHtml(html)
     setIsEditing(true)
-    track('edit_entered', { from: docView })
+    track('edit_entered', { from: docView, draft: !!html })
   }
-  const exitEdit = () => {
-    flushPendingSave()
-    setIsEditing(false)
-    track('edit_exited', {})
-  }
+  const exitEdit = () => leaveEdit()
+
+  // A link clicked, or the tab closed, with draft changes not yet a version.
+  useEffect(() => {
+    if (!isEditing) return
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || !draft.hasDraft()) return
+      const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!a || a.target === '_blank' || a.hasAttribute('download') || a.origin !== window.location.origin) return
+      const to = a.pathname + a.search + a.hash
+      if (to === window.location.pathname + window.location.search + window.location.hash) return
+      e.preventDefault()
+      e.stopPropagation()
+      leaveEdit(() => navigate(to))
+    }
+    const onUnload = (e: BeforeUnloadEvent) => {
+      if (!draft.hasPendingTyping()) return
+      void draft.flush()
+      e.preventDefault()
+    }
+    document.addEventListener('click', onClick, true)
+    window.addEventListener('beforeunload', onUnload)
+    return () => { document.removeEventListener('click', onClick, true); window.removeEventListener('beforeunload', onUnload) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing])
 
   // Esc exits edit mode. Cmd+S forces a flush.
   useEffect(() => {
     if (!isEditing) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); exitEdit() }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); flushPendingSave() }
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void draft.flush() }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -706,10 +915,14 @@ export function ContractDetailPage() {
       // "working…" forever and only a manual refresh reveals the result. The
       // playbook redline takes minutes, so it is exactly the case that suffers.
       const pr = meta?._playbookRedlineStatus
+      // docs/39 A12 — an attachment just attached is being read with the contract.
+      const read = new Set(((q.state.data as any)?.exhibits ?? []).map((e: { s3Key: string }) => e.s3Key))
+      const reading = (((q.state.data as any)?.attachments ?? []) as Array<{ s3Key: string; mimeType: string; attachedAt?: string }>)
+        .some(a => !read.has(a.s3Key) && EXHIBIT_READABLE.has(a.mimeType) && !!a.attachedAt && Date.now() - new Date(a.attachedAt).getTime() < READING_WINDOW_MS)
       const inFlight =
         (s && IN_PROGRESS_STATUSES.includes(s)) ||
         rm === 'ANALYZING' ||
-        pr === 'QUEUED' || pr === 'RUNNING'
+        pr === 'QUEUED' || pr === 'RUNNING' || reading
       // BB4 — a Google Docs copy is out: notice when it comes back.
       return inFlight ? 4000 : q.state.data?.externalEdit ? 15000 : false
     },
@@ -725,15 +938,6 @@ export function ContractDetailPage() {
     queryKey: ['contract-versions', id],
     queryFn: () => api.get(`/contracts/${id}/versions`).then(r => r.data),
     enabled: !!id,
-  })
-
-  const { data: timelineData } = useQuery({
-    queryKey: ['contract-timeline', id],
-    queryFn: () => api.get(`/contracts/${id}/timeline`).then(r => r.data),
-    // B.1.5f — rail's Activity section is collapsed-by-default, but we still
-    // want a count shown; fetch the timeline once the contract loads.
-    enabled: !!id,
-    staleTime: 30_000,
   })
 
   const { data: clausesData } = useQuery({
@@ -789,27 +993,24 @@ export function ContractDetailPage() {
     if (moved) setFocusedClauseId(moved.id)
   }, [focusedClauseId, clausesData])
 
-  const { data: fieldDefsData } = useQuery({
-    queryKey: ['field-definitions'],
-    queryFn: () => api.get('/field-definitions').then(r => r.data.data as FieldDef[]),
-    enabled: !!contract,
-    staleTime: 60_000,
-  })
+  // docs/41 Part 10 — the canvas shows a defined term's definition on hover,
+  // whether or not the Review panel's glossary is open.
+  useDefinedTerms(id, contract?.currentVersionId, canvasEditor)
 
-  // Phase 06 — approval instance for this contract.
-  // B.5.10 — we now load this on every detail-page open (not only when
-  // the approval tab is visible) so the Decision Strip can render when
-  // the current user is the pending approver (docs/26 State 4).
-  const { data: approvalData, refetch: refetchApproval } = useQuery({
-    queryKey: ['contract-approval', id],
-    queryFn: () => api.get(`/approvals/my-queue`).then(r => {
-      // Filter to this contract's approval context
-      const items = r.data?.data ?? []
-      return items.find((i: { contract: { id: string } }) => i.contract?.id === id) ?? null
-    }),
+  // Phase 06 — this contract's approval. docs/41 P0.6 — one read, from the
+  // contract (GET /contracts/:id/approval): the latest request with its steps,
+  // approver names, outcome and the reason it was returned, the earlier
+  // requests, and the step waiting on the current user (the DecisionStrip's).
+  // It used to filter the user's own queue, and the full instance came from
+  // GET /approvals?contractId=, which doesn't exist: the timeline, the rail
+  // section and the "waiting on" strip were always empty.
+  const { data: contractApproval, refetch: refetchApproval } = useQuery({
+    queryKey: approvalKeys.contract(id ?? ''),
+    queryFn: () => api.get(`/contracts/${id}/approval`).then(r => r.data as ContractApproval),
     enabled: !!id,
     staleTime: 15_000,
   })
+  const approvalData = contractApproval?.awaitingMe ?? null
 
   // B.5.10 — Approver Mode flag. True when the current user has a PENDING
   // approval step assigned to them on this contract. Drives:
@@ -830,40 +1031,15 @@ export function ContractDetailPage() {
     staleTime: 60_000,
   })
 
-  // Full approval instance (for timeline + B.5.12 negotiation strip).
-  // B.5.12 relaxed the enabled gate so owners see "waiting on approver"
-  // signal without opening the approval tab. Still cheap — two GETs,
-  // 15s stale window.
-  const { data: approvalInstanceData } = useQuery({
-    queryKey: ['approval-instance-by-contract', id],
-    queryFn: () => api.get(`/approvals?contractId=${id}&limit=1`).then(async r => {
-      // Get the most recent instance for this contract via my-queue or direct lookup
-      // Using the submit endpoint response pattern: GET /approvals/:instanceId
-      const queue = r.data?.data ?? []
-      const item = queue.find((i: { contract: { id: string } }) => i.contract?.id === id)
-      if (!item) return null
-      return api.get(`/approvals/${item.instanceId}`).then(r2 => r2.data)
-    }),
-    enabled: !!id && (
-      tab === 'approval'
-      || ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')
-    ),
-    staleTime: 15_000,
-  })
-
-  const submitForApproval = useMutation({
-    mutationFn: (workflowDefinitionId?: string) =>
-      api.post(`/contracts/${id}/submit-approval`, { workflowDefinitionId }).then(r => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-      qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-    },
-  })
-
+  // docs/39 G1 — a re-analysis refreshes the values the AI owns; values a
+  // person set or checked stay, and what the AI now reads shows beside them
+  // in the Fields panel. `fill_blanks` only fills empty fields.
   const analyze = useMutation({
-    mutationFn: () => api.post(`/contracts/${id}/analyze`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    mutationFn: (fields: 'replace_ai' | 'fill_blanks' | void) => api.post(`/contracts/${id}/analyze`, fields ? { fields } : {}),
+    onSuccess: (_r, fields) => {
+      qc.invalidateQueries({ queryKey: ['contract', id] })
+      toast.info(fields === 'fill_blanks' ? 'Re-analysing — only empty fields will be filled' : 'Re-analysing — values you set or checked are kept')
+    },
   })
 
   const reprocess = useMutation({
@@ -878,16 +1054,6 @@ export function ContractDetailPage() {
     },
   })
 
-  const changeStatus = useMutation({
-    mutationFn: (newStatus: string) =>
-      api.patch(`/contracts/${id}`, { status: newStatus }).then((r) => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['contract', id] })
-      qc.invalidateQueries({ queryKey: ['contracts'] })
-      qc.invalidateQueries({ queryKey: ['dashboard-stats'] })
-    },
-  })
-
   const retype = useMutation({
     mutationFn: (contractType: string) => api.post(`/contracts/${id}/retype`, { contractType }),
     onSuccess: () => {
@@ -895,6 +1061,76 @@ export function ContractDetailPage() {
       qc.invalidateQueries({ queryKey: ['contract', id] })
     },
   })
+  const canRetype = useCanRequest('POST /contracts/:id/retype')
+  // docs/39 A12 — each attachment as it was read with the contract.
+  const exhibitReading = (att: { s3Key: string; mimeType: string; attachedAt?: string }): { state: 'read' | 'reading' | 'failed' | 'unread' | 'not-read'; pages?: number | null; ocr?: boolean; error?: string | null } => {
+    const e = ((contract as any)?.exhibits ?? []).find((x: { s3Key: string }) => x.s3Key === att.s3Key)
+    if (e) return e.error ? { state: 'failed', error: e.error } : { state: 'read', pages: e.pageCount, ocr: e.ocrApplied }
+    if (!EXHIBIT_READABLE.has(att.mimeType)) return { state: 'not-read' }
+    return att.attachedAt && Date.now() - new Date(att.attachedAt).getTime() < READING_WINDOW_MS ? { state: 'reading' } : { state: 'unread' }
+  }
+  const readAttachment = useMutation({
+    mutationFn: (idx: number) => api.post(`/contracts/${id}/attachments/${idx}/read`),
+    onSuccess: () => { toast.success('Reading it with the contract'); qc.invalidateQueries({ queryKey: ['contract', id] }) },
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start reading it'),
+  })
+  // docs/39 A7 — read the file again from the start, for pages of a scan that couldn't be read.
+  const rereadScan = useMutation({
+    mutationFn: () => api.post(`/contracts/${id}/analyze?full=true`),
+    onSuccess: () => { toast.success('Reading the scan again'); qc.invalidateQueries({ queryKey: ['contract', id] }) },
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start reading the scan again'),
+  })
+  const reread = useMutation({
+    mutationFn: () => api.post(`/contracts/${id}/retype`, { contractType: contract?.type, reread: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
+    onError: (e: any) => toast.error(e?.response?.data?.detail ?? 'Couldn’t start the read'),
+  })
+  // docs/39 A13 — the fields list is its own query: read it again when the
+  // type changes (a retype lists the new type's fields, then reads them) or an
+  // analysis finishes, or it shows the old values until the page is reloaded —
+  // and what that analysis changed (G1), with its undo.
+  const fieldsStamp = contract ? `${contract.type}|${contract.analysisStatus}` : null
+  const lastFieldsStamp = useRef(fieldsStamp)
+  useEffect(() => {
+    if (lastFieldsStamp.current && fieldsStamp && lastFieldsStamp.current !== fieldsStamp) {
+      qc.invalidateQueries({ queryKey: ['contract-fields', id] })
+      qc.invalidateQueries({ queryKey: ['field-run-latest', id] })
+    }
+    lastFieldsStamp.current = fieldsStamp
+  }, [fieldsStamp, id, qc])
+
+  // docs/41 P0.3 — the deterministic checks describe the version the contract
+  // stands on: read again when it moves or its analysis finishes.
+  const { data: checksData } = useQuery({
+    queryKey: ['contract-checks', id],
+    queryFn: () => api.get(`/contracts/${id}/checks`).then(r => r.data as { openChoices?: Array<{ key: string; label: string }> }),
+    enabled: !!id,
+    staleTime: 15_000,
+  })
+  // docs/41 P0.4 — terms the draft left to choose (a governing law nobody
+  // named). It can't go out until they are chosen.
+  const openChoices = checksData?.openChoices ?? []
+  // docs/41 P0.8 — sent for signature once approved, unless the org allows otherwise.
+  const { data: orgData } = useQuery<{ settings?: { allowSignWithoutApproval?: boolean } }>({
+    queryKey: ['organization'],
+    queryFn: () => api.get('/organization').then(r => r.data),
+    staleTime: 60_000,
+  })
+  const signGateReason = contract && !['APPROVED', 'PENDING_SIGNATURE'].includes(contract.status) && orgData && !orgData.settings?.allowSignWithoutApproval
+    ? (contract.status === 'PENDING_APPROVAL'
+        ? 'Waiting for approval — it can be sent for signature once approved.'
+        : 'Needs approval first — send it for approval, then for signature.')
+    : null
+  const openChoicesReason = openChoices.length
+    ? `${openChoices.length === 1 ? '1 choice' : `${openChoices.length} choices`} still open in the draft (${openChoices.map(c => c.label).join(', ')}). Choose ${openChoices.length === 1 ? 'it' : 'them'} before sending.`
+    : null
+  const checksStamp = contract ? `${contract.analysisStatus}|${contract.currentVersionId}` : null
+  useEffect(() => {
+    if (checksStamp) {
+      qc.invalidateQueries({ queryKey: ['contract-checks', id] })
+      qc.invalidateQueries({ queryKey: ['contract-review', id] })
+    }
+  }, [checksStamp, id, qc])
 
   // Binder split
   const [showSplitModal, setShowSplitModal] = useState(false)
@@ -907,14 +1143,39 @@ export function ContractDetailPage() {
   const splitError: string | null = (contract as any)?.metadata?._splitError ?? null
   const autoSplitDone = splitInto.length > 0
 
+  // docs/39 A1 — the extraction job's step and attempt, while it runs.
+  const extractionMark = (contract as any)?.metadata?._extraction as ExtractionMark | undefined
+  const extracting = contract?.analysisStatus === 'EXTRACTING' && extractionMark ? extractionMark : null
+  // docs/39 A13 — a retype reads only the new type's own fields: the bar says
+  // that (not a whole analysis), and a read that failed says so below.
+  const typeRead = (contract as any)?.metadata?._typeFieldsRead as { type: string; error?: string } | undefined
+  const readingType = contract?.analysisStatus === 'ANALYZING' && typeRead && !typeRead.error ? typeRead.type : null
+  // docs/39 A7 — a scan is read a few pages at a time: how far it has got.
+  const ocrMark = (contract as any)?.metadata?._ocr as { done: number; of: number } | undefined
+  const readingScan = ocrMark && (contract?.analysisStatus === 'PENDING' || contract?.analysisStatus === 'PARSING') ? ocrMark : null
+  // docs/39 A12 — read again with an exhibit just attached (until its read starts).
+  const exhibitAt = (contract as any)?.metadata?._exhibitReread as string | undefined
+  const exhibitReread = contract?.analysisStatus === 'EXTRACTING' && !!exhibitAt && Date.now() - Date.parse(exhibitAt) < READING_WINDOW_MS
+  const banner = readingType
+    ? { message: `Reading the ${typeNoun(readingType)} fields…`, sub: '' }
+    : readingScan ? { message: 'Reading the scanned pages…', sub: `${readingScan.done} of ${readingScan.of} pages` }
+    : exhibitReread && !extracting ? { message: 'Reading the contract again with its exhibits…', sub: '' }
+    : extracting ? EXTRACTION_STEP_BANNER[extracting.step] ?? STATUS_BANNER.EXTRACTING : STATUS_BANNER[contract?.analysisStatus ?? '']
+
   // Stuck detection: in-progress but updatedAt hasn't changed in 3 minutes
-  // PENDING is excluded — it's just queued, not stuck
-  const STUCK_THRESHOLD_MS = 3 * 60 * 1000
+  // PENDING is excluded — it's just queued, not stuck. An extraction job
+  // marks each step and attempt, and a long contract's run (or a retry's
+  // back-off) takes longer than a step elsewhere: 8 minutes from its last mark.
+  const STUCK_THRESHOLD_MS = (extracting ? 8 : 3) * 60 * 1000
+  const lastActivity = Math.max(
+    contract?.updatedAt ? new Date(contract.updatedAt).getTime() : 0,
+    extracting?.at ? new Date(extracting.at).getTime() : 0,
+  )
   const isStuck = !!(
     contract?.analysisStatus &&
     STUCK_DETECTABLE.includes(contract.analysisStatus) &&
-    contract.updatedAt &&
-    Date.now() - new Date(contract.updatedAt).getTime() > STUCK_THRESHOLD_MS
+    lastActivity &&
+    Date.now() - lastActivity > STUCK_THRESHOLD_MS
   )
 
   // Current step index in the pipeline (for the step indicator)
@@ -945,22 +1206,6 @@ export function ContractDetailPage() {
 
   // Negotiation (Phase 05)
   const [showShareDialog, setShowShareDialog] = useState(false)
-  const [diffV1Id, setDiffV1Id] = useState('')
-  const [diffV2Id, setDiffV2Id] = useState('')
-
-  const diffQuery = useQuery({
-    queryKey: ['contract-diff', id, diffV1Id, diffV2Id],
-    queryFn: () => api.get(`/contracts/${id}/versions/${diffV1Id}/diff/${diffV2Id}`).then(r => r.data),
-    enabled: !!diffV1Id && !!diffV2Id && diffV1Id !== diffV2Id && tab === 'negotiate',
-    // X32 — a pair too large to diff took the whole time limit to say so.
-    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 422 && count < 1,
-  })
-
-  const redlineMutation = useMutation({
-    mutationFn: ({ v1Id, v2Id }: { v1Id: string; v2Id: string }) =>
-      api.post(`/contracts/${id}/redline`, { v1Id, v2Id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
-  })
 
   // Attachments
   const attachFileRef = useRef<HTMLInputElement>(null)
@@ -1030,17 +1275,21 @@ export function ContractDetailPage() {
   const versions = versionsData?.data ?? contract?.versions ?? []
   // DD4 — the version the contract stands on, which an undo moves back; not
   // the newest.
-  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null }>, contract?.currentVersionId)
-  // …and the version before it: what the negotiation diff compares by default.
-  const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
-  const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
+  const standing = currentVersionOf(versions as Array<{ id: string; s3Key?: string | null; mimeType?: string | null; renderedPdfKey?: string | null }>, contract?.currentVersionId)
+  // docs/41 P0.1 — Not analysed · Analysing · Analysed · vN · Failed at a step · stale.
+  const analysis = analysisLine(
+    { analysisStatus: contract?.analysisStatus ?? '', analysisError: contract?.analysisError, currentVersionId: contract?.currentVersionId ?? null, metadata: contract?.metadata },
+    { currentVersionNumber: (standing as { versionNumber?: number } | undefined)?.versionNumber ?? null, checkpointSoon: true },
+  )
 
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
   // toggle would crash with "Invalid PDF structure". We disable it instead.
   // X49 — only a PDF: now that the version list carries the key, a DOCX or
   // TXT latest version would otherwise open the viewer on a file it can't read.
-  const hasOriginal = !!(standing?.s3Key && standing?.mimeType === 'application/pdf')
+  // docs/39 A12 — a .doc or a scan kept as an image is shown as the PDF it was read from.
+  const hasOriginal = !!(standing?.s3Key && (standing?.mimeType === 'application/pdf'
+    || (standing?.renderedPdfKey && CONVERTED_TO_PDF.has(standing?.mimeType ?? ''))))
   // …but a Word or text upload still has an original: say that, not "created
   // from text or a template".
   const originalNotPdf = !!standing?.s3Key && !hasOriginal
@@ -1057,6 +1306,85 @@ export function ContractDetailPage() {
     }
   }, [citeTarget.page, hasOriginal])
 
+  // docs/39 B2 — "Show in document": a field's source or a clause,
+  // highlighted in the view the reader has open (the styled document or the
+  // original PDF), switching to the document first. The request waits for
+  // the view to be ready: from the Overview the canvas mounts first.
+  const [pendingReveal, setPendingReveal] = useState<{ text: string; occurrence: number; tries: number } | null>(null)
+  const showInDocument = (text: string, occurrence = 0) => {
+    if (!text.trim()) return
+    setTab('document')
+    setPendingReveal({ text, occurrence, tries: 0 })
+  }
+  // docs/39 C1/C2 — a passage selected in the document, being set as a field's value.
+  const [fieldPick, setFieldPick] = useState<TextSelection | null>(null)
+  // docs/39 C1 — the original PDF's box (its selection menu listens there) and
+  // each page's text, read once the file loads, to tell which of the passages
+  // worded alike was picked.
+  const [pdfBox, setPdfBox] = useState<HTMLDivElement | null>(null)
+  const pdfPageTexts = useRef<string[] | null>(null)
+  const readPdfPages = async ({ doc }: DocumentLoadEvent) => {
+    pdfPageTexts.current = null
+    const texts: string[] = []
+    try {
+      for (let i = 1; i <= Math.min(doc.numPages, 1000); i++) {
+        const page = await doc.getPage(i)
+        texts.push(pageTextOf((await page.getTextContent()).items as Array<{ str?: string }>))
+      }
+      pdfPageTexts.current = texts
+    } catch { /* the count then starts at the selection's own page */ }
+  }
+  // docs/39 C3 — a passage a new field is being made from.
+  const [newFieldFrom, setNewFieldFrom] = useState<TextSelection | null>(null)
+  // docs/39 C4 — an AI finding being made a field.
+  const [trackFinding, setTrackFinding] = useState<{ finding: AiFinding; rect: DOMRect } | null>(null)
+  const { data: fieldCatalog = [] } = useFieldCatalog()
+  // docs/39 E1 — a passage being tagged as a clause.
+  const [clauseFrom, setClauseFrom] = useState<TextSelection | null>(null)
+  const [libraryFrom, setLibraryFrom] = useState<TextSelection | null>(null)
+  const showFieldSource = (f: ContractField) => {
+    const text = f.anchor?.text ?? f.quote
+    if (text) showInDocument(text, f.anchor?.occurrence ?? 0)
+  }
+  // docs/39 D6 — arriving from a diligence room's cell ("Show in the
+  // contract"): the words its answer came from, highlighted. Carried in the
+  // navigation's state, not the URL, so contract text stays out of history
+  // and logs; cleared once used, so a reload doesn't jump there again.
+  const location = useLocation()
+  useEffect(() => {
+    const reveal = (location.state as { reveal?: { text?: string; occurrence?: number } } | null)?.reveal
+    if (!reveal?.text) return
+    showInDocument(reveal.text, reveal.occurrence ?? 0)
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [location.key])
+  useEffect(() => {
+    if (!pendingReveal || tab !== 'document') return
+    const notFound = () => toast.info("Couldn't find that passage in this view", {
+      description: 'The document may word it slightly differently from the quote.',
+    })
+    const pdf = docView === 'original' && hasOriginal
+    // Not mounted yet: canvasEditor changes when it is.
+    if (!pdf && !viewOf(canvasEditorRef.current)) return
+    const t = setTimeout(async () => {
+      if (!pdf) {
+        if (!revealInCanvas(canvasEditorRef.current, pendingReveal.text, pendingReveal.occurrence)) notFound()
+        setPendingReveal(null)
+        return
+      }
+      const search = () => layoutPluginRef.current.toolbarPluginInstance.searchPluginInstance
+      const pattern = pdfSearchPattern(pendingReveal.text)
+      const matches = pattern ? await search().highlight(pattern) : []
+      // The PDF may still be loading: try for a few seconds before giving up.
+      if (!matches.length && pendingReveal.tries < 6) { setPendingReveal({ ...pendingReveal, tries: pendingReveal.tries + 1 }); return }
+      // The search opens on its first match; a later one once its matches are in state.
+      const { occurrence } = pendingReveal
+      if (!matches.length) notFound()
+      else if (occurrence > 0) setTimeout(() => search().jumpToMatch(Math.min(occurrence, matches.length - 1) + 1), 150)
+      setPendingReveal(null)
+    }, pdf ? (pendingReveal.tries ? 500 : 50) : 50)
+    return () => clearTimeout(t)
+  }, [pendingReveal, tab, docView, hasOriginal, canvasEditor])
+
   const { data: commentsData } = useQuery({
     queryKey: ['comments', id],
     queryFn: () => api.get(`/contracts/${id}/comments`, { params: { limit: 1 } }).then(r => r.data),
@@ -1064,36 +1392,26 @@ export function ContractDetailPage() {
     staleTime: 30_000,
   })
 
-  // P7.4.16 / F-31 — pull active share-links so the NegotiationStatusStrip
-  // can tell "we sent it" from "we never shared". Cheap query, only fires
-  // when we're in a phase where it matters.
-  const { data: shareLinksData } = useQuery({
-    queryKey: ['share-links', id],
-    queryFn: () => api.get(`/contracts/${id}/share`).then(r => r.data),
-    enabled: !!id && ['UNDER_NEGOTIATION', 'PENDING_APPROVAL'].includes(contract?.status ?? ''),
-    staleTime: 30_000,
-  })
-  const commentCount: number | undefined = commentsData?.data?.length != null
-    ? (commentsData.nextCursor ? '9+' : commentsData.data.length) as any
-    : undefined
+  // The threads on the contract, counted by the server: the rail said "9+"
+  // whenever there were two or more (it fetched one and saw a next page).
+  const commentCount: number | undefined = typeof commentsData?.total === 'number' ? commentsData.total : undefined
 
   const visibleTabs = useMemo(() => {
-    const tabs: Tab[] = ['overview', 'clauses', 'document', 'versions']
-    if (versions.length >= 2) tabs.push('negotiate')
+    const tabs: Tab[] = ['overview', 'clauses', 'document']
     tabs.push('comments')
-    if (
-      contract?.analysisStatus === 'DONE' ||
-      ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')
-    ) {
-      tabs.push('approval')
-    }
-    tabs.push('activity')
     return tabs
-  }, [versions.length, contract?.analysisStatus, contract?.status])
+  }, [versions.length])
 
   useEffect(() => {
     if (!visibleTabs.includes(tab)) setTab('document')
   }, [visibleTabs, tab])
+
+  // docs/41 Part 16 — Comment and Request exception on selected words, in the
+  // document and over the original PDF (rewriting is the workspace's job).
+  const selectionExtras = useSelectionActions({
+    contractId: id ?? '', editor: canvasEditor, versionId: contract?.currentVersionId ?? null, canEdit,
+    clauses: ((clausesData?.data ?? []) as Array<{ id: string; content: string }>),
+  })
 
   // B.1 — auto-load the PDF when Document is active and we haven't yet.
   // Kills the "click Load Document to see your own contract" dance.
@@ -1104,17 +1422,6 @@ export function ContractDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, id])
 
-  // Auto-populate version dropdowns when switching to negotiate tab
-  useEffect(() => {
-    if (tab === 'negotiate' && versions.length >= 2 && !diffV1Id && !diffV2Id) {
-      setDiffV1Id(diffDefaults.v1 ?? versions[1]?.id ?? '')
-      setDiffV2Id(diffDefaults.v2 ?? versions[0]?.id ?? '')
-    }
-    if (tab !== 'negotiate' && (diffV1Id || diffV2Id)) {
-      setDiffV1Id('')
-      setDiffV2Id('')
-    }
-  }, [tab, versions.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return (
@@ -1135,11 +1442,6 @@ export function ContractDetailPage() {
   }
 
   const keyTerms = contract.keyTerms ?? {}
-  const fieldConfidence: Record<string, any> = contract.fieldConfidence ?? {}
-  // C5 — unverified fields under the Extraction Queue's default bar (0.7).
-  const lowConfidenceCount = Object.values(fieldConfidence).filter(
-    (e: any) => e && !e.verifiedAt && typeof e.confidence === 'number' && e.confidence < 0.7,
-  ).length
   const riskFactors: string[] = contract.riskFactors ?? []
   const clauseFlags: Record<string, boolean> = currentVersionOf(contract.versions as Array<{ id: string; clauseFlags?: Record<string, boolean> }>, contract.currentVersionId)?.clauseFlags ?? {}
   // P2.1 — trust-signal: was this version's text produced by OCR? If
@@ -1165,25 +1467,38 @@ export function ContractDetailPage() {
     ocrBackend?: string
     pageCount?:  number
     ocrPages?:   number
+    // docs/39 A7 — how sure the OCR engine was of each page, and what it couldn't read.
+    ocrQuality?:   Array<{ page: number; confidence: number | null; failed?: boolean }>
+    unreadPages?:  number[]
+    ocrTruncated?: boolean
   }
   const ocrApplied = extractionMeta.ocrApplied === true
-  const timeline = timelineData?.data ?? []
+  const unclearPages = (extractionMeta.ocrQuality ?? [])
+    .filter(q => !q.failed && q.confidence != null && q.confidence < POOR_SCAN).map(q => q.page)
+  const unreadPages = extractionMeta.unreadPages ?? []
+  // Pages past the limit — or past page 40, for a scan read before A7.
+  const pagesNotRead = extractionMeta.ocrTruncated || (!extractionMeta.ocrQuality && (extractionMeta.ocrPages ?? 0) < (extractionMeta.pageCount ?? 0))
+    ? Math.max(0, (extractionMeta.pageCount ?? 0) - (extractionMeta.ocrPages ?? 0)) : 0
   const presentFlags = Object.entries(CLAUSE_FLAG_LABELS).filter(([k]) => clauseFlags[k] === true)
   const keyTermEntries = Object.entries(keyTerms).filter(([, v]) => v != null && v !== '' && v !== false)
   const hasAnalysis = !!(contract.summary || keyTermEntries.length > 0)
 
   // Custom fields + AI findings from contract.metadata
   const customMeta = (contract.metadata ?? {}) as Record<string, unknown>
-  const aiFindings: AiFinding[] = (customMeta._aiFindings as AiFinding[]) ?? []
-  const redlineMeta = (customMeta._redlineAnalysis ?? null) as any
-  const redlineStatus = (customMeta._redlineStatus ?? null) as string | null
-  const isAnalyzingRedlines = redlineStatus === 'ANALYZING'
-  const typeFieldsMap = (customMeta._typeFields ?? {}) as Record<string, TypeField>
-  const typeFieldEntries = Object.entries(typeFieldsMap).filter(([, f]) => f.value != null)
-  const relevantFieldDefs = (fieldDefsData ?? []).filter(
-    (fd: FieldDef) => fd.contractType === null || fd.contractType === contract.type
+  // C4 — a finding the org has since made a field is that field now: shown in Fields, not here.
+  const aiFindings: AiFinding[] = ((customMeta._aiFindings as AiFinding[]) ?? [])
+    .filter(f => !fieldCatalog.some(c => sameFieldName(c.label, f.label) || sameFieldName(c.key, f.key)))
+  const trackFindingButton = (f: AiFinding) => (canCreateFields || canSuggestFields) && (
+    <button
+      type="button"
+      onClick={e => setTrackFinding({ finding: f, rect: (e.currentTarget as HTMLElement).getBoundingClientRect() })}
+      className="shrink-0 rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      title={canCreateFields ? 'Add it as a field, with this value on this contract' : 'Suggest it as a field to your admins'}
+      data-testid={`track-finding-${f.key}`}
+    >
+      {canCreateFields ? 'Track as field' : 'Suggest as field'}
+    </button>
   )
-  const populatedFields = relevantFieldDefs.filter((fd: FieldDef) => customMeta[fd.fieldKey] != null)
 
   // Suggested questions used to live here for the in-page Ask tab
   // (U.4.4 deleted). When we add per-contract suggested prompts on
@@ -1364,12 +1679,17 @@ export function ContractDetailPage() {
               still has compare-menu-item as a backup for narrower
               widths.
             */}
+            {/* docs/41 Part 16 (C2) — the full-screen workspace (lib/workspace.ts says which contracts open there first). */}
+            <Button variant="outline" size="sm" onClick={() => navigate(workspacePath(id!))} className="gap-1.5" data-testid="open-workspace-btn" title="Work on this contract full screen: the document, its review and its changes">
+              <Maximize2 className="size-4" />
+              Open workspace
+            </Button>
             <Button
               variant="ghost"
               size="sm"
               disabled={versions.length < 2}
               onClick={() => {
-                setCompareOpen(true)
+                openChanges()
                 track('compare_opened', { versionCount: versions.length })
               }}
               className="gap-1.5 text-ink-500 hover:text-ink-950"
@@ -1432,16 +1752,22 @@ export function ContractDetailPage() {
                 >
                   <RefreshCw className="size-4" />
                 </Button>
-                <span className={cn(
-                  'text-dense text-ink-400 min-w-[4rem] text-center',
-                  saveState === 'error' && 'text-risk-700',
-                )}>
-                  {saveState === 'saving' ? 'Saving…'
-                    : saveState === 'saved' ? 'Saved ✓'
-                    : saveState === 'dirty' ? 'Unsaved'
-                    : saveState === 'error' ? 'Save failed'
-                    : ''}
+                <span
+                  className={cn('text-dense text-ink-400 min-w-[4rem] text-center', saveState === 'error' && 'text-risk-700')}
+                  data-testid="draft-save-state"
+                >
+                  {draftStatusText(saveState)}
                 </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => { setSaveVersionError(null); setSaveVersionOpen(true) }}
+                  disabled={!draft.hasDraft()}
+                  title={draft.hasDraft() ? 'Make a version of your draft changes, with a note' : 'Nothing changed since the last version'}
+                  data-testid="save-as-version"
+                >
+                  Save as version
+                </Button>
                 {/* Outlined: the ink fill in this header belongs to the one
                     workflow CTA, and leaving edit mode is chrome. */}
                 <Button variant="outline" size="sm" onClick={exitEdit} className="gap-1.5">
@@ -1472,37 +1798,6 @@ export function ContractDetailPage() {
               </Button>
             ) : null}
 
-            {/* Status transition buttons */}
-            {canChangeStatus && (STATUS_TRANSITIONS[contract.status] ?? []).map((tr) => (
-              <Button
-                key={tr.to}
-                variant={tr.variant ?? 'default'}
-                size="sm"
-                onClick={() => changeStatus.mutate(tr.to)}
-                disabled={changeStatus.isPending}
-                className="gap-1.5"
-              >
-                {changeStatus.isPending && <Loader2 className="size-4 animate-spin" />}
-                {tr.label}
-              </Button>
-            ))}
-            {/*
-              A.3 — single primary CTA across pre-approval states. Always
-              routes through the workflow engine (/submit-approval); the old
-              "Send for Review" manual status-flip was removed.
-            */}
-            {canSendForReview && ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '') && (
-              <Button
-                variant="default" size="sm"
-                onClick={() => setSendForReviewOpen(true)}
-                disabled={submitForApproval.isPending}
-                className="gap-1.5"
-              >
-                {submitForApproval.isPending
-                  ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
-                  : <><CheckCircle2 className="size-4" />Send for Review</>}
-              </Button>
-            )}
             {/* Phase 07 — Send-for-Signature primary CTA.
                 Visible on every non-terminal status; the dialog itself
                 handles version/perm/already-executed gating. Send-for-Review
@@ -1520,13 +1815,13 @@ export function ContractDetailPage() {
                 the single primary slot and this one steps back to outline. */}
             {canSign && !['EXECUTED', 'EXPIRED', 'TERMINATED', 'ARCHIVED'].includes(contract?.status ?? '') && (
               <Button
-                variant={
-                  ['DRAFT', 'PENDING_REVIEW', 'UNDER_NEGOTIATION'].includes(contract?.status ?? '')
-                    ? 'outline'
-                    : 'default'
-                }
+                // The status banner owns the one primary action (docs/41 Part 18).
+                variant="outline"
                 size="sm"
                 onClick={() => setSendForSignatureOpen(true)}
+                // docs/41 P0.4/P0.8 — not with a term still to choose, nor before approval.
+                disabled={!!openChoicesReason || !!signGateReason}
+                title={signGateReason ?? openChoicesReason ?? undefined}
                 className="gap-1.5"
                 data-testid="send-for-signature-btn"
               >
@@ -1591,7 +1886,7 @@ export function ContractDetailPage() {
                     disabled={versions.length < 2}
                     onSelect={() => {
                       if (versions.length < 2) return
-                      setCompareOpen(true)
+                      openChanges()
                       track('compare_opened', { versionCount: versions.length, source: 'actions_menu' })
                     }}
                     data-testid="compare-menu-item"
@@ -1609,8 +1904,15 @@ export function ContractDetailPage() {
                 {/* Y3 — offered only to those who may: sharing needs
                     configure:contract, an amendment create:contract. */}
                 <Can request="POST /contracts/:id/share">
-                  <DropdownMenuItem onSelect={() => setShowShareDialog(true)} data-testid="share-menu-item">
+                  <DropdownMenuItem
+                    onSelect={() => setShowShareDialog(true)}
+                    // docs/41 P0.4 — the counterparty never gets a draft with a term still to choose.
+                    disabled={!!openChoicesReason}
+                    title={openChoicesReason ?? undefined}
+                    data-testid="share-menu-item"
+                  >
                     <Share2 className="size-4" /> Share
+                    {openChoicesReason && <span className="ml-auto text-[10px] text-muted-foreground">choose terms first</span>}
                   </DropdownMenuItem>
                 </Can>
                 {/* P8 Step 8 — spawn an amendment / SOW / order-form / renewal
@@ -1732,6 +2034,21 @@ export function ContractDetailPage() {
         >
           {/* ── STATE ─────────────────────────────────────────────────── */}
           <StatusPill status={contract.status} />
+          {openChoices.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setFocusVariable(openChoices[0].key)
+                if (isXl) setRailCollapsed(false)
+                else setRailOpen(true)
+              }}
+              className="inline-flex items-center gap-1 rounded-chip border border-attention-200 bg-attention-50 px-1.5 py-0.5 text-[11px] font-medium text-attention-700 hover:bg-attention-100"
+              title={openChoicesReason ?? undefined}
+              data-testid="open-choices-chip"
+            >
+              {openChoices.length === 1 ? '1 choice needed' : `${openChoices.length} choices needed`}
+            </button>
+          )}
 
           {/*
             Expiry. Calendar days, not elapsed milliseconds — the header said
@@ -1836,6 +2153,12 @@ export function ContractDetailPage() {
           {contract.jurisdiction && (
             <span className="text-ink-500" title="Governing law">⚖ {contract.jurisdiction}</span>
           )}
+          {/* docs/39 A11 — a contract not in English says so: its quotes are in its own language. */}
+          {(contract as any).metadata?._language?.code && (contract as any).metadata._language.code !== 'en' && (
+            <span className="text-ink-500" title="The language the contract is written in, as read from its text" data-testid="contract-language">
+              {(contract as any).metadata._language.name}
+            </span>
+          )}
           {contract.value != null && (
             <span
               title="Contract value"
@@ -1881,7 +2204,8 @@ export function ContractDetailPage() {
           {ocrApplied && (
             <span
               data-testid="contract-ocr-badge"
-              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`}
+              title={`Text was OCR'd from scan (${extractionMeta.ocrBackend ?? 'unknown'}, ${extractionMeta.ocrPages ?? 0}/${extractionMeta.pageCount ?? 0} pages). Treat extracted fields with higher review bar.`
+                + (unclearPages.length ? ` Hard to read: ${unclearPages.length === 1 ? 'page' : 'pages'} ${pageList(unclearPages)}. Values from ${unclearPages.length === 1 ? 'it' : 'them'} are marked Check.` : '')}
               // Provenance, not "your turn": this badge is a permanent fact
               // about how the text was obtained and rides along on executed and
               // archived contracts too. Nothing is blocked on the user, so it
@@ -1891,9 +2215,9 @@ export function ContractDetailPage() {
             >
               <svg className="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 8h10M7 12h10M7 16h6" /></svg>
               OCR'd
+              {unclearPages.length > 0 && <span className="text-attention-700" data-testid="contract-ocr-unclear">· {unclearPages.length} page{unclearPages.length === 1 ? '' : 's'} unclear</span>}
             </span>
           )}
-          {id && <CollabStatusBadge contractId={id} />}
         </div>
       </div>
 
@@ -1917,67 +2241,20 @@ export function ContractDetailPage() {
       */}
 
       {/*
-        B.5.12 — Negotiation Status strip. State 1 addition (docs/26 §5).
-        For the OWNER / submitter's view — answers "why is my deal stuck
-        and what happens next" without opening a tab. Complements the
-        DecisionStrip: the strip surfaces to the approver when they see
-        the contract (so they decide); this surfaces to everyone ELSE.
-        Two conditions it renders under:
-          - UNDER_NEGOTIATION → waiting on counterparty
-          - PENDING_APPROVAL → waiting on an internal approver
-        We skip it when the current user IS the approver (they already
-        have the DecisionStrip telling them what to do).
+        docs/41 Parts 12, 18 — the status banner: stage progress, state and
+        whose turn in words, the one next action, approvals x/y, signatures
+        x/y, why it came back. It replaces the negotiation strip (which
+        guessed the turn in the browser), the "returned" banner, the
+        signature revert banner and the header's status buttons; everyone
+        sees it, the approver too (their decision strip follows).
       */}
-      {!isApproverMode && ['UNDER_NEGOTIATION', 'PENDING_APPROVAL'].includes(contract?.status ?? '') && (
-        <NegotiationStatusStrip
-          contract={{
-            status:           contract?.status ?? '',
-            counterpartyName: contract?.counterpartyName ?? null,
-          }}
-          approvalInstance={
-            approvalInstanceData?.instance
-              ? {
-                  submittedAt:     approvalInstanceData.instance.submittedAt,
-                  submittedByName: approvalInstanceData.instance.submittedByName,
-                  currentStepName: approvalInstanceData.steps?.find((s: any) => s.status === 'PENDING')?.stepName,
-                  currentApproverName: approvalInstanceData.steps?.find((s: any) => s.status === 'PENDING')?.approverName,
-                }
-              : null
-          }
-          lastComment={
-            commentsData?.data?.[0]
-              ? {
-                  excerpt:    (commentsData.data[0].body ?? commentsData.data[0].content ?? '').toString(),
-                  createdAt:  commentsData.data[0].createdAt,
-                  authorName: commentsData.data[0].authorName,
-                }
-              : null
-          }
-          latestVersion={
-            versions[0]
-              ? {
-                  versionNumber: versions[0].versionNumber,
-                  createdAt:     versions[0].createdAt,
-                  changeNote:    versions[0].changeNote,
-                  fromCounterparty: typeof versions[0].createdById === 'string'
-                    && versions[0].createdById.startsWith('portal:'),
-                }
-              : null
-          }
-          // P7.4.16 / F-31 — real signals from share + portal upload + external comment
-          lastShareSentAt={(shareLinksData?.data ?? [])[0]?.createdAt ?? null}
-          counterpartyUploadedVersion={(() => {
-            const v = (versions as Array<any>).find(v => typeof v.createdById === 'string' && v.createdById.startsWith('portal:'))
-            return v ? { versionNumber: v.versionNumber, createdAt: v.createdAt } : null
-          })()}
-          externalCommentAt={(commentsData?.data ?? []).find((c: any) => typeof c.authorId === 'string' && c.authorId.startsWith('portal:'))?.createdAt ?? null}
-          onNudge={() => {
-            // Scrolls to the comments rail or opens a composer; stubbed
-            // for now — reminder send lands in post-V1.
-            const section = Array.from(document.querySelectorAll('section span'))
-              .find(s => /Comments/i.test((s.textContent || '').trim()))
-            section?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-          }}
+      {id && (
+        <StatusBanner
+          contractId={id}
+          onSubmit={() => setSendForReviewOpen(true)}
+          onSendForSignature={() => setSendForSignatureOpen(true)}
+          onReviewChanges={openChanges}
+          onOpenHistory={() => setHistoryOpen(true)}
         />
       )}
 
@@ -1993,12 +2270,7 @@ export function ContractDetailPage() {
           awaitingMe={approvalData}
           riskScore={contract?.riskScore ?? null}
           onJumpToClause={jumpToClause}
-          onDecided={() => {
-            qc.invalidateQueries({ queryKey: ['contract', id] })
-            qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-            qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-            refetchApproval()
-          }}
+          onDecided={() => { refetchApproval() }}
         />
       )}
 
@@ -2041,15 +2313,21 @@ export function ContractDetailPage() {
           extraction failure whispered. Both are now tints of their meaning,
           which puts them in the right order: failure reads louder because red
           on the page is rarer than blue. */}
-      {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && STATUS_BANNER[contract.analysisStatus] && (
-        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
+      {contract?.analysisStatus && contract.analysisStatus !== 'DRAFTING' && banner && (
+        <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body" data-testid="analysis-progress">
           <Loader2 className="size-4 animate-spin flex-shrink-0" />
-          <span className="font-medium">{STATUS_BANNER[contract.analysisStatus].message}</span>
-          {STATUS_BANNER[contract.analysisStatus].sub && (
-            <span className="text-ink-500 text-dense">{STATUS_BANNER[contract.analysisStatus].sub}</span>
+          <span className="font-medium">{banner.message}</span>
+          {banner.sub && (
+            <span className="text-ink-500 text-dense">{banner.sub}</span>
           )}
-          {/* Step indicator */}
-          <div className="ml-auto flex items-center gap-2.5 flex-shrink-0">
+          {/* A1 — a retry says so, and why the last attempt failed. */}
+          {extracting && extracting.attempt > 1 && (
+            <span className="text-attention-700 text-dense" title={extracting.error ? `The last attempt failed: ${extracting.error}` : undefined} data-testid="analysis-retrying">
+              Retrying ({extracting.attempt}/{extracting.of})
+            </span>
+          )}
+          {/* Step indicator — not for a retype's read, which is one step */}
+          <div className={cn('ml-auto flex items-center gap-2.5 flex-shrink-0', readingType && 'hidden')}>
             {PIPELINE_STEPS.map((step, i) => {
               const isActive = i === currentStepIdx
               const isPast = i < currentStepIdx
@@ -2090,60 +2368,170 @@ export function ContractDetailPage() {
         </div>
       )}
       {contract?.analysisStatus === 'FAILED' && (
-        <div className="bg-risk-50 border-b border-risk-200 text-risk-700 px-6 py-2.5 flex items-center gap-3 text-body">
-          <AlertCircle className="size-4 flex-shrink-0" />
-          <span className="font-medium">
-            {versions.length === 0 ? 'Draft generation failed' : 'Analysis failed'}
-          </span>
-          {contract.analysisError && (
-            <span className="text-risk-900">— {contract.analysisError}</span>
-          )}
-          <div className="ml-auto">
+        <AnalysisFailedBanner
+          contractId={contract.id}
+          analysisError={contract.analysisError}
+          draftFailed={versions.length === 0}
+          onRetry={() => analyze.mutate()}
+          retrying={analyze.isPending}
+        />
+      )}
+      {/* docs/41 P0.1 — a contract nothing has read, or whose document changed
+          after it was read, says so: it used to say DONE, and every check
+          that loops over its clauses found nothing to flag. */}
+      {contract && versions.length > 0 && (analysis.state === 'not_analysed' || analysis.state === 'stale') && (
+        <div className="bg-attention-50 border-b border-attention-200 text-ink-950 px-6 py-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-dense" data-testid="analysis-state-banner" data-state={analysis.state}>
+          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="font-medium">{analysis.text}</span>
+          {analysis.detail && <span className="text-ink-700 min-w-0 flex-1">{analysis.detail}</span>}
+          {canChangeStatus && (
             <Button
-              variant="outline"
-              size="sm"
-              onClick={() => analyze.mutate()}
-              disabled={analyze.isPending}
-              className="gap-1.5 text-risk-700 border-risk-200 hover:bg-risk-100 hover:text-risk-900"
+              variant="outline" size="xs" className="ml-auto flex-shrink-0 gap-1.5"
+              onClick={() => analyze.mutate()} disabled={analyze.isPending}
+              data-testid="analysis-state-analyse"
             >
               {analyze.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              {versions.length === 0 ? 'Retry Draft' : 'Re-analyze'}
+              {analysis.state === 'stale' ? 'Analyse now' : 'Analyse'}
             </Button>
-          </div>
+          )}
         </div>
       )}
-      {/* P2.3 — binder child banner. When this contract was carved out
-          of a binder (parentContractId set + relationshipType='exhibit_only'
-          + family API returns a parent), surface a persistent "Split from
-          <binder>" bar so the user can jump back regardless of which tab
-          they're on. Renders on top of all other banners.
-          Where a document sits in a binder is structure, not machine output, so
-          the indigo this band used to wear went back to the agent surfaces. */}
-      {(contract as any)?.parentContractId && familyData?.parent && (
-        <div
-          data-testid="binder-child-banner"
-          className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
-        >
-          <Scissors className="size-3.5 flex-shrink-0 text-ink-400" />
-          <span className="text-dense">Split from binder:</span>
-          <button
-            onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
-            data-testid="binder-child-parent-link"
-            className="text-dense font-medium underline underline-offset-2 decoration-paper-300 text-ink-950 hover:decoration-ink-950 truncate"
-            title={`Open parent contract: ${familyData.parent.title}`}
-          >
-            {familyData.parent.title}
-          </button>
-          <span className="ml-auto text-[10.5px] text-ink-500">
-            {(familyData.siblings?.length ?? 0) + 1} total agreements in this binder
+      {/* docs/39 A7 — pages of the scan nothing could read, or past the limit
+          (a scan read before A7 stopped at page 40): what's on them isn't in
+          the text, so it isn't in the fields. */}
+      {ocrApplied && (unreadPages.length > 0 || pagesNotRead > 0) && !IN_PROGRESS_STATUSES.includes(contract.analysisStatus) && (
+        <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="scan-unread-banner">
+          <AlertTriangle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="min-w-0 flex-1">
+            {unreadPages.length > 0 && <>Pages {pageList(unreadPages)} of the scan couldn’t be read. </>}
+            {unreadPages.length === 0 && pagesNotRead > 0 && <>Only the first {(extractionMeta.ocrPages ?? 0).toLocaleString()} of its {(extractionMeta.pageCount ?? 0).toLocaleString()} pages were read. </>}
+            <span className="text-ink-700">Anything on the missing pages isn’t in the fields.</span>
           </span>
+          {(unreadPages.length > 0 || (extractionMeta.pageCount ?? 0) <= OCR_MAX_PAGES) && canChangeStatus && (
+            <Button size="xs" variant="outline" disabled={rereadScan.isPending} onClick={() => rereadScan.mutate()} data-testid="scan-read-again">
+              {rereadScan.isPending && <Loader2 className="size-3 animate-spin" />}
+              Read the scan again
+            </Button>
+          )}
         </div>
       )}
+      {/* docs/39 A9 — the other side's Word file, its tracked changes not
+          accepted: the document shows them made, and the fields keep what's
+          agreed with each change's proposal beside it. */}
+      {(() => {
+        const all = ((contract as any)?.versions ?? []) as Array<{ id: string; metadata?: any }>
+        const standing = all.find(v => v.id === contract.currentVersionId) ?? all[0]
+        const t = standing?.metadata?.trackedChanges as { insertions: number; deletions: number; byAuthor?: Record<string, number>; comments?: number } | undefined
+        const n = t ? (t.insertions ?? 0) + (t.deletions ?? 0) : 0
+        if (!n) return null
+        const who = Object.keys(t?.byAuthor ?? {})
+        const by = who.length === 0 ? '' : who.length === 1 ? ` by ${who[0]}` : ` by ${who.slice(0, -1).join(', ')} and ${who[who.length - 1]}`
+        return (
+          <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="tracked-changes-banner">
+            <FileDiff className="size-4 flex-shrink-0 text-attention-700" />
+            <span className="min-w-0 flex-1">
+              This Word file has {n} tracked change{n === 1 ? '' : 's'}{by} that nobody has accepted.
+              <span className="text-ink-700"> The document shows them made. The fields keep what's agreed, with each proposed change beside its value.</span>
+            </span>
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              {versions.length > 1 && (
+                <Button size="xs" variant="ghost" onClick={() => openChanges()} data-testid="tracked-changes-compare">
+                  <ArrowLeftRight className="size-3.5" /> Compare versions
+                </Button>
+              )}
+              <Button size="xs" variant="outline" onClick={() => navigate(`/review-queue?contractId=${id}&reason=proposed`)} data-testid="tracked-changes-review">
+                Go through the proposals
+              </Button>
+            </div>
+          </div>
+        )
+      })()}
+      {typeRead?.error && typeRead.type === contract.type && contract.analysisStatus === 'DONE' && canRetype && (
+        <div className="bg-attention-50 border-b border-attention-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="type-fields-failed">
+          <AlertCircle className="size-4 flex-shrink-0 text-attention-700" />
+          <span className="min-w-0 flex-1">
+            Couldn’t read the {typeNoun(contract.type)} fields <span className="text-ink-500">— {typeRead.error}</span>
+          </span>
+          <Button size="xs" variant="outline" disabled={reread.isPending} onClick={() => reread.mutate()} data-testid="type-fields-retry">
+            {reread.isPending && <Loader2 className="size-3 animate-spin" />}
+            Try again
+          </Button>
+        </div>
+      )}
+      {/* docs/39 A13 — read in full, the AI takes it for another type than the
+          one it was filed as: a person settles it. Making it that type reads
+          only that type's own fields. */}
+      {(() => {
+        const opinion = (contract as any)?.metadata?._typeOpinion?.type as string | undefined
+        if (!opinion || opinion === contract.type || !canRetype) return null
+        const as = typeAs
+        return (
+          <div className="bg-assist-50 border-b border-assist-200 px-6 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-dense text-ink-950" data-testid="type-opinion-banner">
+            <AssistMark />
+            <span className="min-w-0 flex-1">
+              {contract.type === 'OTHER'
+                ? <>Read in full, this looks like {as(opinion)}.</>
+                : <>Read in full, this looks more like {as(opinion)} than {as(contract.type)}.</>}
+            </span>
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              <Button
+                size="xs" variant="ghost" disabled={retype.isPending} data-testid="type-opinion-keep"
+                onClick={() => retype.mutate(contract.type, { onSuccess: () => toast.success(`Kept as ${as(contract.type)}`) })}
+              >
+                Keep as is
+              </Button>
+              <Button
+                size="xs" variant="assistOutline" disabled={retype.isPending} data-testid="type-opinion-use"
+                title={`Reads ${as(opinion)}’s own fields. Values a person set stay.`}
+                onClick={() => retype.mutate(opinion, { onSuccess: () => toast.success(`Now ${as(opinion)} — reading its fields`) })}
+              >
+                Make it {as(opinion)}
+              </Button>
+            </div>
+          </div>
+        )
+      })()}
+      {/* P2.3 — the line a child contract shows about its parent, on every
+          tab. docs/41 P0.9 — "Split from scanned file" only for a contract the
+          binder split carved out of a bundle; an amendment says what it
+          amends, anything else that it is linked (lib/family-banner.ts). */}
+      {(() => {
+        const line = familyLine(familyData)
+        if (!line || !familyData?.parent) return null
+        return (
+          <div
+            data-testid="family-banner"
+            data-kind={line.kind}
+            className="bg-paper-100 border-b border-paper-200 text-ink-700 px-6 py-2 flex items-center gap-2 text-dense"
+          >
+            {line.kind === 'split' ? <Scissors className="size-3.5 flex-shrink-0 text-ink-400" /> : <Link2 className="size-3.5 flex-shrink-0 text-ink-400" />}
+            <span className="text-dense">{line.lead}</span>
+            <button
+              onClick={() => navigate(`/contracts/${familyData.parent.id}`)}
+              data-testid="family-parent-link"
+              className="text-dense font-medium underline underline-offset-2 decoration-paper-300 text-ink-950 hover:decoration-ink-950 truncate"
+              title={`Open ${familyData.parent.title}`}
+            >
+              {familyData.parent.title}
+            </button>
+            {line.note && <span className="ml-auto text-[10.5px] text-ink-500">{line.note}</span>}
+            {/* Fix-up 15 — the whole family, in the rail's Contract family section. */}
+            <button
+              type="button"
+              onClick={() => { if (isXl) setRailCollapsed(false); else setRailOpen(true); setFamilyReveal(n => n + 1) }}
+              data-testid="family-view-link"
+              className={cn('text-dense font-medium text-ink-950 hover:underline underline-offset-2 flex-shrink-0', !line.note && 'ml-auto')}
+            >
+              View family
+            </button>
+          </div>
+        )
+      })()}
       {autoSplitDone && (
         <div className="bg-info-50 border-b border-info-200 text-info-700 px-6 py-2.5 flex items-center gap-3 text-body">
           <Scissors className="size-4 flex-shrink-0 text-info-600" />
           <span className="font-medium">Auto-split into {splitInto.length} contracts</span>
-          <span>— AI split this binder automatically. Each contract is processing independently.</span>
+          <span>— the AI split this scanned file into its agreements. Each one is read on its own.</span>
           {/* Outlined, not ink: the header already owns the one filled primary. */}
           <Button
             variant="outline"
@@ -2234,6 +2622,22 @@ export function ContractDetailPage() {
         </div>
       )}
 
+      {/* The attach input, for every Attach button (the rail's and the Overview card's). */}
+      <input
+        ref={attachFileRef}
+        type="file"
+        accept=".pdf,.docx,.doc,.txt,.xlsx,.csv,.png,.jpg,.jpeg,.tif,.tiff"
+        className="hidden"
+        data-testid="attach-file-input"
+        onChange={e => {
+          const file = e.target.files?.[0]
+          if (file) {
+            attachMutation.mutate(file)
+            e.target.value = ''
+          }
+        }}
+      />
+
       {/* ── Content ─────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto">
 
@@ -2280,7 +2684,19 @@ export function ContractDetailPage() {
                             )}
                           </div>
                           {showReanalyzeMenu && (
-                            <div className="absolute right-0 top-full mt-1 z-50 bg-card border border-paper-200 rounded-md shadow-e2 py-1 w-52" onMouseDown={e => e.stopPropagation()}>
+                            <div className="absolute right-0 top-full mt-1 z-50 bg-card border border-paper-200 rounded-md shadow-e2 py-1 w-64" onMouseDown={e => e.stopPropagation()}>
+                              {/* docs/39 G1 — neither choice touches a value a person set or checked. */}
+                              <button
+                                onClick={() => { analyze.mutate('fill_blanks'); setShowReanalyzeMenu(false) }}
+                                className="w-full px-3 py-2 text-left text-dense text-ink-700 hover:bg-paper-100 flex items-center gap-2"
+                                data-testid="reanalyze-fill-blanks"
+                              >
+                                <Sparkles className="size-3.5 text-ink-400 flex-shrink-0" />
+                                <div>
+                                  <div className="font-medium">Only fill empty fields</div>
+                                  <div className="text-ink-400 mt-0.5">Leave every value there is; new readings show as suggestions</div>
+                                </div>
+                              </button>
                               <button
                                 onClick={() => { reprocess.mutate(); setShowReanalyzeMenu(false) }}
                                 className="w-full px-3 py-2 text-left text-dense text-ink-700 hover:bg-paper-100 flex items-center gap-2"
@@ -2291,6 +2707,9 @@ export function ContractDetailPage() {
                                   <div className="text-ink-400 mt-0.5">Re-parse PDF, re-classify, re-extract</div>
                                 </div>
                               </button>
+                              <p className="px-3 pt-1.5 pb-1 text-[10.5px] text-ink-400 border-t border-paper-100 mt-1">
+                                Values you set or checked are never overwritten.
+                              </p>
                             </div>
                           )}
                         </div>
@@ -2346,108 +2765,9 @@ export function ContractDetailPage() {
                   </div>
                 )}
 
-                {/* Key Terms */}
-                {keyTermEntries.length > 0 ? (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-section text-ink-950">Key Terms</h3>
-                        {lowConfidenceCount > 0 && (
-                          <button
-                            onClick={() => navigate(`/review-queue?contractId=${id}`)}
-                            className="text-dense text-attention-700 hover:underline underline-offset-2"
-                            data-testid="key-terms-review-link"
-                          >
-                            Review {lowConfidenceCount} low-confidence field{lowConfidenceCount === 1 ? '' : 's'}
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-dense text-ink-500">
-                        <span className="flex items-center gap-1"><CheckCircle2 className="size-3 text-ink-400" />High</span>
-                        <span className="flex items-center gap-1"><AlertTriangle className="size-3 text-attention-600" />Review</span>
-                        <span className="flex items-center gap-1"><XCircle className="size-3 text-risk-600" />Uncertain</span>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {keyTermEntries.map(([k, v]) => {
-                        const conf = fieldConfidence[k]
-                        return (
-                          <div key={k} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
-                            <div className="flex items-start gap-2">
-                              {conf && <ConfidenceIcon confidence={conf.confidence} />}
-                              <div className="min-w-0">
-                                <p className="text-dense text-ink-500 capitalize mb-0.5">
-                                  {k.replace(/([A-Z])/g, ' $1').trim()}
-                                </p>
-                                <p className="text-body font-semibold text-ink-950 truncate">
-                                  {formatTermValue(k, v)}
-                                </p>
-                                {conf?.issue && (
-                                  <p className="text-dense text-attention-700 mt-0.5">{conf.issue}</p>
-                                )}
-                              </div>
-                            </div>
-                            {conf?.quote && (
-                              <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
-                                <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
-                                <p className="italic text-paper-100">&ldquo;{conf.quote}&rdquo;</p>
-                                {conf.section && <p className="text-ink-400 mt-1.5 text-[10px] font-mono">{conf.section}</p>}
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                ) : hasAnalysis ? null : null}
-
-                {/* Contract-Type-Specific Fields */}
-                {typeFieldEntries.length > 0 && (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-section text-ink-950">
-                        {contract.type.replace(/_/g, ' ')} — Specific Terms
-                      </h3>
-                      <span className="text-dense text-ink-400 tabular-nums">{typeFieldEntries.length} fields extracted</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      {typeFieldEntries.map(([key, field]) => (
-                        <div key={key} className="group relative rounded-md p-3 bg-paper-50 hover:bg-paper-100 transition-colors">
-                          <p className="text-dense text-ink-500 mb-1 truncate">{field.label}</p>
-                          <div className="flex items-center gap-1.5">
-                            <p className="text-dense font-semibold text-ink-950 truncate flex-1">
-                              {formatTermValue(key, field.value)}
-                            </p>
-                            <ConfidenceIcon confidence={field.confidence} />
-                          </div>
-                          {field.quote && (
-                            <div className="hidden group-hover:block absolute z-20 bottom-full left-0 mb-1.5 w-72 bg-ink-950 text-white text-dense rounded-card p-3 shadow-e2">
-                              <p className="text-ink-400 text-[10px] uppercase tracking-[0.08em] font-semibold mb-1.5">Source</p>
-                              <p className="italic text-paper-100">&ldquo;{field.quote}&rdquo;</p>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Custom Fields */}
-                {populatedFields.length > 0 && (
-                  <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                    <h3 className="text-section text-ink-950 mb-3">Custom Fields</h3>
-                    <div className="divide-y divide-paper-100">
-                      {populatedFields.map((fd: FieldDef) => (
-                        <DetailRow
-                          key={fd.fieldKey}
-                          label={fd.fieldLabel}
-                          value={formatTermValue(fd.fieldKey, customMeta[fd.fieldKey])}
-                          evidence={(customMeta._customFieldEvidence as Record<string, { confidence?: number; quote?: string | null }> | undefined)?.[fd.fieldKey]}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
+                {/* docs/39 B1 — every field, who set it, and the fix in place: replaces
+                    the read-only Key Terms, contract-type terms and custom field cards. */}
+                <FieldsPanel contractId={id!} canEdit={canEditFields} onShowSource={showFieldSource} />
 
                 {/* AI Findings — extra terms the LLM found beyond defined fields */}
                 {aiFindings.length > 0 && (
@@ -2471,13 +2791,15 @@ export function ContractDetailPage() {
                     {showFindings && (
                       <div className="mt-3 divide-y divide-paper-100">
                         {aiFindings.map((f) => (
-                          <div key={f.key} className="py-2.5 flex items-start justify-between gap-3">
+                          <div key={f.key} className="group py-2.5 flex items-start justify-between gap-3">
                             <span className="text-dense text-ink-500 w-1/3 flex-shrink-0">{f.label}</span>
                             <div className="flex items-center gap-2 flex-1 justify-end">
                               <span className="text-dense text-ink-950 text-right">
                                 {formatTermValue(f.key, f.value)}
                               </span>
                               <ConfidenceIcon confidence={f.confidence} />
+                              {/* docs/39 C4 — worth tracking on every contract: one click to a field. */}
+                              {trackFindingButton(f)}
                             </div>
                           </div>
                         ))}
@@ -2559,34 +2881,6 @@ export function ContractDetailPage() {
                   </div>
                 )}
 
-                {/* Versions quick view */}
-                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-section text-ink-950">Versions</h3>
-                    <button onClick={() => setTab('versions')} className="text-dense text-ink-700 hover:text-ink-950 hover:underline underline-offset-2">View all</button>
-                  </div>
-                  {versions.length === 0 ? (
-                    <p className="text-dense text-ink-400">No versions yet</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {versions.slice(0, 3).map((v: any) => (
-                        <div key={v.id} className="flex items-center justify-between">
-                          <div>
-                            <p className="text-dense font-medium text-ink-950 font-mono">v{v.versionNumber}</p>
-                            <p className="text-[10px] text-ink-400 tabular-nums">{new Date(v.createdAt).toLocaleDateString()}</p>
-                          </div>
-                          <button
-                            onClick={() => handleDownload(v.id)}
-                            className="p-1 rounded-chip hover:bg-paper-100 text-ink-400 hover:text-ink-950"
-                          >
-                            <Download className="size-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
                 {/* Contract Family */}
                 <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
                   <div className="flex items-center justify-between mb-3">
@@ -2659,19 +2953,6 @@ export function ContractDetailPage() {
                     >
                       {attachMutation.isPending ? 'Uploading…' : '+ Attach'}
                     </button>
-                    <input
-                      ref={attachFileRef}
-                      type="file"
-                      accept=".pdf,.docx,.doc,.txt,.xlsx,.csv"
-                      className="hidden"
-                      onChange={e => {
-                        const file = e.target.files?.[0]
-                        if (file) {
-                          attachMutation.mutate(file)
-                          e.target.value = ''
-                        }
-                      }}
-                    />
                   </div>
                   {(contract.attachments as any[] ?? []).length === 0 ? (
                     <p className="text-dense text-ink-400">No attachments. Click "+ Attach" to add exhibits, schedules, or reference documents.</p>
@@ -2680,7 +2961,22 @@ export function ContractDetailPage() {
                       {(contract.attachments as any[]).map((att: any, idx: number) => (
                         <div key={idx} className="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-paper-100 group">
                           <Paperclip className="size-3 text-ink-400 flex-shrink-0" />
-                          <span className="text-dense text-ink-700 truncate flex-1">{att.label || att.filename}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-dense text-ink-700 truncate">{att.label || att.filename}</span>
+                            {/* docs/39 A12 — read as part of the contract */}
+                            {(() => {
+                              const r = exhibitReading(att)
+                              if (r.state === 'read') return <span className="block text-[11px] text-ink-500" data-testid={`attachment-read-${idx}`}>Read with the contract{r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}{r.ocr ? ' · OCR’d' : ''}</span>
+                              if (r.state === 'reading') return <span className="block text-[11px] text-ink-500 inline-flex items-center gap-1" data-testid={`attachment-read-${idx}`}><Loader2 className="size-3 animate-spin" /> Reading it…</span>
+                              if (r.state === 'failed') return <span className="block text-[11px] text-attention-700" title={r.error ?? undefined} data-testid={`attachment-read-${idx}`}>Couldn’t read it</span>
+                              if (r.state === 'unread' && canChangeStatus) return (
+                                <button type="button" onClick={() => readAttachment.mutate(idx)} disabled={readAttachment.isPending} className="text-[11px] text-ink-500 hover:text-ink-950 underline underline-offset-2" data-testid={`attachment-read-${idx}`}>
+                                  Not read yet — read it with the contract
+                                </button>
+                              )
+                              return null
+                            })()}
+                          </span>
                           <span className="text-[10px] text-ink-400 tabular-nums">{(att.size / 1024).toFixed(0)} KB</span>
                           <button
                             onClick={() => downloadAttachment(idx, att.filename)}
@@ -2718,7 +3014,7 @@ export function ContractDetailPage() {
             const matchesSearch = !clauseSearch ||
               c.content.toLowerCase().includes(clauseSearch.toLowerCase()) ||
               c.interpretation?.toLowerCase().includes(clauseSearch.toLowerCase()) ||
-              (CLAUSE_TYPE_LABELS[c.clauseType] ?? c.clauseType).toLowerCase().includes(clauseSearch.toLowerCase())
+              clauseLabelOf(c.clauseType).toLowerCase().includes(clauseSearch.toLowerCase())
             return matchesRating && matchesSearch
           })
 
@@ -2779,7 +3075,7 @@ export function ContractDetailPage() {
                     <div className="space-y-3">
                       {filtered.map(clause => {
                         const badge = clause.riskRating ? RISK_RATING_BADGE[clause.riskRating] : null
-                        const typeLabel = CLAUSE_TYPE_LABELS[clause.clauseType] ?? clause.clauseType.replace(/_/g, ' ')
+                        const typeLabel = clauseLabelOf(clause.clauseType)
                         return (
                           <ClauseCard
                             key={clause.id}
@@ -2789,6 +3085,12 @@ export function ContractDetailPage() {
                             interpretation={clause.interpretation}
                             content={clause.content}
                             onReview={() => setFocusedClauseId(clause.id)}
+                            onShowInDocument={() => showInDocument(clause.content)}
+                            clauseType={clause.clauseType}
+                            source={(clause as { source?: string }).source}
+                            onRetype={canTagClauses ? type => retypeClause.mutate({ clauseId: clause.id, clauseType: type }) : undefined}
+                            onDismiss={canTagClauses ? () => dismissClause.mutate({ clauseId: clause.id }) : undefined}
+                            busy={retypeClause.isPending || dismissClause.isPending}
                           />
                         )
                       })}
@@ -2849,13 +3151,14 @@ export function ContractDetailPage() {
               // The document canvas: paper on warm ground, and the only surface
               // in the system allowed a drop shadow.
               <div className="h-full overflow-hidden bg-paper-50 p-4">
-                <div className="bg-card rounded-paper shadow-page h-full">
+                <div ref={setPdfBox} className="bg-card rounded-paper shadow-page h-full">
                   <Worker workerUrl={pdfWorkerUrl}>
                     <Viewer
                       // X1 — remounted per citation: initialPage applies on load.
                       key={citeTarget.page ?? 0}
                       fileUrl={pdfUrl}
                       plugins={[layoutPlugin]}
+                      onDocumentLoad={e => { void readPdfPages(e) }}
                       initialPage={citeTarget.page ? citeTarget.page - 1 : 0}
                       renderPage={citeTarget.bbox ? (props: RenderPageProps) => (
                         <>
@@ -2884,9 +3187,12 @@ export function ContractDetailPage() {
           // B.5.1 — Styled branch. TipTap + contract-paper CSS. Default.
           // DD4 — the version the contract stands on (an undo moves it back), not the newest.
           const latest = currentVersionOf(contract.versions as any[], contract.currentVersionId)
-          const rawHtml = latest?.htmlContent?.trim()
-            ? latest.htmlContent
-            : latest?.plainText?.trim() || ''
+          // docs/41 Part 16 — while editing, the draft changes when there are any.
+          const rawHtml = isEditing && draftHtml
+            ? draftHtml
+            : latest?.htmlContent?.trim()
+              ? latest.htmlContent
+              : latest?.plainText?.trim() || ''
           // A freshly-seeded amendment/draft carries markup-only content like
           // '<p></p>' — truthy, but with no real text. Strip tags before deciding
           // emptiness; otherwise the Styled view mounts a blank editor and paints
@@ -2898,7 +3204,9 @@ export function ContractDetailPage() {
           ].includes(contract.analysisStatus ?? '')
 
           let canvasState: CanvasState
-          if (contract.analysisStatus === 'FAILED') {
+          // A failed analysis doesn't hide a document that was read: the
+          // banner above says what failed and offers the retry (docs/39 A1).
+          if (contract.analysisStatus === 'FAILED' && !hasText) {
             canvasState = {
               kind: 'analysis_failed',
               reason: contract.analysisError ?? undefined,
@@ -2924,10 +3232,7 @@ export function ContractDetailPage() {
                 // X75 review — nothing a viewer changes is saved (the server
                 // refuses it): a view-mode command still changes the canvas.
                 if (canvasState.kind !== 'ready' || !canEdit) return
-                setSaveState('dirty')
-                dirtyHtmlRef.current = html
-                if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-                saveTimerRef.current = setTimeout(flushPendingSave, 5000)
+                draft.change(html)
               }}
               // B.5.5 — feed extracted clauses into the decoration layer
               riskClauses={(clausesData?.data ?? []).map((c: any) => ({
@@ -2942,6 +3247,12 @@ export function ContractDetailPage() {
               onRiskClick={(clauseId) => {
                 // B.5.6 — open the focused-review drawer on this clause.
                 setFocusedClauseId(clauseId)
+              }}
+              onSetField={canEditFields ? setFieldPick : undefined}
+              onVariableClick={(key) => {
+                setFocusVariable(key)
+                if (isXl) setRailCollapsed(false)
+                else setRailOpen(true)
               }}
               onAiAction={(selected) => {
                 // P6.3 — bubble menu's ✨ opens the streaming BubbleAiPopover
@@ -2963,232 +3274,11 @@ export function ContractDetailPage() {
           )
         })()}
 
-        {/* ─── Versions ──────────────────────────────────────────────────── */}
-        {tab === 'versions' && (
-          <div className="p-6 max-w-3xl mx-auto">
-            <div className="bg-card rounded-card border border-paper-200 shadow-e1 divide-y divide-paper-100">
-              {versions.length === 0 ? (
-                <p className="p-8 text-body text-ink-400 text-center">No versions yet</p>
-              ) : versions.map((v: any) => (
-                <div key={v.id} className="flex items-center justify-between p-4 hover:bg-paper-50">
-                  <div className="flex items-center gap-3">
-                    <div className="size-8 rounded-full bg-paper-100 border border-paper-200 flex items-center justify-center text-[11px] font-semibold font-mono text-ink-700">
-                      v{v.versionNumber}
-                    </div>
-                    <div>
-                      <p className="text-body font-medium text-ink-950">Version {v.versionNumber}</p>
-                      {v.changeNote && <p className="text-dense text-ink-500 mt-0.5">{v.changeNote}</p>}
-                      {v.changeSummary && <p className="text-dense text-ink-500 mt-0.5 italic">{v.changeSummary}</p>}
-                      <p className="text-dense text-ink-400 mt-0.5 flex items-center gap-1">
-                        <Clock className="size-3" />
-                        {new Date(v.createdAt).toLocaleString()}
-                        {v.fileSize && ` · ${(v.fileSize / 1024).toFixed(0)} KB`}
-                      </p>
-                    </div>
-                  </div>
-                  <Button variant="outline" size="icon" onClick={() => handleDownload(v.id)}>
-                    <Download className="size-3.5" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ─── Negotiate ─────────────────────────────────────────────────── */}
-        {tab === 'negotiate' && (
-          <div className="p-6 space-y-6">
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {/* Left: Diff viewer */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-section text-ink-950">Version diff</p>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={diffV1Id}
-                      onChange={e => setDiffV1Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
-                    >
-                      <option value="">v1 (baseline)</option>
-                      {versions.map((v: any) => (
-                        <option key={v.id} value={v.id}>v{v.versionNumber}</option>
-                      ))}
-                    </select>
-                    <span className="text-dense text-ink-400">vs</span>
-                    <select
-                      value={diffV2Id}
-                      onChange={e => setDiffV2Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
-                    >
-                      <option value="">v2 (redlines)</option>
-                      {versions.map((v: any) => (
-                        <option key={v.id} value={v.id}>v{v.versionNumber}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                {diffQuery.isLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="size-5 animate-spin text-ink-400" />
-                  </div>
-                ) : diffQuery.isError ? (
-                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-500 text-body">
-                    {(diffQuery.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-                      ?? 'The comparison could not be loaded.'}
-                  </div>
-                ) : diffQuery.data ? (
-                  <DiffViewer
-                    diffHtml={diffQuery.data.diffHtml}
-                    stats={diffQuery.data.stats}
-                    v1Label={`v${versions.find((v: any) => v.id === diffV1Id)?.versionNumber ?? '1'}`}
-                    v2Label={`v${versions.find((v: any) => v.id === diffV2Id)?.versionNumber ?? '2'}`}
-                  />
-                ) : (
-                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-400 text-body">
-                    Select two versions above to view tracked changes
-                  </div>
-                )}
-              </div>
-
-              {/* Right: Redline AI panel */}
-              <div>
-                <RedlinePanel
-                  analysis={redlineMeta}
-                  isAnalyzing={isAnalyzingRedlines}
-                  failure={redlineStatus === 'FAILED' ? String(customMeta._redlineError ?? 'The analysis did not complete.') : null}
-                  versions={versions.map((v: any) => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt }))}
-                  defaultV1Id={diffDefaults.v1}
-                  defaultV2Id={diffDefaults.v2}
-                  onRequestAnalysis={(v1Id, v2Id) => {
-                    setDiffV1Id(v1Id)
-                    setDiffV2Id(v2Id)
-                    redlineMutation.mutate({ v1Id, v2Id })
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ─── Comments ───────────────────────────────────────────────────── */}
         {tab === 'comments' && (
           <div className="p-6 max-w-3xl mx-auto">
-            <CommentsPanel contractId={id!} />
-          </div>
-        )}
-
-        {/* ─── Activity ──────────────────────────────────────────────────── */}
-        {tab === 'activity' && (
-          <div className="p-6 max-w-2xl mx-auto">
-            {timeline.length === 0 ? (
-              <div className="flex flex-col items-center py-16 gap-2">
-                <Clock className="size-8 text-ink-400" />
-                <p className="text-body text-ink-400">No activity recorded yet</p>
-              </div>
-            ) : (
-              <div className="relative">
-                <div className="absolute left-5 top-0 bottom-0 w-px bg-paper-200" />
-                {timeline.map((e: any) => (
-                  <div key={e.id} className="flex items-start gap-4 mb-4 relative pl-12">
-                    {/* A recorded event is history, not a live state — the node
-                        is a neutral rule marker, not an inflight dot. */}
-                    <div className="absolute left-3.5 top-1.5 size-3 rounded-full bg-card border-2 border-paper-300" />
-                    <div className="bg-card rounded-card border border-paper-200 shadow-e1 px-4 py-3 flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-dense font-semibold text-ink-950">{e.action.replace(/_/g, ' ')}</span>
-                        <span className="text-dense text-ink-400 tabular-nums">{new Date(e.createdAt).toLocaleString()}</span>
-                      </div>
-                      {e.userId && (
-                        <p className="text-dense text-ink-500 mt-1 flex items-center gap-1">
-                          <User className="size-3" /> {e.userId}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ─── Approval ──────────────────────────────────────────────────── */}
-        {tab === 'approval' && (
-          <div className="p-6 max-w-3xl mx-auto space-y-6">
-            {/* Status banner */}
-            {contract?.status === 'PENDING_APPROVAL' && (
-              <div className="flex items-center gap-2 p-3 rounded-md bg-info-50 border border-info-200 text-body text-info-700">
-                <Loader2 className="size-4 animate-spin text-info-600" />
-                Contract is pending approval — waiting for approver decision.
-              </div>
-            )}
-            {contract?.status === 'APPROVED' && (
-              <div className="flex items-center gap-2 p-3 rounded-md bg-brand-50 border border-brand-200 text-body text-brand-700">
-                <CheckCircle2 className="size-4 text-brand-700" />
-                Contract approved. Ready for execution.
-              </div>
-            )}
-
-            {/* No instance yet — show submit prompt */}
-            {!approvalInstanceData && !['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '') && (
-              <div className="text-center py-10 border-2 border-dashed rounded-card border-paper-200 bg-paper-50">
-                <CheckCircle2 className="size-10 text-ink-400 mx-auto mb-3" />
-                <p className="text-body font-semibold text-ink-950 mb-1">Not yet in review</p>
-                <p className="text-dense text-ink-500 mb-4">
-                  {canSendForReview ? 'Send this contract to the approval workflow to start the review.' : 'Someone with edit access can send it for review.'}
-                </p>
-                {/* Same action the header CTA already offers, so it doesn't
-                    take a second ink fill. */}
-                {canSendForReview && <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => submitForApproval.mutate(undefined)}
-                  disabled={submitForApproval.isPending}
-                  className="gap-1.5"
-                >
-                  {submitForApproval.isPending
-                    ? <><Loader2 className="size-4 animate-spin" />Submitting…</>
-                    : <>Send for Review</>}
-                </Button>}
-                {submitForApproval.isError && (
-                  <p className="text-dense text-risk-700 mt-2">
-                    {(submitForApproval.error as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Failed to submit'}
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* My pending step on this contract */}
-            {approvalData && (
-              <div>
-                <h3 className="text-section text-ink-950 mb-3">Your Pending Approval</h3>
-                <ApprovalCard
-                  stepId={approvalData.stepId}
-                  instanceId={approvalData.instanceId}
-                  stepName={approvalData.stepName}
-                  contract={approvalData.contract}
-                  instance={approvalData.instance}
-                  onDecided={() => {
-                    qc.invalidateQueries({ queryKey: ['contract', id] })
-                    qc.invalidateQueries({ queryKey: ['contract-approval', id] })
-                    qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-                    refetchApproval()
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Timeline */}
-            {approvalInstanceData && (
-              <div>
-                <h3 className="text-section text-ink-950 mb-3">Approval Timeline</h3>
-                <div className="bg-card rounded-card border border-paper-200 shadow-e1 p-5">
-                  <ApprovalTimeline
-                    instance={approvalInstanceData}
-                    steps={approvalInstanceData.steps ?? []}
-                  />
-                </div>
-              </div>
-            )}
+            {/* docs/41 Part 16 — threads are written in the workspace, beside their words. */}
+            <CommentsReadList contractId={id!} onOpenWorkspace={() => navigate(workspacePath(id!))} />
           </div>
         )}
 
@@ -3616,11 +3706,17 @@ export function ContractDetailPage() {
         )}
 
         <RailSection title="Overview" defaultOpen>
+          {/* docs/41 P0.1 — which version the analysis describes. */}
+          {versions.length > 0 && analysis.state === 'done' && (
+            <p className="text-[11px] text-ink-500 mb-1.5" data-testid="analysis-done-for">{analysis.text}</p>
+          )}
           {contract.summary ? (
             <p className="text-body text-ink-700">{contract.summary}</p>
           ) : (
             <p className="text-body text-ink-400 italic">
-              {contract.analysisStatus === 'DONE'
+              {analysis.state === 'not_analysed'
+                ? 'Not analysed yet — no summary.'
+                : contract.analysisStatus === 'DONE'
                 ? 'No AI summary available.'
                 : contract.analysisStatus === 'FAILED'
                   ? 'Analysis failed — re-run to generate a summary.'
@@ -3628,6 +3724,28 @@ export function ContractDetailPage() {
             </p>
           )}
         </RailSection>
+
+        {/* docs/39 H2 — a draft's variables: each term changed once, everywhere
+            it appears and in the field it fills. Only a draft made from a
+            template has any. */}
+        {id && (
+          <VariablesRailSection
+            contractId={id}
+            editor={canvasEditor}
+            canEdit={canEdit}
+            canEditFields={canEditFields}
+            title={contract.title}
+            canRetitle={canChangeStatus}
+            focusKey={focusVariable}
+            onFocused={() => setFocusVariable(null)}
+            beforeChange={() => saveDocumentNow()}
+            saveDocument={note => saveDocumentNow(note)}
+          />
+        )}
+        {/* docs/41 Part 1 — the template and clause choices the draft was made with. */}
+        {id && <OriginRailSection contractId={id} canEdit={canEdit} beforeChange={() => saveDocumentNow()} />}
+        {/* docs/41 fix-up 4 — deal changes from Salesforce held back on this contract. */}
+        {id && <SalesforceConflictsSection contractId={id} canEdit={mayEdit} />}
 
         {/* P5.1 — Obligations rail section. When metadata.obligations
             exists, show the list with a due-date indicator + an
@@ -3654,39 +3772,43 @@ export function ContractDetailPage() {
           }}
         />
 
-        {/* Phase 3 — whole-document playbook redline. Stages a first-pass
-            markup the reviewer accepts change by change; nothing reaches the
-            document until they do. Status lives in contract.metadata, which is
-            what the 4s poll above is already watching. */}
+        {/* docs/41 P1 (Part 8) — the one Review panel: the recommendation,
+            the findings with their evidence, and the fixes, from GET
+            /contracts/:id/review. It replaces the separate playbook review
+            and playbook redline sections, which used two engines that could
+            disagree. "Fix all fixable" stages its rewrites in
+            contract.metadata, which the 4s poll above watches. docs/41
+            Parts 9, 10 — compliance gaps and drafting problems are groups
+            of it too, with the defined-terms glossary under Drafting (it
+            replaces the separate Drafting section). */}
         {id && (
-          <PlaybookRedlineRailSection
+          <ReviewPanel
             contractId={id}
-            status={((contract?.metadata as Record<string, unknown> | undefined)
-              ?._playbookRedlineStatus as 'IDLE' | 'QUEUED' | 'RUNNING' | 'DONE' | 'APPLIED' | 'FAILED') ?? 'IDLE'}
-            staged={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedline as never}
-            error={(contract?.metadata as Record<string, unknown> | undefined)?._playbookRedlineError as string | null}
+            contractMetadata={contract?.metadata as Record<string, unknown> | undefined}
+            canEdit={canEdit}
+            onJumpToClause={jumpToClause}
+            onAnalyse={canChangeStatus && analysis.canAnalyse ? () => analyze.mutate() : undefined}
+            analysing={analyze.isPending}
+            onShowText={text => { revealInCanvas(canvasEditorRef.current, text) }}
+            definedTerms={<DefinedTermsGlossary contractId={id} versionId={contract.currentVersionId} editor={canvasEditor} canEdit={canEdit} />}
           />
         )}
 
-        {/* V1 — the playbook review that runs after extraction; each
-            finding links to its clause. */}
-        {id && <PlaybookReviewRailSection contractId={id} onJumpToClause={jumpToClause} />}
-
-        {/* Phase 10 — Compliance Agent. GDPR / HIPAA / SOX / CCPA clause
-            checks with per-framework status, grounded quotes, and
-            remediation suggestions. Empty state offers a run button. */}
+        {/* Phase 10 — Compliance Agent; docs/41 Part 9 — which frameworks
+            apply and why (facts with quotes, the one question), and each
+            framework's checks. The gaps are also findings in the Review
+            panel's Compliance group, where the recommendation weighs them. */}
         {id && (
           <ComplianceRailSection
             contractId={id}
-            onAfterCheck={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
+            canEdit={canEdit}
+            onAfterCheck={() => {
+              qc.invalidateQueries({ queryKey: ['contract', id] })
+              // Its gaps are review findings too.
+              qc.invalidateQueries({ queryKey: ['contract-review', id] })
+            }}
           />
         )}
-
-        {/* P6.4 — Defined-term guard. Surfaces canonical defined
-            terms + any inconsistent author-typed variants + an
-            "Apply defined term everywhere" action. Only renders when
-            the doc has ≥1 defined term pattern. */}
-        <DefinedTermsRailSection editor={canvasEditor} canEdit={canEdit} />
 
         {/* P5.3 — Renewal advisor. Shows inside the 180-day expiry
             window; offers an LLM-backed recommendation + decision
@@ -3695,7 +3817,6 @@ export function ContractDetailPage() {
           contractId={id ?? ''}
           expiryDate={contract.expiryDate ?? null}
           advice={(contract.metadata?.renewalAdvice as RenewalAdvice | undefined) ?? null}
-          decision={(contract.metadata?.renewalDecision as string | undefined) ?? null}
           onAfterAdvice={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
           onAfterDecision={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
         />
@@ -3764,41 +3885,42 @@ export function ContractDetailPage() {
           )
         })()}
 
-        <RailSection title="Key Terms" defaultOpen>
-          <dl className="space-y-0">
-            <DetailRow label="Owner" value={contract.owner?.name ?? '—'} />
-            <DetailRow
-              label="Counterparty"
-              value={contract.counterpartyName ?? contract.counterparty?.name ?? '—'}
-            />
-            <DetailRow
-              label="Effective"
-              value={
-                contract.effectiveDate
-                  ? new Date(contract.effectiveDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-                  : keyTerms.effectiveDate ? formatTermValue('effectiveDate', keyTerms.effectiveDate) : '—'
-              }
-            />
-            <DetailRow
-              label="Expires"
-              value={
-                contract.expiryDate
-                  ? new Date(contract.expiryDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
-                  : keyTerms.expiryDate ? formatTermValue('expiryDate', keyTerms.expiryDate) : '—'
-              }
-            />
-            <DetailRow
-              label="Value"
-              value={
-                contract.value
-                  ? `${contract.currency ?? keyTerms.currency ?? 'USD'} ${Number(contract.value).toLocaleString()}`
-                  : keyTerms.value ? `${keyTerms.currency ?? 'USD'} ${Number(keyTerms.value).toLocaleString()}` : '—'
-              }
-            />
-            <DetailRow label="Jurisdiction" value={contract.jurisdiction ?? keyTerms.governingLaw ?? '—'} />
-            <DetailRow label="Contract No." value={contract.contractNumber ?? '—'} />
+        {/* docs/39 B1 — the contract's fields beside its text: every value,
+            who set it, and the fix in place (was a read-only list of six). */}
+        {/* docs/39 G3 — the agreement this one amends: its changes, set there; or the agreement it may belong to. */}
+        {/* docs/41 Part 13 — the family, the agreement as amended, an amendment's redline. */}
+        {id && <FamilyPanel contractId={id} reveal={familyReveal} />}
+        {id && <AgreementPanel contractId={id} canEdit={canEditFields} />}
+
+        <RailSection title="Fields" defaultOpen>
+          <dl className="flex flex-wrap gap-x-4 gap-y-0.5 pb-2 text-[11px] text-ink-500">
+            <div><dt className="inline">Owner </dt><dd className="inline text-ink-700">{contract.owner?.name ?? '—'}</dd></div>
+            {contract.contractNumber && <div><dt className="inline">No. </dt><dd className="inline font-mono text-ink-700">{contract.contractNumber}</dd></div>}
           </dl>
+          <FieldsPanel contractId={id!} canEdit={canEditFields} variant="rail" onShowSource={showFieldSource} />
         </RailSection>
+
+        {/* docs/39 C4 — what the AI noticed beyond the fields, beside them (it
+            was only on the Overview tab, read-only), each one a click from
+            being tracked on every contract. */}
+        {aiFindings.length > 0 && (
+          <RailSection title="AI findings" count={aiFindings.length}>
+            <p className="pb-1.5 text-[11px] text-ink-500">Terms the AI noticed beyond your fields. Track one to follow it on every contract.</p>
+            <ul className="space-y-1.5" data-testid="ai-findings-rail">
+              {aiFindings.map(f => (
+                <li key={f.key} className="rounded-md border border-paper-200 bg-card px-2 py-1.5 text-[11.5px]">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-ink-500">{f.label}</p>
+                      <p className="text-ink-950 break-words" title={f.quote ? `“${f.quote}”` : undefined}>{formatTermValue(f.key, f.value)}</p>
+                    </div>
+                    {trackFindingButton(f)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </RailSection>
+        )}
 
         {/* B.1.5d — Risks (collapsed by default, count in header) */}
         <RailSection
@@ -3882,7 +4004,7 @@ export function ContractDetailPage() {
               {clausesData.data.slice(0, 6).map((c: any) => (
                 <li key={c.id} className="text-dense">
                   <div className="font-medium text-ink-950 truncate">
-                    {CLAUSE_TYPE_LABELS[c.clauseType] ?? c.clauseType.replace(/_/g, ' ')}
+                    {clauseLabelOf(c.clauseType)}
                   </div>
                   {c.riskRating && (
                     <div className={cn(
@@ -3911,28 +4033,43 @@ export function ContractDetailPage() {
           this contract" — users shouldn't have to tell us whether a
           counter-redline is a version, attachment, or child.
         */}
+        {/* docs/41 Part 12 — versions are in the History drawer (with the
+            rest of what happened); this section keeps the documents that go
+            with the contract: attachments, its parent and its children. */}
         <RailSection
-          title="History"
+          title="Related documents"
           count={
-            (versions.length || 0) +
             ((contract.attachments as any[] ?? []).length || 0) +
             (familyData?.children?.length ?? 0) +
             (familyData?.parent ? 1 : 0) || null
           }
           action={
-            // X51 — the tab bar shows only outside the document view, and the
-            // way out was Clauses' "View all" or an approval: a contract with
-            // no extracted clauses could never open Negotiate to analyze its
-            // redlines. (The header's Compare is a different view, CompareMode.)
-            versions.length >= 2 ? (
-              <button
-                onClick={() => setTab('negotiate')}
-                data-testid="rail-history-negotiate"
-                className="text-[11px] font-semibold text-ink-950 hover:underline"
-              >
-                Negotiate
-              </button>
-            ) : null
+            <span className="inline-flex items-center gap-3">
+              {/* docs/39 A12 — attach an exhibit where the attachments are listed:
+                  the Overview tab that had the only Attach button can't be
+                  reached from the document for a contract without clauses. */}
+              {mayEdit && (
+                <button
+                  onClick={() => attachFileRef.current?.click()}
+                  disabled={attachMutation.isPending}
+                  data-testid="rail-history-attach"
+                  className="text-[11px] font-semibold text-ink-950 hover:underline disabled:opacity-50"
+                  title="Attach an exhibit or schedule — it's read as part of the contract"
+                >
+                  {attachMutation.isPending ? 'Attaching…' : 'Attach'}
+                </button>
+              )}
+              {/* docs/41 Part 15 — what changed between versions is the workspace's Changes mode. */}
+              {versions.length >= 2 && (
+                <button
+                  onClick={openChanges}
+                  data-testid="rail-history-changes"
+                  className="text-[11px] font-semibold text-ink-950 hover:underline"
+                >
+                  Changes
+                </button>
+              )}
+            </span>
           }
         >
           <ol className="space-y-2.5">
@@ -3952,30 +4089,27 @@ export function ContractDetailPage() {
               </li>
             )}
 
-            {/* Versions */}
-            {versions.map((v: any) => (
-              <li key={v.id} className="flex items-start gap-2.5">
-                <div className="size-5 rounded-full bg-paper-100 border border-paper-200 text-ink-700 text-[9.5px] font-semibold font-mono flex items-center justify-center flex-shrink-0">
-                  v{v.versionNumber}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="text-dense text-ink-950 font-medium truncate">
-                    {v.changeNote?.replace(/\s*\(\s*\)\s*$/, '') || `Version ${v.versionNumber}`}
-                  </div>
-                  <div className="text-[11px] text-ink-400 tabular-nums">
-                    {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  </div>
-                </div>
-              </li>
-            ))}
 
             {/* Attachments */}
             {((contract.attachments as any[] ?? []) as any[]).map((att: any, i: number) => (
               <li key={`att-${i}`} className="flex items-start gap-2.5">
                 <Paperclip className="size-3.5 text-ink-400 mt-1 flex-shrink-0" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-dense text-ink-700 truncate">{att.label || att.filename}</div>
-                  <div className="text-[11px] text-ink-400">Attachment</div>
+                  <button type="button" onClick={() => downloadAttachment(i, att.filename)} className="block max-w-full text-dense text-ink-700 hover:text-ink-950 hover:underline truncate text-left" title="Download">
+                    {att.label || att.filename}
+                  </button>
+                  {(() => {
+                    const r = exhibitReading(att)
+                    if (r.state === 'reading') return <div className="text-[11px] text-ink-500 inline-flex items-center gap-1" data-testid={`rail-attachment-read-${i}`}><Loader2 className="size-3 animate-spin" /> Reading it with the contract…</div>
+                    if (r.state === 'failed') return <div className="text-[11px] text-attention-700" title={r.error ?? undefined} data-testid={`rail-attachment-read-${i}`}>Attachment · couldn’t read it</div>
+                    if (r.state === 'unread' && mayEdit) return (
+                      <div className="text-[11px] text-ink-400" data-testid={`rail-attachment-read-${i}`}>
+                        Attachment · not read yet —{' '}
+                        <button type="button" onClick={() => readAttachment.mutate(i)} disabled={readAttachment.isPending} className="underline underline-offset-2 hover:text-ink-950">read it with the contract</button>
+                      </div>
+                    )
+                    return <div className="text-[11px] text-ink-400" data-testid={`rail-attachment-read-${i}`}>{r.state === 'read' ? `Attachment · read with the contract${r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}` : 'Attachment'}</div>
+                  })()}
                 </div>
               </li>
             ))}
@@ -4002,56 +4136,6 @@ export function ContractDetailPage() {
           </ol>
         </RailSection>
 
-        {/* B.1.5f — Approval (conditional: only if instance or in-flow) */}
-        {(approvalInstanceData || ['PENDING_APPROVAL', 'APPROVED', 'REJECTED'].includes(contract?.status ?? '')) && (
-          <RailSection
-            title="Approval"
-            count={approvalInstanceData?.instance?.status ?? null}
-            defaultOpen={contract?.status === 'PENDING_APPROVAL'}
-          >
-            {approvalData ? (
-              <div className="space-y-2">
-                <div className="text-dense text-ink-500">
-                  Waiting on you: <span className="font-medium text-ink-950">{approvalData.stepName}</span>
-                </div>
-                <Button
-                  /*
-                   * Outline, not the ink fill. At PENDING_APPROVAL the header
-                   * already carries an ink "Send for signature", and the real
-                   * decision lives in the DecisionStrip above the document —
-                   * this only scrolls to it. Two ink fills on one screen is two
-                   * primaries, and the design system allows one; the navigation
-                   * is the one that steps back.
-                   */
-                  variant="outline"
-                  className="w-full"
-                  onClick={() => {
-                    // Wave 2.3 — scroll to the real DecisionStrip (Approve /
-                    // Reject / Delegate) that renders above the document when
-                    // the current user is the pending approver. Falls back to
-                    // the Approvals tab's ApprovalCard if the strip isn't
-                    // mounted. (Replaces the window.alert placeholder.)
-                    const strip = document.getElementById('approval-decision-strip')
-                    if (strip) {
-                      strip.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                    } else {
-                      setTab('approval')
-                    }
-                  }}
-                >
-                  Review & Decide
-                </Button>
-              </div>
-            ) : approvalInstanceData?.instance ? (
-              <p className="text-body text-ink-700">
-                Status: <span className="font-medium text-ink-950">{approvalInstanceData.instance.status}</span>
-              </p>
-            ) : (
-              <p className="text-body text-ink-400 italic">Not yet submitted for approval.</p>
-            )}
-          </RailSection>
-        )}
-
         {/* B.1.5f — Comments */}
         <RailSection
           title="Comments"
@@ -4073,37 +4157,22 @@ export function ContractDetailPage() {
           )}
         </RailSection>
 
-        {/* B.1.5f — Activity */}
-        <RailSection
-          title="Activity"
-          count={timeline.length || null}
-        >
-          {timeline.length ? (
-            <ol className="space-y-2">
-              {timeline.slice(0, 8).map((evt: any, i: number) => (
-                <li key={evt.id ?? i} className="flex gap-2 text-dense">
-                  <span className="text-ink-400 tabular-nums min-w-[3.5rem]">
-                    {new Date(evt.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                  </span>
-                  <span className="text-ink-700">
-                    {evt.action?.replace(/_/g, ' ').toLowerCase().replace(/\b./g, (c: string) => c.toUpperCase())}
-                  </span>
-                </li>
-              ))}
-              {timeline.length > 8 && (
-                <li className="text-dense text-ink-400">+ {timeline.length - 8} more events</li>
-              )}
-            </ol>
-          ) : (
-            <p className="text-body text-ink-400 italic">No activity yet.</p>
-          )}
-        </RailSection>
       </aside>
 
       {/* end of two-column body */}
       </div>
 
       {id && <GoogleDocsStartDialog contractId={id} open={googleDocsOpen} onClose={() => setGoogleDocsOpen(false)} />}
+
+      {id && (
+        <HistoryDrawer
+          contractId={id}
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onCompare={(baseline, current) => navigate(workspacePath(id!, { changes: true, baseline, current }))}
+          onDownload={(versionId) => handleDownload(versionId)}
+        />
+      )}
 
       {/* Share dialog */}
       {showShareDialog && id && (
@@ -4239,6 +4308,95 @@ export function ContractDetailPage() {
         selectionRange={aiPopoverRange}
       />
 
+      {/* docs/39 C1 — the selection menu while reading (the bubble menu has it
+          while editing), and C2's field picker it opens. */}
+      <SelectionMenu
+        editor={canvasEditor}
+        enabled={tab === 'document' && docView === 'styled' && !isEditing}
+        onSetField={canEditFields ? setFieldPick : undefined}
+        onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
+        onTagClause={canTagClauses ? setClauseFrom : undefined}
+        onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+        {...selectionExtras.pdfActions}
+      />
+      {/* …and over the original PDF, with the same actions. */}
+      <PdfSelectionMenu
+        container={pdfBox}
+        pageTexts={pdfPageTexts}
+        enabled={tab === 'document' && docView === 'original' && hasOriginal}
+        onSetField={canEditFields ? setFieldPick : undefined}
+        onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
+        onTagClause={canTagClauses ? setClauseFrom : undefined}
+        onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+        {...selectionExtras.pdfActions}
+      />
+      {selectionExtras.ui}
+      {libraryFrom && id && (
+        <SaveToLibraryPopover contractId={id} selection={libraryFrom} onClose={() => setLibraryFrom(null)} />
+      )}
+      {clauseFrom && id && (
+        <ClauseTagPicker
+          contractId={id}
+          selection={clauseFrom}
+          onClose={() => setClauseFrom(null)}
+          // The tagged passage, highlighted in whichever view is open (the document or the original PDF).
+          onTagged={() => showInDocument(clauseFrom.text, clauseFrom.occurrence)}
+        />
+      )}
+      {newFieldFrom && id && (
+        <NewFieldPopover
+          contractId={id}
+          contractType={contract?.type ?? null}
+          selection={newFieldFrom}
+          canCreate={canCreateFields}
+          onClose={() => setNewFieldFrom(null)}
+        />
+      )}
+      {/* docs/39 C4 — something the AI found, tracked as a field from here on. */}
+      {trackFinding && id && (
+        <NewFieldPopover
+          contractId={id}
+          contractType={contract?.type ?? null}
+          selection={{ text: findingText(trackFinding.finding.value), occurrence: 0, rect: trackFinding.rect, before: '', after: '' }}
+          seed={{ label: trackFinding.finding.label, quote: trackFinding.finding.quote ?? null }}
+          canCreate={canCreateFields}
+          onClose={() => setTrackFinding(null)}
+        />
+      )}
+      {fieldPick && id && (
+        <FieldPicker
+          contractId={id}
+          selection={fieldPick}
+          onClose={() => setFieldPick(null)}
+          onSaved={() => showInDocument(fieldPick.text, fieldPick.occurrence)}
+        />
+      )}
+
+      {/* docs/41 Part 16 — the editor's draft changes: save as a version, leave, or a save that met someone else's. */}
+      <SaveVersionDialog
+        key={saveVersionOpen ? 'open' : 'closed'}
+        open={saveVersionOpen}
+        onClose={() => { setSaveVersionOpen(false); afterSaveVersion.current = null }}
+        onSave={saveAsVersion}
+        saving={savingVersion}
+        error={saveVersionError}
+        canResetApprovals={canResetApprovals}
+        canShare={canShare}
+      />
+      <LeaveDraftPrompt open={!!leaving} busy={leaveBusy} onChoose={chooseLeave} onClose={() => setLeaving(null)} />
+      <WorkingCopyConflictDialog
+        conflict={draft.conflict}
+        onClose={draft.dismissConflict}
+        onReload={async () => {
+          const html = await draft.reloadTheirs()
+          if (html != null) {
+            setDraftHtml(html)
+            canvasEditorRef.current?.commands.setContent(html, { emitUpdate: false })
+          }
+        }}
+        onOverwrite={() => { void draft.overwrite() }}
+      />
+
       {/* U.6.1 — Send-for-Review dialog. Picks workflow + adds optional
           message. Replaces the silent state flip the toolbar button did. */}
       {id && (
@@ -4249,10 +4407,7 @@ export function ContractDetailPage() {
           contractCurrency={contract?.currency}
           open={sendForReviewOpen}
           onClose={() => setSendForReviewOpen(false)}
-          onSent={() => {
-            qc.invalidateQueries({ queryKey: ['contract', id] })
-            qc.invalidateQueries({ queryKey: ['approval-instance-by-contract', id] })
-          }}
+          onSent={() => invalidateApproval(qc, id)}
         />
       )}
 
@@ -4321,27 +4476,6 @@ export function ContractDetailPage() {
         }}
       />
 
-      {/*
-        B.5.13 — Compare Versions fullscreen mode. See docs/26 State 9.
-        We render conditionally on `id` being present (same guard as the
-        palette) so we don't mount the mode during the initial loading
-        flash. Entering is cheap (no data fetched until user picks two
-        versions that differ); exiting is Esc or the × button.
-      */}
-      {id && (
-        <CompareMode
-          open={compareOpen}
-          onClose={() => setCompareOpen(false)}
-          contractId={id}
-          versions={versions.map((v: any) => ({
-            id:            v.id,
-            versionNumber: v.versionNumber,
-            createdAt:     v.createdAt,
-            authorName:    v.createdByName ?? v.authorName ?? null,
-            changeNote:    v.changeNote ?? null,
-          }))}
-        />
-      )}
 
       {/*
         B.5.17 — First-visit guide. Dismissible three-step walkthrough

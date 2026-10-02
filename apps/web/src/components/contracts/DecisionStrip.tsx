@@ -3,11 +3,11 @@
  *
  * Appears above the document when the current user has a PENDING approval
  * step on this contract. Its job: compress the review signal into one row
- * so the approver can Approve / Reject / Delegate without hunting.
+ * so the approver can Approve / Return / Decline / Delegate without hunting.
  *
  * Layout (left → right):
  *   [AI Confidence]  [Risk score]  [AI Recommendation]  [Top blocker → jump]
- *   + primary CTAs:  [Approve]  [Reject]  [Delegate]
+ *   + primary CTAs:  [Approve]  [Return for changes]  [Decline]  [Delegate]
  *
  * Per ChatGPT round-3: approvers don't trust AI blindly. The strip shows
  * all three inputs (confidence, risk, recommendation) side-by-side so the
@@ -15,7 +15,7 @@
  * scrolls the document to the clause that drives the recommendation, so
  * decisions reference the actual text and not just the summary.
  *
- * Reject/Delegate require extra input (comment / delegateTo user); those
+ * Return/Decline/Delegate require extra input (a reason / a user); those
  * cases expand into an inline popover. Approve is one click + optional
  * comment.
  */
@@ -27,8 +27,11 @@ import { AssistChip, AssistMark } from '@/components/ui/assist'
 import { UserPicker } from '@/components/common/UserPicker'
 import { cn } from '@/lib/utils'
 import { MEANING_CLASS, normalizeRisk, riskBand } from '@/lib/status'
+import { recommendationText } from '@/lib/recommendation'
+import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { DecisionReason, CONFIRM_LABEL, needsReason, type Decision } from '@/components/approvals/DecisionReason'
 import {
-  CheckCircle2, XCircle, ArrowRight, Loader2,
+  CheckCircle2, XCircle, ArrowRight, Loader2, Undo2,
   ShieldAlert, TrendingUp, ChevronDown,
 } from 'lucide-react'
 
@@ -52,6 +55,8 @@ interface AwaitingMe {
     aiSummary?:              string
     keyRisks?:               KeyRisk[]
     approvalRecommendation?: string
+    /** docs/41 P0.2 — why the recommendation is held back, when it is. */
+    recommendationReasons?:  string[]
   }
 }
 
@@ -66,12 +71,6 @@ interface AwaitingMe {
  * unsure. The assist vocabulary is the whole answer: the diamond says who wrote
  * it, the words say what it advises. (Same call ApprovalCard's REC_LABEL makes.)
  */
-const REC_LABEL: Record<string, string> = {
-  approve:         'Approve',
-  review_required: 'Review required',
-  reject_advised:  'Reject advised',
-}
-
 export function DecisionStrip({
   awaitingMe,
   riskScore,
@@ -86,30 +85,34 @@ export function DecisionStrip({
   onDecided?: () => void
 }) {
   const queryClient = useQueryClient()
-  const [pending, setPending] = useState<'APPROVED' | 'REJECTED' | 'DELEGATED' | null>(null)
+  const [pending, setPending] = useState<Decision | null>(null)
   const [comment, setComment] = useState('')
+  const [findingIds, setFindingIds] = useState<string[]>([])
   const [delegateTo, setDelegateTo] = useState('')
 
   const decide = useMutation({
-    mutationFn: (payload: { decision: string; comment?: string; delegateTo?: string }) =>
+    mutationFn: (payload: { decision: string; comment?: string; delegateTo?: string; findingIds?: string[] }) =>
       api.post(`/approvals/${awaitingMe.instanceId}/decide`, {
         stepId: awaitingMe.stepId,
         ...payload,
       }).then(r => r.data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['contract', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['contract-approval', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['approval-instance-by-contract', awaitingMe.contract.id] })
-      queryClient.invalidateQueries({ queryKey: ['approvals', 'my-queue'] })
+      // docs/41 P0.6 — every place the approval is read from (lib/approval-keys.ts):
+      // the keys cleared here used to match none of the ones the pages read.
+      invalidateApproval(queryClient, awaitingMe.contract.id, awaitingMe.instanceId)
       setPending(null)
       setComment('')
       setDelegateTo('')
+      setFindingIds([])
       onDecided?.()
     },
+    // Shown in the strip with the server's reason; handled, so no global toast.
+    onError: () => {},
   })
 
   const recKey = (awaitingMe.instance.approvalRecommendation ?? 'review_required').toLowerCase()
-  const recLabel = REC_LABEL[recKey] ?? REC_LABEL.review_required
+  // docs/41 P0.2 — "Ready to approve" only when the API's checks passed.
+  const recLabel = recommendationText(recKey, awaitingMe.instance.recommendationReasons) ?? 'Review required'
   const topRisk = awaitingMe.instance.keyRisks?.[0]
   const confidence = Math.max(0, Math.min(100, Math.round(
     // Confidence is derived: strong recommendation + few blockers → high.
@@ -117,6 +120,7 @@ export function DecisionStrip({
     // produces a proper confidence number we replace this.
     (recKey === 'approve' ? 90
       : recKey === 'reject_advised' ? 75
+      : recKey === 'cant_recommend' ? 30
       : 60) - (awaitingMe.instance.keyRisks?.length ?? 0) * 5
   )))
   // "The mark scales with how sure it is" — a hollow diamond on a shaky
@@ -172,9 +176,12 @@ export function DecisionStrip({
           <span>Risk {riskPct != null ? `${riskPct}%` : '—'}</span>
         </div>
 
-        {/* AI Recommendation — advice, not a verdict. See REC_LABEL. */}
+        {/* AI Recommendation — advice, not a verdict. It carries no meaning
+            colour: a model advising is not a decision, and emerald or red here
+            would read as one. "Ready to approve" appears only when every check
+            on the analysis passed (lib/recommendation.ts). */}
         <AssistChip icon={<AssistMark confidence={confidenceBand} className="size-[5px]" />}>
-          AI: {recLabel}
+          <span title={awaitingMe.instance.recommendationReasons?.join('; ') || undefined} data-testid="decision-recommendation">AI: {recLabel}</span>
         </AssistChip>
 
         {/* Top blocker — clickable "jump" link */}
@@ -210,12 +217,23 @@ export function DecisionStrip({
           </Button>
           <Button
             size="sm"
-            variant="danger"
-            onClick={() => setPending('REJECTED')}
+            variant="outline"
+            onClick={() => setPending('RETURNED')}
             className="gap-1"
+            data-testid="strip-return-btn"
+          >
+            <Undo2 className="size-3.5" />
+            Return for changes
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            onClick={() => setPending('DECLINED')}
+            className="gap-1"
+            data-testid="strip-decline-btn"
           >
             <XCircle className="size-3.5" />
-            Reject
+            Decline
           </Button>
           <Button
             size="sm"
@@ -230,18 +248,28 @@ export function DecisionStrip({
         </div>
       </div>
 
+      {/* docs/41 P0.6 — a decision that didn't go through says so, and why:
+          the strip used to just stay as it was. */}
+      {decide.isError && (
+        <div role="alert" className="px-6 pb-2 text-dense text-risk-700" data-testid="decision-error">
+          The decision wasn’t recorded: {serverMessage(decide.error)}
+        </div>
+      )}
+
       {/* Inline confirmation row — appears below the strip once a decision
           is clicked. Collects the required input for the chosen action. */}
       {pending && (
         <div className="px-6 pb-3 pt-0 flex items-start gap-2 border-t border-attention-200 bg-card/50">
           <div className="flex-1 pt-3">
-            {pending === 'REJECTED' && (
-              <textarea
+            {(pending === 'RETURNED' || pending === 'DECLINED') && (
+              <DecisionReason
                 autoFocus
-                value={comment}
-                onChange={e => setComment(e.target.value)}
-                placeholder="Reason for rejection (required) — helps the submitter fix and re-submit…"
-                className="w-full text-[13px] text-ink-950 bg-card px-2.5 py-1.5 border border-risk-200 rounded-md placeholder:text-ink-400 focus:outline-none focus:border-risk-600 focus:ring-[3px] focus:ring-risk-600/15 resize-y min-h-[52px]"
+                contractId={awaitingMe.contract.id}
+                decision={pending}
+                reason={comment}
+                onReason={setComment}
+                findingIds={findingIds}
+                onFindingIds={setFindingIds}
               />
             )}
             {pending === 'DELEGATED' && (
@@ -267,7 +295,7 @@ export function DecisionStrip({
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => { setPending(null); setComment(''); setDelegateTo('') }}
+              onClick={() => { setPending(null); setComment(''); setDelegateTo(''); setFindingIds([]) }}
               disabled={decide.isPending}
               className="text-ink-500"
             >
@@ -277,21 +305,22 @@ export function DecisionStrip({
                 ink while approve/reject keep their decision colors. */}
             <Button
               size="sm"
-              variant={pending === 'APPROVED' ? 'brand' : pending === 'REJECTED' ? 'danger' : 'default'}
+              variant={pending === 'APPROVED' ? 'brand' : pending === 'DECLINED' ? 'danger' : 'default'}
               onClick={() => decide.mutate({
                 decision:   pending,
                 comment:    comment.trim() || undefined,
                 delegateTo: delegateTo.trim() || undefined,
+                ...(needsReason(pending) && findingIds.length && { findingIds }),
               })}
               disabled={
                 decide.isPending
-                || (pending === 'REJECTED' && !comment.trim())
+                || (needsReason(pending) && !comment.trim())
                 || (pending === 'DELEGATED' && !delegateTo.trim())
               }
               className="gap-1"
             >
               {decide.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              Confirm {pending === 'APPROVED' ? 'Approve' : pending === 'REJECTED' ? 'Reject' : 'Delegate'}
+              {CONFIRM_LABEL[pending]}
             </Button>
           </div>
         </div>

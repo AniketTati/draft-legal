@@ -1,0 +1,4 @@
+# Files the Salesforce CLI skips when deploying
+**/__tests__/**
+**/jsconfig.json
+**/.eslintrc.json

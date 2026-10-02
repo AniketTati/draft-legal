@@ -14,6 +14,7 @@ import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { CalendarClock, DollarSign, Shield, RefreshCw, FileSearch, Bell, Check, AlertTriangle, Sparkles, CheckCircle2 } from 'lucide-react'
 import { CompleteObligationModal } from '@/components/contracts/CompleteObligationModal'
+import { useCanRequest } from '@/lib/permissions'
 import { ObligationDrawer, sectionLabel } from '@/components/obligations/ObligationDrawer'
 
 export interface ObligationShape {
@@ -30,6 +31,10 @@ export interface ObligationShape {
   status?: string
   completedAt?: string | null
   notifiedAt?: string | null
+  /** docs/39 G4 — found by the AI: suggested until a person confirms it. */
+  reviewState?: 'SUGGESTED' | 'CONFIRMED' | 'DISMISSED'
+  /** Fix-up 13 — the amendment that replaced the clause it came from: on the record, no longer owed. */
+  replacedBy?: { contractId: string; label: string } | null
 }
 
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -92,6 +97,8 @@ export function ObligationsRailSection({
   const extractedAt = list.data?.extractedAt ?? null
 
   const extract = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async () => (await api.post<{ ok: boolean; obligations: ObligationShape[]; summary: string }>(
       `/contracts/${contractId}/extract-obligations`,
     )).data,
@@ -100,6 +107,21 @@ export function ObligationsRailSection({
       onAfterExtract?.()
     },
   })
+
+  // G4 — a suggestion becomes an obligation, or goes.
+  const canReview = useCanRequest('POST /obligations/:id/confirm')
+  const review = useMutation({
+    mutationFn: async ({ ids, action }: { ids: string[]; action: 'confirm' | 'dismiss' }) =>
+      (await api.post<{ count: number }>('/obligations/review', { ids, action })).data,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contract-obligations', contractId] })
+      qc.invalidateQueries({ queryKey: ['obligations-list'] })
+      qc.invalidateQueries({ queryKey: ['obligations-stats'] })
+    },
+  })
+  const suggested = obligations.filter(o => o.reviewState === 'SUGGESTED')
+  // docs/41 Part 11 — read from a draft: what it would commit to, owed once signed.
+  const proposed = obligations.filter(o => o.status === 'PROPOSED')
 
   const [showAll, setShowAll] = useState(false)
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
@@ -127,7 +149,7 @@ export function ObligationsRailSection({
         <div className="text-[12px] text-muted-foreground" data-testid={`obligations-empty-${emptyVariant}`}>
           {emptyVariant === 'pre_execution' && (
             <p className="leading-relaxed">
-              Obligations are extracted once this contract is executed. Until then, focus on negotiation + risk review.
+              This draft’s obligations are read when it is analysed, and shown as proposed until it is signed.
             </p>
           )}
           {emptyVariant === 'low_value_type' && (
@@ -174,6 +196,26 @@ export function ObligationsRailSection({
         </div>
       ) : (
         <>
+          {suggested.length > 0 && canReview && (
+            <div className="mb-2 flex items-center gap-2 text-[11px] text-ink-700" data-testid="obligations-suggested">
+              <Sparkles className="size-3 shrink-0 text-assist-600" />
+              <span className="flex-1">
+                {suggested.length} found by the AI — confirm the ones that apply.
+              </span>
+              {suggested.length > 1 && (
+                <button type="button" disabled={review.isPending} onClick={() => review.mutate({ ids: suggested.map(o => o.id), action: 'confirm' })}
+                  className="font-medium text-ink-950 hover:underline underline-offset-2 disabled:opacity-50" data-testid="obligations-confirm-all">
+                  Confirm all
+                </button>
+              )}
+            </div>
+          )}
+          {proposed.length > 0 && (
+            <p className="mb-2 text-[11px] leading-relaxed text-ink-700" data-testid="obligations-proposed-note">
+              <span className="font-medium text-ink-950">Proposed — confirmed at signing.</span>{' '}
+              What this draft would commit you to. They become obligations to track when it is signed.
+            </p>
+          )}
           <ul data-testid="obligations-list" className="space-y-1.5">
             {visible.map(o => {
               const Icon = TYPE_ICON[o.type] ?? Bell
@@ -208,12 +250,19 @@ export function ObligationsRailSection({
                         {o.description}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
+                        {o.replacedBy ? (
+                          <span className="rounded-chip border border-paper-300 bg-paper-100 px-1 font-medium text-ink-700" data-testid={`obligation-replaced-${o.id}`}>Replaced by {o.replacedBy.label}</span>
+                        ) : o.status === 'PROPOSED' ? (
+                          <span className="rounded-chip border border-paper-300 bg-paper-100 px-1 font-medium text-ink-700" data-testid={`obligation-proposed-${o.id}`}>Proposed — confirmed at signing</span>
+                        ) : o.reviewState === 'SUGGESTED' && (
+                          <span className="rounded-chip border border-assist-200 bg-assist-50 px-1 font-medium text-assist-700">Suggested</span>
+                        )}
                         <span className="font-mono uppercase tracking-wider text-ink-400">{o.type}</span>
                         <span className="text-muted-foreground">· {o.owner}</span>
                         {sectionLabel(o.sectionRef) && <span className="font-mono text-ink-500">{sectionLabel(o.sectionRef)}</span>}
                         {o.dueDate && (
-                          <span className={dueColor}>
-                            {days == null ? new Date(o.dueDate).toLocaleDateString()
+                          <span className={o.status === 'PROPOSED' || o.replacedBy ? 'text-muted-foreground' : dueColor}>
+                            {days == null || o.status === 'PROPOSED' || o.replacedBy ? new Date(o.dueDate).toLocaleDateString()
                               : days < 0 ? `${-days}d overdue`
                               : days === 0 ? 'due today'
                               : `due in ${days}d`}
@@ -222,7 +271,23 @@ export function ObligationsRailSection({
                         {!o.dueDate && o.trigger && (
                           <span className="text-muted-foreground italic truncate">{o.trigger}</span>
                         )}
-                        {o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                        {o.reviewState === 'SUGGESTED' && canReview ? (
+                          // G4 — confirmed (or dismissed) before it's worked.
+                          <span className="ml-auto inline-flex items-center gap-2">
+                            <button type="button" disabled={review.isPending}
+                              onClick={(e) => { e.stopPropagation(); review.mutate({ ids: [o.id], action: 'confirm' }) }}
+                              className="inline-flex items-center gap-0.5 font-medium text-ink-950 hover:underline underline-offset-2 disabled:opacity-50"
+                              data-testid={`obligation-confirm-${o.id}`}>
+                              <Check className="size-3" /> confirm
+                            </button>
+                            <button type="button" disabled={review.isPending}
+                              onClick={(e) => { e.stopPropagation(); review.mutate({ ids: [o.id], action: 'dismiss' }) }}
+                              className="text-ink-500 hover:text-ink-950 hover:underline underline-offset-2 disabled:opacity-50"
+                              data-testid={`obligation-dismiss-${o.id}`}>
+                              dismiss
+                            </button>
+                          </span>
+                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && o.status !== 'PROPOSED' && !o.replacedBy && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setCompleteTarget({ id: o.id, description: o.description }) }}

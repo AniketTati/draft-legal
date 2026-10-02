@@ -13,6 +13,10 @@ import { MessageSquare, Check, Trash2, Reply, Loader2, ChevronDown, ChevronRight
 interface Comment {
   id: string
   authorId: string
+  /** The portal names authors itself (our user ids never reach it). */
+  authorName?: string
+  /** docs/41 Part 16 — internal (our side only) or external (the portal sees it). */
+  visibility?: 'internal' | 'external'
   body: string
   clauseRef?: string | null
   resolved: boolean
@@ -28,6 +32,8 @@ interface CommentsPanelProps {
   portalMode?: boolean
   portalToken?: string
   permissions?: string[]
+  /** docs/41 Part 15 — a comment started from a change in the workspace: its quote, ready to add to. */
+  initialBody?: string
 }
 
 function timeAgo(iso: string) {
@@ -38,9 +44,10 @@ function timeAgo(iso: string) {
   return `${Math.floor(diff / 86_400_000)}d ago`
 }
 
-function authorDisplay(authorId: string) {
+function authorDisplay({ authorId, authorName }: Pick<Comment, 'authorId' | 'authorName'>) {
+  if (authorName) return authorName
   if (authorId.startsWith('portal:')) return 'External reviewer'
-  return authorId.slice(0, 8)
+  return authorId.slice(0, 8) || 'Someone'
 }
 
 function CommentThread({
@@ -65,6 +72,7 @@ function CommentThread({
       if (portalMode && portalToken) {
         return api.post(`/portal/${portalToken}/comments`, {
           body: replyBody.trim(),
+          parentId: comment.id,
           clauseRef: comment.clauseRef,
           authorName: replyName || undefined,
         })
@@ -89,11 +97,11 @@ function CommentThread({
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-start gap-2.5 flex-1 min-w-0">
             <div className="size-7 rounded-full border border-paper-200 bg-paper-100 flex-shrink-0 flex items-center justify-center text-ink-700 text-[11px] font-semibold">
-              {authorDisplay(comment.authorId)[0].toUpperCase()}
+              {authorDisplay(comment)[0].toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-body font-semibold text-ink-950">{authorDisplay(comment.authorId)}</span>
+                <span className="text-body font-semibold text-ink-950">{authorDisplay(comment)}</span>
                 {comment.clauseRef && (
                   // A section pointer, not a state — mono and neutral.
                   <span className="text-[11px] bg-paper-100 text-ink-700 px-1.5 py-0.5 rounded-chip font-mono">
@@ -151,11 +159,11 @@ function CommentThread({
             {comment.replies.map(reply => (
               <div key={reply.id} className="flex items-start gap-2">
                 <div className="size-6 rounded-full border border-paper-200 bg-paper-100 flex-shrink-0 flex items-center justify-center text-ink-700 text-[11px] font-semibold">
-                  {authorDisplay(reply.authorId)[0].toUpperCase()}
+                  {authorDisplay(reply)[0].toUpperCase()}
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-[11px] font-semibold text-ink-700">{authorDisplay(reply.authorId)}</span>
+                    <span className="text-[11px] font-semibold text-ink-700">{authorDisplay(reply)}</span>
                     <span className="text-[11px] text-ink-400">{timeAgo(reply.createdAt)}</span>
                   </div>
                   <p className="text-dense text-ink-700 mt-0.5">{reply.body}</p>
@@ -200,10 +208,10 @@ function CommentThread({
 }
 
 export function CommentsPanel({
-  contractId, versionId, clauseRef, portalMode = false, portalToken, permissions = [],
+  contractId, versionId, clauseRef, portalMode = false, portalToken, permissions = [], initialBody,
 }: CommentsPanelProps) {
   const qc = useQueryClient()
-  const [body, setBody] = useState('')
+  const [body, setBody] = useState(initialBody ?? '')
   const [authorName, setAuthorName] = useState('')
   const [clauseRefInput, setClauseRefInput] = useState(clauseRef ?? '')
   const [filter, setFilter] = useState<'all' | 'unresolved' | 'resolved'>('unresolved')
@@ -214,16 +222,19 @@ export function CommentsPanel({
     queryKey: ['contract-comments', contractId, clauseRef],
     queryFn: () => {
       if (portalMode && portalToken) {
-        // Portal mode: comments are loaded with the contract — we don't have a separate endpoint
-        // Return empty for now; portal shows existing comments inline
-        return { data: [] }
+        // Only threads shared with the counterparty come back (docs/41 Part 16).
+        return api.get(`/portal/${portalToken}/comments`).then(r => ({
+          data: (r.data.data as Array<Omit<Comment, 'authorId' | 'replies'> & { replies: Array<Omit<Comment, 'authorId' | 'replies'>> }>).map(t => ({
+            ...t, authorId: '', replies: t.replies.map(c => ({ ...c, authorId: '', replies: [] })),
+          })),
+        }))
       }
       const params: Record<string, string> = {}
       if (clauseRef) params.clauseRef = clauseRef
       if (filter !== 'all') params.resolved = String(filter === 'resolved')
       return api.get(`/contracts/${contractId}/comments`, { params }).then(r => r.data)
     },
-    enabled: !!contractId && !portalMode,
+    enabled: !!contractId && (!portalMode || !!portalToken),
   })
 
   const addComment = useMutation({

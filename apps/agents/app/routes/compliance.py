@@ -13,10 +13,17 @@ SOX, CCPA) and returns a structured per-framework report:
 Single LLM call. Node side persists the result onto
 Contract.metadata._compliance so the rail section + agent tools can
 read it without re-running the pass.
+
+POST /compliance/facts (docs/41 Part 9) — reads the FACTS that decide
+which frameworks apply (personal data? whose? health data? card data?…),
+each with a verbatim quote and a confidence. One fast-tier call. Whether a
+framework applies is then decided by the API from these facts and the org's
+policy (lib/compliance-policy.ts), not by a model.
 """
 from __future__ import annotations
 
 import json
+import re
 from ..jsonish import loads_lenient
 import logging
 
@@ -29,7 +36,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 logger = logging.getLogger("compliance")
 router = APIRouter()
 
-VALID_FRAMEWORKS = ["GDPR", "HIPAA", "SOX", "CCPA"]
+VALID_FRAMEWORKS = ["GDPR", "UK_GDPR", "HIPAA", "SOX", "CCPA", "PCI_DSS"]
 
 # Per-framework requirement catalogs injected into the prompt. Keeping
 # these in code (not the LLM's head) pins WHAT we check; the LLM only
@@ -73,7 +80,27 @@ involves personal information of California residents:
   ccpa_purpose_limitation  — processing limited to specified business purposes
   ccpa_consumer_rights     — assistance with consumer requests (access / deletion / opt-out)
   ccpa_subcontractor_flowdown — service-provider obligations flow down to subcontractors
-  ccpa_compliance_certification — certification of understanding & compliance"""
+  ccpa_compliance_certification — certification of understanding & compliance
+
+UK_GDPR (UK GDPR and Data Protection Act 2018) — applies when the contract \
+involves personal data of people in the UK or a UK-established party:
+  ukgdpr_processing_scope  — subject-matter, duration, nature & purpose of processing (Art. 28(3))
+  ukgdpr_documented_instructions — processor acts only on documented controller instructions
+  ukgdpr_security_measures — appropriate technical & organisational measures (Art. 32)
+  ukgdpr_subprocessor_consent — prior authorisation for sub-processors + flow-down
+  ukgdpr_breach_notification — personal data breach notice without undue delay
+  ukgdpr_deletion_return   — delete or return personal data at end of services
+  ukgdpr_audit_rights      — controller audit / inspection rights
+  ukgdpr_international_transfers — restricted transfers covered (IDTA / UK Addendum to the SCCs / adequacy)
+
+PCI_DSS (Payment Card Industry Data Security Standard) — applies when a \
+party stores, processes or transmits payment card data:
+  pci_compliance_maintained — service provider maintains PCI DSS compliance for the whole term
+  pci_responsibility_for_cardholder_data — written acknowledgement of responsibility for the security of cardholder data (Req. 12.8.2)
+  pci_attestation          — annual Attestation of Compliance (AOC) provided on request
+  pci_breach_notification  — prompt notice of any compromise of cardholder data
+  pci_responsibility_matrix — which PCI DSS requirements each party manages
+  pci_return_destroy       — cardholder data returned or securely destroyed at end of term"""
 
 _SYSTEM = f"""You are a regulatory compliance specialist reviewing a \
 commercial contract. For each requested framework, first decide whether \
@@ -90,7 +117,7 @@ Return ONLY this JSON shape:
 {{
   "frameworks": [
     {{
-      "framework": "GDPR|HIPAA|SOX|CCPA",
+      "framework": "GDPR|UK_GDPR|HIPAA|SOX|CCPA|PCI_DSS",
       "applicable": true|false,
       "applicabilityReason": "<one sentence — why this framework does or doesn't apply to THIS contract>",
       "status": "compliant|gaps|non_compliant|not_applicable",
@@ -138,6 +165,9 @@ class CheckComplianceRequest(BaseModel):
     frameworks:   list[str] | None = None  # default: assess all, gate by applicability
     jurisdiction: str | None = None
     orgId:        str | None = None  # Wave 3.5 — enables per-org BYOK key
+    # docs/41 Part 9 — the API already decided these frameworks apply (from
+    # facts and the org's policy): check the requirements, don't re-judge.
+    applicabilityDecided: bool = False
 
 
 @router.post("/check_compliance")
@@ -166,8 +196,13 @@ async def check_compliance(req: CheckComplianceRequest):
     model = resolved.model
 
     juris = f"\nGoverning law / jurisdiction: {req.jurisdiction}" if req.jurisdiction else ""
+    decided = (
+        "\nThese frameworks have already been determined to APPLY to this contract. "
+        "Set applicable=true for each and check every requirement; do not re-judge applicability."
+        if req.applicabilityDecided else ""
+    )
     user = f"""Contract type: {req.contractType}{juris}
-Frameworks to assess: {", ".join(requested)}
+Frameworks to assess: {", ".join(requested)}{decided}
 
 Contract text (truncated if very long):
 \"\"\"
@@ -191,7 +226,7 @@ Run the compliance checks now. JSON only."""
             if content.startswith("json"):
                 content = content[4:]
         parsed = loads_lenient(content)
-        frameworks = _normalise_frameworks(parsed.get("frameworks") or [], requested)
+        frameworks = _normalise_frameworks(parsed.get("frameworks") or [], requested, req.applicabilityDecided)
         overall = parsed.get("overall") or {}
         critical = sum(
             1
@@ -223,9 +258,10 @@ _SEVERITIES = {"low", "medium", "high", "critical"}
 _FW_STATUSES = {"compliant", "gaps", "non_compliant", "not_applicable"}
 
 
-def _normalise_frameworks(raw: list, requested: list[str]) -> list[dict]:
+def _normalise_frameworks(raw: list, requested: list[str], decided: bool = False) -> list[dict]:
     """Coerce LLM output to the expected keys + types so downstream code
-    never has to defensive-check."""
+    never has to defensive-check. `decided`: applicability was settled by
+    the API, so a model's "not applicable" doesn't stand."""
     out: list[dict] = []
     for fw in raw:
         if not isinstance(fw, dict):
@@ -249,7 +285,11 @@ def _normalise_frameworks(raw: list, requested: list[str]) -> list[dict]:
                 "sectionRef":     (str(c.get("sectionRef")) if c.get("sectionRef") else None),
                 "recommendation": (str(c.get("recommendation"))[:500] if c.get("recommendation") else None),
             })
+        if decided:
+            fw["applicable"] = True
         fw_status = str(fw.get("status") or "gaps").lower()
+        if decided and fw_status == "not_applicable":
+            fw_status = "gaps"
         try:
             score = max(0, min(100, int(fw.get("score", 0))))
         except (TypeError, ValueError):
@@ -274,3 +314,161 @@ def _rollup_status(frameworks: list[dict]) -> str:
     if any(fw["status"] == "gaps" for fw in applicable):
         return "gaps"
     return "compliant"
+
+
+# ─── /compliance/facts (docs/41 Part 9) ─────────────────────────────────────
+
+# key → kind. Mirrors COMPLIANCE_FACT_KEYS in packages/types/src/compliance.ts.
+FACT_KINDS: dict[str, str] = {
+    "personal_data": "boolean",
+    "personal_data_categories": "list",
+    "data_subject_regions": "list",
+    "health_data": "boolean",
+    "hipaa_covered_entity": "boolean",
+    "payment_card_data": "boolean",
+    "financial_reporting_impact": "boolean",
+    "public_company": "boolean",
+    "party_jurisdictions": "list",
+    "processing_role": "choice",
+    "cross_border_transfer": "boolean",
+    "industry": "choice",
+}
+_ROLES = {"controller", "processor", "joint", "none"}
+MAX_FACT_QUOTE = 240
+# A quote the text doesn't contain can't be trusted: its fact is kept, but
+# below the API's threshold (0.6), so the user is asked instead.
+UNGROUNDED_CONFIDENCE_CAP = 0.4
+
+_FACTS_SYSTEM = """You read a commercial contract and report FACTS that decide \
+which data-protection and financial regulations apply. You do NOT decide \
+whether a regulation applies. Every fact you report as present must be \
+backed by a verbatim quote from the text.
+
+Facts (key: type — meaning):
+  personal_data: boolean — will either party process information about identifiable people (employees, customers, end users, patients…) under this agreement? Contact details of the signatories alone do NOT count.
+  personal_data_categories: list of short strings — e.g. ["employee data", "customer contact details"]
+  data_subject_regions: list of codes — where the people whose data it is are. ISO 3166 alpha-2 country codes (DE, FR, GB, IN…), "EU" for the EU in general, "US-CA" for California residents, "US" for elsewhere in the US.
+  health_data: boolean — health, medical or patient information (PHI)
+  hipaa_covered_entity: boolean — is a party a US healthcare provider, health plan or clearinghouse, or acting as a business associate of one?
+  payment_card_data: boolean — will a party store, process or transmit payment card numbers?
+  financial_reporting_impact: boolean — does the agreement affect financial reporting, accounting records or internal financial controls (e.g. outsourced finance, billing systems, audit services)?
+  public_company: boolean — is a party publicly listed (stock exchange, "NYSE", "Nasdaq", "listed company")?
+  party_jurisdictions: list of codes — where the parties are incorporated or based (same codes as above)
+  processing_role: one of controller | processor | joint | none — the role of the party providing the services with respect to personal data
+  cross_border_transfer: boolean — will personal data be transferred between countries?
+  industry: one short lowercase word — e.g. healthcare, finance, retail, technology, logistics, manufacturing
+
+Return ONLY this JSON:
+{"facts": [{"key": "<fact key>", "value": <boolean | list | string | null>, "quote": "<verbatim excerpt ≤240 chars, or null>", "confidence": 0.0-1.0}]}
+
+Rules:
+ • Report every key. Use value null when the text says nothing either way.
+ • A true / non-empty value needs a verbatim quote. A false value may have quote null when the text is simply silent — then give confidence for how sure you are it is absent (a pure supply NDA with no data processing: personal_data false, confidence 0.8).
+ • Never invent quotes. Copy them exactly, including punctuation."""
+
+
+def _norm_ws(s: str) -> str:
+    s = s.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def _coerce_value(kind: str, raw):
+    if raw is None:
+        return None
+    if kind == "boolean":
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str) and raw.strip().lower() in ("true", "yes"):
+            return True
+        if isinstance(raw, str) and raw.strip().lower() in ("false", "no"):
+            return False
+        return None
+    if kind == "list":
+        items = raw if isinstance(raw, list) else [raw]
+        out = []
+        for item in items[:20]:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip()[:60])
+        return out
+    # choice
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw.strip().lower()[:40]
+
+
+def parse_facts_response(content: str, text: str) -> list[dict]:
+    """The model's facts, coerced to known keys and types, each quote checked
+    against the contract text. Never raises on a malformed item: it is dropped."""
+    parsed = loads_lenient(content)
+    raw = parsed.get("facts") if isinstance(parsed, dict) else None
+    haystack = _norm_ws(text)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "")
+        kind = FACT_KINDS.get(key)
+        if not kind or key in seen:
+            continue
+        seen.add(key)
+        value = _coerce_value(kind, item.get("value"))
+        if key == "processing_role" and value not in _ROLES:
+            value = None
+        quote = item.get("quote")
+        quote = str(quote).strip()[:MAX_FACT_QUOTE] if quote else None
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence", 0.5))))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        if quote and _norm_ws(quote) not in haystack:
+            quote = None
+            confidence = min(confidence, UNGROUNDED_CONFIDENCE_CAP)
+        # A fact that something IS there needs its quote.
+        if quote is None and (value is True or (isinstance(value, list) and value) or (kind == "choice" and value not in (None, "none"))):
+            confidence = min(confidence, UNGROUNDED_CONFIDENCE_CAP)
+        out.append({"key": key, "value": value, "quote": quote, "confidence": round(confidence, 3)})
+    return out
+
+
+class ComplianceFactsRequest(BaseModel):
+    plainText:    str
+    contractType: str = "general commercial"
+    jurisdiction: str | None = None
+    orgId:        str | None = None
+
+
+@router.post("/compliance/facts")
+async def compliance_facts(req: ComplianceFactsRequest):
+    text = (req.plainText or "").strip()
+    if not text:
+        return {"facts": []}
+    resolved = await resolve_llm(
+        "fast",
+        org_id=req.orgId,
+        streaming=False,
+        trace_name="compliance.facts",
+    )
+    juris = f"\nGoverning law / jurisdiction: {req.jurisdiction}" if req.jurisdiction else ""
+    user = f"""Contract type: {req.contractType}{juris}
+
+Contract text (truncated if very long):
+\"\"\"
+{text[:60000]}
+\"\"\"
+
+Report the facts now. JSON only."""
+    try:
+        response = await resolved.llm.ainvoke(
+            [SystemMessage(content=_FACTS_SYSTEM), HumanMessage(content=user)],
+            config={"callbacks": resolved.callbacks} if resolved.callbacks else None,
+        )
+        content = response.content if isinstance(response.content, str) else str(response.content)
+        return {
+            "facts":    parse_facts_response(content, text[:60000]),
+            "model":    resolved.model,
+            "provider": resolved.provider,
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[compliance_facts] LLM call / parse failed")
+        return {"facts": [], "error": f"facts_failed: {type(e).__name__}: {str(e)[:180]}"}

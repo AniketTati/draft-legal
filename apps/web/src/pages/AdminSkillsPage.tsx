@@ -232,6 +232,8 @@ function SkillEditDrawer({ skillId, onClose, onSaved }: {
   useEffect(() => { if (detail) setForm({ ...detail }) }, [detail])
 
   const save = useMutation({
+    // Shown where it happened; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: async (patch: Partial<SkillDetail>) => {
       const r = await api.patch<SkillDetail>(`/skills/${skillId}`, patch)
       return r.data

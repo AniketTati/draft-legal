@@ -16,6 +16,9 @@ import { ContractEditor } from '@/components/editor/ContractEditor'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ClauseCategory, PlaybookPosition } from '@clm/types'
+import { PlaybookSwitcher } from '@/components/playbook/PlaybookSwitcher'
+import { CategoryRulesPanel, type RulesCategory } from '@/components/playbook/CategoryRulesPanel'
+import { flattenCategories } from '@/lib/clause-approver'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -77,6 +80,9 @@ function PositionCard({
       )}
       {position.notes && (
         <p className="text-[11.5px] text-ink-500 mt-2 italic">{position.notes}</p>
+      )}
+      {position.counterpartyNote && (
+        <p className="text-[11.5px] text-ink-700 mt-1"><span className="text-ink-500">To the counterparty:</span> {position.counterpartyNote}</p>
       )}
       {/*
         The bar used to set `background: currentColor` inline on top of a wash
@@ -182,13 +188,14 @@ function PositionEditor({
   )
   const [content, setContent] = useState(position?.content ?? '')
   const [notes, setNotes] = useState(position?.notes ?? '')
+  const [counterpartyNote, setCounterpartyNote] = useState(position?.counterpartyNote ?? '')
   const [riskThreshold, setRiskThreshold] = useState(position?.riskThreshold ?? 0.5)
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await onSave({ clauseCategoryId: categoryId, positionType, content, notes, riskThreshold })
+      await onSave({ clauseCategoryId: categoryId, positionType, content, notes, counterpartyNote: counterpartyNote.trim() || null, riskThreshold })
     } finally {
       setSaving(false)
     }
@@ -238,6 +245,20 @@ function PositionEditor({
               onChange={e => setNotes(e.target.value)}
               placeholder="Guidance for the legal team..."
             />
+          </div>
+          <div>
+            <label className="text-[11px] font-medium text-ink-700 mb-1 block" htmlFor="counterparty-note">Suggested note to counterparty</label>
+            <textarea
+              id="counterparty-note"
+              value={counterpartyNote}
+              onChange={e => setCounterpartyNote(e.target.value)}
+              rows={3}
+              maxLength={2000}
+              placeholder="What we tell the other side when their wording misses this position, e.g. “We need the cap to cover fees paid in the prior 12 months.”"
+              className="w-full text-[13px] bg-card border border-input rounded-md px-[11px] py-2 resize-none focus-visible:outline-none focus-visible:border-brand-700"
+              data-testid="position-counterparty-note"
+            />
+            <p className="text-[11px] text-ink-500 mt-1">Offered as a comment the counterparty can see, on a finding against this position.</p>
           </div>
           <div>
             <label className="text-[11px] font-medium text-ink-700 mb-1 block">
@@ -375,6 +396,8 @@ export function PlaybookPage() {
   // Which rung the editor should open on when the user adds from a gap card.
   const [addType, setAddType] = useState<PlaybookPosition['positionType'] | undefined>()
   const [pendingDelete, setPendingDelete] = useState<PlaybookPosition | undefined>()
+  // docs/41 P1 — the playbook whose positions are shown and added to.
+  const [playbookId, setPlaybookId] = useState<string | null>(null)
 
   const { data: categoriesData } = useQuery({
     queryKey: ['clause-categories'],
@@ -385,16 +408,16 @@ export function PlaybookPage() {
   // whether this is a brand-new playbook (show explainer) or a populated
   // one (auto-select the first category). Cheap query — runs once.
   const { data: allPositionsData } = useQuery({
-    queryKey: ['playbook-all'],
-    queryFn: () => api.get('/playbook/positions').then(r => r.data),
+    queryKey: ['playbook-all', playbookId],
+    queryFn: () => api.get('/playbook/positions', { params: playbookId ? { playbookId } : {} }).then(r => r.data),
     staleTime: 30_000,
   })
 
   const { data: playbookData } = useQuery({
-    queryKey: ['playbook', selectedCategoryId],
+    queryKey: ['playbook', selectedCategoryId, playbookId],
     queryFn: () =>
       api.get('/playbook/positions', {
-        params: selectedCategoryId ? { clauseCategoryId: selectedCategoryId } : {},
+        params: { ...(selectedCategoryId && { clauseCategoryId: selectedCategoryId }), ...(playbookId && { playbookId }) },
       }).then(r => r.data),
     enabled: !!selectedCategoryId,
   })
@@ -405,14 +428,19 @@ export function PlaybookPage() {
   const refreshPlaybook = () => {
     qc.invalidateQueries({ queryKey: ['playbook'] })
     qc.invalidateQueries({ queryKey: ['playbook-all'] })
+    qc.invalidateQueries({ queryKey: ['playbooks'] })
   }
 
   const createMutation = useMutation({
-    mutationFn: (body: any) => api.post('/playbook/positions', body),
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
+    mutationFn: (body: any) => api.post('/playbook/positions', { ...body, ...(playbookId && { playbookId }) }),
     onSuccess: () => { refreshPlaybook(); setShowEditor(false); setAddType(undefined) },
   })
 
   const updateMutation = useMutation({
+    // Its caller awaits it and handles a failure; the global error toast stays out (lib/api.ts).
+    meta: { errorHandled: true },
     mutationFn: ({ id, data }: { id: string; data: any }) => api.patch(`/playbook/positions/${id}`, data),
     onSuccess: () => { refreshPlaybook(); setShowEditor(false); setEditPosition(undefined) },
   })
@@ -490,6 +518,7 @@ export function PlaybookPage() {
             <h1 className="text-title text-ink-950">Playbook</h1>
           </div>
           <p className="text-[11.5px] text-ink-500 mt-0.5">Negotiation positions per clause type</p>
+          <PlaybookSwitcher value={playbookId} onChange={setPlaybookId} />
         </div>
         <div className="flex-1 overflow-y-auto p-3">
           {categories.map(cat => (
@@ -602,6 +631,13 @@ export function PlaybookPage() {
                   </div>
                 </div>
               )
+            })()}
+
+            {/* docs/41 fix-up 9 — whether contracts must have this clause, and who decides exceptions. */}
+            {(() => {
+              const all = flattenCategories(categories as unknown as RulesCategory[])
+              const current = all.find(c => c.id === selectedCategoryId)
+              return current ? <CategoryRulesPanel category={current} all={all} /> : null
             })()}
 
             {showTest && <TestPanel categoryId={selectedCategoryId} />}

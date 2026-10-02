@@ -10,6 +10,7 @@
  */
 import { redactJson, restorePii } from './pii-policy.js'
 import { prisma } from './prisma.js'
+import { contractPlaybook } from './playbooks.js'
 import { findCategoryForClauseType } from './clause-category.js'
 import { modelFetch } from './model-boundary.js'
 
@@ -70,7 +71,7 @@ export async function proposeClauseAlternatives(args: {
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, title: true, type: true, currentVersionId: true },
+    select: { id: true, title: true, type: true, currentVersionId: true, playbookId: true },
   })
   if (!contract) return { ok: false, status: 404, detail: 'Contract not found' }
   if (!contract.currentVersionId) {
@@ -136,9 +137,11 @@ export async function proposeClauseAlternatives(args: {
   // aggressive" variant had nothing to anchor on but the counterparty's text.
   let preferred: { content: string; rules: unknown } | null = null
   let allPositions: Array<{ positionType: string; content: string }> = []
-  if (category) {
+  // docs/41 P1 — of the playbook this contract is reviewed against.
+  const { where: positionScope } = await contractPlaybook(orgId, contract)
+  if (category && positionScope) {
     const rows = await prisma.playbookPosition.findMany({
-      where:   { orgId, clauseCategoryId: category.id },
+      where:   { AND: [positionScope, { clauseCategoryId: category.id }] },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       select:  { positionType: true, content: true, rules: true },
     })

@@ -15,18 +15,24 @@ import {
   BarChart3,
   Database,
   ScrollText,
+  ShieldCheck,
 } from 'lucide-react'
 import { AiConfigTab } from '@/components/admin/AiConfigTab'
 import { OrgAuditLog } from '@/components/admin/OrgAuditLog'
+import { DateOrderSection } from '@/components/admin/DateOrderSection'
+import { SigningPolicySection } from '@/components/admin/SigningPolicySection'
+import { OurEntitiesSection } from '@/components/admin/OurEntitiesSection'
+import { CompliancePolicySection } from '@/components/admin/CompliancePolicySection'
 import { Card, EmptyState, Eyebrow } from '@/components/ui/primitives'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'alerts' | 'ai-config' | 'audit' | 'system' | 'data'
+type Tab = 'general' | 'alerts' | 'compliance' | 'ai-config' | 'audit' | 'system' | 'data'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'general', label: 'General', icon: Building2 },
   { id: 'alerts', label: 'Alert Rules', icon: Bell },
+  { id: 'compliance', label: 'Compliance', icon: ShieldCheck },
   { id: 'ai-config', label: 'AI Config', icon: Cpu },
   { id: 'audit', label: 'Audit Log', icon: ScrollText },
   { id: 'system', label: 'System Dashboard', icon: BarChart3 },
@@ -245,6 +251,12 @@ export function AdminOrgPage() {
                 </Button>
               </div>
             </Card>
+
+            {/* docs/39 A11 — saved on choosing, like the other org-wide reading settings. */}
+            <DateOrderSection />
+            <SigningPolicySection />
+            {/* docs/39 A8 — the names the org signs as: never the counterparty. */}
+            <OurEntitiesSection />
           </div>
         )}
 
@@ -252,6 +264,8 @@ export function AdminOrgPage() {
         {activeTab === 'alerts' && (
           <PlaceholderTab icon={Bell} title="Alert Rules" />
         )}
+        {/* docs/41 Part 9 — the rules from facts to compliance frameworks. */}
+        {activeTab === 'compliance' && <div className="max-w-3xl"><CompliancePolicySection /></div>}
         {activeTab === 'ai-config' && <AiConfigTab />}
         {activeTab === 'audit' && <OrgAuditLog />}
         {activeTab === 'system' && (

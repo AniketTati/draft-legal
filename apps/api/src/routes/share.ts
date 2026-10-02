@@ -7,6 +7,8 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'crypto'
 import jwt from 'jsonwebtoken'
 import { prisma } from '../lib/prisma.js'
+import { onSentToCounterparty } from '../lib/lifecycle.js'
+import { saveDraftChangesBefore } from '../lib/working-copy.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
@@ -14,6 +16,7 @@ import { resolveSecret } from '../lib/secrets.js'
 import { sendShareLinkEmail } from '../lib/share-email.js'
 import { isEmailConfigured } from '../lib/mailer.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
+import { openChoices, openChoicesMessage } from '../lib/open-choices.js'
 
 // Portal tokens are signed with PORTAL_JWT_SECRET, isolated from the user
 // JWT_SECRET. Resolved lazily + cached; production fails closed if missing/
@@ -77,6 +80,18 @@ export async function shareRoutes(app: FastifyInstance) {
       include: { org: { select: { name: true } } },
     })
     if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    // docs/41 Part 16 (C1) — the counterparty gets what the editor shows:
+    // draft changes still unsaved become a version first.
+    const saved = await saveDraftChangesBefore({ orgId, contractId, userId, reason: 'send', ipAddress: req.ip })
+    if (!saved.ok) return reply.status(saved.status).send({ ...saved.body, error: saved.body.detail })
+    if (saved.version) contract.currentVersionId = saved.version.id
+    // docs/41 P0.4 — the counterparty never receives a draft with a term
+    // still to choose (a governing law nobody named).
+    const open = await openChoices(contractId)
+    if (open.length) {
+      const detail = openChoicesMessage(open, 'sending it to the counterparty')
+      return reply.status(409).send({ code: 'OPEN_CHOICES', error: detail, detail, choices: open })
+    }
 
     if (!Array.isArray(permissions)) {
       return reply.status(400).send({ error: 'permissions must be an array of strings' })
@@ -141,7 +156,9 @@ export async function shareRoutes(app: FastifyInstance) {
       })
     }
 
-    createAuditEvent({ orgId, userId, action: AuditAction.LINK_SHARED, resourceType: 'contract', resourceId: contractId, metadata: { shareLinkId: shareLink.id, permissions: grantedPermissions, expiresAt, emailedTo: inviteEmail } }).catch(() => {})
+    createAuditEvent({ orgId, userId, action: AuditAction.LINK_SHARED, resourceType: 'contract', resourceId: contractId, metadata: { shareLinkId: shareLink.id, permissions: grantedPermissions, expiresAt, emailedTo: inviteEmail, versionId: contract.currentVersionId } }).catch(() => {})
+    // docs/41 Part 18 — sent to the counterparty: their turn (a draft starts the negotiation).
+    await onSentToCounterparty({ orgId, contractId, userId, via: inviteEmail ? 'email' : 'share_link' })
 
     return reply.status(201).send({
       shareLink,

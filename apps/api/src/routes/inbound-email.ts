@@ -44,6 +44,8 @@ import { bareAddress, extractContractTag } from '../lib/email-address.js'
 import { AuditAction } from '@clm/types'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { devFlag, isStrict } from '../lib/runtime-mode.js'
+import { onApprovalChange } from '../lib/approval-reset.js'
+import { onCounterpartyVersion } from '../lib/lifecycle.js'
 
 const InboundEmailSchema = z.object({
   to: z.string().min(1),
@@ -354,19 +356,21 @@ export async function inboundEmailRoutes(app: FastifyInstance) {
       },
     })
 
-    // Flip to UNDER_NEGOTIATION, point the contract at the incoming version,
-    // and reset analysisStatus so the parse pipeline extracts the attachment.
-    // currentVersionId and analysisStatus must move together — PENDING is what
-    // makes a not-yet-parsed version render as "Preparing document…".
+    // Point the contract at the incoming version, and reset analysisStatus so
+    // the parse pipeline extracts the attachment. currentVersionId and
+    // analysisStatus must move together — PENDING is what makes a
+    // not-yet-parsed version render as "Preparing document…".
     await prisma.contract.update({
       where: { id: contractId },
       data: {
-        status:           'UNDER_NEGOTIATION',
         currentVersionId: version.id,
         analysisStatus:   'PENDING',
         updatedAt:        new Date(),
       },
     })
+    // docs/41 Part 18 — back with us; a request for approval made before it is withdrawn (§6.5).
+    const reset = await onApprovalChange({ orgId: contract.orgId, contractId, versionId: version.id, source: 'counterparty', via: 'email' })
+    if (!reset.withdrawn) await onCounterpartyVersion({ orgId: contract.orgId, contractId, versionId: version.id, via: 'email' })
 
     // Without this the emailed redline stays blank text forever and cannot
     // be diffed against the previous version.

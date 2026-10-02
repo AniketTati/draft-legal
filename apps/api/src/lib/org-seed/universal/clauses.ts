@@ -1,5 +1,5 @@
 /**
- * Universal clause library — 106 clauses across the 18 universal categories.
+ * Universal clause library — 107 clauses across the 18 universal categories.
  *
  * Content is plain HTML (matches `ClauseLibraryItem.content` column). Each
  * clause is a short, reusable building-block — not a full agreement. Most
@@ -695,6 +695,14 @@ export const UNIVERSAL_CLAUSES: SeedClause[] = [
     title: 'Governing Law — New York',
     content: `<p>This Agreement is governed by and construed in accordance with the laws of the State of New York, without giving effect to its conflict-of-laws principles.</p>`,
     tags: ['dispute', 'governing-law', 'new-york'],
+    riskRating: 'standard',
+    isApproved: true,
+  },
+  {
+    categorySlug: 'dispute',
+    title: 'Governing Law — England and Wales',
+    content: `<p>This Agreement is governed by and construed in accordance with the laws of England and Wales, without giving effect to its conflict-of-laws principles.</p>`,
+    tags: ['dispute', 'governing-law', 'england-wales'],
     riskRating: 'standard',
     isApproved: true,
   },

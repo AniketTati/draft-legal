@@ -6,7 +6,7 @@ Review Agent v3 — Phase 2.2
   Step 3 — Score & Classify Agent (Sonnet): risk score, contract type, summary
 
 Changes from v2:
-  - Chunked extraction for long docs (40K chars, 4K overlap, merge logic)
+  - Chunked extraction for long docs (120K chars, 6K overlap, merge logic)
   - Dynamic custom field injection into extract prompt
   - Open-ended "extract anything else relevant" section
   - contract_type context injected for re-type flows
@@ -25,6 +25,8 @@ from typing_extensions import TypedDict
 from ..router import resolve_llm
 from ..untrusted import wrap_untrusted_document
 from ..pii_tokens import PII_TOKEN_RULE
+from .candidates import Readings, is_reading
+from .custom_fields import extract_custom_fields
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,9 @@ Return ONLY valid JSON matching this exact schema — no markdown, no explanatio
   "clauseSegments": [
     {
       "clauseType": "<type from list below>",
-      "content": "<verbatim clause text, max 800 chars — quote directly from the contract>",
+      "startsWith": "<the clause's first 10-15 words, copied exactly>",
+      "endsWith": "<the clause's last 10-15 words, copied exactly — where the clause ends, including all its sub-clauses>",
+      "content": "<the clause's text copied exactly; for a clause longer than 800 characters, its first 800>",
       "interpretation": "<plain-English explanation in 1-2 sentences: what does this clause mean, what obligation does it create for each party>",
       "riskRating": "<favorable|unfavorable|neutral|unusual>",
       "sectionRef": "<e.g. Section 5.2 or Article III — null if not identifiable>",
@@ -46,15 +50,26 @@ Return ONLY valid JSON matching this exact schema — no markdown, no explanatio
     }
   ],
   "rawFields": {
-    "parties":            [{ "role": "<Client|Vendor|Licensor|etc>", "name": "<party name>", "quote": "<verbatim text where found>" }],
-    "effectiveDate":      { "value": "<ISO date or null>", "quote": "<verbatim text or null>" },
+    "parties":            [{ "role": "<Client|Vendor|Licensor|etc>", "name": "<party name>", "address": "<the party's address as written, or null>", "signatory": "<who signed for this party and their title, e.g. 'Jane Doe, CFO', or null>", "quote": "<verbatim text where found>" }],
+    "effectiveDate":      { "value": "<ISO date the contract takes effect (for a SOW or an employment, the start date) or null>", "quote": "<verbatim text or null>" },
+    "executionDate":      { "value": "<ISO date the contract was signed, ONLY if different from the effective date, else null>", "quote": "<verbatim text or null>" },
+    "initialTerm":        { "value": "<how long the first term runs, as written with its unit, e.g. '12 months' or '3 years', or null>", "quote": "<verbatim text or null>" },
     "expiryDate":         { "value": "<ISO date or null>", "quote": "<verbatim text or null>" },
+    "renewalTerm":        { "value": "<how long each renewal runs, as written with its unit, e.g. '12 months', or null>", "quote": "<verbatim text or null>" },
+    "terminationForConvenience": { "value": "<true|false|null — may a party end the contract early WITHOUT cause?>", "quote": "<verbatim text or null>" },
+    "valueBasis":         { "value": "<Total|Annual|Monthly|Other|null — whether 'value' below is the total over the term, a yearly amount or a monthly amount>", "quote": "<verbatim text or null>" },
+    "paymentFrequency":   { "value": "<One-time|Monthly|Quarterly|Annually|Milestones|Other|null>", "quote": "<verbatim text or null>" },
+    "venue":              { "value": "<the courts or arbitration seat where disputes are decided, or null — NOT the governing law>", "quote": "<verbatim text or null>" },
     "value":              { "value": "<number as string or null>", "quote": "<verbatim text or null>" },
     "currency":           { "value": "<3-letter code or null>", "quote": "<verbatim text or null>" },
     "governingLaw":       { "value": "<jurisdiction string or null>", "quote": "<verbatim text or null>" },
-    "noticePeriodDays":   { "value": "<integer as string or null>", "quote": "<verbatim text or null>" },
+    "nonRenewalNotice":   { "value": "<notice needed BEFORE A TERM ENDS to stop automatic renewal, as written with its unit, e.g. '90 days' or '3 months', or null>", "quote": "<verbatim text or null>" },
+    "terminationNotice":  { "value": "<notice needed to END THE CONTRACT EARLY without cause (for convenience), as written with its unit, e.g. '30 days', or null>", "quote": "<verbatim text or null>" },
     "paymentTermsDays":   { "value": "<integer as string or null>", "quote": "<verbatim text or null>" },
     "autoRenew":          { "value": "<true|false|null>", "quote": "<verbatim text or null>" },
+    "renewalType":        { "value": "<Automatic|By agreement|Evergreen|None|null — Automatic: renews unless a party gives notice; By agreement: only if both agree to renew; Evergreen: runs until a party ends it; None: ends at expiry>", "quote": "<verbatim text or null>" },
+    "optOutWindow":       { "value": "<the EARLIEST a party may give notice to stop a renewal, before a term ends, as written with its unit (e.g. 'not more than 120 days' → '120 days'), or null>", "quote": "<verbatim text or null>" },
+    "priceUpliftCap":     { "value": "<the most the price may rise at a renewal, as a percentage number (e.g. '5'), or null>", "quote": "<verbatim text or null>" },
     "exclusivity":        { "value": "<true|false|null>", "quote": "<verbatim text or null>" },
     "liabilityCapAmount": { "value": "<amount as string or null>", "quote": "<verbatim text or null>" },
     "ipOwnership":        { "value": "<brief description or null>", "quote": "<verbatim text or null>" },
@@ -144,8 +159,14 @@ Return ONLY valid JSON — no markdown, no explanation:
 
 Rules:
 - Dates → ISO 8601 string (YYYY-MM-DD) or null
-- Numbers (value, noticePeriodDays, paymentTermsDays, liabilityCapAmount) → actual number or null. Never keep as string.
-- Booleans (autoRenew, exclusivity, confidentiality) → true, false, or null. Never keep as string.
+- Numbers (value, paymentTermsDays, liabilityCapAmount) → actual number or null. Never keep as string.
+- Notice periods (nonRenewalNotice, terminationNotice) → a short phrase with a number and a unit, e.g. "90 days" or "3 months". Keep the contract's own unit: never turn months into days. nonRenewalNotice is ONLY notice to stop an automatic renewal; terminationNotice is ONLY notice to end early without cause. A notice clause about how notices are delivered is neither.
+- Terms (initialTerm, renewalTerm) → the same kind of phrase, e.g. "12 months", "3 years".
+- Dates (effectiveDate, executionDate, expiryDate) → YYYY-MM-DD. executionDate only when the signing date differs from the effective date.
+- valueBasis → exactly one of Total, Annual, Monthly, Other, or null. paymentFrequency → exactly one of One-time, Monthly, Quarterly, Annually, Milestones, Other, or null.
+- venue is where disputes are heard (courts, arbitration seat), never the governing law.
+- parties[] → keep each party's role, name, address and signatory exactly as extracted.
+- Booleans (autoRenew, terminationForConvenience, exclusivity, confidentiality) → true, false, or null. Never keep as string.
 - confidence 0.9+ = value clearly stated in quote; 0.7-0.9 = reasonable inference; <0.7 = uncertain, flag for human review
 - If value is null because field genuinely not present, confidence = 1.0 (certain absence)
 - parties[] → validate each party has both role and name; confidence = avg of all party extractions
@@ -239,9 +260,16 @@ class ReviewState(TypedDict):
     contract_type:    str | None    # user-corrected type — injected into extract prompt
     custom_fields:    list[dict]    # org-defined fields to extract
     org_id:           str | None    # routes LLM calls through the org's BYOK / overrides
+    language:         str | None    # docs/39 A11 — the contract's language, when not English
+    date_order:       str | None    # docs/39 A11 — "MDY" or "DMY": how the org writes dates with numbers
+    custom_clause_types: list[dict] # docs/39 E3 — the org's own clause types, tagged like the listed ones
+    corrections:      list[dict]    # docs/39 I2 — what people corrected earlier readings of these fields to
+    type_locked:      bool          # docs/39 A13 — a person set contract_type: no opinion of our own
+    type_opinion:     str | None    # docs/39 A13 — the type the whole contract reads as, when not contract_type
     # Step 1 output
     clause_segments:  list[dict]
     raw_fields:       dict
+    field_candidates: dict          # docs/39 A6 — {field: [readings]} where the chunks read it differently
     clause_flags:     dict
     custom_extracted: dict          # { customFields: {...}, openEndedFindings: [...] }
     # Step 2 output
@@ -462,7 +490,13 @@ def _chunk_text(text: str) -> list[str]:
 
 
 def _merge_raw_fields(base: dict, new: dict) -> dict:
-    """Merge two rawFields dicts: prefer first non-null value per field. Concatenate parties."""
+    """Merge two rawFields dicts: the first reading per field wins; concatenate parties.
+
+    docs/39 A6 — an answer that says nothing ("", [], or "no" with no words
+    to show for it) is no reading: a later chunk's real one replaces it.
+    Which of several real readings a field takes is settled after all the
+    chunks are read (candidates.Readings).
+    """
     merged = dict(base)
     for key, val in new.items():
         if key == "parties":
@@ -472,8 +506,60 @@ def _merge_raw_fields(base: dict, new: dict) -> dict:
             merged["parties"] = (merged.get("parties") or []) + new_parties
         elif key not in merged or merged[key] is None:
             merged[key] = val
-        elif isinstance(merged[key], dict) and merged[key].get("value") is None and isinstance(val, dict):
+        elif isinstance(val, dict) and not is_reading(merged[key]) and is_reading(val):
             merged[key] = val
+    return merged
+
+
+# Fields every contract states, and the types whose contracts also state a
+# price (an NDA or an MSA legitimately has none, and asking again for it on
+# every one of them is the waste A2 removed). Keys are the rawFields names
+# the first pass writes — the canonical names in packages/types/src/fields.ts.
+_REQUIRED_ALWAYS = ("parties", "effectiveDate", "governingLaw")
+_PRICED_TYPES = {"SOW", "ORDER_FORM", "VENDOR_AGREEMENT", "LICENSE"}
+_REQUIRED_FIELD_HINTS = {
+    "parties":       'every party to the contract, as a list of {"role": ..., "name": ...}',
+    "effectiveDate": "the date the contract takes effect (YYYY-MM-DD)",
+    "governingLaw":  "the law that governs the contract",
+    "value":         "the total amount payable under the contract, as a number",
+}
+
+
+def _is_empty_field(v: Any) -> bool:
+    return (
+        v is None or v == "" or
+        (isinstance(v, dict) and v.get("value") in (None, "", [])) or
+        (isinstance(v, list) and len(v) == 0)
+    )
+
+
+def _missing_required_fields(fields: dict, contract_type: str | None) -> list[str]:
+    """The required rawFields keys the first pass left empty, in a stable order."""
+    required = list(_REQUIRED_ALWAYS)
+    if (contract_type or "").upper() in _PRICED_TYPES:
+        required.append("value")
+    return [k for k in required if _is_empty_field(fields.get(k))]
+
+
+def _merge_recovered_fields(fields: dict, recovered: Any, missing: list[str]) -> dict:
+    """Fill only the missing keys, under their own names; never overwrite a hit.
+
+    `parties` keeps the first pass's shape — a list of {role, name, quote} —
+    whether the second pass returns the list or wraps it in {"value": [...]}.
+    """
+    if not isinstance(recovered, dict):
+        return fields
+    merged = dict(fields)
+    for k in missing:
+        cand = recovered.get(k)
+        if k == "parties":
+            parties = cand.get("value") if isinstance(cand, dict) else cand
+            if isinstance(parties, list) and parties:
+                merged[k] = [p for p in parties if isinstance(p, dict) and p.get("name")]
+                logger.info("[extract] second-pass recovered field=%s", k)
+        elif isinstance(cand, dict) and cand.get("value") not in (None, "", []):
+            merged[k] = cand
+            logger.info("[extract] second-pass recovered field=%s", k)
     return merged
 
 
@@ -507,8 +593,94 @@ def _merge_clause_flags(base: dict, new: dict) -> dict:
     return merged
 
 
-def _build_custom_fields_prompt(custom_fields: list[dict], contract_type: str | None) -> str:
-    """Build the dynamic section appended to _EXTRACT_PROMPT."""
+_LANGUAGE_NAMES = {"fr": "French", "de": "German", "es": "Spanish", "it": "Italian", "pt": "Portuguese", "nl": "Dutch"}
+
+
+def _reading_note(language: str | None, date_order: str | None) -> str:
+    """docs/39 A11 — what the model is reading: the contract's language and
+    how the org writes dates with numbers. Values keep one format whatever the
+    language (ISO dates, plain numbers); quotes keep the contract's words."""
+    lines: list[str] = []
+    name = _LANGUAGE_NAMES.get((language or "").lower())
+    if name:
+        lines.append(
+            f"The contract is written in {name}. Quote it verbatim in {name}; give every value "
+            "in the formats asked for (dates as YYYY-MM-DD, numbers as numbers), and write "
+            "summaries and issues in English."
+        )
+    if date_order == "DMY":
+        lines.append(
+            "Dates written with numbers only are day first: 03/04/2025 is 3 April 2025. "
+            "Read them so unless the contract itself shows otherwise (a US governing law, "
+            "or a date like 12/31/2025 that can only be month first)."
+        )
+    elif date_order == "MDY":
+        lines.append(
+            "Dates written with numbers only are month first: 03/04/2025 is 4 March 2025. "
+            "Read them so unless the contract itself shows otherwise (a UK or EU governing "
+            "law, or a date like 31/12/2025 that can only be day first)."
+        )
+    return ("\n\nREADING NOTES:\n" + "\n".join(f"- {l}" for l in lines)) if lines else ""
+
+
+def _corrections_note(corrections: list[dict] | None) -> str:
+    """docs/39 I2 — the org's reviewers corrected earlier readings of these
+    fields, more than once each: the patterns to follow (how the org reads
+    the field), never values to copy — this contract says what it says."""
+    fields = []
+    for c in corrections or []:
+        if not isinstance(c, dict) or not c.get("key"):
+            continue
+        examples = [
+            {k: e.get(k) for k in ("read", "corrected", "quote") if e.get(k)}
+            for e in (c.get("examples") or [])[:3]
+            if isinstance(e, dict) and e.get("read") and e.get("corrected")
+        ]
+        if examples:
+            fields.append({"field": c["key"], "label": c.get("label") or c["key"], "corrections": examples})
+    if not fields:
+        return ""
+    return (
+        "\n\nCORRECTIONS THE ORGANISATION'S REVIEWERS MADE: on other contracts, people corrected what an "
+        "earlier reading of these fields gave (read → corrected, with the words it was read from). Read these "
+        "fields the way the corrections show — the same wording, the same unit, the same distinction — but "
+        "take every value from this contract, never from an example:\n"
+        + json.dumps(fields[:8], ensure_ascii=False, indent=1)
+    )
+
+
+def _custom_clause_types_note(types: list[dict] | None) -> str:
+    """docs/39 E3 — the organisation's own clause types: tagged in clauseSegments
+    like the listed ones, found by what the clause does (the examples show what
+    one looks like elsewhere, never wording to match)."""
+    specs = []
+    for t in types or []:
+        key = str((t or {}).get("key") or "") if isinstance(t, dict) else ""
+        if not key.startswith("custom_"):
+            continue
+        specs.append({
+            "clauseType": key,
+            "name": t.get("label") or key,
+            "what it is": str(t.get("description") or "")[:600],
+            "examples": [str(e)[:400] for e in (t.get("examples") or [])[:3] if str(e).strip()],
+        })
+    if not specs:
+        return ""
+    return (
+        "\n\nTHE ORGANISATION'S OWN CLAUSE TYPES: tag a clause in clauseSegments with one of these clauseType keys "
+        "when it is that kind of clause, rather than a general type above. The examples show what one looks like "
+        "in other contracts: find it by what it does, not by their wording.\n"
+        + json.dumps(specs[:25], ensure_ascii=False, indent=1)
+    )
+
+
+def _build_custom_fields_prompt(contract_type: str | None, tracked_labels: list[str] | None = None) -> str:
+    """Build the dynamic section appended to _EXTRACT_PROMPT: the contract type's fields and open-ended findings.
+
+    docs/39 A5 — the org's own fields are no longer in it: they are read in a
+    pass of their own (custom_fields.py). Their names still are, so the
+    open-ended findings don't report again what the org already tracks (C4).
+    """
     lines = []
 
     if contract_type:
@@ -530,32 +702,16 @@ def _build_custom_fields_prompt(custom_fields: list[dict], contract_type: str | 
             '"confidence": <0.0-1.0>, "quote": "<verbatim source text or null>" }'
         )
 
-    if custom_fields:
-        lines.append(
-            "\nORGANISATION-SPECIFIC FIELDS: Additionally extract the following org-defined fields. "
-            "Add a top-level \"customFields\" key to your JSON response:"
-        )
-        field_specs = [
-            {
-                "key":     f["fieldKey"],
-                "label":   f["fieldLabel"],
-                "type":    f["fieldType"],
-                "options": f.get("options", []),
-                "hint":    f.get("helpText") or "",
-            }
-            for f in custom_fields
-        ]
-        lines.append(json.dumps(field_specs, indent=2))
-        lines.append(
-            'For each custom field return: { "value": <extracted value matching the type, or null>, '
-            '"confidence": <0.0-1.0>, "quote": "<verbatim source text or null>" }'
-        )
-
     lines.append("""
 OPEN-ENDED: Also extract an "openEndedFindings" array for any other legally significant terms
 not covered by the schemas above (e.g. unusual penalties, bespoke triggers, non-standard carve-outs).
 Each entry: { "key": "<snake_case_name>", "label": "<human readable>", "value": <value>, "confidence": <0.0-1.0>, "quote": "<verbatim text>" }
 """)
+    if tracked_labels:
+        lines.append(
+            "The organisation already tracks these as fields of its own, read separately — "
+            "do not report them as open-ended findings: " + "; ".join(tracked_labels[:60]) + "."
+        )
 
     return "\n".join(lines)
 
@@ -567,7 +723,11 @@ async def _extract(state: ReviewState) -> ReviewState:
     text   = state["plain_text"]
     chunks = _chunk_text(text)
 
-    extra_prompt = _build_custom_fields_prompt(state["custom_fields"], state["contract_type"])
+    tracked = [f.get("fieldLabel") for f in state["custom_fields"] if isinstance(f, dict) and f.get("fieldLabel")]
+    extra_prompt = _build_custom_fields_prompt(state["contract_type"], tracked) \
+        + _custom_clause_types_note(state.get("custom_clause_types")) \
+        + _reading_note(state.get("language"), state.get("date_order")) \
+        + _corrections_note(state.get("corrections"))
 
     resolved = await resolve_llm(
         "default",
@@ -586,6 +746,9 @@ async def _extract(state: ReviewState) -> ReviewState:
     merged_custom: dict       = {}
     merged_type:   dict       = {}
     open_ended:    list[dict] = []
+    # docs/39 A6 — every chunk's reading of each field, not just the first.
+    readings      = Readings()
+    type_readings = Readings()
 
     for i, chunk in enumerate(chunks):
         logger.info("[extract] chunk %d/%d chars=%d", i + 1, len(chunks), len(chunk))
@@ -614,19 +777,19 @@ async def _extract(state: ReviewState) -> ReviewState:
             _dict = lambda v: v if isinstance(v, dict) else {}   # noqa: E731
             _list = lambda v: v if isinstance(v, list) else []   # noqa: E731
 
+            raw = _dict(data.get("rawFields"))
+            for k, v in raw.items():
+                if k != "parties":
+                    readings.add(k, v, i)
             all_segments  = all_segments + _list(data.get("clauseSegments"))
-            merged_fields = _merge_raw_fields(merged_fields, _dict(data.get("rawFields")))
+            merged_fields = _merge_raw_fields(merged_fields, raw)
             merged_flags  = _merge_clause_flags(merged_flags, _dict(data.get("clauseFlags")))
 
-            # Merge contract-type-specific fields (prefer first non-null)
+            # Merge contract-type-specific fields (the first reading wins; see A6 below)
             for k, v in _dict(data.get("typeFields")).items():
-                if k not in merged_type or (isinstance(merged_type[k], dict) and merged_type[k].get("value") is None):
+                type_readings.add(k, v, i)
+                if k not in merged_type or (not is_reading(merged_type[k]) and is_reading(v)):
                     merged_type[k] = v
-
-            # Merge org custom fields (prefer first non-null)
-            for k, v in _dict(data.get("customFields")).items():
-                if k not in merged_custom or (isinstance(merged_custom[k], dict) and merged_custom[k].get("value") is None):
-                    merged_custom[k] = v
 
             # Accumulate open-ended findings (deduplicate by key)
             seen_keys = {f.get("key") for f in open_ended if isinstance(f, dict)}
@@ -641,6 +804,39 @@ async def _extract(state: ReviewState) -> ReviewState:
             logger.error("[extract] chunk %d/%d FAILED: %s", i + 1, len(chunks), e, exc_info=True)
             state["error"] = f"extract chunk {i+1}: {e}"
 
+    # docs/39 A5 — the org's own fields, in a pass of their own: with how
+    # people filled each in on other contracts, the relevant chunk first, and
+    # each answer checked against the document.
+    if state["custom_fields"]:
+        try:
+            merged_custom, _, _ = await extract_custom_fields(
+                text, state["custom_fields"],
+                contract_type=state.get("contract_type"), org_id=state.get("org_id"),
+                reading_note=_reading_note(state.get("language"), state.get("date_order")),
+                trace_name="review.custom_fields",
+            )
+        except Exception as e:
+            logger.error("[extract] custom-field pass FAILED: %s", e, exc_info=True)
+            state["error"] = state.get("error") or f"custom fields: {e}"
+
+    # docs/39 A6 — where chunks read a field differently, it takes the first
+    # reading whose words are in the document, and every reading goes with it.
+    field_candidates: dict = {}
+    if len(chunks) > 1:
+        for key in list(readings.by_key):
+            primary, candidates = readings.settle(key, text)
+            if primary is not None:
+                merged_fields[key] = primary
+            if candidates:
+                field_candidates[key] = candidates
+        for key in list(type_readings.by_key):
+            primary, candidates = type_readings.settle(key, text)
+            if primary is not None:
+                merged_type[key] = {**primary, "candidates": candidates} if candidates else primary
+        if field_candidates:
+            logger.info("[extract] chunks read differently: %s", ", ".join(sorted(field_candidates)))
+    state["field_candidates"] = field_candidates
+
     state["clause_segments"] = _dedupe_segments(all_segments)
     state["raw_fields"]      = merged_fields
     state["clause_flags"]    = merged_flags
@@ -651,30 +847,23 @@ async def _extract(state: ReviewState) -> ReviewState:
     }
 
     # P-fix #3 (2026-05-02). Smart Import second-pass for missing
-    # required fields. The first-pass extract is broad but often misses
-    # 1-2 high-value fields — typically `parties`, `term_length`,
-    # `governing_law`, `total_value`. When the customer migrates 1000
-    # contracts the field-coverage average is what they grade us on.
-    # If any required field came back null/empty, run a tighter LLM
-    # call focused ONLY on those fields, with the explicit instruction
-    # to look harder. Cheap (only fires when needed), bounded (only
-    # rerolls the missing keys), additive (never overwrites a hit).
-    REQUIRED = {"parties", "term_length", "governing_law", "total_value"}
-    missing = []
-    for k in REQUIRED:
-        v = merged_fields.get(k)
-        is_empty = (
-            v is None or v == "" or
-            (isinstance(v, dict) and (v.get("value") in (None, "", []))) or
-            (isinstance(v, list) and len(v) == 0)
-        )
-        if is_empty:
-            missing.append(k)
+    # required fields: if one came back empty, a tighter call looks for
+    # only those. Cheap (only fires when needed), bounded (only the
+    # missing keys), additive (never overwrites a hit).
+    #
+    # A2 (docs/39) — it used to ask for `term_length`, `governing_law`
+    # and `total_value`, names the first pass never writes (it writes
+    # governingLaw and value, and has no term field). So it fired on
+    # nearly every contract, and what it recovered was stored under keys
+    # nothing read: a found governing law never reached `jurisdiction`.
+    missing = _missing_required_fields(merged_fields, state.get("contract_type"))
     if missing and len(text) > 0:
         try:
             second_prompt = (
                 "You are a focused extraction specialist. The first pass "
-                "missed these specific fields: " + ", ".join(missing) + ".\n\n"
+                "missed these specific fields:\n"
+                + "\n".join(f"- {k}: {_REQUIRED_FIELD_HINTS[k]}" for k in missing)
+                + "\n\n"
                 "Re-read the contract text below and return ONLY a JSON "
                 "object with just those keys. Each value should be "
                 '{"value": <extracted>, "quote": "<verbatim source>", '
@@ -700,12 +889,7 @@ async def _extract(state: ReviewState) -> ReviewState:
                 config={"callbacks": resolved.callbacks},
             )
             recovered = _parse_json(resp2.content)
-            for k in missing:
-                if k in recovered and recovered[k]:
-                    cand = recovered[k]
-                    if isinstance(cand, dict) and cand.get("value") not in (None, "", []):
-                        merged_fields[k] = cand
-                        logger.info("[extract] second-pass recovered field=%s", k)
+            merged_fields = _merge_recovered_fields(merged_fields, recovered, missing)
             state["raw_fields"] = merged_fields
         except Exception as e:
             logger.warning("[extract] second-pass missing-field recovery failed: %s", e)
@@ -736,9 +920,11 @@ async def _validate(state: ReviewState) -> ReviewState:
         )
         logger.info("[validate] provider=%s model=%s raw_fields=%d",
                     resolved.provider, resolved.model, len(state["raw_fields"]))
+        # A11 reading note, I2 corrections: before the token rule, which ends the prompt.
+        notes = _reading_note(state.get("language"), state.get("date_order")) + _corrections_note(state.get("corrections"))
         resp = await resolved.llm.ainvoke(
             [
-                SystemMessage(content=_VALIDATE_PROMPT + payload + PII_TOKEN_RULE),
+                SystemMessage(content=_VALIDATE_PROMPT + payload + notes + PII_TOKEN_RULE),
                 HumanMessage(content="Validate the fields above."),
             ],
             config={"callbacks": resolved.callbacks},
@@ -825,9 +1011,16 @@ async def _score(state: ReviewState) -> ReviewState:
         data = _parse_json(resp.content)
 
         ct = str(data.get("contractType", "OTHER")).upper().strip()
-        # If user explicitly set a type, respect it even if model disagrees
-        if state["contract_type"] and state["contract_type"].upper() in _VALID_TYPES:
-            ct = state["contract_type"].upper()
+        read_as = ct if ct in _VALID_TYPES else None
+        # The type it was read as (a person's, or the classifier's) stands: its
+        # fields are the ones extracted. docs/39 A13 — unless a person set it,
+        # the whole contract's own reading is kept as an opinion when it differs.
+        given = (state["contract_type"] or "").upper()
+        if given in _VALID_TYPES:
+            ct = given
+            state["type_opinion"] = (
+                read_as if read_as and read_as not in (given, "OTHER") and not state.get("type_locked") else None
+            )
 
         state["contract_type_out"] = ct if ct in _VALID_TYPES else "OTHER"
         state["suggested_title"]   = data.get("suggestedTitle", "")
@@ -881,6 +1074,11 @@ async def run_review(
     contract_type: str | None = None,
     custom_fields: list[dict] | None = None,
     org_id:        str | None = None,
+    language:      str | None = None,
+    date_order:    str | None = None,
+    corrections:   list[dict] | None = None,
+    type_locked:   bool = False,
+    custom_clause_types: list[dict] | None = None,
 ) -> dict[str, Any]:
     """
     Run the 3-step review pipeline.
@@ -897,8 +1095,15 @@ async def run_review(
         "contract_type":     contract_type,
         "custom_fields":     custom_fields or [],
         "org_id":            org_id,
+        "language":          language,
+        "date_order":        date_order,
+        "corrections":       corrections or [],
+        "custom_clause_types": custom_clause_types or [],
+        "type_locked":       type_locked,
+        "type_opinion":      None,
         "clause_segments":   [],
         "raw_fields":        {},
+        "field_candidates":  {},
         "clause_flags":      {},
         "custom_extracted":  {},
         "validated_fields":  {},
@@ -926,6 +1131,10 @@ async def run_review(
             "section": vdata.get("section"),
             "issue":   vdata.get("issue") if conf < 0.7 else None,
         }
+        # docs/39 A6 — the contract says different things about it: every reading, the value's first.
+        candidates = (final.get("field_candidates") or {}).get(field_name)
+        if candidates:
+            field_confidence[field_name]["candidates"] = candidates
 
     return {
         "summary":          final["summary"],
@@ -939,5 +1148,7 @@ async def run_review(
         "clauseFlags":      final["clause_flags"],
         "overallConfidence": final["overall_confidence"],
         "customExtracted":  final.get("custom_extracted", {}),
+        # docs/39 A13 — the type the whole contract reads as, when not the one it was read as.
+        "typeOpinion":      final.get("type_opinion"),
         "error":            final.get("error"),
     }

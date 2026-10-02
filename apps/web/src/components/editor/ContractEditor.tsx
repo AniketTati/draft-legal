@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { DOMSerializer } from '@tiptap/pm/model'
 import { useEditor, EditorContent } from '@tiptap/react'
+import { BubbleMenu } from '@tiptap/react/menus'
+import type { Node as PmNode } from '@tiptap/pm/model'
 import StarterKit from '@tiptap/starter-kit'
 import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
@@ -28,13 +30,14 @@ import TableCell from '@tiptap/extension-table-cell'
 import { TextStyle } from '@tiptap/extension-text-style'
 import { Color } from '@tiptap/extension-color'
 import GhostCompletion from './GhostCompletion'
+import { VariableTokens, variableTokensKey } from './VariableTokens'
 import {
   Bold, Italic, UnderlineIcon, Strikethrough,
   Heading1, Heading2, Heading3,
   List, ListOrdered, AlignLeft, AlignCenter, AlignRight,
   Table as TableIcon, Undo, Redo,
   Download, Search, X, ChevronRight,
-  Wand2, BookOpen, FileText, Loader2,
+  Wand2, BookOpen, FileText, Loader2, Braces,
 } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -46,6 +49,21 @@ import { MEANING_CLASS, type Meaning } from '@/lib/status'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
+/**
+ * docs/39 H1 — words selected in a template to make a variable of, and the
+ * way to put its {{key}} in their place (here only, or everywhere the same
+ * words are in this section).
+ */
+export interface VariableSelection {
+  text: string
+  before: string
+  after: string
+  rect: { top: number; bottom: number; left: number; right: number }
+  /** Times the same words are in this section. */
+  occurrences: number
+  replace: (token: string, everywhere: boolean) => number
+}
+
 interface ContractEditorProps {
   initialContent?: string
   contractType?: string
@@ -53,6 +71,21 @@ interface ContractEditorProps {
   onChange?: (html: string) => void
   onExport?: (format: 'pdf' | 'docx') => void
   readOnly?: boolean
+  /** docs/39 H1 — the template's variable keys: a {{key}} not among them is marked. */
+  variableKeys?: readonly string[]
+  /** docs/39 H1 — "Make variable" on selected words (the template builder). */
+  onMakeVariable?: (selection: VariableSelection) => void
+}
+
+/** Where the same words are in a document, each within one run of text. */
+function rangesOf(doc: PmNode, text: string): Array<{ from: number; to: number }> {
+  const out: Array<{ from: number; to: number }> = []
+  if (!text) return out
+  doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) return
+    for (let i = node.text.indexOf(text); i >= 0; i = node.text.indexOf(text, i + text.length)) out.push({ from: pos + i, to: pos + i + text.length })
+  })
+  return out
 }
 
 interface ClauseItem {
@@ -297,7 +330,12 @@ export function ContractEditor({
   onChange,
   onExport,
   readOnly = false,
+  variableKeys,
+  onMakeVariable,
 }: ContractEditorProps) {
+  // H1 — read by the token decorations on every draw; refreshed below when the list changes.
+  const knownKeys = useRef<ReadonlySet<string>>(new Set(variableKeys ?? []))
+  knownKeys.current = new Set(variableKeys ?? [])
   const [showClausePanel, setShowClausePanel] = useState(false)
   const [showFindReplace, setShowFindReplace] = useState(false)
   const [assistLoading, setAssistLoading] = useState(false)
@@ -333,6 +371,8 @@ export function ContractEditor({
       TableCell,
       TextStyle,
       Color,
+      // docs/39 H1 — {{key}} tokens drawn as chips; one the list lacks, marked.
+      VariableTokens.configure({ known: () => knownKeys.current }),
       // P6.1 — Ghost-text completion. Only fires in edit mode.
       GhostCompletion.configure({
         contractType: contractType ?? 'general commercial',
@@ -354,6 +394,41 @@ export function ContractEditor({
       editor.commands.setContent(initialContent)
     }
   }, [initialContent, editor])
+
+  // H1 — the variables list changed: the tokens are drawn again.
+  const keysSig = (variableKeys ?? []).join('|')
+  useEffect(() => {
+    if (editor && !editor.isDestroyed) editor.view.dispatch(editor.state.tr.setMeta(variableTokensKey, keysSig))
+  }, [editor, keysSig])
+
+  /** H1 — the selection as words to make a variable of, with the way to put its token in their place. */
+  const variableSelection = (): VariableSelection | null => {
+    if (!editor) return null
+    const { from, to, empty } = editor.state.selection
+    if (empty) return null
+    const raw = editor.state.doc.textBetween(from, to, ' ')
+    const text = raw.replace(/\s+/g, ' ').trim()
+    if (!text || text.length > 300) return null
+    const a = editor.view.coordsAtPos(from)
+    const b = editor.view.coordsAtPos(to)
+    const size = editor.state.doc.content.size
+    return {
+      text,
+      before: editor.state.doc.textBetween(Math.max(0, from - 120), from, ' '),
+      after: editor.state.doc.textBetween(to, Math.min(size, to + 120), ' '),
+      rect: { top: Math.min(a.top, b.top), bottom: Math.max(a.bottom, b.bottom), left: Math.min(a.left, b.left), right: Math.max(a.right, b.right) },
+      occurrences: Math.max(1, rangesOf(editor.state.doc, raw).length),
+      replace: (token, everywhere) => {
+        const found = everywhere ? rangesOf(editor.state.doc, raw) : []
+        // The selection itself, even when its words cross formatting (bold in the middle).
+        const targets = found.some(r => r.from === from && r.to === to) ? found : [...found, { from, to }]
+        const tr = editor.state.tr
+        for (const r of [...targets].sort((x, y) => y.from - x.from)) tr.insertText(token, r.from, r.to)
+        editor.view.dispatch(tr)
+        return targets.length
+      },
+    }
+  }
 
   const insertClause = useCallback((html: string) => {
     if (!editor) return
@@ -514,8 +589,8 @@ export function ContractEditor({
     // `Authorization: Bearer`, there is no cookie fallback, and only the axios
     // client attaches the token — so this 401'd every single time. Then
     // `if (!resp?.ok) return` swallowed it, which is why the buttons appeared
-    // to do nothing at all rather than to fail. CompareMode.tsx is the correct
-    // pattern and its own comment already named this file as the anti-pattern.
+    // to do nothing at all rather than to fail. The workspace's ChangesView
+    // downloads the same way, through the axios client.
     setExportError(null)
     try {
       const res = await api.post(
@@ -781,6 +856,23 @@ export function ContractEditor({
 
         {/* Editor canvas */}
         <div className="flex-1 overflow-y-auto">
+          {/* docs/39 H1 — words in a template made a variable. */}
+          {onMakeVariable && !readOnly && (
+            <BubbleMenu
+              editor={editor}
+              updateDelay={100}
+              className="inline-flex items-center gap-0.5 rounded-md border border-paper-200 bg-popover p-1 shadow-e2"
+            >
+              <button
+                type="button"
+                onMouseDown={e => { e.preventDefault(); const sel = variableSelection(); if (sel) onMakeVariable(sel) }}
+                className="inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950"
+                data-testid="make-variable"
+              >
+                <Braces className="size-3.5" /> Make variable
+              </button>
+            </BubbleMenu>
+          )}
           <EditorContent
             editor={editor}
             // An unfilled variable is attention — the document cannot go out

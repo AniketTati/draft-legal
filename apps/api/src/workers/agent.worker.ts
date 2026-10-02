@@ -2,115 +2,53 @@
  * Agent Worker — handles agentQueue jobs:
  *   detect-binder    : LLM binder detection (Haiku, first 10K chars) → BINDER_DETECTED or classify-document
  *   classify-document: LLM contract type classification (Haiku, first 5K chars) → extract-ai
- *   extract-ai       : fetch custom field defs + call agents /review with full payload
+ *   extract-ai       : read, extract (agents /review/run) and save a contract's fields and clauses (lib/extraction-job.ts)
  *   classify-request : LLM intake classification (Haiku, 3K chars) → stores in request.metadata
  *   approval-summary : Phase 06 — AI executive summary for approvers (LangGraph 3-step pipeline)
+ *   draft-contract   : a draft from a converted request, saved and analysed (lib/draft-save.ts)
+ *   analysis-checkpoint: docs/41 P0.1 — an edited contract, analysed again once left alone (lib/analysis-trigger.ts)
+ *   working-copy-idle: docs/41 Part 16 — draft changes left alone become a version (lib/working-copy.ts)
  */
-import { Worker } from 'bullmq'
+import { Worker, type Job } from 'bullmq'
 import { redis } from '../lib/redis.js'
 import { prisma } from '../lib/prisma.js'
 import { queueClassifyDocument, queueExtractAi, queueSplitBinder } from '../lib/queue.js'
 import { SPLIT_REQUIRES_PDF } from '../lib/binder-split.js'
 import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
-import { redlineTargets, uncheckedClauses, type ReviewFinding } from '../lib/playbook-redline-targets.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob } from '../lib/queue.js'
+import { complianceStep } from '../lib/version-review-steps.js'
+import { redlineTargets, uncheckedClauses, redlineClearNote, type ReviewFinding } from '../lib/playbook-redline-targets.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, ComplianceReviewJob, ChangeAdviceJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
+import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
+import { readTypeFields, clearTypeFieldsMark } from '../lib/type-fields-read.js'
+import { CostCapExceededError } from '../lib/costCap.js'
+import { runDetect } from '../lib/clause-types.js'
+import { agentsFindClause } from '../lib/clause-type-agents.js'
+import { answerColumn, answerDocument } from '../lib/diligence-columns.js'
+import { agentsAskFields } from '../lib/diligence-agents.js'
 import { proposeClauseBatch } from '../lib/clause-propose-batch.js'
 import { createAuditEvent } from '../lib/audit.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, CLAUSE_TYPE_LABELS } from '@clm/types'
+import { matchCategory } from '../lib/clause-category.js'
 import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.js'
 import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 import { modelFetch } from '../lib/model-boundary.js'
+import { internalWriteInit } from '../lib/internal-write.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
+import { runExtractionJob, recordRunUsage, type ExtractionJobData, type RunUsage } from '../lib/extraction-job.js'
+import { callAgents } from '../lib/agents-call.js'
+import { saveDraftVersion } from '../lib/draft-save.js'
+import { draftFromRequest, type RequestDraftContext } from '../lib/request-draft.js'
+import { runCheckpointAnalysis } from '../lib/analysis-trigger.js'
+import { runJobStep, type StepOutcome } from '../lib/analysis-runs.js'
+import { contractPlaybook } from '../lib/playbooks.js'
+import { computeAndStoreFindings, positionCheckTargets, type PositionVerdict, type Verdict } from '../lib/review-findings.js'
+import { normaliseText } from '../lib/fingerprint.js'
 
 const AGENTS_URL = process.env.AGENTS_URL ?? 'http://localhost:8002'
 
-/**
- * Every call from this worker into the agents service.
- *
- * Before this existed, agent.worker.ts had ZERO references to costCap or
- * recordUsage: all nine background job types called the agents service
- * directly with no pre-check and no post-record. So background spend was
- * invisible to the daily cap AND absent from OrgUsageDaily, which means the
- * admin usage panel under-reported by the entire background pipeline -- the
- * one W0-6 fixed to stop reporting $0.00 forever.
- *
- * The cap is checked BEFORE the call, because a cap that only notices after
- * the tokens are spent is a report, not a cap. A breach throws
- * CostCapExceededError, which callers let propagate: BullMQ marks the job
- * failed, which is the honest outcome -- the work did not happen.
- */
-async function callAgents(
-  path: string,
-  init: RequestInit,
-  meta: {
-    orgId: string; toolName: string
-    /** Round-trip token scope: the contract's id, or the request's. */
-    scope: string
-    contractId?: string
-    /**
-     * The text whose personal data is replaced (see redactJson's valuesFrom):
-     * the whole document when the body carries parts of it, or the request's
-     * own text. The body's other strings (org name, field labels, playbook
-     * text) are configuration, which the callbacks couldn't restore.
-     */
-    context?: string | null
-  },
-): Promise<Response> {
-  await assertCostCapNotExceeded(meta.orgId)
-
-  // X23 — contract text leaves our trust zone here, so the org's PII policy
-  // applies, as it does on the chat tools (it was skipped for every job).
-  // What comes back is stored — a draft, findings, and (through the
-  // extraction's callbacks, see contracts.ts) the clause text itself — so the
-  // values go out as round-trip tokens and are put back below. Jobs whose body
-  // carries only ids (/redline, /approval-summary) are unaffected: the agents
-  // service fetches that text itself.
-  let sent: unknown
-  const source = () => (meta.context != null ? [meta.context] : [sent])
-  if (typeof init.body === 'string') {
-    sent = JSON.parse(init.body)
-    const redacted = await redactJson(meta.orgId, sent, {
-      surface: `worker:${meta.toolName}`, contractId: meta.contractId, roundTrip: meta.scope, valuesFrom: source(),
-    })
-    init = { ...init, body: JSON.stringify(redacted) }
-  }
-
-  const res = await modelFetch(`${AGENTS_URL}${path}`, init, { orgId: meta.orgId, surface: `worker:${meta.toolName}`, contractId: meta.contractId })
-
-  // Size-based estimate, the same heuristic the chat path uses. Recorded even
-  // on a non-2xx: a failed generation still burned tokens upstream.
-  //
-  // recordUsage writes OrgUsageDaily AND the cap counter (skipping the counter
-  // for BYOK), so it is the single call -- adding recordCost alongside it would
-  // double-count.
-  const inputChars  = typeof init.body === 'string' ? init.body.length : 0
-  const outputChars = (await res.clone().text().catch(() => '')).length
-  const usd = estimateCostUsd(inputChars + outputChars)
-  recordUsage(meta.orgId, usd, {
-    provider: 'agents-service',
-    model:    'background-job',
-    tier:     'default',
-    toolName: meta.toolName,
-    inputChars,
-    outputChars,
-  }).catch(() => { /* accounting must never fail a job */ })
-
-  if (sent === undefined || !res.ok) return res
-  const text = await res.text()
-  const headers = { 'content-type': res.headers.get('content-type') ?? 'application/json' }
-  if (!text) return new Response(null, { status: res.status, headers })
-  let reply: unknown
-  try { reply = JSON.parse(text) } catch { return new Response(text, { status: res.status, headers }) }
-  const restored = restorePii(reply, source(), meta.scope)
-  const left = unresolvedPiiTokens(restored, [sent, meta.context ?? '']).length
-  if (left) {
-    console.warn('[agent-worker] %s scope=%s: %d PII token(s) the model altered or invented stay as tokens', meta.toolName, meta.scope, left)
-  }
-  return new Response(JSON.stringify(restored), { status: res.status, headers })
-}
 
 // playbook_check lives on THIS service's internal-ai plugin, not on the Python
 // agents service. Same self-call shape agent-threads.ts uses.
@@ -131,7 +69,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     where: { id: contractId },
     select: { parentContractId: true, relationshipType: true },
   })
-  if (contractMeta?.parentContractId || contractMeta?.relationshipType === 'exhibit_only') {
+  if (contractMeta?.parentContractId || contractMeta?.relationshipType === 'split_part') {
     console.info(
       '[agent-worker] detect-binder: skipping %s (already a split child: parent=%s, rel=%s)',
       contractId, contractMeta.parentContractId, contractMeta.relationshipType,
@@ -245,7 +183,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
 
 // ─── classify-document ────────────────────────────────────────────────────────
 
-async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> {
+async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<StepOutcome | void> {
   const { contractId, versionId, orgId, contractType: knownType } = data
   console.info('[agent-worker] classify-document start contractId=%s', contractId)
 
@@ -256,7 +194,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
   if (!version?.plainText) {
     // Stale job from a previous run — a fresh parse/classify job will re-queue this. Skip silently.
     console.warn('[agent-worker] classify-document: plainText not yet ready for versionId=%s, skipping stale job', versionId)
-    return
+    return { skipped: 'the document has no text yet' }
   }
 
   const res = await callAgents('/classify', {
@@ -270,7 +208,10 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
   }
 
   const result = await res.json() as { contractType: string; confidence: number; reason: string }
-  const resolvedType = knownType ?? result.contractType
+  // docs/39 A13 — a type a person set stands through a re-analysis.
+  const current = await prisma.contract.findUnique({ where: { id: contractId }, select: { type: true, metadata: true } })
+  const personType = (current?.metadata as Record<string, unknown> | null)?._typeSource === 'person' ? current?.type : undefined
+  const resolvedType = knownType ?? personType ?? result.contractType
   console.info('[agent-worker] classify-document contractId=%s type=%s confidence=%.2f',
     contractId, resolvedType, result.confidence)
 
@@ -282,83 +223,31 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<void> 
     },
   })
 
-  queueExtractAi({ contractId, versionId, orgId, contractType: resolvedType, triggeredBy: 'upload' })
+  queueExtractAi({ contractId, versionId, orgId, contractType: resolvedType, triggeredBy: 'upload', typeLocked: !!(knownType || personType) })
 }
 
 // ─── extract-ai ───────────────────────────────────────────────────────────────
+// docs/39 A1 — the extraction runs inside this job, and is saved by it; see
+// lib/extraction-job.ts. Saved through this API's own routes, as the agents
+// service saved it when it ran in the background there.
 
-async function handleExtractAi(data: ExtractAiJob): Promise<void> {
-  const { contractId, versionId, orgId, contractType, triggeredBy } = data
+async function apiWrite(method: 'PATCH' | 'POST', path: string, orgId: string, body?: unknown): Promise<{ status: number; text: string }> {
+  const res = await fetch(`${API_INTERNAL_URL}${path}`, internalWriteInit(method, orgId, INTERNAL_SECRET, body))
+  return { status: res.status, text: await res.text().catch(() => '') }
+}
 
-  console.info('[agent-worker] extract-ai start contractId=%s triggeredBy=%s', contractId, triggeredBy)
-
-  // Fetch full plain text from DB (written by parse worker)
-  const version = await prisma.contractVersion.findUnique({
-    where: { id: versionId },
-    select: { plainText: true },
+async function handleExtractAi(job: Job<ExtractionJobData>): Promise<void> {
+  const { contractId, orgId, triggeredBy } = job.data
+  console.info('[agent-worker] extract-ai start contractId=%s triggeredBy=%s attempt=%d', contractId, triggeredBy, job.attemptsMade + 1)
+  const agentsHeaders = { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' }
+  const outcome = await runExtractionJob(job, {
+    review: (body, text) => callAgents('/review/run', { method: 'POST', headers: agentsHeaders, body: JSON.stringify(body) },
+      { orgId, toolName: 'extraction', scope: contractId, contractId, context: text, estimate: false }),
+    reviewLegacy: (body, text) => callAgents('/review', { method: 'POST', headers: agentsHeaders, body: JSON.stringify(body) },
+      { orgId, toolName: 'extraction', scope: contractId, contractId, context: text }),
+    api: apiWrite,
   })
-
-  if (!version?.plainText) {
-    throw new Error(`No plainText for versionId=${versionId} — parse worker may not have finished`)
-  }
-
-  // Fetch org custom field definitions (global + type-scoped) + org name.
-  // orgName is passed to the agents service so the counterparty picker can
-  // filter out parties whose name matches the user's own org — without this
-  // the extractor picks "us" as counterparty in ~40% of contracts because
-  // both parties have a name and the model has no context for which one is
-  // the user. (Wave E.3)
-  const [customFields, org] = await Promise.all([
-    prisma.contractFieldDefinition.findMany({
-      where: {
-        orgId,
-        deletedAt: null,
-        OR: [
-          { contractType: contractType ?? null },
-          { contractType: null },   // global fields apply to all types
-        ],
-      },
-      orderBy: { sortOrder: 'asc' },
-      select: { fieldKey: true, fieldLabel: true, fieldType: true, options: true, helpText: true },
-    }),
-    prisma.organization.findUnique({
-      where: { id: orgId },
-      select: { name: true },
-    }),
-  ])
-
-  console.info('[agent-worker] found %d custom fields for orgId=%s contractType=%s',
-    customFields.length, orgId, contractType ?? 'any')
-
-  // Call agents service
-  const body = {
-    contractId,
-    versionId,
-    orgId,
-    orgName:       org?.name,
-    contractType:  contractType ?? undefined,
-    customFields:  customFields.map(f => ({
-      fieldKey:   f.fieldKey,
-      fieldLabel: f.fieldLabel,
-      fieldType:  f.fieldType,
-      options:    (f.options as string[]) ?? [],
-      helpText:   f.helpText ?? undefined,
-    })),
-    plainText: version.plainText,
-  }
-
-  const res = await callAgents('/review', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
-    body: JSON.stringify(body),
-  }, { orgId, toolName: 'redline_analysis', scope: contractId, contractId, context: version.plainText })
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`Agents /review returned ${res.status}: ${text.slice(0, 200)}`)
-  }
-
-  console.info('[agent-worker] extract-ai queued in agents service contractId=%s', contractId)
+  console.info('[agent-worker] extract-ai %s contractId=%s', outcome, contractId)
 }
 
 // ─── classify-request ────────────────────────────────────────────────────────
@@ -484,6 +373,35 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
   try {
     await setMeta({ _playbookRedlineStatus: 'RUNNING' })
 
+    // docs/41 P1 — "Fix all fixable": the review's findings already say which
+    // clauses and why; nothing is worked out again.
+    if (data.targets?.clauseIds.length) {
+      const { clauseIds, hints, severity = {}, findingIds = {} } = data.targets
+      const proposed = await proposeClauseBatch({ orgId, contractId, clauseIds, aggression, hints })
+      if (!proposed.ok) throw new Error(`${proposed.detail}${proposed.upstream ? `: ${proposed.upstream}` : ''}`)
+      const rows = await prisma.contractClause.findMany({ where: { id: { in: clauseIds } }, select: { id: true, content: true, sectionRef: true } })
+      const byId = new Map(rows.map(c => [c.id, c]))
+      const proposals = proposed.data.proposals.map(p => ({
+        clauseId: p.clauseId, clauseType: p.clauseType,
+        sectionRef: byId.get(p.clauseId)?.sectionRef ?? null,
+        originalText: byId.get(p.clauseId)?.content ?? '',
+        proposedText: p.proposedText, rationale: p.rationale, changes: p.changes,
+        severity: severity[p.clauseId] ?? null, findingId: findingIds[p.clauseId] ?? null, error: p.error,
+      }))
+      await setMeta({
+        _playbookRedlineStatus: 'DONE',
+        _playbookRedline: {
+          versionId, aggression, proposals, source: 'review',
+          deviationCount: clauseIds.length,
+          proposedCount: proposals.filter(p => p.proposedText).length,
+          failedCount: proposals.filter(p => p.error).length,
+          worstSeverity: null, truncated: false, uncoveredClauses: 0,
+          stagedAt: new Date().toISOString(),
+        },
+      })
+      return
+    }
+
     // 1. Which clauses deviate. Ask for the WHOLE document — Phase 0 raised the
     //    cap for exactly this caller.
     const checkRes = await fetch(`${API_INTERNAL_URL}/api/internal/ai/tools/playbook_check`, {
@@ -507,6 +425,8 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
     // "Could not be checked" means neither the rules nor the review judged it.
     const uncoveredClauses = await uncheckedClauses(versionId, review, checked.summary?.uncoveredClauses ?? 0)
     if (deviatingIds.length === 0) {
+      // docs/41 P0.7 — zero clauses checked is not an all-clear.
+      const clauseCount = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
       await setMeta({
         _playbookRedlineStatus: 'DONE',
         _playbookRedline: {
@@ -514,8 +434,9 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
           worstSeverity: checked.summary?.worstSeverity ?? null,
           truncated: checked.summary?.truncated ?? false,
           uncoveredClauses,
+          clauseCount,
           stagedAt: new Date().toISOString(),
-          note: 'No clause deviated from the playbook.',
+          note: redlineClearNote(clauseCount, (checked.checks ?? []).length),
         },
       })
       return
@@ -590,49 +511,73 @@ async function handlePlaybookRedline(data: PlaybookRedlineJob): Promise<void> {
   }
 }
 
-async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
+/** The built-in clause type a playbook category is (the first that names it). */
+function clauseTypeFor(categoryName: string | null | undefined): string | null {
+  if (!categoryName) return null
+  const cat = { id: 'c', name: categoryName }
+  return Object.keys(CLAUSE_TYPE_LABELS).find(t => matchCategory([cat], t)) ?? null
+}
+
+/**
+ * docs/41 P1 (Part 7) — the model's position check, after the findings.
+ *
+ * Only the clauses the findings say changed since the baseline (all of them
+ * on a contract with none) and that aren't standard (still the template's
+ * words) are sent, each judged against the positions of the playbook this
+ * contract is reviewed against: a verdict, a quote and a sentence, stored on
+ * the clause. The findings are then worked out again with the verdicts in.
+ * The model judges clauses; it never writes the recommendation.
+ */
+async function handlePlaybookReview(data: PlaybookReviewJob): Promise<StepOutcome> {
   const { contractId, orgId } = data
 
   const contract = await prisma.contract.findFirst({
     where:  { id: contractId, orgId, deletedAt: null },
-    select: { id: true, type: true, currentVersionId: true },
+    select: { id: true, type: true, currentVersionId: true, playbookId: true },
   })
   if (!contract) {
     console.info('[agent-worker] playbook-review skip contractId=%s — contract gone', contractId)
-    return
+    return { skipped: 'the contract was deleted' }
   }
   // DD2 — a review after edits takes the version the contract stands on now.
   const versionId = data.versionId ?? contract.currentVersionId
-  if (!versionId) return
+  if (!versionId) return { skipped: 'the contract has no version' }
 
-  // Review the version that was just extracted, not whatever is "current" by
-  // the time this runs — the pointer may have moved on, and the stamp below
-  // must describe the document actually scored.
-  const clauses = await prisma.contractClause.findMany({
+  // Which clauses changed, and which are standard: the findings, fresh.
+  const review = await computeAndStoreFindings(contractId, versionId)
+  if (!review) return { skipped: 'the version is gone' }
+  const rows = await prisma.contractClause.findMany({
     where:   { versionId, isSubChunk: false },
-    select:  { id: true, clauseType: true, content: true, sectionRef: true },
-    orderBy: { id: 'asc' },
+    select:  { id: true, clauseType: true, content: true, sectionRef: true, sortOrder: true, positionVerdict: true, sourceRef: true },
+    orderBy: { sortOrder: 'asc' },
   })
-  if (clauses.length === 0) {
+  if (rows.length === 0) {
     console.info('[agent-worker] playbook-review skip contractId=%s — no clauses extracted', contractId)
-    return
+    return { skipped: 'no clauses to check' }
+  }
+  const targets = positionCheckTargets(
+    rows.map(r => ({ ...r, positionVerdict: r.positionVerdict as PositionVerdict | null, standardSource: r.sourceRef })),
+    review.changedClauseIds,
+  )
+  const standard = review.standardClauseIds.length
+  if (targets.length === 0) {
+    return { skipped: standard ? 'every changed clause is standard or already checked' : 'no changed clauses to check', counts: { checked: 0, standard } }
   }
 
-  const positions = await prisma.playbookPosition.findMany({
-    where:  { orgId },
+  // docs/41 P1 — the positions of the playbook this contract is reviewed
+  // against (lib/playbooks.ts), for its type.
+  const { resolution, where: positionScope } = await contractPlaybook(orgId, contract)
+  const relevant = positionScope ? await prisma.playbookPosition.findMany({
+    where:  positionScope,
     select: {
-      positionType: true, content: true, notes: true, contractTypes: true,
+      id: true, positionType: true, content: true, notes: true, contractTypes: true,
       clauseCategory: { select: { name: true } },
     },
-  })
-  // A position pinned to specific contract types must not be applied to others.
-  const relevant = positions.filter(
-    p => p.contractTypes.length === 0 || p.contractTypes.includes(contract.type),
-  )
+  }) : []
   if (relevant.length === 0) {
     console.info('[agent-worker] playbook-review skip contractId=%s — no playbook positions for type=%s',
       contractId, contract.type)
-    return
+    return { skipped: resolution.playbook ? `${resolution.playbook.name} has no positions for this type` : resolution.explanation, counts: { checked: 0, standard } }
   }
 
   const res = await callAgents('/playbook-review', {
@@ -641,16 +586,18 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     body:    JSON.stringify({
       contractId,
       orgId,
+      mode: 'positions',
       // DD1 — a clause's caps, measured from its words, so the review states
       // them instead of working them out.
-      clauses: clauses.map(c => {
+      clauses: targets.map(c => {
         const facts = liabilityCaps(c.content).map(x => x.statement)
-        return facts.length ? { ...c, facts } : c
+        return { id: c.id, clauseType: c.clauseType, content: c.content, sectionRef: c.sectionRef, ...(facts.length && { facts }) }
       }),
       playbookPositions: relevant.map(p => ({
+        id:           p.id,
         clauseType:   p.clauseCategory?.name ?? 'other',
         positionType: p.positionType,
-        content:      p.content,
+        content:      htmlToText(p.content),
         notes:        p.notes,
       })),
       contractType: contract.type,
@@ -664,39 +611,60 @@ async function handlePlaybookReview(data: PlaybookReviewJob): Promise<void> {
     const text = await res.text().catch(() => '')
     throw new Error(`Agents /playbook-review returned ${res.status}: ${text.slice(0, 200)}`)
   }
-  const result = await res.json() as {
-    findings: unknown[]
-    summary: string
-    requiresHumanGate: boolean
-    clausesReviewed: number
-    playbookPositions: number
+  const result = await res.json() as { verdicts?: Array<{ clauseId: string; positionId: string | null; verdict: Verdict; quote: string; explanation: string }> }
+
+  // Each verdict on its clause, with a quote that is really in the clause:
+  // a quote the model made up is replaced by the clause's own words.
+  const typeOf = new Map(relevant.map(p => [p.id, p.positionType]))
+  const at = new Date().toISOString()
+  let stored = 0
+  for (const v of result.verdicts ?? []) {
+    const clause = targets.find(c => c.id === v.clauseId)
+    if (!clause) continue
+    const real = v.quote && normaliseText(clause.content).includes(normaliseText(v.quote))
+    const verdict: PositionVerdict = {
+      positionId: v.positionId, verdict: v.verdict,
+      quote: real ? v.quote : clause.content.slice(0, 300),
+      explanation: v.explanation || 'No reason was given.',
+      positionType: v.positionId ? typeOf.get(v.positionId) ?? null : null,
+      at,
+    }
+    // docs/41 P1 — new text from an edit has no type yet: the position it
+    // was judged against names it (the only re-classification an edit gets).
+    const retyped = clause.clauseType === 'unclassified' && v.positionId ? clauseTypeFor(relevant.find(p => p.id === v.positionId)?.clauseCategory?.name) : null
+    await prisma.contractClause.update({ where: { id: clause.id }, data: { positionVerdict: verdict as object, ...(retyped && { clauseType: retyped }) } })
+    stored++
   }
 
-  // Re-read metadata immediately before merging. The LLM round-trip above can
-  // take tens of seconds, and anything written to contract.metadata in that
-  // window (e.g. POST /:id/redline setting _redlineStatus) would be silently
-  // clobbered by a snapshot taken before the call.
-  const fresh = await prisma.contract.findUnique({
-    where:  { id: contractId },
-    select: { metadata: true },
+  // The rail's older review and the redline targets read this; kept for a release (docs/41 Part 8).
+  const verdicts = result.verdicts ?? []
+  const legacy = verdicts.filter(v => v.verdict !== 'meets_preferred' && v.verdict !== 'not_covered').map(v => {
+    const walkaway = v.positionId && typeOf.get(v.positionId) === 'walkaway'
+    return {
+      clauseId: v.clauseId,
+      clauseType: targets.find(c => c.id === v.clauseId)?.clauseType ?? 'other',
+      playbookAlignment: v.verdict === 'meets_fallback' ? 'fallback' : walkaway ? 'walkaway' : 'outside_playbook',
+      severity: v.verdict === 'meets_fallback' ? 'low' : walkaway ? 'critical' : 'high',
+      recommendation: v.verdict === 'meets_fallback' ? 'accept' : 'negotiate',
+      reasoning: v.explanation,
+      requiresHumanReview: v.verdict !== 'meets_fallback',
+    }
   })
-  const existing = (fresh?.metadata as Record<string, unknown> | null) ?? {}
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  {
-      metadata: {
-        ...existing,
-        _playbookReview: {
-          ...result,
-          reviewedAt: new Date().toISOString(),
-          versionId,
-        },
-      } as never,
-    },
-  })
+  await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_playbookReview}', ${JSON.stringify({
+    findings: legacy,
+    summary: legacy.length ? `${legacy.length} of ${targets.length} changed clause(s) are not at your preferred position.` : `Checked ${targets.length} changed clause(s) against your playbook.`,
+    requiresHumanGate: legacy.some(f => f.requiresHumanReview),
+    clausesReviewed: targets.length,
+    playbookPositions: relevant.length,
+    playbook: resolution.playbook ? { id: resolution.playbook.id, name: resolution.playbook.name, version: resolution.playbook.version } : null,
+    reviewedAt: at,
+    versionId,
+  })}::jsonb) WHERE id = ${contractId}`
 
-  console.info('[agent-worker] playbook-review done contractId=%s findings=%d gate=%s',
-    contractId, result.findings.length, result.requiresHumanGate)
+  // The findings again, with the verdicts in.
+  await computeAndStoreFindings(contractId, versionId)
+  console.info('[agent-worker] playbook-review done contractId=%s checked=%d verdicts=%d standard=%d', contractId, targets.length, stored, standard)
+  return { counts: { checked: targets.length, verdicts: stored, standard } }
 }
 
 // ─── approval-summary ─────────────────────────────────────────────────────────
@@ -722,78 +690,28 @@ async function handleApprovalSummary(data: ApprovalSummaryJob): Promise<void> {
 
 // ─── draft-contract ──────────────────────────────────────────────────────────
 
-interface DraftContractJobData {
+/**
+ * The convert route's `_draftContext` (routes/requests.ts), plus what the
+ * requester picked on the request page (docs/41 Part 1).
+ */
+type DraftContractJobData = RequestDraftContext & {
   contractId: string
   orgId: string
   userId: string
-  requestTitle: string
-  requestDescription: string
-  contractType: string
-  counterpartyName?: string
-  estimatedValue?: number
 }
 
+/**
+ * docs/41 Part 1 — the request's draft, made as the assistant makes one: the
+ * template and the clause slots chosen by rule (lib/draft-plan.ts), the
+ * agent asked only to read values out of the request's words, with quotes
+ * (lib/request-draft.ts). No LLM picks a template or a clause.
+ */
 async function handleDraftContract(data: DraftContractJobData): Promise<void> {
-  const { contractId, orgId, userId, requestTitle, requestDescription, contractType, counterpartyName, estimatedValue } = data
+  const { contractId, orgId, userId, contractType } = data
   console.info('[agent-worker] draft-contract start contractId=%s type=%s', contractId, contractType)
-
-  const userMessage = `Draft a ${contractType} titled "${requestTitle}". ${requestDescription ?? ''}`
-  const context: Record<string, unknown> = {}
-  if (counterpartyName) context.counterpartyName = counterpartyName
-  if (estimatedValue) context.estimatedValue = estimatedValue
-
-  const res = await callAgents('/draft', {
-    method:  'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '',
-    },
-    body: JSON.stringify({
-      user_message: userMessage,
-      org_id: orgId,
-      user_id: userId,
-      context,
-    }),
-  }, { orgId, toolName: 'draft_contract', scope: contractId, contractId })
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`Agents /draft returned ${res.status}: ${text.slice(0, 200)}`)
-  }
-
-  const result = await res.json() as { html?: string; error?: string }
-
-  if (result.error || !result.html) {
-    throw new Error(`Draft agent error: ${result.error ?? 'No HTML returned'}`)
-  }
-
-  // Save as version 1
-  const latest = await prisma.contractVersion.findFirst({
-    where: { contractId },
-    orderBy: { versionNumber: 'desc' },
-  })
-  const nextVersion = (latest?.versionNumber ?? 0) + 1
-
-  await prisma.contractVersion.create({
-    data: {
-      contractId,
-      versionNumber: nextVersion,
-      htmlContent:   result.html,
-      plainText:     htmlToText(result.html),
-      mimeType:      'text/html',
-      fileSize:      Buffer.byteLength(result.html),
-      changeNote:    'AI-generated first draft',
-      createdById:   userId,
-    },
-  })
-
-  // Mark contract as done drafting
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  { analysisStatus: 'DONE' },
-  })
-
-  console.info('[agent-worker] draft-contract done contractId=%s', contractId)
+  const result = await draftFromRequest({ orgId, contractId, ctx: data })
+  await saveDraftVersion({ contractId, orgId, userId, result, changeNote: 'AI-generated first draft', source: 'request' })
+  console.info('[agent-worker] draft-contract done contractId=%s template=%s', contractId, result.usedTemplateId)
 }
 
 // ─── backfill-custom-field (X2) ──────────────────────────────────────────────
@@ -806,12 +724,57 @@ async function handleBackfillCustomField(data: BackfillCustomFieldJob): Promise<
       method:  'POST',
       headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
       body:    JSON.stringify(body),
-    }, { orgId, toolName: 'backfill_custom_field', scope: contractId, contractId })
+    }, { orgId, toolName: 'backfill_custom_field', scope: contractId, contractId, estimate: false })
     if (!res.ok) throw new Error(`Agents /extract-fields returned ${res.status}`)
-    return ((await res.json()) as { customFields?: Record<string, ExtractedField> }).customFields ?? null
+    const reply = await res.json() as { customFields?: Record<string, ExtractedField>; usage?: RunUsage }
+    // A15 — the call's real use, priced per model.
+    await recordRunUsage(orgId, reply.usage, { inputChars: JSON.stringify(body).length, outputChars: JSON.stringify(reply).length }, 'backfill_custom_field')
+    return reply.customFields ?? null
   })
   console.info('[agent-worker] backfill-custom-field field=%s status=%s processed=%d filled=%d failed=%d',
     data.fieldDefinitionId, state?.status, state?.processed ?? 0, state?.filled ?? 0, state?.failed ?? 0)
+}
+
+// ─── extract-obligations (docs/39 G4) ────────────────────────────────────────
+// A signed contract read for its obligations after its analysis, or in bulk
+// from the Obligations page. What it finds is suggested until a person
+// confirms it (lib/obligation-extract.ts).
+
+// ─── extract-type-fields (docs/39 A13) ───────────────────────────────────────
+// A retyped contract reads its new type's own fields, and only those.
+
+async function handleExtractTypeFields(data: ExtractTypeFieldsJob): Promise<void> {
+  const r = await readTypeFields({
+    contractId: data.contractId, orgId: data.orgId, contractType: data.contractType,
+    call: async body => {
+      const res = await callAgents('/extract-fields', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET ?? '' },
+        body:    JSON.stringify(body),
+      }, { orgId: data.orgId, toolName: 'extract_type_fields', scope: data.contractId, contractId: data.contractId, estimate: false }).catch((err: Error) => {
+        // Said so a person can act on it: a read that fails is on the page (_typeFieldsRead).
+        if (err instanceof CostCapExceededError) throw new Error('today’s AI budget is used up')
+        throw new Error(err.message === 'fetch failed' ? 'the AI service didn’t answer' : err.message)
+      })
+      if (!res.ok) throw new Error(`the AI service answered ${res.status}`)
+      const reply = await res.json() as { customFields?: Record<string, { value: unknown; confidence?: number; quote?: string; issue?: string }>; usage?: RunUsage }
+      await recordRunUsage(data.orgId, reply.usage, { inputChars: JSON.stringify(body).length, outputChars: JSON.stringify(reply).length }, 'extract_type_fields')
+      return reply.customFields ?? null
+    },
+  })
+  // The retype marked it as being read; it's done (or there was nothing to
+  // read). A later retype's read is its own, and finishes itself.
+  await prisma.contract.updateMany({ where: { id: data.contractId, type: data.contractType, analysisStatus: 'ANALYZING' }, data: { analysisStatus: 'DONE' } })
+  await clearTypeFieldsMark(data.contractId, data.contractType)
+  console.info('[agent-worker] extract-type-fields contract=%s type=%s written=%d', data.contractId, data.contractType, r?.written.length ?? 0)
+}
+
+async function handleExtractObligations(data: ExtractObligationsJob): Promise<void> {
+  const r = await extractObligationsForContract({ orgId: data.orgId, contractId: data.contractId, userId: 'system' })
+  console.info('[agent-worker] extract-obligations contract=%s ok=%s suggested=%d%s',
+    data.contractId, r.ok, r.count, r.skippedReason ? ` skipped=${r.skippedReason}` : '')
+  // A failed read is retried (the job's attempts); one with nothing to read is done.
+  if (!r.ok && r.error) throw new Error(r.error)
 }
 
 export const agentWorker = new Worker(
@@ -819,11 +782,15 @@ export const agentWorker = new Worker(
   async (job) => {
     console.info('[worker:agents] → start name=%s id=%s', job.name, job.id)
     if (job.name === 'detect-binder') {
-      await handleDetectBinder(job.data as DetectBinderJob)
+      // docs/41 P1 — each analysis step records itself on the version's run.
+      const data = job.data as DetectBinderJob
+      await runJobStep(job, data, () => handleDetectBinder(data))
     } else if (job.name === 'classify-document') {
-      await handleClassifyDocument(job.data as ClassifyDocumentJob)
+      const data = job.data as ClassifyDocumentJob
+      await runJobStep(job, data, () => handleClassifyDocument(data))
     } else if (job.name === 'extract-ai') {
-      await handleExtractAi(job.data as ExtractAiJob)
+      const data = job.data as ExtractionJobData
+      await runJobStep(job, data, () => handleExtractAi(job as Job<ExtractionJobData>))
     } else if (job.name === 'classify-request') {
       await handleClassifyRequest(job.data as ClassifyRequestJob)
     } else if (job.name === 'redline-analysis') {
@@ -831,13 +798,52 @@ export const agentWorker = new Worker(
     } else if (job.name === 'playbook-redline') {
       await handlePlaybookRedline(job.data as PlaybookRedlineJob)
     } else if (job.name === 'playbook-review') {
-      await handlePlaybookReview(job.data as PlaybookReviewJob)
+      const data = job.data as PlaybookReviewJob
+      // A review asked for after edits takes the version the contract stands on.
+      const versionId = data.versionId ?? (await prisma.contract.findUnique({ where: { id: data.contractId }, select: { currentVersionId: true } }))?.currentVersionId
+      await runJobStep(job, { contractId: data.contractId, versionId }, () => handlePlaybookReview(data))
+    } else if (job.name === 'compliance-review') {
+      // docs/41 Part 9 — which compliance frameworks apply, their checks and findings.
+      const data = job.data as ComplianceReviewJob
+      await runJobStep(job, data, () => complianceStep(data.contractId, data.versionId))
+    } else if (job.name === 'change-advice') {
+      // docs/41 Part 15 — the model's advice on a counterparty version's changes, on their findings.
+      const data = job.data as ChangeAdviceJob
+      const { changeAdviceStep } = await import('../lib/change-advice.js')
+      await runJobStep(job, data, () => changeAdviceStep(data.contractId, data.versionId))
     } else if (job.name === 'approval-summary') {
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {
       await handleDraftContract(job.data as DraftContractJobData)
+    } else if (job.name === 'analysis-checkpoint') {
+      // docs/41 P0.1 — an edited contract, left alone long enough: analysed again.
+      const outcome = await runCheckpointAnalysis(job.data as { contractId: string; orgId: string })
+      console.info('[agent-worker] analysis-checkpoint contractId=%s %s', (job.data as { contractId: string }).contractId, outcome)
+    } else if (job.name === 'working-copy-idle') {
+      // docs/41 Part 16 (C1) — draft changes nobody touched for a while: saved as a version.
+      const { runIdleCheckpoint } = await import('../lib/working-copy.js')
+      const outcome = await runIdleCheckpoint(job.data as { orgId: string; contractId: string; revision: number })
+      console.info('[agent-worker] working-copy-idle contractId=%s %s', (job.data as { contractId: string }).contractId, outcome)
     } else if (job.name === 'backfill-custom-field') {
       await handleBackfillCustomField(job.data as BackfillCustomFieldJob)
+    } else if (job.name === 'extract-obligations') {
+      await handleExtractObligations(job.data as ExtractObligationsJob)
+    } else if (job.name === 'extract-type-fields') {
+      await handleExtractTypeFields(job.data as ExtractTypeFieldsJob)
+    } else if (job.name === 'detect-clause-type') {
+      // docs/39 E3 — a new clause type, found in the contracts read before it.
+      const state = await runDetect(job.data as DetectClauseTypeJob, agentsFindClause('clause_detect'))
+      console.info('[agent-worker] detect-clause-type %s processed=%d found=%d status=%s', (job.data as DetectClauseTypeJob).definitionId, state?.processed ?? 0, state?.found ?? 0, state?.status ?? 'gone')
+    } else if (job.name === 'answer-diligence-column') {
+      // docs/39 D6 — a diligence room's question (or field) answered for its documents.
+      const data = job.data as AnswerDiligenceColumnJob
+      const run = await answerColumn(data, agentsAskFields())
+      console.info('[agent-worker] answer-diligence-column %s processed=%d answered=%d failed=%d status=%s', data.columnId, run?.processed ?? 0, run?.answered ?? 0, run?.failed ?? 0, run?.status ?? 'gone')
+    } else if (job.name === 'answer-diligence-document') {
+      // docs/39 D6 — a room's document read after its questions were asked.
+      const data = job.data as AnswerDiligenceDocumentJob
+      const asked = await answerDocument(data, agentsAskFields())
+      console.info('[agent-worker] answer-diligence-document %s asked=%d', data.contractId, asked)
     }
   },
   { connection: redis, concurrency: 2 }

@@ -17,6 +17,8 @@ export interface SeedTemplateVariable {
   type: 'string' | 'number' | 'date' | 'enum'
   required: boolean
   defaultValue?: string | number
+  /** docs/41 P0.4 — the org chose this default (a legal choice is filled from it only then). */
+  orgDefault?: boolean
   options?: string[]   // for enum types
   helpText?: string
 }
@@ -25,6 +27,8 @@ export interface SeedTemplateSection {
   title: string
   sortOrder: number
   content: string
+  /** docs/41 Part 1 — a clause slot over this seeded family (families.ts), by name. */
+  slotFamily?: string
 }
 
 export interface SeedTemplate {
@@ -34,6 +38,8 @@ export interface SeedTemplate {
   variables: SeedTemplateVariable[]
   sections: SeedTemplateSection[]
   isPublished: boolean
+  /** docs/41 Part 1 — the template drafting uses for its type when nobody picks one. */
+  isDefaultForType?: boolean
 }
 
 // ─── Common variables reused across multiple templates ─────────────────────
@@ -52,22 +58,53 @@ const PAYMENT_VARS: SeedTemplateVariable[] = [
   { key: 'paymentTermsDays',   label: 'Payment Terms (days)',   type: 'number', required: true, defaultValue: 30 },
 ]
 
+// docs/41 P0.4 — Delaware is offered as the default, not chosen: without
+// `orgDefault` a draft whose request names no law leaves it as a choice to
+// make. An org (a demo org) that wants Delaware filled sets orgDefault
+// (scripts/set-template-org-default.ts).
 const GOVERNING_LAW_VARS: SeedTemplateVariable[] = [
   { key: 'governingLaw',       label: 'Governing Law',          type: 'enum',   required: true, defaultValue: 'Delaware', options: ['Delaware', 'New York', 'California', 'Texas', 'England and Wales'] },
   { key: 'venueLocation',      label: 'Venue Location',         type: 'string', required: true, defaultValue: 'Wilmington, Delaware' },
 ]
 
-// ─── The 20 templates ─────────────────────────────────────────────────────
-export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
+/**
+ * docs/41 Part 1 — a template's governing-law sentence becomes a clause slot
+ * over the seeded Governing Law family, so the law is decided by rule (the
+ * request's words, the org's default) and not left in a variable a model
+ * filled. What follows the sentence (venue, jury waiver…) stays literal text
+ * in its own section.
+ */
+export function withGoverningLawSlot(t: SeedTemplate): SeedTemplate {
+  const sections: SeedTemplateSection[] = []
+  for (const s of t.sections) {
+    const m = /^<p>([^<]*\{\{governingLaw\}\}[^.]*\.)\s*(.*)<\/p>$/.exec(s.content)
+    if (!/^Governing Law/.test(s.title) || !m) { sections.push(s); continue }
+    sections.push({ title: 'Governing Law', sortOrder: s.sortOrder, content: '', slotFamily: 'Governing Law' })
+    const rest = m[2].trim()
+    if (rest) {
+      const title = s.title === 'Governing Law' ? 'Jurisdiction and Venue' : s.title.replace(/^Governing Law and /, '')
+      sections.push({ title, sortOrder: s.sortOrder + 1, content: `<p>${rest}</p>` })
+    }
+  }
+  return { ...t, sections }
+}
+
+// ─── The 22 templates ─────────────────────────────────────────────────────
+/** As first seeded, governing law as literal text (scripts/backfill-clause-families.ts recognises it). */
+export const UNIVERSAL_TEMPLATES_LITERAL: SeedTemplate[] = [
   // 1. Mutual NDA
   {
     name: 'Mutual Non-Disclosure Agreement',
     description: 'Two-way NDA for use during pre-contract diligence, partnership exploration, or any reciprocal exchange of confidential information.',
     contractType: 'NDA',
     isPublished: true,
+    isDefaultForType: true,
     variables: [...PARTIES_VARS, ...GOVERNING_LAW_VARS,
       { key: 'purpose',         label: 'Purpose of Disclosure', type: 'string', required: true, helpText: 'e.g., "evaluating a potential commercial partnership"' },
-      { key: 'confidentialityYears', label: 'Confidentiality Term (years)', type: 'number', required: true, defaultValue: 3 },
+      // docs/41 Part 2 — the playbook's preferred term (5 years, trade secrets
+      // for as long as they last). 3 years is its fallback, so the template
+      // was flagged by its own playbook.
+      { key: 'confidentialityYears', label: 'Confidentiality Term (years)', type: 'number', required: true, defaultValue: 5 },
     ],
     sections: [
       { title: 'Preamble',            sortOrder: 10, content: `<p>This Mutual Non-Disclosure Agreement (this "Agreement") is entered into as of {{effectiveDate}} (the "Effective Date") by and between {{customerName}}, {{customerEntity}}, with an address at {{customerAddress}}, and {{providerName}}, {{providerEntity}}, with an address at {{providerAddress}} (each a "Party" and collectively, the "Parties").</p>` },
@@ -75,7 +112,12 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
       { title: 'Definition',          sortOrder: 30, content: `<p>"Confidential Information" means any non-public information disclosed by one Party (the "Discloser") to the other Party (the "Recipient"), in any form, that is identified as confidential or that a reasonable person would understand to be confidential given the nature of the information and the circumstances of disclosure.</p>` },
       { title: 'Obligations',         sortOrder: 40, content: `<p>The Recipient will (a) use the Confidential Information solely for the Purpose; (b) protect the Confidential Information using at least the same degree of care it uses for its own confidential information of similar importance, but no less than a reasonable degree of care; and (c) limit access to those of its representatives who have a need to know and who are bound by obligations of confidentiality no less protective than this Agreement.</p>` },
       { title: 'Exclusions',          sortOrder: 50, content: `<p>This Agreement does not apply to information that the Recipient can demonstrate (a) was already in its lawful possession without confidentiality obligations before disclosure; (b) is or becomes publicly available through no fault of the Recipient; (c) is rightfully received from a third party without confidentiality obligations; or (d) is independently developed without use of the Discloser's Confidential Information.</p>` },
-      { title: 'Term',                sortOrder: 60, content: `<p>The obligations of confidentiality continue for {{confidentialityYears}} years from the date of disclosure, or, with respect to trade secrets, for so long as the information remains a trade secret under applicable law.</p>` },
+      // docs/41 browser QA — an NDA needs a term: how long the agreement runs
+      // and how it ends. The section that only said how long confidentiality
+      // lasts reads as confidentiality, so every NDA drafted from this template
+      // was "Term & Termination — not detected" (required for NDAs).
+      { title: 'Term and Termination', sortOrder: 55, content: `<p>This Agreement begins on the Effective Date and continues until either Party terminates it by giving the other Party thirty (30) days' written notice. On termination, or earlier on the Discloser's written request, the Recipient will promptly return or destroy the Discloser's Confidential Information. Termination does not end the obligations of confidentiality, which continue for the period set out below.</p>` },
+      { title: 'Period of Confidentiality', sortOrder: 60, content: `<p>The obligations of confidentiality continue for {{confidentialityYears}} years from the date of disclosure, or, with respect to trade secrets, for so long as the information remains a trade secret under applicable law.</p>` },
       { title: 'Governing Law',       sortOrder: 70, content: `<p>This Agreement is governed by the laws of {{governingLaw}}, without giving effect to its conflict-of-laws principles. The Parties consent to the exclusive jurisdiction and venue of the state and federal courts located in {{venueLocation}}.</p>` },
       { title: 'Miscellaneous',       sortOrder: 80, content: `<p>This Agreement is the entire agreement between the Parties on this subject, may be amended only in a signed writing, may be executed in counterparts (including by electronic signature), and is binding on permitted successors and assigns. No license to any intellectual property is granted, express or implied, except as expressly set forth in this Agreement.</p>` },
     ],
@@ -94,7 +136,8 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
       { title: 'Preamble',            sortOrder: 10, content: `<p>This One-Way Non-Disclosure Agreement is entered into as of {{effectiveDate}} between {{customerName}} ("Recipient") and {{providerName}} ("Discloser").</p>` },
       { title: 'Confidential Information', sortOrder: 20, content: `<p>"Confidential Information" means any non-public information Discloser provides to Recipient in connection with {{purpose}}, whether marked confidential or reasonably understood to be confidential.</p>` },
       { title: 'Obligations',         sortOrder: 30, content: `<p>Recipient will not disclose Confidential Information to any third party and will use it solely to evaluate {{purpose}}. Standard exclusions apply for publicly-known, prior-known, independently-developed, or third-party-sourced information.</p>` },
-      { title: 'Term',                sortOrder: 40, content: `<p>Obligations continue for three (3) years from disclosure.</p>` },
+      { title: 'Term and Termination', sortOrder: 35, content: `<p>This Agreement begins on the date above and continues until either party terminates it by giving the other thirty (30) days' written notice. On termination, or earlier on Discloser's written request, Recipient will promptly return or destroy the Confidential Information. Termination does not end Recipient's obligations, which continue for the period set out below.</p>` },
+      { title: 'Period of Confidentiality', sortOrder: 40, content: `<p>Obligations continue for five (5) years from disclosure, or, with respect to trade secrets, for so long as the information remains a trade secret under applicable law.</p>` },
       { title: 'Governing Law',       sortOrder: 50, content: `<p>{{governingLaw}} law governs. Exclusive jurisdiction in {{venueLocation}}.</p>` },
     ],
   },
@@ -105,6 +148,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Customer-favorable master services agreement covering professional services delivered under one or more SOWs.',
     contractType: 'MSA',
     isPublished: true,
+    isDefaultForType: true,
     variables: [...PARTIES_VARS, ...PAYMENT_VARS, ...GOVERNING_LAW_VARS,
       { key: 'initialTerm',     label: 'Initial Term (years)',  type: 'number', required: true, defaultValue: 1 },
       { key: 'liabilityCapMultiple', label: 'Liability Cap (months of fees)', type: 'number', required: true, defaultValue: 12 },
@@ -132,6 +176,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Generic SOW template referencing an existing MSA. Use for professional services engagements.',
     contractType: 'SOW',
     isPublished: true,
+    isDefaultForType: true,
     variables: [
       { key: 'msaReference',    label: 'Referenced MSA',         type: 'string', required: true, helpText: 'e.g., "MSA dated [date]"' },
       { key: 'customerName',    label: 'Customer Name',          type: 'string', required: true },
@@ -324,6 +369,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
     description: 'Letter agreement memorializing the mutual termination of an existing contract.',
     contractType: 'Termination',
     isPublished: true,
+    isDefaultForType: true,
     variables: [
       { key: 'partyAName',      label: 'Party A Name',           type: 'string', required: true },
       { key: 'partyBName',      label: 'Party B Name',           type: 'string', required: true },
@@ -438,6 +484,7 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
       { title: 'Confidentiality',     sortOrder: 20, content: `<p>Each Party will treat the other's submissions as Confidential Information under standard mutual NDA terms (3-year term; indefinite for trade secrets).</p>` },
       { title: 'IP Ownership of Submissions', sortOrder: 30, content: `<p>Each Party retains full ownership of the ideas, concepts, and IP it submits to the other. Neither Party acquires any license, express or implied, to the other's submissions by reason of the disclosure under this Agreement.</p>` },
       { title: 'No Obligation to Proceed', sortOrder: 40, content: `<p>Neither Party is obligated to pursue any project or to grant a license to the other's submissions. Any future collaboration requires a separate signed agreement.</p>` },
+      { title: 'Term and Termination', sortOrder: 45, content: `<p>This Agreement begins on the date both Parties sign it and continues until either Party terminates it by giving the other Party thirty (30) days' written notice. Each Party's obligations for submissions received before termination survive it.</p>` },
       { title: 'Governing Law',       sortOrder: 50, content: `<p>{{governingLaw}} law.</p>` },
     ],
   },
@@ -534,4 +581,52 @@ export const UNIVERSAL_TEMPLATES: SeedTemplate[] = [
       { title: 'Counterparts',        sortOrder: 50, content: `<p>This Amendment may be executed in counterparts (including by electronic signature), each of which is deemed an original.</p>` },
     ],
   },
+
+  // 21–22. docs/41 Part 14 — what a renewal decision drafts: a short letter
+  // extending the term (renew as is, renewing by agreement) and the notice
+  // that stops a renewal (let it lapse, end it). lib/renewal-decisions.ts
+  // fills the variables from the agreement and its renewal terms.
+  {
+    name: 'Renewal letter',
+    description: 'A short letter agreement renewing an existing agreement for another term on the same terms.',
+    contractType: 'RENEWAL_LETTER',
+    isPublished: true,
+    isDefaultForType: true,
+    variables: [
+      { key: 'senderName',        label: 'Our company',             type: 'string', required: true },
+      { key: 'recipientName',     label: 'Counterparty',            type: 'string', required: true },
+      { key: 'agreementName',     label: 'Agreement',               type: 'string', required: true },
+      { key: 'agreementDate',     label: 'Agreement date',          type: 'date',   required: false },
+      { key: 'currentExpiryDate', label: 'Current end date',        type: 'date',   required: true },
+      { key: 'renewalTerm',       label: 'Renewal term',            type: 'string', required: true, defaultValue: '12 months' },
+      { key: 'newExpiryDate',     label: 'New end date',            type: 'date',   required: true },
+    ],
+    sections: [
+      { title: 'Renewal',      sortOrder: 10, content: `<p>Dear {{recipientName}},</p><p>We refer to the {{agreementName}} dated {{agreementDate}} (the "Agreement"), whose current term ends on {{currentExpiryDate}}. The parties agree to renew the Agreement for a further term of {{renewalTerm}}, so that it ends on {{newExpiryDate}}.</p>` },
+      { title: 'Same terms',   sortOrder: 20, content: `<p>Except for its term, the Agreement continues on the same terms. Capitalised terms not defined in this letter have the meanings given in the Agreement.</p>` },
+      { title: 'Agreement',   sortOrder: 30, content: `<p>Please sign below to confirm your agreement. This letter may be signed in counterparts, including by electronic signature.</p><p>{{senderName}}</p>` },
+    ],
+  },
+  {
+    name: 'Notice of non-renewal',
+    description: 'Written notice that an agreement will not renew at the end of its current term.',
+    contractType: 'NON_RENEWAL_NOTICE',
+    isPublished: true,
+    isDefaultForType: true,
+    variables: [
+      { key: 'senderName',        label: 'Our company',             type: 'string', required: true },
+      { key: 'recipientName',     label: 'Counterparty',            type: 'string', required: true },
+      { key: 'agreementName',     label: 'Agreement',               type: 'string', required: true },
+      { key: 'agreementDate',     label: 'Agreement date',          type: 'date',   required: false },
+      { key: 'currentExpiryDate', label: 'End of current term',     type: 'date',   required: true },
+      { key: 'noticeDays',        label: 'Notice period (days)',    type: 'number', required: false },
+    ],
+    sections: [
+      { title: 'Notice',          sortOrder: 10, content: `<p>Dear {{recipientName}},</p><p>We refer to the {{agreementName}} dated {{agreementDate}} (the "Agreement"). This letter is our written notice, given under the Agreement's renewal provisions ({{noticeDays}} days' notice), that the Agreement will not renew and will end at the end of its current term on {{currentExpiryDate}}.</p>` },
+      { title: 'Until then',      sortOrder: 20, content: `<p>Until that date both parties continue to perform the Agreement. The provisions of the Agreement that survive its end continue to apply.</p>` },
+      { title: 'Sender',          sortOrder: 30, content: `<p>{{senderName}}</p>` },
+    ],
+  },
 ]
+
+export const UNIVERSAL_TEMPLATES: SeedTemplate[] = UNIVERSAL_TEMPLATES_LITERAL.map(withGoverningLawSlot)

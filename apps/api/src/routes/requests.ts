@@ -5,8 +5,42 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
-import { CreateRequestSchema, UpdateRequestSchema, AuditAction } from '@clm/types'
-import { queueClassifyRequest, queueParseDocument, queueDraftContract } from '../lib/queue.js'
+import { CreateRequestSchema, UpdateRequestSchema, AuditAction, requestTransitionRefusal } from '@clm/types'
+import { transition } from '../lib/lifecycle.js'
+import { queueClassifyRequest, queueParseDocument, queueDraftContract, queueNotification } from '../lib/queue.js'
+import { requestTerms } from '../lib/draft-save.js'
+import { z } from 'zod'
+import { chooseTemplate } from '../lib/draft-plan.js'
+import { planFromRequest, type RequestDraftContext } from '../lib/request-draft.js'
+import { draftSource } from '../lib/template-snapshot.js'
+
+/** docs/41 Part 1 — what a requester picked for the draft: a template, and clause choices. */
+interface DraftChoices { templateId?: string; slots?: Record<string, string> }
+const draftChoicesOf = (metadata: unknown): DraftChoices => ((metadata ?? {}) as { _draftChoices?: DraftChoices })._draftChoices ?? {}
+
+const DraftChoicesSchema = z.object({
+  templateId: z.string().max(64).nullable().optional(),
+  /** familyId → variant id; null clears a choice. */
+  slots: z.record(z.string().max(64), z.string().max(64).nullable()).optional(),
+})
+
+/** The drafting context a request gives, before and at convert. */
+function requestContext(request: { title: string; description: string | null; type: string; counterpartyName: string | null; estimatedValue: unknown; metadata: unknown }): RequestDraftContext {
+  const meta = (request.metadata ?? {}) as Record<string, unknown>
+  const aiTerms = (meta._aiClassification as { extractedTerms?: Record<string, unknown> } | undefined)?.extractedTerms
+  const choices = draftChoicesOf(request.metadata)
+  const terms = requestTerms(aiTerms)
+  return {
+    requestTitle: request.title,
+    requestDescription: request.description ?? (meta.description as string | undefined) ?? request.title,
+    contractType: request.type,
+    counterpartyName: request.counterpartyName ?? undefined,
+    estimatedValue: request.estimatedValue != null ? Number(request.estimatedValue) : undefined,
+    ...(Object.keys(terms).length && { extractedTerms: terms }),
+    ...(choices.templateId && { templateId: choices.templateId }),
+    ...(choices.slots && Object.keys(choices.slots).length && { slotChoices: choices.slots }),
+  }
+}
 import { indexContract } from '../lib/elasticsearch.js'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
@@ -223,10 +257,19 @@ export async function requestRoutes(app: FastifyInstance) {
     })
 
     if (!existing) return reply.status(404).send({ detail: 'Request not found' })
+    // docs/41 Part 4 — "Decline request": a reason is required and kept;
+    // the request's own moves are checked (accepting is drafting it).
+    if (body.status && body.status !== existing.status) {
+      const refusal = requestTransitionRefusal(existing.status, body.status, body.rejectionReason)
+      if (refusal) return reply.status(409).send({ detail: refusal })
+    }
+    const { rejectionReason, ...rest } = body
+    const declining = body.status === 'REJECTED' && existing.status !== 'REJECTED'
+    const reopening = !!body.status && body.status !== 'REJECTED' && existing.status === 'REJECTED'
 
     const updated = await prisma.contractRequest.update({
       where: { id },
-      data: body,
+      data: { ...rest, ...(declining && { rejectionReason: rejectionReason?.trim() }), ...(reopening && { rejectionReason: null }) },
     })
 
     await createAuditEvent({
@@ -237,10 +280,97 @@ export async function requestRoutes(app: FastifyInstance) {
         : AuditAction.REQUEST_ASSIGNED,
       resourceType: 'contract_request',
       resourceId: id,
-      metadata: { changes: body },
+      metadata: { changes: rest, ...(body.status && { from: existing.status, to: body.status }), ...(declining && { reason: rejectionReason?.trim() }) },
     })
+    if (declining && existing.requestedById !== userId) {
+      queueNotification({
+        orgId, userId: existing.requestedById, type: 'REQUEST_DECLINED', title: 'Request declined',
+        body: `Your request "${existing.title}" was declined: “${rejectionReason?.trim()}”`,
+        resourceType: 'contract_request', resourceId: id,
+      })
+    }
 
     return reply.send(updated)
+  })
+
+  // GET /api/v1/requests/:id/draft-plan — docs/41 Part 1: what drafting this
+  // request would use, before it is drafted: the template (and how it was
+  // chosen), each clause choice decided and why, and the ones left to make.
+  // Deterministic and free: no LLM is asked.
+  app.get('/:id/draft-plan', { preHandler: requirePermission('view', 'request') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId } = req.user
+    const request = await prisma.contractRequest.findFirst({ where: { id, orgId, deletedAt: null } })
+    if (!request) return reply.status(404).send({ detail: 'Request not found' })
+    const hasDocument = Array.isArray(request.attachments) && request.attachments.length > 0
+    const ctx = requestContext(request)
+    const [{ choice, plan }, templates] = await Promise.all([
+      planFromRequest(orgId, ctx),
+      prisma.template.findMany({
+        where: { orgId, deletedAt: null, isPublished: true, OR: [{ contractType: request.type }, { contractType: null }] },
+        select: { id: true, name: true, contractType: true, isDefaultForType: true },
+        orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      }),
+    ])
+    return reply.send({
+      // A request with its own document is read, not drafted from a template.
+      drafted: !hasDocument,
+      choices: draftChoicesOf(request.metadata),
+      templates,
+      template: choice.ok ? { id: choice.template.id, name: choice.template.name, decidedBy: choice.decidedBy } : null,
+      templateProblem: choice.ok ? null : { code: choice.error, detail: choice.detail },
+      slots: plan?.ok ? plan.slots : [],
+      openChoices: plan?.ok ? plan.slots.filter(s => s.decidedBy === 'unresolved').length : 0,
+    })
+  })
+
+  // PUT /api/v1/requests/:id/draft-choices — the template and clause variants
+  // the requester picked; drafting uses them before any rule.
+  app.put('/:id/draft-choices', { preHandler: requirePermission('edit', 'request') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId, sub: userId } = req.user
+    const body = DraftChoicesSchema.parse(req.body ?? {})
+    const request = await prisma.contractRequest.findFirst({ where: { id, orgId, deletedAt: null } })
+    if (!request) return reply.status(404).send({ detail: 'Request not found' })
+    if (request.status === 'ACCEPTED' || request.status === 'COMPLETED') {
+      return reply.status(409).send({ detail: 'This request has already been drafted.' })
+    }
+    const current = draftChoicesOf(request.metadata)
+    const next: DraftChoices = { ...current }
+    if (body.templateId !== undefined) {
+      if (body.templateId) {
+        const t = await prisma.template.findFirst({ where: { id: body.templateId, orgId, deletedAt: null, isPublished: true }, select: { id: true } })
+        if (!t) return reply.status(404).send({ detail: 'Template not found' })
+        next.templateId = t.id
+      } else delete next.templateId
+      // Clause choices belong to a template's slots; a new template starts clean.
+      if (next.templateId !== current.templateId) next.slots = {}
+    }
+    if (body.slots) {
+      // Each choice must be an approved variant of a family a slot of the
+      // chosen template uses, as the template was published.
+      const choice = await chooseTemplate({ orgId, templateId: next.templateId, contractType: request.type })
+      const source = choice.ok ? await draftSource(orgId, choice.template) : null
+      const slots = { ...(next.slots ?? {}) }
+      for (const [familyId, variantId] of Object.entries(body.slots)) {
+        if (variantId === null) { delete slots[familyId]; continue }
+        const slot = source?.snapshot.sections.find(s => s.slot?.family.id === familyId)?.slot
+        if (!slot?.variants.some(v => v.id === variantId)) {
+          return reply.status(422).send({ detail: 'That clause option isn’t one this template offers.' })
+        }
+        slots[familyId] = variantId
+      }
+      next.slots = slots
+    }
+    await prisma.$executeRaw`UPDATE contract_requests SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_draftChoices}', ${JSON.stringify(next)}::jsonb) WHERE id = ${id} AND "orgId" = ${orgId}`
+    await createAuditEvent({
+      orgId, userId,
+      action: AuditAction.REQUEST_STATUS_CHANGED,
+      resourceType: 'contract_request',
+      resourceId: id,
+      metadata: { draftChoices: next },
+    })
+    return reply.send({ choices: next })
   })
 
   // POST /api/v1/requests/:id/convert — accept request and create a Contract
@@ -262,23 +392,28 @@ export async function requestRoutes(app: FastifyInstance) {
     if (request.status === 'ACCEPTED' || request.status === 'COMPLETED') {
       return reply.status(400).send({ detail: 'Request already converted' })
     }
+    if (request.status === 'REJECTED') {
+      return reply.status(409).send({ detail: 'This request was declined. Reopen it before drafting from it.' })
+    }
 
     const attachments = (request.attachments as Array<{ filename: string; s3Key: string; mimeType: string; size: number }>) ?? []
 
     const hasAttachments = attachments.length > 0
-    const reqMeta = (request.metadata ?? {}) as Record<string, unknown>
 
-    // Draft context — stored in metadata so retry can re-queue without the original request
-    const draftContext = !hasAttachments ? {
-      requestTitle:      request.title,
-      // `description` is a top-level column on ContractRequest (not in metadata);
-      // read it first so the AI drafts from the requester's actual ask, not just
-      // the title. Fall back to legacy metadata, then title, to stay defensive.
-      requestDescription: request.description ?? (reqMeta.description as string) ?? request.title,
-      contractType:      request.type,
-      counterpartyName:  request.counterpartyName ?? undefined,
-      estimatedValue:    request.estimatedValue != null ? Number(request.estimatedValue) : undefined,
-    } : undefined
+    // Draft context — stored in metadata so retry can re-queue without the
+    // original request. `description` (a column) is what the requester asked
+    // for; docs/41 P0.4 — the intake classifier's terms (governing law,
+    // duration…) go with it, and (Part 1) the template and clause choices the
+    // requester picked.
+    const draftContext = !hasAttachments ? requestContext(request) : undefined
+    if (draftContext) {
+      // docs/41 Part 1 — the template is chosen by rule; when the rule can't
+      // (several published, none the default) the requester picks first.
+      const choice = await chooseTemplate({ orgId, templateId: draftContext.templateId, contractType: draftContext.contractType })
+      if (!choice.ok && choice.error === 'TEMPLATE_CHOICE_NEEDED') {
+        return reply.status(409).send({ code: choice.error, detail: choice.detail, templates: choice.templates })
+      }
+    }
 
     // X21 — the contract belongs to whoever asked for it. It went to the
     // converter, so a requester with own scope could never open the contract
@@ -298,13 +433,16 @@ export async function requestRoutes(app: FastifyInstance) {
         orgId,
         title:            request.title,
         type:             request.type,
+        // docs/41 Part 18 — it starts as the request it was, and is accepted into Draft below.
         status:           'DRAFT',
+        stage:            'request',
+        stageState:       'in_triage',
         analysisStatus:   hasAttachments ? 'PENDING' : 'DRAFTING',
         counterpartyName: request.counterpartyName ?? undefined,
         value:            request.estimatedValue ?? undefined,
         ownerId,
         createdBy:        userId,
-        ...(draftContext && { metadata: { _draftContext: draftContext } }),
+        ...(draftContext && { metadata: { _draftContext: draftContext } as unknown as Prisma.InputJsonValue }),
       },
     })
 
@@ -322,6 +460,9 @@ export async function requestRoutes(app: FastifyInstance) {
           // with the parse job below and is derived from s3Key for display.
         },
       })
+      // docs/41 P0.1 — the contract stands on its document (it had no current
+      // version, so the page and the playbook redline had nothing to read).
+      await prisma.contract.update({ where: { id: contract.id }, data: { currentVersionId: version.id } })
       queueParseDocument({
         contractId: contract.id,
         versionId:  version.id,
@@ -358,6 +499,11 @@ export async function requestRoutes(app: FastifyInstance) {
     await prisma.contractRequest.update({
       where: { id },
       data:  { status: 'ACCEPTED' },
+    })
+    // Request → Draft, on the record (the banner's first step).
+    await transition({
+      orgId, contractId: contract.id, to: { stage: 'draft', state: 'drafting' }, source: 'import', userId,
+      reason: 'the request was accepted', extra: { requestId: id },
     })
 
     await createAuditEvent({

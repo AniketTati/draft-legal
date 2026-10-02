@@ -9,6 +9,8 @@ import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Plus, Trash2, ChevronUp, ChevronDown, User } from 'lucide-react'
+import { CLAUSE_TYPE_LABELS, RESET_MODES, readResetRule, type ResetMode } from '@clm/types'
+import { RESET_FIELD_LABEL, RESET_MODE_LABEL, resetOnForMode, resetRuleProblem, toggleResetItem, type StoredResetOn } from '@/lib/reset-rule-form'
 
 export interface WorkflowStepDef {
   order:            number
@@ -22,6 +24,8 @@ export interface WorkflowStepDef {
   requiredApprovals: number
   dueSoonHours:     number
   escalateTo?:      string
+  /** docs/41 Part 18 — when this step's approval is asked for again after a change. Unset: after any change. */
+  resetOn?:         StoredResetOn
 }
 
 interface Props {
@@ -255,6 +259,9 @@ export function WorkflowBuilder({ steps, onChange }: Props) {
                 </div>
               </div>
 
+              {/* docs/41 Part 18 — which changes after approval send it back to this step. */}
+              <ResetOnField idx={idx} resetOn={step.resetOn} onChange={resetOn => update(idx, { resetOn })} />
+
               {/* Execution mode */}
               <div>
                 <label className="block text-dense font-medium text-ink-700 mb-1.5">Execution mode</label>
@@ -314,6 +321,54 @@ export function WorkflowBuilder({ steps, onChange }: Props) {
       <Button size="sm" variant="outline" onClick={addStep} className="w-full mt-1">
         <Plus />Add Step
       </Button>
+    </div>
+  )
+}
+
+const SELECT_CLS = 'w-full rounded-md border border-input text-[13px] text-ink-950 px-2.5 py-1.5 bg-card focus-visible:outline-none focus-visible:border-brand-700 focus-visible:ring-[3px] focus-visible:ring-brand-700/15'
+
+function ResetOnField({ idx, resetOn, onChange }: { idx: number; resetOn: StoredResetOn | undefined; onChange: (r: StoredResetOn) => void }) {
+  const rule = readResetRule(resetOn)
+  const problem = resetRuleProblem(resetOn)
+  const chosen = rule.mode === 'clause_text_changes' ? rule.clauseTypes ?? [] : rule.mode === 'fields' ? rule.fields ?? [] : []
+  const items: Array<[string, string]> = rule.mode === 'clause_text_changes' ? Object.entries(CLAUSE_TYPE_LABELS)
+    : rule.mode === 'fields' ? Object.entries(RESET_FIELD_LABEL) : []
+  return (
+    <div data-testid={`step-reset-${idx}`}>
+      <label className="block text-dense font-medium text-ink-700 mb-1" htmlFor={`reset-${idx}`}>Ask again after a change</label>
+      <select
+        id={`reset-${idx}`}
+        value={rule.mode}
+        onChange={e => onChange(resetOnForMode(e.target.value as ResetMode, resetOn))}
+        className={SELECT_CLS}
+      >
+        {RESET_MODES.map(m => <option key={m} value={m}>{RESET_MODE_LABEL[m]}</option>)}
+      </select>
+      {items.length > 0 && (
+        <>
+          <div className="mt-2 max-h-32 overflow-y-auto flex flex-wrap gap-1.5">
+            {items.map(([key, label]) => {
+              const on = chosen.includes(key)
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => onChange(toggleResetItem(resetOn, key))}
+                  className={`px-2 py-0.5 rounded-full text-[11.5px] border transition-colors ${on ? 'bg-ink-950 border-ink-950 text-white' : 'bg-card border-paper-300 text-ink-700 hover:bg-paper-50'}`}
+                >
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+          <p className={`mt-1 text-[11.5px] ${problem ? 'text-risk-700' : 'text-ink-500'}`}>
+            {problem ?? (rule.mode === 'clause_text_changes' && chosen.length === 0
+              ? 'None picked: a change to any clause asks again.'
+              : `${chosen.length} picked.`)}
+          </p>
+        </>
+      )}
     </div>
   )
 }

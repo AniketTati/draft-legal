@@ -81,7 +81,7 @@ describe('filling a new custom field in on existing contracts', () => {
 
     const filled = (await prisma.contract.findUniqueOrThrow({ where: { id: ids['empty-me'] } })).metadata as Record<string, unknown>
     expect(filled.payment_terms_days).toBe(45)
-    expect(filled._customFieldEvidence).toEqual({ payment_terms_days: { confidence: 0.9, quote: 'due within 45 days' } })
+    expect(filled._customFieldEvidence).toMatchObject({ payment_terms_days: { confidence: 0.9, quote: 'due within 45 days', source: 'ai' } })
     const kept = (await prisma.contract.findUniqueOrThrow({ where: { id: ids['already-set'] } })).metadata as Record<string, unknown>
     expect(kept.payment_terms_days).toBe(30)
     expect((await prisma.contractFieldDefinition.findUniqueOrThrow({ where: { id: def } })).backfill).toMatchObject({ status: 'DONE', filled: 1 })
@@ -118,8 +118,12 @@ describe('filling a new custom field in on existing contracts', () => {
   it('an admin queues it; others may not', async () => {
     const res = await app.inject({ method: 'POST', url: `/api/v1/field-definitions/${def}/backfill`, headers: auth(org, ['ADMIN'], user) })
     expect(res.statusCode).toBe(202)
-    expect(res.json().backfill).toMatchObject({ status: 'QUEUED' })
-    expect(vi.mocked(queueBackfillCustomField)).toHaveBeenCalledWith({ orgId: org, fieldDefinitionId: def })
+    expect(res.json().backfill).toMatchObject({ status: 'QUEUED', mode: 'fill' })
+    expect(vi.mocked(queueBackfillCustomField)).toHaveBeenCalledWith({ orgId: org, fieldDefinitionId: def, mode: 'fill' })
+    // docs/39 D5 — a re-check is asked for by name.
+    const recheck = await app.inject({ method: 'POST', url: `/api/v1/field-definitions/${def}/backfill`, headers: auth(org, ['ADMIN'], user), payload: { mode: 'recheck' } })
+    expect(recheck.json().backfill).toMatchObject({ status: 'QUEUED', mode: 'recheck' })
+    expect(vi.mocked(queueBackfillCustomField)).toHaveBeenLastCalledWith({ orgId: org, fieldDefinitionId: def, mode: 'recheck' })
     expect((await app.inject({ method: 'POST', url: `/api/v1/field-definitions/${def}/backfill`, headers: auth(org, ['VIEWER'], user) })).statusCode).toBe(403)
   })
 })

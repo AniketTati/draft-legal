@@ -26,6 +26,8 @@ import { Sparkles, Copy, Check, Replace, ArrowDown, X, Loader2 } from 'lucide-re
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/store/auth'
+import { insertAsTrackedChange, replaceRange } from '@/lib/tracked-insert'
+import { AskAiDrafts, type AskAiOutcome } from './AskAiDrafts'
 
 export interface BubbleAiPopoverProps {
   editor: Editor | null
@@ -35,6 +37,11 @@ export interface BubbleAiPopoverProps {
    *  collapsed by the time the popover mounts. */
   selectedText?: string
   selectionRange?: { from: number; to: number } | null
+  /** docs/41 Part 16 — on a contract: an instruction and three drafts to
+   *  choose from (AskAiDrafts) instead of the fixed action chips. */
+  contractId?: string
+  /** What became of the drafts, for the AI suggestion log. */
+  onOutcome?: (outcome: AskAiOutcome, suggestionId: string) => void
 }
 
 interface Action { id: string; label: string; helper: string }
@@ -46,7 +53,7 @@ const ACTIONS: Action[] = [
   { id: 'check_compliance', label: 'Check compliance', helper: 'List any regulatory gaps' },
 ]
 
-export function BubbleAiPopover({ editor, open, onClose, selectedText: incomingText, selectionRange }: BubbleAiPopoverProps) {
+export function BubbleAiPopover({ editor, open, onClose, selectedText: incomingText, selectionRange, contractId, onOutcome }: BubbleAiPopoverProps) {
   const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null)
   const [selected, setSelected] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -193,7 +200,17 @@ export function BubbleAiPopover({ editor, open, onClose, selectedText: incomingT
         </button>
       </div>
 
-      {!streaming && !result && !error && (
+      {contractId && (
+        <AskAiDrafts
+          contractId={contractId}
+          selectedText={selected}
+          onInsertTracked={(text, suggestionId) => { insertAsTrackedChange(editor, selectionRange ?? null, text, { contractId, feature: 'ask_ai', suggestionId }); onClose() }}
+          onReplace={text => { replaceRange(editor, selectionRange ?? null, text); onClose() }}
+          onOutcome={onOutcome}
+        />
+      )}
+
+      {!contractId && !streaming && !result && !error && (
         <div className="p-2 grid grid-cols-2 gap-1.5" data-testid="bubble-ai-actions">
           {ACTIONS.map(a => (
             <button

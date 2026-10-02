@@ -158,7 +158,8 @@ describe('the extraction\'s callbacks store the real text', () => {
 
     const patch = await app.inject({
       method: 'PATCH', url: `/api/v1/contracts/${contract}`, headers: agentHeaders(),
-      payload: { summary: tokenized, keyTerms: { paymentTerms: { quote: tokenized } } },
+      // A text field: the store refuses a value its field can't hold (docs/39 A5).
+      payload: { summary: tokenized, keyTerms: { venue: tokenized } },
     })
     expect(patch.statusCode).toBe(200)
     const c = await prisma.contract.findUniqueOrThrow({ where: { id: contract } })

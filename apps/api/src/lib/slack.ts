@@ -9,7 +9,7 @@
  *
  * Outbound notifications still go through the existing webhook system
  * (type='slack' + slack-formatter.ts); this module powers the INBOUND
- * half: `/contract` slash command + Approve/Reject button clicks.
+ * half: `/contract` slash command + Approve / Return with a reason button clicks.
  */
 import crypto from 'node:crypto'
 import { prisma } from './prisma.js'

@@ -8,7 +8,8 @@
 import type { PrismaClient } from '@prisma/client'
 import { notificationQueue, queueEscalation, queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
-import { AuditAction, autoApproves } from '@clm/types'
+import { transition, workingStageBefore } from './lifecycle.js'
+import { AuditAction, autoApproves, type ResetRule } from '@clm/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,6 +27,9 @@ export interface WorkflowStepDef {
   requiredApprovals: number  // for parallel: how many of N must approve (1 = any-one)
   dueSoonHours:     number   // default 48 — used to set escalateAt
   escalateTo?:      string   // userId to reassign to on timeout
+  // docs/41 Part 18 — when an approval given at this step is asked for again
+  // after a change (packages/types lifecycle.ts readResetRule; `always` when unset).
+  resetOn?:         ResetRule | ResetRule['mode']
 }
 
 // ─── Pure decision helper (Wave 3.8) ─────────────────────────────────────────
@@ -73,7 +77,7 @@ export function evaluateApprovalBatch(
 
 // ─── Helper: cancel escalation job ────────────────────────────────────────────
 
-async function cancelEscalation(stepId: string): Promise<void> {
+export async function cancelEscalation(stepId: string): Promise<void> {
   try {
     await notificationQueue.remove(`escalate-${stepId}`)
   } catch {
@@ -81,63 +85,122 @@ async function cancelEscalation(stepId: string): Promise<void> {
   }
 }
 
-// ─── Helper: create ApprovalStep rows for a step definition ──────────────────
-// Wave 3.8 — creates ONE ApprovalStep per resolved approver at the same
-// stepOrder. For a sequential step that's a single row; for a parallel step
-// it's the whole concurrent set, which is what makes N-of-M approvals possible.
+// ─── Who a step is assigned to (docs/41 Part 6) ──────────────────────────────
+// A sequential step for a role went to the first user holding the role
+// (`userRoles[0]`), so the other holders never saw it. Now it waits in the
+// role's pool: one step with `approverRoleId` and no approver; every holder
+// sees it, and the first to decide claims it (approverId is set then).
 
-async function createStepsForDef(
+export interface Assignees {
+  /** People each given a step of their own. */
+  userIds: string[]
+  /** A role whose holders share one step, and who holds it now. */
+  pool?: { roleId: string; roleName: string; holderIds: string[] }
+}
+
+/** The role ids a user holds (for pooled steps). */
+export async function roleIdsOf(userId: string, prisma: PrismaClient): Promise<string[]> {
+  return (await prisma.userRole.findMany({ where: { userId }, select: { roleId: true } })).map(r => r.roleId)
+}
+
+/** The active members of the org holding a role. */
+export async function holdersOf(roleId: string, orgId: string, prisma: PrismaClient): Promise<string[]> {
+  return (await prisma.userRole.findMany({
+    where: { roleId, user: { orgId, deletedAt: null, status: 'ACTIVE' } },
+    select: { userId: true },
+  })).map(r => r.userId)
+}
+
+/** The org's role of that name (its own, or the system's). */
+async function roleNamed(name: string, orgId: string, prisma: PrismaClient): Promise<{ id: string; name: string } | null> {
+  return prisma.role.findFirst({ where: { name, OR: [{ orgId }, { orgId: null }] }, orderBy: { orgId: { sort: 'desc', nulls: 'last' } }, select: { id: true, name: true } })
+}
+
+/** Who a step definition is assigned to: named people, or a sequential role's pool. */
+export async function resolveAssignees(stepDef: WorkflowStepDef, orgId: string, prisma: PrismaClient): Promise<Assignees> {
+  const named = [...(stepDef.approverIds ?? []), ...(stepDef.approverId ? [stepDef.approverId] : [])].filter(Boolean)
+  const roles = [...(stepDef.roleRequireds ?? []), ...(stepDef.roleRequired ? [stepDef.roleRequired] : [])].filter(Boolean)
+  if (stepDef.executionMode !== 'parallel' && named.length === 0 && roles.length > 0) {
+    const role = await roleNamed(roles[0], orgId, prisma)
+    if (!role) return { userIds: [] }
+    const holderIds = await holdersOf(role.id, orgId, prisma)
+    return holderIds.length ? { userIds: [], pool: { roleId: role.id, roleName: role.name, holderIds } } : { userIds: [] }
+  }
+  return { userIds: await resolveApprovers(stepDef, orgId, prisma) }
+}
+
+/** Whether a step has anyone to decide it. */
+export const hasAssignees = (a: Assignees) => a.userIds.length > 0 || !!a.pool?.holderIds.length
+
+/** Everyone who may decide a step now: its approver, or its role's holders. */
+export async function deciderIdsOf(step: { approverId: string | null; approverRoleId: string | null; orgId: string }, prisma: PrismaClient): Promise<string[]> {
+  if (step.approverId) return [step.approverId]
+  if (step.approverRoleId) return holdersOf(step.approverRoleId, step.orgId, prisma)
+  return []
+}
+
+// ─── Helper: create ApprovalStep rows for a step definition ──────────────────
+// Wave 3.8 — ONE ApprovalStep per resolved approver at the same stepOrder
+// (a parallel step's whole concurrent set, for N-of-M); a role's pool is one
+// step for all its holders.
+
+export async function createStepsForDef(
   prisma: PrismaClient,
-  instanceId: string,
-  orgId: string,
+  instance: { id: string; orgId: string; contractId: string },
   stepDef: WorkflowStepDef,
-  resolvedApproverIds: string[],
-): Promise<string[]> {
+  assignees: Assignees,
+): Promise<Array<{ id: string; approverId: string | null; approverRoleId: string | null; notify: string[] }>> {
   const dueSoonHours = stepDef.dueSoonHours ?? 48
   const escalateAt = new Date(Date.now() + dueSoonHours * 60 * 60 * 1000)
   const delayMs = dueSoonHours * 60 * 60 * 1000
+  const rows: Array<{ approverId: string | null; approverRoleId: string | null; notify: string[] }> = [
+    ...assignees.userIds.map(id => ({ approverId: id, approverRoleId: null, notify: [id] })),
+    ...(assignees.pool ? [{ approverId: null, approverRoleId: assignees.pool.roleId, notify: assignees.pool.holderIds }] : []),
+  ]
 
-  const stepIds: string[] = []
-  for (const approverId of resolvedApproverIds) {
+  const out: Array<{ id: string; approverId: string | null; approverRoleId: string | null; notify: string[] }> = []
+  for (const r of rows) {
     const step = await prisma.approvalStep.create({
       data: {
-        approvalInstanceId: instanceId,
-        orgId,
+        approvalInstanceId: instance.id,
+        orgId:      instance.orgId,
+        contractId: instance.contractId,
+        kind:       'approval',
         stepOrder:  stepDef.order,
         stepName:   stepDef.name,
-        approverId,
+        approverId: r.approverId,
+        approverRoleId: r.approverRoleId,
         status:     'PENDING',
         escalateAt,
       },
     })
-
-    // Queue escalation delayed job (one per concurrent approver)
-    const job = await queueEscalation({
-      instanceId,
-      stepId:     step.id,
-      orgId,
-      escalateTo: stepDef.escalateTo,
-    }, delayMs)
-
-    // Store job ID on the step so we can cancel it on decision
-    await prisma.approvalStep.update({
-      where: { id: step.id },
-      data:  { escalationJobId: job.id?.toString() },
-    })
-
-    stepIds.push(step.id)
+    // Queue escalation delayed job (one per step); the id is stored so a decision cancels it.
+    const job = await queueEscalation({ instanceId: instance.id, stepId: step.id, orgId: instance.orgId, escalateTo: stepDef.escalateTo }, delayMs)
+    await prisma.approvalStep.update({ where: { id: step.id }, data: { escalationJobId: job.id?.toString() } })
+    out.push({ id: step.id, ...r })
   }
-
-  return stepIds
+  return out
 }
+
+/**
+ * The step order that follows `current` in a definition: the next one that
+ * exists. A definition numbered 0, 2, 5 used to be approved after step 0,
+ * because the engine looked for `current + 1` and, finding none, finished.
+ */
+export function nextStepOrder(stepDefs: Array<{ order: number }>, current: number): number | null {
+  const later = stepDefs.map(d => d.order).filter(o => typeof o === 'number' && o > current)
+  return later.length ? Math.min(...later) : null
+}
+
+/** A decision that ends the round without approval: a return, a decline (older rows: REJECTED). */
+export const isNegative = (decision: string | null | undefined) => decision === 'RETURNED' || decision === 'DECLINED' || decision === 'REJECTED'
 
 // ─── Main engine: advanceWorkflow ─────────────────────────────────────────────
 //
-// Called after every step decision. Reads current state and transitions the
-// instance (and contract) to the next state. All DB writes in a single transaction.
+// Called after every step decision. Reads current state and moves the
+// instance — and, through lib/lifecycle.ts, the contract — on.
 
 export async function advanceWorkflow(instanceId: string, prisma: PrismaClient): Promise<void> {
-  // Load instance + all steps + workflow definition
   const instance = await prisma.approvalInstance.findUnique({
     where:   { id: instanceId },
     include: { steps: true, definition: true },
@@ -145,74 +208,31 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
   if (!instance) throw new Error(`advanceWorkflow: instance not found: ${instanceId}`)
   if (instance.status !== 'PENDING' && instance.status !== 'ESCALATED') return // already terminal
 
-  const stepDefs: WorkflowStepDef[] = Array.isArray(instance.definition.steps)
-    ? (instance.definition.steps as unknown as WorkflowStepDef[])
+  const stepDefs: WorkflowStepDef[] = Array.isArray(instance.definition?.steps)
+    ? (instance.definition!.steps as unknown as WorkflowStepDef[])
     : []
 
   const currentDef = stepDefs.find(d => d.order === instance.currentStepOrder)
-  const currentSteps = instance.steps.filter(s => s.stepOrder === instance.currentStepOrder)
+  const currentSteps = instance.steps.filter(s => s.stepOrder === instance.currentStepOrder && s.kind === 'approval')
   const executionMode = currentDef?.executionMode ?? 'sequential'
 
   // Decide the batch outcome (pure — see evaluateApprovalBatch).
   const { anyRejected, batchResolved, leftoverPendingIds } = evaluateApprovalBatch(
-    currentSteps, executionMode, currentDef?.requiredApprovals ?? 1,
+    currentSteps.map(s => ({ ...s, decision: isNegative(s.decision) ? 'REJECTED' : s.decision })), executionMode, currentDef?.requiredApprovals ?? 1,
   )
 
-  // ── Case 1: Any step REJECTED → reject the whole workflow ─────────────────
+  // ── Case 1: returned or declined → the round ends ─────────────────────────
   if (anyRejected) {
-    // Cancel all pending escalation jobs at this step
-    await Promise.all(currentSteps.filter(s => s.status === 'PENDING').map(s => cancelEscalation(s.id)))
-
-    await prisma.$transaction([
-      // Reject all still-pending steps
-      prisma.approvalStep.updateMany({
-        where: { approvalInstanceId: instanceId, status: 'PENDING' },
-        data:  { status: 'REJECTED', decidedAt: new Date() },
-      }),
-      // Close the instance
-      prisma.approvalInstance.update({
-        where: { id: instanceId },
-        data:  { status: 'REJECTED', decidedAt: new Date() },
-      }),
-      // Revert contract to DRAFT so submitter can edit and resubmit — if it
-      // is still waiting on this approval. X24 follow-up: a contract sent for
-      // signature, or moved on by a counterparty's upload, meanwhile keeps
-      // its status; a late decision used to overwrite even EXECUTED.
-      prisma.contract.updateMany({
-        where: { id: instance.contractId, status: 'PENDING_APPROVAL' },
-        data:  { status: 'DRAFT' },
-      }),
-    ])
-
-    createAuditEvent({
-      orgId:        instance.orgId,
-      action:       AuditAction.APPROVAL_DECIDED,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
-      metadata:     { decision: 'REJECTED', contractId: instance.contractId },
-    }).catch(() => {})
-
-    // Notify submitter
-    const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
-    queueNotification({
-      orgId:        instance.orgId,
-      userId:       instance.submittedById,
-      type:         'APPROVAL_DECIDED',
-      title:        'Contract approval rejected',
-      body:         `"${contract?.title ?? 'Contract'}" was rejected and returned to Draft.`,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
-    })
+    const by = currentSteps.find(s => isNegative(s.decision))!
+    await closeRound(prisma, instance, by)
     return
   }
 
   // ── Case 2: Is the current batch resolved (required approvals met)? ────────
   if (!batchResolved) return // still waiting for more decisions at this step
 
-  // Wave 3.8 — the batch is APPROVED. For a parallel step that short-circuited
-  // on the required count, close any still-PENDING siblings so their escalation
-  // timers don't fire and they stop showing as actionable. (Empty for the
-  // sequential path, which required no pending steps to get here.)
+  // Wave 3.8 — close any still-PENDING siblings of a parallel step that
+  // short-circuited on the required count.
   if (leftoverPendingIds.length > 0) {
     await Promise.all(leftoverPendingIds.map(id => cancelEscalation(id)))
     await prisma.approvalStep.updateMany({
@@ -221,23 +241,25 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
     })
   }
 
-  // ── Case 3: Batch resolved as APPROVED — advance or complete ──────────────
-  const nextStepDef = stepDefs.find(d => d.order === instance.currentStepOrder + 1)
+  // ── Case 3: Batch resolved as APPROVED — the next existing step, or done ──
+  // A later step whose approval still stands (it was not reset by a change,
+  // lib/approval-reset.ts) isn't asked again.
+  const stillApproved = (order: number) => {
+    const def = stepDefs.find(d => d.order === order)
+    const approvedAt = instance.steps.filter(s => s.kind === 'approval' && s.stepOrder === order && s.status === 'APPROVED')
+    return approvedAt.length > 0 && evaluateApprovalBatch(approvedAt, def?.executionMode ?? 'sequential', def?.requiredApprovals ?? 1).batchResolved
+  }
+  let nextOrder = nextStepOrder(stepDefs, instance.currentStepOrder)
+  while (nextOrder != null && stillApproved(nextOrder)) nextOrder = nextStepOrder(stepDefs, nextOrder)
+  const nextStepDef = nextOrder == null ? undefined : stepDefs.find(d => d.order === nextOrder)
+  const contract = await prisma.contract.findUnique({ where: { id: instance.contractId }, select: { title: true, ownerId: true } })
 
   if (!nextStepDef) {
-    // All steps complete — approve the contract
-    await prisma.$transaction([
-      prisma.approvalInstance.update({
-        where: { id: instanceId },
-        data:  { status: 'APPROVED', decidedAt: new Date() },
-      }),
-      // Only while it is still waiting on this approval (X24 follow-up).
-      prisma.contract.updateMany({
-        where: { id: instance.contractId, status: 'PENDING_APPROVAL' },
-        data:  { status: 'APPROVED' },
-      }),
-    ])
-
+    const done = await prisma.approvalInstance.updateMany({
+      where: { id: instanceId, status: { in: ['PENDING', 'ESCALATED'] } },
+      data:  { status: 'APPROVED', outcome: 'approved', decidedAt: new Date() },
+    })
+    if (!done.count) return
     createAuditEvent({
       orgId:        instance.orgId,
       action:       AuditAction.APPROVAL_DECIDED,
@@ -245,25 +267,24 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
       resourceId:   instanceId,
       metadata:     { decision: 'APPROVED', contractId: instance.contractId },
     }).catch(() => {})
-
-    const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
-    queueNotification({
-      orgId:        instance.orgId,
-      userId:       instance.submittedById,
-      type:         'APPROVAL_DECIDED',
-      title:        'Contract approved',
-      body:         `"${contract?.title ?? 'Contract'}" has been fully approved.`,
-      resourceType: 'approval_instance',
-      resourceId:   instanceId,
+    const last = [...instance.steps].filter(s => s.decision === 'APPROVED').sort((a, b) => (b.decidedAt?.getTime() ?? 0) - (a.decidedAt?.getTime() ?? 0))[0]
+    // Ready to sign — only while it is still waiting on this approval (X24 follow-up).
+    await transition({
+      orgId: instance.orgId, contractId: instance.contractId, source: 'approval',
+      to: { stage: 'approve', state: 'approved' }, onlyFrom: [{ stage: 'approve', state: 'pending' }],
+      userId: last?.approverId, versionId: instance.versionId, extra: { instanceId },
     })
-    return
-  }
-
-  // Advance to the next step — resolve approver(s) from def (Wave 3.8: plural
-  // for parallel steps, single for sequential).
-  const nextApproverIds = await resolveApprovers(nextStepDef, instance.orgId, prisma)
-  if (nextApproverIds.length === 0) {
-    console.warn('[workflow-engine] no approvers found for step %d (def: %j) — skipping', nextStepDef.order, nextStepDef)
+    for (const userId of new Set([instance.submittedById, contract?.ownerId].filter((x): x is string => !!x))) {
+      queueNotification({
+        orgId:        instance.orgId,
+        userId,
+        type:         'APPROVAL_DECIDED',
+        title:        'Contract approved',
+        body:         `"${contract?.title ?? 'Contract'}" has been fully approved. It can be sent for signature.`,
+        resourceType: 'contract',
+        resourceId:   instance.contractId,
+      })
+    }
     return
   }
 
@@ -271,28 +292,123 @@ export async function advanceWorkflow(instanceId: string, prisma: PrismaClient):
     where: { id: instanceId },
     data:  { currentStepOrder: nextStepDef.order },
   })
-
-  const newStepIds = await createStepsForDef(prisma, instanceId, instance.orgId, nextStepDef, nextApproverIds)
-
-  // Notify each next approver (one notification per concurrent approver).
-  const contract = await prisma.contract.findUnique({ where: { id: instance.contractId } })
-  const nextApprovers = await prisma.user.findMany({
-    where: { id: { in: nextApproverIds } },
-    select: { id: true, email: true },
-  })
-  const emailById = new Map(nextApprovers.map(u => [u.id, u.email]))
-  nextApproverIds.forEach((approverId, i) => {
+  const assignees = await resolveAssignees(nextStepDef, instance.orgId, prisma)
+  if (!hasAssignees(assignees)) {
+    // Stuck: nobody holds the step. The Team inbox lists it ("no approver");
+    // the submitter is told rather than left waiting.
+    console.warn('[workflow-engine] no approvers for step %d of %s — the approval is stuck', nextStepDef.order, instanceId)
     queueNotification({
       orgId:        instance.orgId,
-      userId:       approverId,
-      type:         'APPROVAL_REQUEST',
-      title:        'Contract awaiting your approval',
-      body:         `"${contract?.title ?? 'Contract'}" requires your approval (${nextStepDef.name}).`,
-      resourceType: 'approval_step',
-      resourceId:   newStepIds[i],
-      email:        emailById.get(approverId) ?? undefined,
+      userId:       instance.submittedById,
+      type:         'APPROVAL_DECIDED',
+      title:        'Approval stuck: no approver',
+      body:         `"${contract?.title ?? 'Contract'}" reached "${nextStepDef.name}", which no one can approve. Ask an admin to fix the workflow.`,
+      resourceType: 'contract',
+      resourceId:   instance.contractId,
     })
-  })
+    return
+  }
+
+  const created = await createStepsForDef(prisma, instance, nextStepDef, assignees)
+  const people = await prisma.user.findMany({ where: { id: { in: created.flatMap(s => s.notify) } }, select: { id: true, email: true } })
+  const emailById = new Map(people.map(u => [u.id, u.email]))
+  for (const s of created) {
+    for (const userId of s.notify) {
+      queueNotification({
+        orgId:        instance.orgId,
+        userId,
+        type:         'APPROVAL_REQUEST',
+        title:        'Contract awaiting your approval',
+        body:         `"${contract?.title ?? 'Contract'}" requires your approval (${nextStepDef.name})${s.approverRoleId ? ' — any one of your role can decide' : ''}.`,
+        resourceType: 'approval_step',
+        resourceId:   s.id,
+        email:        emailById.get(userId) ?? undefined,
+      })
+    }
+  }
+}
+
+/**
+ * docs/41 Part 4 — the round ends without approval.
+ *   - Returned (changes needed): the contract goes back to the stage it was
+ *     worked in (Negotiate if it was negotiating, otherwise Draft), state
+ *     "returned", the owner's turn.
+ *   - Declined (do not proceed): it stays in Approve, state "declined", the
+ *     owner's turn to decide whether to cancel it.
+ * Either way the owner and the submitter are told who and why.
+ */
+async function closeRound(
+  prisma: PrismaClient,
+  instance: { id: string; orgId: string; contractId: string; submittedById: string; versionId: string | null; steps: Array<{ id: string; status: string }> },
+  by: { approverId: string | null; decision: string | null; comment: string | null },
+): Promise<void> {
+  const outcome = by.decision === 'DECLINED' ? 'declined' : 'returned'
+  const pending = instance.steps.filter(s => s.status === 'PENDING')
+  await Promise.all(pending.map(s => cancelEscalation(s.id)))
+  const [, closed] = await prisma.$transaction([
+    // The others at this round had nothing left to decide.
+    prisma.approvalStep.updateMany({ where: { approvalInstanceId: instance.id, status: 'PENDING' }, data: { status: 'SKIPPED', decidedAt: new Date() } }),
+    // `status` keeps its older value for readers of it: REJECTED.
+    prisma.approvalInstance.updateMany({ where: { id: instance.id, status: { in: ['PENDING', 'ESCALATED'] } }, data: { status: 'REJECTED', outcome, decidedAt: new Date() } }),
+  ])
+  if (!closed.count) return
+
+  createAuditEvent({
+    orgId:        instance.orgId,
+    action:       AuditAction.APPROVAL_DECIDED,
+    resourceType: 'approval_instance',
+    resourceId:   instance.id,
+    metadata:     { decision: outcome === 'declined' ? 'DECLINED' : 'RETURNED', outcome, contractId: instance.contractId },
+  }).catch(() => {})
+
+  const reason = by.comment?.trim() || null
+  const moved = outcome === 'returned'
+    ? await transition({
+        orgId: instance.orgId, contractId: instance.contractId, source: 'approval',
+        to: { stage: await workingStageBefore(instance.orgId, instance.contractId), state: 'returned' },
+        onlyFrom: [{ stage: 'approve', state: 'pending' }],
+        userId: by.approverId, reason, versionId: instance.versionId, extra: { instanceId: instance.id, outcome },
+      })
+    : await transition({
+        orgId: instance.orgId, contractId: instance.contractId, source: 'approval',
+        to: { stage: 'approve', state: 'declined' },
+        onlyFrom: [{ stage: 'approve', state: 'pending' }],
+        userId: by.approverId, reason, versionId: instance.versionId, extra: { instanceId: instance.id, outcome },
+      })
+
+  // docs/41 P0.6 — who returned it and why, to the submitter and the owner.
+  const contract = await prisma.contract.findUnique({ where: { id: instance.contractId }, select: { title: true, ownerId: true } })
+  const who = by.approverId ? await prisma.user.findUnique({ where: { id: by.approverId }, select: { name: true, email: true } }) : null
+  const name = who?.name || who?.email || null
+  const stageNow = moved.ok && moved.changed ? moved.to.stage : null
+  for (const userId of new Set([instance.submittedById, contract?.ownerId].filter((x): x is string => !!x))) {
+    queueNotification({
+      orgId:        instance.orgId,
+      userId,
+      type:         'APPROVAL_DECIDED',
+      title:        outcome === 'declined' ? 'Contract declined' : 'Contract returned for changes',
+      body:         outcome === 'declined'
+        ? declinedBody(contract?.title ?? 'Contract', name, reason)
+        : returnedBody(contract?.title ?? 'Contract', name, reason, stageNow === 'draft' || stageNow === 'negotiate' ? stageNow : null),
+      resourceType: 'contract',
+      resourceId:   instance.contractId,
+    })
+  }
+}
+
+/** docs/41 P0.6 — the notification a returned approval sends: who, why, and where the contract is now. */
+export function returnedBody(title: string, by: string | null, reason: string | null, backTo: 'draft' | 'negotiate' | boolean | null): string {
+  const who = by ? `${by} returned` : 'An approver returned'
+  const why = reason?.trim() ? `: “${reason.trim()}”` : '.'
+  const stage = backTo === true ? 'draft' : backTo || null
+  return `${who} "${title}" for changes${why}${stage ? ` It is back in ${stage === 'negotiate' ? 'Negotiate' : 'Draft'} to fix and resubmit.` : ''}`
+}
+
+/** docs/41 Part 4 — the notification a declined approval sends. */
+export function declinedBody(title: string, by: string | null, reason: string | null): string {
+  const who = by ? `${by} declined` : 'An approver declined'
+  const why = reason?.trim() ? `: “${reason.trim()}”` : '.'
+  return `${who} "${title}"${why} It should not go ahead as it is: decide whether to cancel it or rework it and resubmit.`
 }
 
 // ─── Auto-approval check ─────────────────────────────────────────────────────
@@ -405,4 +521,28 @@ export async function resolveApprovers(
   const all = [...ids]
   // Sequential always collapses to a single approver.
   return withDelegates(parallel ? all : all.slice(0, 1), orgId, prisma)
+}
+
+// ─── Progress (docs/41 Parts 12, 18) ─────────────────────────────────────────
+
+/**
+ * "Approvals 1 of 3": the steps of the workflow approved so far, of all its
+ * steps. Counted by step of the definition, not by row: a parallel step's
+ * three approvers, a delegation or a reset don't count three times.
+ */
+export function approvalProgress(instance: {
+  status: string
+  steps: Array<{ stepOrder: number; status: string; decision: string | null; kind?: string }>
+  definition?: { steps: unknown } | null
+}): { approved: number; total: number } {
+  const defs = (Array.isArray(instance.definition?.steps) ? instance.definition!.steps : []) as WorkflowStepDef[]
+  const steps = instance.steps.filter(s => (s.kind ?? 'approval') === 'approval')
+  const orders = defs.length ? defs.map(d => d.order) : [...new Set(steps.map(s => s.stepOrder))]
+  if (instance.status === 'APPROVED' || instance.status === 'AUTO_APPROVED') return { approved: orders.length, total: orders.length }
+  const approved = orders.filter(o => {
+    const def = defs.find(d => d.order === o)
+    const at = steps.filter(s => s.stepOrder === o && s.status === 'APPROVED')
+    return at.length > 0 && evaluateApprovalBatch(at.map((s, i) => ({ id: String(i), status: s.status, decision: s.decision })), def?.executionMode ?? 'sequential', def?.requiredApprovals ?? 1).batchResolved
+  }).length
+  return { approved, total: orders.length }
 }

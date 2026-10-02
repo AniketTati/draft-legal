@@ -16,8 +16,10 @@ import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededE
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
 import { modelFetch } from './model-boundary.js'
+import { createHash } from 'node:crypto'
 
-export const COMPLIANCE_FRAMEWORKS = ['GDPR', 'HIPAA', 'SOX', 'CCPA'] as const
+// docs/41 Part 9 — UK GDPR and PCI DSS joined; the catalogue is in the agents service.
+export const COMPLIANCE_FRAMEWORKS = ['GDPR', 'UK_GDPR', 'HIPAA', 'SOX', 'CCPA', 'PCI_DSS'] as const
 export type ComplianceFramework = typeof COMPLIANCE_FRAMEWORKS[number]
 
 export interface ComplianceCheckItem {
@@ -49,7 +51,13 @@ export interface ComplianceReport {
   }
   checkedAt:           string
   frameworksRequested: string[]
+  /** docs/41 Part 9 — the version checked, and a hash of its text: a result is for one text. */
+  versionId?:          string
+  textHash?:           string
 }
+
+/** The hash a report and the facts are stamped with: same text, same hash. */
+export const textHashOf = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 32)
 
 export interface ComplianceParams {
   orgId:      string
@@ -58,6 +66,13 @@ export interface ComplianceParams {
   userId:     string
   /** Subset of COMPLIANCE_FRAMEWORKS; defaults to all. */
   frameworks?: string[]
+  /**
+   * docs/41 Part 9 — keep the stored results for frameworks not checked now,
+   * when they are for the same text ("Add a framework" adds one result).
+   */
+  merge?: boolean
+  /** The frameworks were found to apply from facts and policy: the model only checks requirements. */
+  applicabilityDecided?: boolean
 }
 
 export interface ComplianceResult {
@@ -76,7 +91,7 @@ export interface ComplianceResult {
  * surface 429. All other failures return { ok: false, error }.
  */
 export async function runComplianceCheck({
-  orgId, contractId, userId, frameworks,
+  orgId, contractId, userId, frameworks, merge, applicabilityDecided,
 }: ComplianceParams): Promise<ComplianceResult> {
   const contract = await prisma.contract.findFirst({
     where: { id: contractId, orgId, deletedAt: null },
@@ -130,6 +145,7 @@ export async function runComplianceCheck({
       frameworks:   requested,
       jurisdiction: contract.jurisdiction ?? undefined,
       orgId,   // Wave 3.5 — lets the agents service resolve the org's BYOK key
+      applicabilityDecided: applicabilityDecided ?? false,
     }),
   }, { orgId, surface: 'compliance_check', contractId: contract.id, userId })
   if (!pyRes.ok) {
@@ -155,22 +171,29 @@ export async function runComplianceCheck({
     return { ok: false, report: null, error: parsed.error }
   }
 
+  const textHash = textHashOf(rawText)
+  const fresh = parsed.frameworks ?? []
+  // The results kept from before: only for the same text, and not re-checked now.
+  const previous = (contract.metadata as Record<string, unknown> | null)?._compliance as ComplianceReport | undefined
+  const kept = merge && previous?.textHash === textHash
+    ? previous.frameworks.filter(f => !fresh.some(n => n.framework === f.framework))
+    : []
   const report: ComplianceReport = {
-    frameworks: parsed.frameworks ?? [],
+    frameworks: [...kept, ...fresh],
     overall: {
       status:        parsed.overall?.status ?? 'unknown',
       summary:       parsed.overall?.summary ?? '',
-      criticalCount: parsed.overall?.criticalCount ?? 0,
+      criticalCount: (parsed.overall?.criticalCount ?? 0)
+        + kept.flatMap(f => f.checks).filter(c => c.severity === 'critical' && c.status !== 'present').length,
     },
     checkedAt:           new Date().toISOString(),
-    frameworksRequested: requested,
+    frameworksRequested: [...new Set([...kept.map(f => f.framework), ...requested])],
+    versionId,
+    textHash,
   }
 
-  const existing = (contract.metadata ?? {}) as Record<string, unknown>
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  { metadata: { ...existing, _compliance: report } as never },
-  })
+  // One key, written in place: other analysis steps write other metadata keys meanwhile.
+  await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{_compliance}', ${JSON.stringify(report)}::jsonb) WHERE id = ${contractId} AND "orgId" = ${orgId}`
 
   await createAuditEvent({
     orgId, userId,

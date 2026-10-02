@@ -8,6 +8,8 @@ export { scanWorker } from './scan.worker.js'
 export { webhookWorker } from './webhook.worker.js'
 // Retryable sealing of executed contracts into their signed PDF
 export { signingWorker } from './signing.worker.js'
+// docs/41 Parts 17 and 20 — integration syncs (Salesforce)
+export { integrationSyncWorker } from './integration-sync.worker.js'
 
 // ─── Stuck-contract recovery ─────────────────────────────────────────────────
 // Contracts stuck in an in-progress status (e.g. agents service restarted

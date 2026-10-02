@@ -1,3 +1,4 @@
+import { lazy, Suspense, type ComponentType } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '@/store/auth'
@@ -5,45 +6,57 @@ import { api } from '@/lib/api'
 import { AppShell } from '@/components/layout/AppShell'
 import { OnboardingWizard } from '@/components/onboarding/OnboardingWizard'
 import { LoginPage } from '@/pages/LoginPage'
-import { RegisterPage } from '@/pages/RegisterPage'
 import { DashboardPage } from '@/pages/DashboardPage'
-import { AgentHomePage } from '@/pages/AgentHomePage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
-import { ContractsPage } from '@/pages/ContractsPage'
-import { ContractDetailPage } from '@/pages/ContractDetailPage'
-import { RequestsPage } from '@/pages/RequestsPage'
-import { CounterpartiesPage } from '@/pages/CounterpartiesPage'
-import { CounterpartyDetailPage } from '@/pages/CounterpartyDetailPage'
-import { SettingsPage } from '@/pages/SettingsPage'
-import { TemplatesPage } from '@/pages/TemplatesPage'
-import { ClausesPage } from '@/pages/ClausesPage'
-import { PlaybookPage } from '@/pages/PlaybookPage'
-import { ApprovalsPage } from '@/pages/ApprovalsPage'
-import { SignaturesPage } from '@/pages/SignaturesPage'
-import { ObligationsPage } from '@/pages/ObligationsPage'
-import { RenewalsPage } from '@/pages/RenewalsPage'
-import { InvoicesPage } from '@/pages/InvoicesPage'
-import { DiligenceRoomsPage } from '@/pages/DiligenceRoomsPage'
-import { DiligenceRoomDetailPage } from '@/pages/DiligenceRoomDetailPage'
-import { AnalyticsPage } from '@/pages/AnalyticsPage'
-import { ExternalPortalPage } from '@/pages/ExternalPortalPage'
-import { SignerPortal } from '@/pages/SignerPortal'
-import { PrivacyPage } from '@/pages/legal/PrivacyPage'
-import { TermsPage } from '@/pages/legal/TermsPage'
-import { StatusPage } from '@/pages/legal/StatusPage'
-import { AdminUsersPage } from '@/pages/AdminUsersPage'
-import { AdminRolesPage } from '@/pages/AdminRolesPage'
-import { AdminOrgPage } from '@/pages/AdminOrgPage'
-import { AdminIntegrationsPage } from '@/pages/AdminIntegrationsPage'
-import { AdminSkillsPage } from '@/pages/AdminSkillsPage'
-import { ReviewQueuePage } from '@/pages/ReviewQueuePage'
-import { MattersPage } from '@/pages/MattersPage'
-import { MatterDetailPage } from '@/pages/MatterDetailPage'
-import { ProfilePage } from '@/pages/ProfilePage'
-import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
-import { TeamPage } from '@/pages/TeamPage'
 import { Toaster } from '@/components/common/Toaster'
+import { PageLoading } from '@/components/common/PageLoading'
+
+// Pages load when first visited, not with the app: every page in the entry
+// chunk had pushed it past its size budget (scripts/check-bundle-size.mjs).
+// Sign-in, the dashboard and not-found stay in it, as the pages people land on.
+function page<K extends string>(load: () => Promise<Record<K, ComponentType>>, name: K) {
+  return lazy(() => load().then(m => ({ default: m[name] })))
+}
+const SsoCallbackPage = page(() => import('@/pages/SsoCallbackPage'), 'SsoCallbackPage')
+const EmbedContractPage = page(() => import('@/pages/EmbedContractPage'), 'EmbedContractPage')
+const RegisterPage = page(() => import('@/pages/RegisterPage'), 'RegisterPage')
+const AgentHomePage = page(() => import('@/pages/AgentHomePage'), 'AgentHomePage')
+const ContractsPage = page(() => import('@/pages/ContractsPage'), 'ContractsPage')
+const ContractDetailPage = page(() => import('@/pages/ContractDetailPage'), 'ContractDetailPage')
+const ContractWorkspacePage = page(() => import('@/pages/ContractWorkspacePage'), 'ContractWorkspacePage')
+const RequestsPage = page(() => import('@/pages/RequestsPage'), 'RequestsPage')
+const CounterpartiesPage = page(() => import('@/pages/CounterpartiesPage'), 'CounterpartiesPage')
+const CounterpartyDetailPage = page(() => import('@/pages/CounterpartyDetailPage'), 'CounterpartyDetailPage')
+const SettingsPage = page(() => import('@/pages/SettingsPage'), 'SettingsPage')
+const TemplatesPage = page(() => import('@/pages/TemplatesPage'), 'TemplatesPage')
+const ClausesPage = page(() => import('@/pages/ClausesPage'), 'ClausesPage')
+const PlaybookPage = page(() => import('@/pages/PlaybookPage'), 'PlaybookPage')
+const ApprovalsPage = page(() => import('@/pages/ApprovalsPage'), 'ApprovalsPage')
+const SignaturesPage = page(() => import('@/pages/SignaturesPage'), 'SignaturesPage')
+const ObligationsPage = page(() => import('@/pages/ObligationsPage'), 'ObligationsPage')
+const RenewalsPage = page(() => import('@/pages/RenewalsPage'), 'RenewalsPage')
+const InvoicesPage = page(() => import('@/pages/InvoicesPage'), 'InvoicesPage')
+const DiligenceRoomsPage = page(() => import('@/pages/DiligenceRoomsPage'), 'DiligenceRoomsPage')
+const DiligenceRoomDetailPage = page(() => import('@/pages/DiligenceRoomDetailPage'), 'DiligenceRoomDetailPage')
+const AnalyticsPage = page(() => import('@/pages/AnalyticsPage'), 'AnalyticsPage')
+const ExternalPortalPage = page(() => import('@/pages/ExternalPortalPage'), 'ExternalPortalPage')
+const SignerPortal = page(() => import('@/pages/SignerPortal'), 'SignerPortal')
+const PrivacyPage = page(() => import('@/pages/legal/PrivacyPage'), 'PrivacyPage')
+const TermsPage = page(() => import('@/pages/legal/TermsPage'), 'TermsPage')
+const StatusPage = page(() => import('@/pages/legal/StatusPage'), 'StatusPage')
+const AdminUsersPage = page(() => import('@/pages/AdminUsersPage'), 'AdminUsersPage')
+const AdminRolesPage = page(() => import('@/pages/AdminRolesPage'), 'AdminRolesPage')
+const AdminOrgPage = page(() => import('@/pages/AdminOrgPage'), 'AdminOrgPage')
+const AdminIntegrationsPage = page(() => import('@/pages/AdminIntegrationsPage'), 'AdminIntegrationsPage')
+const AdminSkillsPage = page(() => import('@/pages/AdminSkillsPage'), 'AdminSkillsPage')
+const AdminAnalysisHealthPage = page(() => import('@/pages/AdminAnalysisHealthPage'), 'AdminAnalysisHealthPage')
+const ReviewQueuePage = page(() => import('@/pages/ReviewQueuePage'), 'ReviewQueuePage')
+const MattersPage = page(() => import('@/pages/MattersPage'), 'MattersPage')
+const MatterDetailPage = page(() => import('@/pages/MatterDetailPage'), 'MatterDetailPage')
+const ProfilePage = page(() => import('@/pages/ProfilePage'), 'ProfilePage')
+const AcceptInvitePage = page(() => import('@/pages/AcceptInvitePage'), 'AcceptInvitePage')
+const TeamPage = page(() => import('@/pages/TeamPage'), 'TeamPage')
 
 function OnboardingGate({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
@@ -81,8 +94,13 @@ export default function App() {
   return (
     <>
     <Toaster />
+    <Suspense fallback={<PageLoading />}>
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* docs/41 Part 20 — where single sign-on lands. */}
+      <Route path="/login/sso" element={<SsoCallbackPage />} />
+      {/* docs/41 Part 17 — the read-only preview Salesforce frames, by token. */}
+      <Route path="/embed/contracts/:id" element={<EmbedContractPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/accept-invite/:token" element={<AcceptInvitePage />} />
       <Route path="/portal/:portalToken" element={<ExternalPortalPage />} />
@@ -98,6 +116,17 @@ export default function App() {
         rollout is a single commit.
       */}
       <Route path="/sign/:token" element={<SignerPortal />} />
+      {/* docs/41 Part 16 (C2) — the contract workspace is full screen: no app rail. */}
+      <Route
+        path="/contracts/:id/workspace"
+        element={
+          <ProtectedRoute>
+            <ErrorBoundary label="the workspace">
+              <ContractWorkspacePage />
+            </ErrorBoundary>
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/*"
         element={
@@ -141,6 +170,7 @@ export default function App() {
         <Route path="admin/org" element={<AdminOrgPage />} />
         <Route path="admin/integrations" element={<AdminIntegrationsPage />} />
         <Route path="admin/skills" element={<AdminSkillsPage />} />
+        <Route path="admin/analysis" element={<AdminAnalysisHealthPage />} />
         {/* D.4.3 — convenience alias matching docs/30 §4.4 wording */}
         <Route path="settings/skills" element={<AdminSkillsPage />} />
         {/* P2.5 — HITL review queue for low-confidence extractions */}
@@ -157,6 +187,7 @@ export default function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
+    </Suspense>
     </>
   )
 }

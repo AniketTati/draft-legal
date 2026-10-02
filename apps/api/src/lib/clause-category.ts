@@ -69,7 +69,10 @@ const CATEGORY_WORDS: Record<string, string[]> = {
   ip_ownership:            ['intellectual property', 'ip'],
   license_grant:           ['licen', 'intellectual property'],
   warranty:                ['warrant', 'representation'],
-  governing_law:           ['governing law', 'law'],
+  // docs/41 P0.3 — the seed keeps governing law in "Dispute Resolution"
+  // (its positions are about the law and venue); 'law' alone matched
+  // "Compliance with Laws" first.
+  governing_law:           ['governing law', 'dispute', 'law'],
   dispute_resolution:      ['dispute', 'arbitration'],
   assignment:              ['assignment'],
   change_of_control:       ['change of control', 'assignment'],

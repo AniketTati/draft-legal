@@ -9,10 +9,17 @@ import { Input } from '@/components/ui/input'
 import { StatusPill } from '@/components/ui/status-pill'
 import { Chip, CountBadge, EmptyState, Eyebrow, RiskMeter } from '@/components/ui/primitives'
 import { UploadModal } from '@/components/contracts/UploadModal'
-import { BulkImportDialog } from '@/components/contracts/BulkImportDialog'
+import { ImportWizard } from '@/components/contracts/ImportWizard'
 import { NewContractFlow } from '@/components/contracts/NewContractFlow'
 import { useCanRequest } from '@/lib/permissions'
-import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw } from 'lucide-react'
+import { useFieldCatalog } from '@/lib/field-catalog'
+import { AddFieldFilter, FieldFilterChip } from '@/components/contracts/FieldFilters'
+import { ColumnPicker } from '@/components/contracts/ColumnPicker'
+import { ViewsMenu, useSavedViews, type SavedView, type ViewQuery } from '@/components/contracts/ViewsMenu'
+import { VERIFICATION_LABELS, decodeFieldFilters, encodeFieldFilters, type CatalogField, type ContractSort, type FieldFilter } from '@clm/types'
+import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw, ArrowUp, ArrowDown, Download, CircleCheck } from 'lucide-react'
+import { toast } from '@/components/common/Toaster'
+import { openPathFor } from '@/lib/workspace'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -40,7 +47,33 @@ const TYPE_DOT = 'bg-paper-300'
 const PAGE_SIZE = 50
 const ES_MAX = 100
 
-const GRID_COLS = 'grid-cols-[minmax(0,2fr)_120px_160px_100px_80px_36px]'
+/**
+ * The grid: the fixed columns, then one per chosen field (docs/39 D3). Inline
+ * because the field columns vary; past a few the table scrolls sideways
+ * rather than squeezing the title.
+ */
+function gridStyle(fieldColumns: number): React.CSSProperties {
+  return {
+    gridTemplateColumns: [
+      fieldColumns ? 'minmax(240px,2fr)' : 'minmax(0,2fr)', '120px', '160px', '100px', '80px',
+      ...Array.from({ length: fieldColumns }, () => 'minmax(130px,1fr)'), '36px',
+    ].join(' '),
+  }
+}
+
+// docs/39 D3 — the chosen field columns, remembered on this browser when the URL doesn't name them.
+const COLUMNS_KEY = 'clm.contracts.columns'
+function storedColumns(): string[] {
+  try {
+    const v = JSON.parse(window.localStorage.getItem(COLUMNS_KEY) ?? '[]')
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : []
+  } catch { return [] }
+}
+
+function sortFrom(raw: string | null): ContractSort | null {
+  const [key, dir] = (raw ?? '').split(':')
+  return key && (dir === 'asc' || dir === 'desc') ? { key, dir } : null
+}
 
 // ─── Expiry urgency ───────────────────────────────────────────────────────────
 
@@ -138,8 +171,10 @@ interface ActiveFilters {
   clauseFlags?: Record<string, boolean>
   expiryDateTo?: string
   counterpartyId?: string
+  /** docs/39 A16 — the contracts one import made (?import=). */
+  importBatch?: string
   // U12 audit (2026-04-29). Numeric SLA facets — encoded as preset
-  // bands so the chip surface stays simple. The buildQuery step
+  // bands so the chip surface stays simple. The listQuery step
   // translates these into otdMax / uptimeSlaMin server params.
   // 'below_target'    → otdMax=95
   // 'meeting_target'  → otdMin=95
@@ -147,7 +182,12 @@ interface ActiveFilters {
   // 'three_nines'     → uptimeSlaMin=99.0
   // 'four_nines'      → uptimeSlaMin=99.99
   uptimeBand?: 'three_nines' | 'four_nines'
+  // docs/39 B3 — how much of each contract a person checked.
+  checked?: CheckedState
 }
+
+type CheckedState = 'verified' | 'partly' | 'unverified'
+const CHECKED_STATES: CheckedState[] = ['verified', 'partly', 'unverified']
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -203,18 +243,103 @@ export function ContractsPage() {
     const status = searchParams.get('status')
     const riskBand = searchParams.get('riskBand')
     const counterpartyId = searchParams.get('counterpartyId')
+    const checked = searchParams.get('checked') as CheckedState | null
+    const importBatch = searchParams.get('import')
+    if (importBatch && /^imp_[0-9a-f]{12}$/.test(importBatch)) f.importBatch = importBatch
     if (expiryDateTo) f.expiryDateTo = expiryDateTo
     if (type) f.type = type
     if (status) f.status = status
     if (riskBand) f.riskBand = riskBand
     if (counterpartyId) f.counterpartyId = counterpartyId
+    if (checked && CHECKED_STATES.includes(checked)) f.checked = checked
     return f
   })
+
+  // docs/39 A16 — "Open the imported contracts" links here while the list is open: the import's filter applies then too.
+  const importParam = searchParams.get('import')
+  useEffect(() => {
+    if (importParam && /^imp_[0-9a-f]{12}$/.test(importParam) && importParam !== filters.importBatch) setFilters(f => ({ ...f, importBatch: importParam }))
+  }, [importParam])
+
+  // docs/39 D3 — field filters (?ff=), field columns (?cols=) and the sort (?sort=key:dir).
+  const [fieldFilters, setFieldFilters] = useState<FieldFilter[]>(() => decodeFieldFilters(searchParams.get('ff')))
+  const [columns, setColumns] = useState<string[]>(() => {
+    const cols = searchParams.get('cols')
+    return cols !== null ? cols.split(',').filter(Boolean) : storedColumns()
+  })
+  const [sort, setSort] = useState<ContractSort | null>(() => sortFrom(searchParams.get('sort')))
+  const { data: catalog = [] } = useFieldCatalog()
+  const fieldOf = (key: string): CatalogField | undefined => catalog.find(f => f.key === key)
+  const changeColumns = (next: string[]) => {
+    setColumns(next)
+    try { window.localStorage.setItem(COLUMNS_KEY, JSON.stringify(next)) } catch { /* storage unavailable */ }
+  }
+  // Sorting by a column: ascending, then descending, then back to newest first.
+  const cycleSort = (key: string) => setSort(s => (s?.key !== key ? { key, dir: 'asc' } : s.dir === 'asc' ? { key, dir: 'desc' } : null))
+
+  // docs/39 D3 — a saved view (?view=). A link with the view alone opens it
+  // once the views load; with the list's state beside it, that state stands
+  // (the view shows as edited).
+  const [viewId, setViewId] = useState<string | null>(() => searchParams.get('view'))
+  const [pendingView, setPendingView] = useState(() => !!searchParams.get('view')
+    && !['ff', 'cols', 'sort', 'type', 'status', 'riskBand', 'expiryDateTo', 'counterpartyId', 'checked', 'import'].some(k => searchParams.has(k)))
+  const { data: savedViews } = useSavedViews()
+  const openView = (view: SavedView | null) => {
+    const q = view?.query
+    setViewId(view?.id ?? null)
+    setFilters((q?.filters ?? {}) as ActiveFilters)
+    setFieldFilters(q?.fieldFilters ?? [])
+    // "All contracts" goes back to the columns this browser keeps; a view brings its own.
+    setColumns(q ? q.columns ?? [] : storedColumns())
+    setSort(q?.sort ?? null)
+    setSearch(q?.q ?? '')
+    setDebouncedSearch(q?.q ?? '')
+    const next = new URLSearchParams(searchParams)
+    if (q?.filterLabel) next.set('filterLabel', q.filterLabel); else next.delete('filterLabel')
+    if (view) next.set('view', view.id); else next.delete('view')
+    setSearchParams(next, { replace: true })
+  }
+  useEffect(() => {
+    if (!pendingView || !savedViews) return
+    setPendingView(false)
+    const view = savedViews.find(v => v.id === viewId)
+    if (view) openView(view)
+    else setViewId(null)
+  }, [pendingView, savedViews])
 
   // The optional label carried in the URL overrides our default chip
   // text (so the dashboard can say "Expiring within 30 days" instead
   // of the raw ISO date). Only used for the expiry filter today.
   const filterLabelFromUrl = searchParams.get('filterLabel') ?? undefined
+
+  // docs/41 Part 19 — opened from an Analytics bar: the contracts behind it.
+  const drill = searchParams.get('drill')
+  const drillKey = searchParams.get('drillKey') ?? ''
+  const drillLabel = searchParams.get('drillLabel') ?? 'From Analytics'
+  const drillQuery = searchParams.get('dq') ?? ''
+  const { data: drillIds } = useQuery<string[]>({
+    queryKey: ['analytics-drilldown', drill, drillKey, drillQuery],
+    enabled: !!drill,
+    queryFn: async () => {
+      const q = new URLSearchParams(drillQuery)
+      q.set('metric', drill!)
+      q.set('key', drillKey)
+      return (await api.get(`/analytics/drilldown?${q.toString()}`)).data.ids as string[]
+    },
+  })
+  const clearDrill = () => {
+    const next = new URLSearchParams(searchParams)
+    for (const k of ['drill', 'drillKey', 'drillLabel', 'dq']) next.delete(k)
+    setSearchParams(next, { replace: true })
+  }
+
+  // What a saved view would keep of the list as it is now.
+  const currentView: ViewQuery = {
+    filters: filters as Record<string, unknown>,
+    ...(filterLabelFromUrl && { filterLabel: filterLabelFromUrl }),
+    fieldFilters, columns, sort,
+    ...(debouncedSearch && { q: debouncedSearch }),
+  }
 
   // Keep URL in sync with filter state — so copy-paste / back / reload
   // round-trips cleanly.
@@ -230,15 +355,22 @@ export function ContractsPage() {
     syncKey('status')
     syncKey('riskBand')
     syncKey('counterpartyId')
+    syncKey('checked')
+    if (filters.importBatch) next.set('import', filters.importBatch); else next.delete('import')
     // Drop the label when no chip-labelled filter is active
     if (!filters.expiryDateTo && !filters.counterpartyId) next.delete('filterLabel')
+    // docs/39 D3 — so a filtered, sorted list with its columns can be linked to.
+    if (fieldFilters.length) next.set('ff', encodeFieldFilters(fieldFilters)); else next.delete('ff')
+    if (columns.length) next.set('cols', columns.join(',')); else next.delete('cols')
+    if (sort) next.set('sort', `${sort.key}:${sort.dir}`); else next.delete('sort')
+    if (viewId) next.set('view', viewId); else next.delete('view')
     // Only replace if something actually changed — avoids an extra
     // history entry when React re-renders without change.
     if (next.toString() !== searchParams.toString()) {
       setSearchParams(next, { replace: true })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.expiryDateTo, filters.type, filters.status, filters.riskBand, filters.counterpartyId])
+  }, [filters.expiryDateTo, filters.type, filters.status, filters.riskBand, filters.counterpartyId, filters.checked, filters.importBatch, fieldFilters, columns, sort, viewId])
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length
 
@@ -248,9 +380,26 @@ export function ContractsPage() {
     staleTime: 30_000,
   })
 
-  const buildQuery = () => {
-    const q: Record<string, any> = { limit: ES_MAX, mode: 'keyword' }
+  /*
+   * docs/39 D3 — the search index only nominates candidates: the words, the
+   * clause flags and jurisdiction (with type and status to narrow them), up to
+   * ES_MAX. Every filter is then applied from Postgres — which is also where
+   * the SLA bands, the counterparty and the expiry window now hold on a
+   * search (the index ignored or bent them) — along with the field filters,
+   * the sort and the field columns.
+   */
+  const searchQuery = () => {
+    const q: Record<string, unknown> = { limit: ES_MAX, mode: 'keyword' }
     if (debouncedSearch) q.q = debouncedSearch
+    if (filters.type) q.type = filters.type
+    if (filters.status) q.status = filters.status
+    if (filters.jurisdiction) q.jurisdiction = filters.jurisdiction
+    if (filters.clauseFlags && Object.keys(filters.clauseFlags).length) q.clauseFlags = filters.clauseFlags
+    return q
+  }
+
+  const listQuery = () => {
+    const q: Record<string, unknown> = {}
     if (filters.type) q.type = filters.type
     if (filters.status) q.status = filters.status
     if (filters.jurisdiction) q.jurisdiction = filters.jurisdiction
@@ -261,7 +410,6 @@ export function ContractsPage() {
     if (filters.riskBand === 'high') q.riskScoreMin = 67
     if (filters.riskBand === 'medium') { q.riskScoreMin = 34; q.riskScoreMax = 67 }
     if (filters.riskBand === 'low') q.riskScoreMax = 34
-    if (filters.clauseFlags && Object.keys(filters.clauseFlags).length) q.clauseFlags = filters.clauseFlags
     if (filters.expiryDateTo) q.expiryDateTo = filters.expiryDateTo
     // B.6.9 — counterparty drill-through. Historical contracts often
     // only have counterpartyName (no FK), so we pass BOTH when we can.
@@ -273,10 +421,17 @@ export function ContractsPage() {
     if (filters.otdBand === 'meeting_target') q.otdMin = 95
     if (filters.uptimeBand === 'three_nines') q.uptimeSlaMin = 99.0
     if (filters.uptimeBand === 'four_nines')  q.uptimeSlaMin = 99.99
+    if (filters.checked) q.checked = filters.checked
+    if (filters.importBatch) q.importBatch = filters.importBatch
+    // An empty bar lists nothing; an empty id list would mean no filter at all.
+    if (drill) q.ids = drillIds?.length ? drillIds : ['none']
+    if (fieldFilters.length) q.where = fieldFilters
+    if (columns.length) q.columns = columns
+    if (sort) q.sort = sort
     return q
   }
 
-  const hasFilters = activeFilterCount > 0 || !!debouncedSearch
+  const hasFilters = activeFilterCount > 0 || !!debouncedSearch || fieldFilters.length > 0 || !!drill
 
   // B.6.9 — Route choice.
   // Plain /contracts hits Postgres directly and is always correct for
@@ -302,37 +457,39 @@ export function ContractsPage() {
   const {
     data,
     isLoading,
+    error: listError,
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['contracts', debouncedSearch, filters, needsEs],
-    initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => {
+    queryKey: ['contracts', debouncedSearch, filters, needsEs, fieldFilters, columns, sort, drill, drillIds],
+    // A drill-down lists nothing until its contracts are known.
+    enabled: !drill || !!drillIds,
+    initialPageParam: 0,
+    queryFn: async ({ pageParam }) => {
       if (needsEs) {
-        return api.post('/search/advanced', buildQuery()).then(r => r.data)
+        const found = (await api.post('/search/advanced', searchQuery())).data
+        const hits: string[] = (found?.data ?? []).map((c: { id: string }) => c.id)
+        // Searching inside a drill-down: the hits among its contracts.
+        const inDrill = hits.filter(id => drillIds?.includes(id))
+        const ids = drill ? (inDrill.length ? inDrill : ['none']) : hits
+        const page = (await api.post('/contracts/query', { ...listQuery(), ids, limit: ES_MAX })).data
+        // One page: the index can't page past ES_MAX, and the footer says so.
+        return { ...page, hasMore: false, highlights: found?.highlights ?? {}, searchTotal: found?.total ?? ids.length }
       }
-      // Plain route — pass structural filters as GET params.
-      // Risk MUST be in this list. It was moved off the Elasticsearch path
+      // Risk MUST be in the list query. It was moved off the Elasticsearch path
       // because that index holds a subset of contracts and made "high risk AND
       // expiring" answer zero; if the bounds are then omitted here, the filter
       // is silently ignored and the list returns EVERYTHING while the chip
       // still says "High risk" — a wrong answer that looks like a right one,
       // which is worse than the empty result it replaced.
-      const params: Record<string, unknown> = { limit: PAGE_SIZE }
-      if (filters.type) params.type = filters.type
-      if (filters.status) params.status = filters.status
-      if (filters.counterpartyId) params.counterpartyId = filters.counterpartyId
-      if (filters.expiryDateTo) params.expiryDateTo = filters.expiryDateTo
-      if (filters.riskBand === 'high') params.riskScoreMin = 67
-      if (filters.riskBand === 'medium') { params.riskScoreMin = 34; params.riskScoreMax = 67 }
-      if (filters.riskBand === 'low') params.riskScoreMax = 34
-      if (pageParam) params.cursor = pageParam
-      return api.get('/contracts', { params }).then(r => r.data)
+      return (await api.post('/contracts/query', { ...listQuery(), offset: pageParam, limit: PAGE_SIZE })).data
     },
-    // Only the Postgres route hands back a cursor; the search route answers in
-    // one page, so hasNextPage is false there and the footer says why.
-    getNextPageParam: (last: any) => (last?.hasMore ? last.cursor ?? undefined : undefined),
+    // Paged by offset (a field sort has no stable cursor); the search route
+    // answers in one page, so hasNextPage is false there and the footer says why.
+    getNextPageParam: (last: any) => (last?.hasMore ? (last.offset ?? 0) + (last.data?.length ?? 0) : undefined),
+    // A field filter the server refuses (a field since deleted) is said, not retried.
+    retry: (n, err: any) => err?.response?.status !== 400 && n < 2,
     // Poll every 5s while any contract in the list is being analyzed
     refetchInterval: (q) => {
       const loaded = (q.state.data?.pages ?? []).flatMap((p: any) => p?.data ?? [])
@@ -382,7 +539,41 @@ export function ContractsPage() {
   // after a problem that isn't theirs. Seen live: a cursor that lost a row to a
   // createdAt tie printed "Search shows the first 374 matches" on an unfiltered
   // repository.
-  const truncated = needsEs && !hasNextPage && total > contracts.length
+  //
+  // docs/39 D3 — the index nominates at most ES_MAX candidates, which the
+  // other filters then narrow, so the cap is the index's total, not the list's.
+  const searchTotal: number = pages[0]?.searchTotal ?? 0
+  const truncated = needsEs && searchTotal > ES_MAX
+  const fieldColumns = columns.map(fieldOf).filter((f): f is CatalogField => !!f)
+  const grid = gridStyle(fieldColumns.length)
+  const listRefused: string | null = (listError as any)?.response?.status === 400 ? (listError as any).response.data?.detail ?? 'A filter is no longer valid.' : null
+
+  // docs/39 D3 — the list as it stands (every matching contract, not just the
+  // loaded rows) with its columns, as a spreadsheet. A search's matches are
+  // the ones on screen: the index nominated them.
+  const canExport = useCanRequest('POST /contracts/query/export')
+  const [exporting, setExporting] = useState(false)
+  const exportList = async () => {
+    setExporting(true)
+    try {
+      const body = { ...listQuery(), ...(needsEs && { ids: contracts.map((c: { id: string }) => c.id) }) }
+      const res = await api.post('/contracts/query/export', body, { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data as Blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `contracts-${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(url)
+      const matched = Number(res.headers['x-total-count'] ?? 0)
+      const exported = Number(res.headers['x-exported-count'] ?? 0)
+      if (exported < matched) toast.info(`Exported the first ${exported.toLocaleString()} of ${matched.toLocaleString()} contracts`, { description: 'Narrow the filters to export the rest.' })
+      else toast.success(`Exported ${exported.toLocaleString()} contract${exported === 1 ? '' : 's'}`)
+    } catch {
+      toast.error("Couldn't export the list", { description: 'Try again.' })
+    } finally {
+      setExporting(false)
+    }
+  }
 
   return (
     <div className="h-full flex flex-col bg-paper-50">
@@ -391,7 +582,11 @@ export function ContractsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-title text-ink-950">Contract Repository</h1>
-            <p className="text-dense text-ink-500 mt-1 tabular-nums">{total} contract{total !== 1 ? 's' : ''}</p>
+            <div className="mt-1 flex items-center gap-2">
+              {/* docs/39 D3 — saved views of this list. */}
+              <ViewsMenu current={currentView} activeId={viewId} onOpen={openView} />
+              <span className="text-dense text-ink-500 tabular-nums">· {total} contract{total !== 1 ? 's' : ''}</span>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -410,16 +605,23 @@ export function ContractsPage() {
                 </CountBadge>
               )}
             </Button>
+            <ColumnPicker catalog={catalog} columns={columns} onChange={changeColumns} />
+            {canExport && (
+              <Button variant="outline" size="sm" className="gap-1.5" disabled={exporting || total === 0} onClick={exportList}
+                title="Download this list, as filtered and sorted, with its columns" data-testid="export-contracts">
+                {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />} Export
+              </Button>
+            )}
             {canCreate && (
               <>
                 <Button
                   variant="outline"
                   onClick={() => setShowBulkImport(true)}
                   data-testid="bulk-import-button"
-                  title="Bulk import contracts from CSV"
+                  title="Import contracts from a spreadsheet, with their documents"
                   className="gap-2"
                 >
-                  <Upload className="size-4" /> Bulk import
+                  <Upload className="size-4" /> Import
                 </Button>
                 <Button
                   variant="outline"
@@ -446,7 +648,7 @@ export function ContractsPage() {
 
       {/* Search bar */}
       <div className="bg-card border-b border-paper-200 px-6 py-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="relative flex-1 max-w-lg">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-400" />
             <Input
@@ -458,7 +660,7 @@ export function ContractsPage() {
           </div>
           {hasFilters && (
             <button
-              onClick={() => { setFilters({}); setSearch(''); setDebouncedSearch('') }}
+              onClick={() => { setFilters({}); setFieldFilters([]); setSearch(''); setDebouncedSearch('') }}
               className="flex items-center gap-1 text-[11.5px] text-ink-400 hover:text-ink-700"
             >
               <X className="size-3.5" /> Clear all
@@ -476,6 +678,15 @@ export function ContractsPage() {
           )}
           {filters.riskBand && (
             <FilterChip label={`${filters.riskBand} risk`} onRemove={() => setFilters(f => ({ ...f, riskBand: undefined }))} />
+          )}
+          {filters.checked && (
+            <FilterChip label={VERIFICATION_LABELS[filters.checked]} onRemove={() => setFilters(f => ({ ...f, checked: undefined }))} />
+          )}
+          {drill && (
+            <FilterChip label={`Analytics: ${drillLabel}`} onRemove={clearDrill} />
+          )}
+          {filters.importBatch && (
+            <FilterChip label="From an import" onRemove={() => setFilters(f => ({ ...f, importBatch: undefined }))} />
           )}
           {filters.expiryDateTo && !filters.counterpartyId && (
             <FilterChip
@@ -501,6 +712,17 @@ export function ContractsPage() {
               onRemove={() => setFilters(f => ({ ...f, uptimeBand: undefined }))}
             />
           )}
+          {/* docs/39 D3 — any captured field, in its own terms. */}
+          {fieldFilters.map((ff, i) => (
+            <FieldFilterChip
+              key={`${ff.key}-${i}`}
+              field={fieldOf(ff.key)}
+              filter={ff}
+              onChange={next => setFieldFilters(all => all.map((x, j) => (j === i ? next : x)))}
+              onRemove={() => setFieldFilters(all => all.filter((_, j) => j !== i))}
+            />
+          ))}
+          {catalog.length > 0 && <AddFieldFilter catalog={catalog} onAdd={f => setFieldFilters(all => [...all, f])} />}
         </div>
       </div>
 
@@ -534,7 +756,7 @@ export function ContractsPage() {
             {/* No counts on the risk bands. Every other facet here is both
                 counted AND filtered by Elasticsearch, so its badge matches
                 what clicking it returns. Risk is the exception: the filter
-                was deliberately moved to Postgres (see buildQuery) because
+                was deliberately moved to Postgres (see listQuery) because
                 the index holds a subset, but these doc_counts are still
                 aggregated over that same partial index — so the badges read
                 "Low 12 / Medium 6 / High 1" while the filters actually
@@ -548,6 +770,14 @@ export function ContractsPage() {
                 <FacetItem key={b.key} label={b.key.charAt(0).toUpperCase() + b.key.slice(1)}
                   active={filters.riskBand === b.key}
                   onClick={() => setFilters(f => ({ ...f, riskBand: f.riskBand === b.key ? undefined : b.key as any }))} />
+              ))}
+            </FacetGroup>
+            {/* docs/39 B3 — what a person set or checked, counted from Postgres like the rows. */}
+            <FacetGroup title="Checked by a person">
+              {CHECKED_STATES.map(state => (
+                <FacetItem key={state} label={VERIFICATION_LABELS[state]}
+                  active={filters.checked === state}
+                  onClick={() => setFilters(f => ({ ...f, checked: f.checked === state ? undefined : state }))} />
               ))}
             </FacetGroup>
             <FacetGroup title="Clause Flags">
@@ -613,8 +843,8 @@ export function ContractsPage() {
               <EmptyState
                 className="w-full max-w-md"
                 icon={<FileText />}
-                title={hasFilters ? 'No contracts match your filters' : 'No contracts yet'}
-                description={hasFilters ? 'Try adjusting or clearing your filters'
+                title={listRefused ? 'One of the filters can’t be used' : hasFilters ? 'No contracts match your filters' : 'No contracts yet'}
+                description={listRefused ? `${listRefused}. Remove or change it above.` : hasFilters ? 'Try adjusting or clearing your filters'
                   : canCreate ? 'Upload your first contract to get started'
                   : 'Contracts appear here once your team adds them'}
                 action={!hasFilters && canCreate ? (
@@ -634,7 +864,7 @@ export function ContractsPage() {
              * which was which. aria-rowcount is the MATCHING count, not the
              * loaded one, so the announcement agrees with the footer.
              */
-            <div className="bg-card">
+            <div className="bg-card" style={fieldColumns.length ? { minWidth: 800 + fieldColumns.length * 146 } : undefined}>
               <div
                 role="table"
                 aria-label="Contracts"
@@ -647,17 +877,21 @@ export function ContractsPage() {
                     table, which is what the header used to have before the ARIA
                     wrappers went in. */}
                 <div role="rowgroup" className="sticky top-0 z-10">
-                  {/* Table header */}
+                  {/* Table header — docs/39 D3: each column sorts, field columns included. */}
                   <div
                     role="row"
                     aria-rowindex={1}
-                    className={`grid ${GRID_COLS} gap-4 px-6 py-2 border-b border-paper-200 bg-paper-50`}
+                    style={grid}
+                    className="grid gap-4 px-6 py-2 border-b border-paper-200 bg-paper-50"
                   >
-                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Contract</span>
-                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Status</span>
-                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Counterparty</span>
-                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Expires</span>
-                    <span role="columnheader" className="text-[10px] font-bold text-ink-400 uppercase tracking-[0.09em]">Risk</span>
+                    <SortHeader label="Contract" sortKey="title" sort={sort} onSort={cycleSort} />
+                    <SortHeader label="Status" sortKey="status" sort={sort} onSort={cycleSort} />
+                    <SortHeader label="Counterparty" sortKey="counterpartyName" sort={sort} onSort={cycleSort} />
+                    <SortHeader label="Expires" sortKey="expiryDate" sort={sort} onSort={cycleSort} />
+                    <SortHeader label="Risk" sortKey="riskScore" sort={sort} onSort={cycleSort} />
+                    {fieldColumns.map(f => (
+                      <SortHeader key={f.key} label={f.label} sortKey={f.key} sort={sort} onSort={cycleSort} title={f.definition ?? undefined} />
+                    ))}
                     {/* The chevron column is decorative, but a header cell with no
                         name leaves the row a cell short of the others. */}
                     <span role="columnheader"><span className="sr-only">Open</span></span>
@@ -682,9 +916,10 @@ export function ContractsPage() {
                       // Don't double-navigate when the click started on the
                       // <Link> or a button inside the row.
                       if ((e.target as HTMLElement).closest('a, button')) return
-                      navigate(`/contracts/${c.id}`)
+                      navigate(openPathFor(c))
                     }}
-                    className={`grid ${GRID_COLS} gap-4 items-center px-6 py-2 border-b border-paper-100 hover:bg-paper-50 cursor-pointer transition-colors group`}
+                    style={grid}
+                    className="grid gap-4 items-center px-6 py-2 border-b border-paper-100 hover:bg-paper-50 cursor-pointer transition-colors group"
                   >
                     {/* Title + type */}
                     <div role="cell" className="min-w-0 flex items-center gap-3">
@@ -692,7 +927,7 @@ export function ContractsPage() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <Link
-                            to={`/contracts/${c.id}`}
+                            to={openPathFor(c)}
                             className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                             onClick={(e) => e.stopPropagation()}
                           >
@@ -734,6 +969,17 @@ export function ContractsPage() {
                         <p className="text-[11px] text-ink-400 mt-0.5">
                           {c.type.replace(/_/g, ' ')} ·{' '}
                           <span title={new Date(c.createdAt).toLocaleString()}>{formatRelativeTime(c.createdAt)}</span>
+                          {/* docs/39 B3 — how much of it a person checked (nothing said: none of it). */}
+                          {c.verification?.state === 'verified' && (
+                            <span className="text-brand-700 font-medium" data-testid={`contract-checked-${c.id}`} title={`All ${c.verification.filled} values set or checked by a person`}>
+                              {' '}· <CircleCheck className="inline size-2.5 -mt-px" /> Verified
+                            </span>
+                          )}
+                          {c.verification?.state === 'partly' && (
+                            <span className="tabular-nums" data-testid={`contract-checked-${c.id}`} title="Values set or checked by a person">
+                              {' '}· {c.verification.checked} of {c.verification.filled} checked
+                            </span>
+                          )}
                         </p>
                         {/* U3 — search-match field hint. When ES matched a
                             field other than the title (counterparty,
@@ -803,6 +1049,9 @@ export function ContractsPage() {
                       ) : <span className="text-ink-400 text-[12.5px]">—</span>}
                     </div>
 
+                    {/* docs/39 D3 — the chosen fields. */}
+                    {fieldColumns.map(f => <FieldCellView key={f.key} cell={c.fields?.[f.key]} />)}
+
                     {/* Arrow */}
                     <div role="cell">
                       <ChevronRight aria-hidden="true" className="size-4 text-paper-300 group-hover:text-ink-400 transition-colors" />
@@ -840,7 +1089,7 @@ export function ContractsPage() {
                   // triages from is the user's problem to resolve, so it takes
                   // the "your turn" tone and says what to do about it.
                   <span className="text-dense text-attention-700">
-                    Search shows the first {contracts.length} matches — narrow the filters to see the rest.
+                    Search looked at the first {ES_MAX} of {searchTotal} matches — narrow the search to see the rest.
                   </span>
                 )}
               </div>
@@ -853,9 +1102,9 @@ export function ContractsPage() {
         <UploadModal onClose={() => setShowUpload(false)} onSuccess={() => setShowUpload(false)} />
       )}
       {showBulkImport && (
-        <BulkImportDialog
+        <ImportWizard
           onClose={() => setShowBulkImport(false)}
-          onSuccess={() => queryClient.invalidateQueries({ queryKey: ['contracts'] })}
+          onImported={() => queryClient.invalidateQueries({ queryKey: ['contracts'] })}
         />
       )}
       {showNewContract && canCreate && (
@@ -906,4 +1155,50 @@ function FacetItem({ label, count, active, onClick }: {
 
 function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
   return <Chip onRemove={onRemove}>{label}</Chip>
+}
+
+/** A column header that sorts: ascending, descending, then back to newest first (docs/39 D3). */
+function SortHeader({ label, sortKey, sort, onSort, title }: {
+  label: string
+  sortKey: string
+  sort: ContractSort | null
+  onSort: (key: string) => void
+  title?: string
+}) {
+  const dir = sort?.key === sortKey ? sort.dir : null
+  return (
+    <span role="columnheader" aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'} className="min-w-0">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        title={title ?? `Sort by ${label.toLowerCase()}`}
+        className={`inline-flex max-w-full items-center gap-1 text-[10px] font-bold uppercase tracking-[0.09em] hover:text-ink-950 ${dir ? 'text-ink-950' : 'text-ink-400'}`}
+        data-testid={`sort-${sortKey}`}
+      >
+        <span className="truncate">{label}</span>
+        {dir === 'asc' && <ArrowUp className="size-3 shrink-0" aria-hidden="true" />}
+        {dir === 'desc' && <ArrowDown className="size-3 shrink-0" aria-hidden="true" />}
+      </button>
+    </span>
+  )
+}
+
+interface FieldCell { value: unknown; display: string; source: string | null; verified: boolean; confidence: number | null }
+
+/**
+ * One field's value in the list. A reading the AI wasn't sure of, and nobody
+ * has checked, is marked so a sorted column doesn't pass it off as settled.
+ */
+function FieldCellView({ cell }: { cell: FieldCell | undefined }) {
+  if (!cell?.display) return <p role="cell" className="text-[12.5px] text-ink-400">—</p>
+  const unsure = cell.source === 'ai' && !cell.verified && cell.confidence != null && cell.confidence < 0.7
+  return (
+    <p
+      role="cell"
+      className={`text-[12.5px] text-ink-950 truncate tabular-nums ${unsure ? 'underline decoration-dotted decoration-attention-500 underline-offset-2' : ''}`}
+      title={unsure ? `${cell.display} — the AI read this but isn’t sure (${Math.round((cell.confidence ?? 0) * 100)}%); nobody has checked it yet` : cell.display}
+    >
+      {cell.display}
+    </p>
+  )
 }

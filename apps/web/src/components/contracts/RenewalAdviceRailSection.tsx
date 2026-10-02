@@ -11,19 +11,23 @@
  *   rationale paragraph
  *   negotiationPoints list
  *   riskFlags pill row
- *   [Log decision: Renew | Renegotiate | Let expire | Pause]
+ *   the notice deadline, the standing decision and [Start renewal] (docs/41 Part 14)
  *   [Run advisor again] on the bottom row
  *
  * Only renders when the contract has expiryDate (otherwise advice
  * is nonsense). Always-visible when there's any advice content or
  * the expiry is inside the 180-day window.
  */
-import { useMemo } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { RefreshCw, Repeat, LogOut, Pause, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { RenewalDecisionDialog, NoticeSentButton } from './RenewalDecisionDialog'
+import { ContractWatchers } from './ContractWatchers'
+import { deadlineWords, noticeOutstanding, noticeSentWords, renewalKey, type RenewalState } from '@/lib/renewal'
 
 export interface NegotiationPoint {
   topic:       string
@@ -69,24 +73,17 @@ export function RenewalAdviceRailSection({
   contractId,
   expiryDate,
   advice,
-  decision,
   onAfterAdvice,
   onAfterDecision,
 }: {
   contractId:  string
   expiryDate:  string | null
   advice:      RenewalAdvice | null
-  decision:    string | null  // renew | renegotiate | let_expire | pause | null
   onAfterAdvice?:   () => void
   onAfterDecision?: () => void
 }) {
   const days = useMemo(() => daysUntil(expiryDate), [expiryDate])
   const inWindow = days !== null && days <= 180 && days >= -30
-
-  // Only show the section when the contract has a meaningful renewal
-  // context — either it's within the window or someone already asked
-  // for advice.
-  if (!expiryDate || (!inWindow && !advice)) return null
 
   const run = useMutation({
     mutationFn: async () => (await api.post<{ ok: boolean; advice: RenewalAdvice }>(
@@ -95,13 +92,21 @@ export function RenewalAdviceRailSection({
     onSuccess: () => onAfterAdvice?.(),
   })
 
-  const decide = useMutation({
-    mutationFn: async (d: string) => (await api.post<{ ok: boolean; decision: string }>(
-      `/contracts/${contractId}/renewal-decision`,
-      { decision: d },
-    )).data,
-    onSuccess: () => onAfterDecision?.(),
+  // docs/41 Part 14 — the renewal terms, deadline and standing decision.
+  const renewal = useQuery({
+    queryKey: renewalKey(contractId),
+    queryFn: async () => (await api.get<RenewalState>(`/contracts/${contractId}/renewal`)).data,
+    enabled: !!contractId && !!expiryDate,
   })
+  const standing = renewal.data?.decision ?? null
+  const [deciding, setDeciding] = useState(false)
+
+  // Only show the section when the contract has a meaningful renewal
+  // context — either it's within the window or someone already asked
+  // for advice. After the hooks: an expiry date can arrive while the page is
+  // open (a calculated end date, docs/39 F2), and a hook skipped on the
+  // render before crashes the page.
+  if (!expiryDate || (!inWindow && !advice && !renewal.data?.inWindow && !standing)) return null
 
   const daysLabel = days === null ? '' : days < 0 ? `Expired ${Math.abs(days)}d ago`
     : days === 0 ? 'Expires today'
@@ -216,38 +221,38 @@ export function RenewalAdviceRailSection({
           )
         })()}
 
-        {/* Decision buttons — always present so the owner can log a
-            decision even without running the advisor. */}
-        <div className="pt-2 border-t border-border mt-2">
-          <div className="text-[9.5px] font-semibold uppercase tracking-[0.07em] text-ink-500 mb-1">
-            Log decision
-          </div>
-          <div className="flex gap-1.5 flex-wrap">
-            {(['renew', 'renegotiate', 'let_expire', 'pause'] as const).map(d => {
-              const meta = REC_META[d]
-              const active = decision === d
-              return (
-                <button
-                  key={d}
-                  onClick={() => decide.mutate(d)}
-                  disabled={decide.isPending}
-                  data-testid={`renewal-decision-${d}`}
-                  className={`text-[10.5px] px-2 py-0.5 rounded-md border transition-colors ${
-                    active
-                      ? meta.cls
-                      : 'border-border text-ink-700 hover:bg-paper-100'
-                  }`}
-                >
-                  {meta.label}
-                </button>
-              )
-            })}
-          </div>
-          {decision && (
-            <div className="text-[10px] text-muted-foreground mt-1">
-              Recorded: <span className="font-medium">{REC_META[decision]?.label ?? decision}</span>
+        {/* docs/41 Part 14 — the decision drives the action: "Start renewal"
+            opens the decision dialog; the standing decision, what it
+            drafted, and its notice show here. */}
+        <div className="pt-2 border-t border-border mt-2 space-y-1.5" data-testid="renewal-decision-block">
+          {renewal.data && deadlineWords(renewal.data) && (
+            <div className={`text-[11px] ${renewal.data.daysToDeadline != null && renewal.data.daysToDeadline <= 14 ? 'text-risk-700 font-medium' : 'text-ink-700'}`} data-testid="renewal-rail-deadline">
+              {deadlineWords(renewal.data)}
             </div>
           )}
+          {standing ? (
+            <div className="text-[11px] text-ink-700" data-testid="renewal-standing">
+              Decided: <span className="font-medium">{standing.label}</span>
+              {standing.decidedBy && <> by {standing.decidedBy}</>}
+              {standing.decidedInTime === false && <span className="text-risk-700"> (after the deadline)</span>}
+              {standing.actionContract && (
+                <> · <Link to={`/contracts/${standing.actionContract.id}`} className="underline hover:text-ink-950">{standing.actionContract.title}</Link></>
+              )}
+              {standing.noticeSentAt && (
+                <div className={standing.noticeSentInTime === false ? 'text-risk-700' : 'text-ink-500'}>
+                  {noticeSentWords(standing)}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {renewal.data && noticeOutstanding(renewal.data) && <NoticeSentButton contractId={contractId} onDone={onAfterDecision} />}
+          {renewal.data?.canDecide && (
+            <Button size="xs" variant={renewal.data.inWindow && !standing ? 'default' : 'outline'} onClick={() => setDeciding(true)} data-testid="start-renewal-btn">
+              {standing ? 'Change decision' : 'Start renewal'}
+            </Button>
+          )}
+          <ContractWatchers contractId={contractId} />
+          {deciding && <RenewalDecisionDialog contractId={contractId} onClose={() => { setDeciding(false); onAfterDecision?.() }} />}
         </div>
 
         {advice && (

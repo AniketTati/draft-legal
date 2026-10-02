@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DL_Approvals__c</fullName>
+    <description>Approvals on the current round, e.g. "1 of 2".</description>
+    <label>Approvals</label>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+</CustomField>

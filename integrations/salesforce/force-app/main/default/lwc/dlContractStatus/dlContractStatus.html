@@ -1,0 +1,44 @@
+<template>
+    <lightning-card title="draftLegal status" icon-name="standard:contract">
+        <lightning-button-icon slot="actions" icon-name="utility:refresh" alternative-text="Refresh" onclick={load}></lightning-button-icon>
+        <div class="slds-p-horizontal_medium">
+            <template lwc:if={loading}>
+                <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+            </template>
+            <template lwc:elseif={error}>
+                <div class="slds-text-color_error" role="alert">{error}</div>
+            </template>
+            <template lwc:elseif={status}>
+                <lightning-progress-indicator current-step={status.stage} type="path" variant="base">
+                    <template for:each={stages} for:item="stage">
+                        <lightning-progress-step key={stage} label={stage} value={stage}></lightning-progress-step>
+                    </template>
+                </lightning-progress-indicator>
+
+                <dl class="slds-list_horizontal slds-wrap slds-m-top_medium">
+                    <template lwc:if={status.waitingOn}>
+                        <dt class="slds-item_label slds-text-color_weak">Waiting on</dt>
+                        <dd class="slds-item_detail">{status.waitingOn}</dd>
+                    </template>
+                    <template lwc:if={approvalsText}>
+                        <dt class="slds-item_label slds-text-color_weak">Approvals</dt>
+                        <dd class="slds-item_detail">{approvalsText}</dd>
+                    </template>
+                </dl>
+
+                <template lwc:if={hasKeyTerms}>
+                    <h3 class="slds-text-title_caps slds-m-top_medium slds-m-bottom_x-small">Key terms</h3>
+                    <dl class="slds-list_horizontal slds-wrap">
+                        <template for:each={keyTerms} for:item="t">
+                            <dt key={t.key} class="slds-item_label slds-text-color_weak slds-truncate" title={t.label}>{t.label}</dt>
+                            <dd key={t.key} class="slds-item_detail">{t.value}</dd>
+                        </template>
+                    </dl>
+                </template>
+            </template>
+        </div>
+        <div slot="footer">
+            <lightning-button label="Open in draftLegal" onclick={open} disabled={loading}></lightning-button>
+        </div>
+    </lightning-card>
+</template>

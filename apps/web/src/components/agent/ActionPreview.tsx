@@ -71,6 +71,24 @@ interface ActionPreviewProps {
 
 const UNDO_WINDOW_MS = 15 * 60 * 1000  // 15 minutes — matches server-side gate
 
+/**
+ * What each write tool does, read as words ("Ready to set a field"): the
+ * card said "About to run contract_field_set". A tool not listed still shows
+ * its name.
+ */
+const TOOL_ACTIONS: Record<string, string> = {
+  comment_add:                   'add a comment',
+  contract_update:               'update the contract',
+  request_create:                'create a request',
+  approval_route:                'send for approval',
+  redline_apply:                 'apply a redline',
+  approval_decide:               'decide an approval',
+  contract_create_from_template: 'create a draft',
+  // docs/39 C5
+  contract_field_set:            'set a field',
+  field_create:                  'add a field',
+}
+
 export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPreviewProps) {
   const [editing, setEditing] = useState(false)
   const [draftJson, setDraftJson] = useState(() => argsJson(action.args))
@@ -166,11 +184,17 @@ export function ActionPreview({ action, onApply, onCancel, onUndo }: ActionPrevi
       // the proposal.
       className="rounded-card border border-attention-200 bg-attention-50 text-dense overflow-hidden"
     >
-      {/* Header — tool + reversible badge */}
+      {/* Header — what it will do (the tool's name read as words) + reversible badge */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b border-attention-200">
         <AssistMark className="flex-shrink-0" />
-        <span className="font-semibold text-attention-700">About to run</span>
-        <span className="font-mono text-[10.5px] text-ink-700">{action.toolName}</span>
+        {TOOL_ACTIONS[action.toolName] ? (
+          <span className="font-semibold text-attention-700" title={action.toolName}>Ready to {TOOL_ACTIONS[action.toolName]}</span>
+        ) : (
+          <>
+            <span className="font-semibold text-attention-700">About to run</span>
+            <span className="font-mono text-[10.5px] text-ink-700">{action.toolName}</span>
+          </>
+        )}
         {action.reversible && (
           // Reversibility is a neutral fact about the tool, not a verdict.
           <span className="ml-auto text-[9.5px] uppercase tracking-wider font-medium text-ink-500 bg-paper-100 border border-paper-200 rounded-chip px-1.5 py-0.5">

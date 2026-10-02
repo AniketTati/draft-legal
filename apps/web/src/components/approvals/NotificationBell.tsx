@@ -145,6 +145,10 @@ export function NotificationBell() {
                     if (n.resourceType === 'approval_step' || n.resourceType === 'approval_instance') {
                       navigate('/approvals'); return
                     }
+                    // docs/39 C3 — a suggested field, or one added: where fields are managed.
+                    if (n.resourceType === 'field_suggestion' || n.resourceType === 'field_definition') {
+                      navigate('/settings?tab=custom-fields'); return
+                    }
                   }}
                 >
                   <div className="shrink-0 mt-0.5">

@@ -59,3 +59,13 @@ export async function uncheckedClauses(
   const clauses = await prisma.contractClause.count({ where: { versionId, isSubChunk: false } })
   return Math.max(0, clauses - (review.clausesReviewed ?? 0))
 }
+
+/**
+ * docs/41 P0.7 — what a redline that found nothing to change says: never
+ * "No clause deviated" when no clause was there to check.
+ */
+export function redlineClearNote(clauseCount: number, checked: number): string {
+  if (clauseCount === 0) return 'Nothing to check — this contract has no analysed clauses.'
+  if (checked === 0) return 'Nothing was checked — no playbook position covers these clauses.'
+  return 'No clause deviated from the playbook.'
+}

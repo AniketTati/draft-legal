@@ -11,6 +11,7 @@
  * is forwarded into the same in-process app, so the real path runs end to end.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { planDraft } from '../lib/draft-plan.js'
 import { getApp, closeApp, makeOrg, makeUser, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
@@ -44,14 +45,15 @@ beforeAll(async () => {
     '<p>{{counterparty}} agrees to keep our information confidential under {{jurisdiction}} law.</p>')
   licenseTemplate = await template('Software License Agreement', null, '<p>License to {{counterparty_name}}.</p>')
 
-  // Forward the apply RPC's internal HTTP call into this app.
+  // Forward the apply RPC's internal HTTP call into this app, whatever
+  // port API_URL / PORT name (routes/agent-threads.ts).
   const realFetch = globalThis.fetch
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const url = String(input)
-    if (url.startsWith('http://localhost:3001/api/')) {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+    if (url.hostname === 'localhost' && url.pathname.startsWith('/api/')) {
       const res = await app.inject({
         method: (init?.method ?? 'GET') as 'POST',
-        url: url.slice('http://localhost:3001'.length),
+        url: url.pathname + url.search,
         headers: init?.headers as Record<string, string>,
         payload: init?.body as string | undefined,
       })
@@ -83,6 +85,22 @@ describe('CC5 — a template that names the parties by role', () => {
     expect(b.unfilledVariables).toEqual([])
     const s = (await plan({ userMessage: 'Draft an MSA for Initech', templateId: sell, counterpartyName: 'Initech' })).json()
     expect(s.variables).toMatchObject({ providerName: orgName, customerName: 'Initech' })
+  })
+})
+
+describe('41 browser QA — our side is never read from the request (ff9ece0)', () => {
+  it('fills our role from the org even when the extractor read the counterparty into it', async () => {
+    const orgName = (await prisma.organization.findUniqueOrThrow({ where: { id: org } })).name
+    const vars = [{ key: 'customerName', label: 'Customer Name' }, { key: 'providerName', label: 'Provider Name' }]
+    const nda = await template('QA party roles (Buy-Side)', null, '<p>{{customerName}} and {{providerName}} agree.</p>', vars)
+    const text = 'Please draft an NDA with Initech Solutions for a data-sharing pilot.'
+    const p = await planDraft({
+      orgId: org, userMessage: text, requestText: text, via: 'request', templateId: nda, counterpartyName: 'Initech Solutions',
+      extracted: [{ key: 'customerName', value: 'Initech Solutions', quote: 'an NDA with Initech Solutions' }, { key: 'providerName', value: 'Initech Solutions', quote: 'an NDA with Initech Solutions' }],
+    })
+    if (!p.ok) throw new Error('no plan')
+    expect(p.variables).toMatchObject({ customerName: orgName, providerName: 'Initech Solutions' })
+    expect(p.variableSources.customerName).not.toBe('request_text')
   })
 })
 
@@ -195,12 +213,20 @@ describe('confirm → apply → undo', () => {
       method: 'POST', url: `/api/v1/agent/threads/${thread}/actions/apply`, headers: auth(org, ['ADMIN'], owner),
       payload: {
         toolName: 'contract_create_from_template',
-        args: { templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech' },
+        args: {
+          templateId: p.templateId, variables: p.variables, title: p.title, contractType: p.contractType, counterpartyName: 'Initech',
+          slotChoices: p.slotChoices, slotDecisions: p.slotDecisions, variableSources: p.variableSources,
+        },
       },
     })
     expect(applied.statusCode).toBe(200)
     const { result, toolCallId } = applied.json()
     expect(result.html).toContain('New York')
+    // docs/41 Part 1 — exactly what the card showed, and why it says it.
+    expect(result.html).toBe(p.html)
+    const origin = ((await prisma.contract.findUniqueOrThrow({ where: { id: result.contractId } })).metadata as { _origin?: Record<string, unknown> })._origin
+    expect(origin).toMatchObject({ templateId: p.templateId, templateDecidedBy: 'explicit' })
+    expect(origin?.variables).toEqual(expect.arrayContaining([{ key: 'governing_law', value: 'New York', source: 'user' }, { key: 'payment_terms', value: 'net 30', source: 'template_default' }]))
 
     const created = await prisma.contract.findUnique({ where: { id: result.contractId } })
     expect(created).toMatchObject({ ownerId: owner, type: 'NDA', status: 'DRAFT', title: 'Initech — NDA', deletedAt: null })
@@ -234,5 +260,106 @@ describe('a draft made from a template', () => {
     expect(res.statusCode).toBe(200)
     const version = await prisma.contractVersion.findFirstOrThrow({ where: { contractId: res.json().contractId } })
     expect(version.plainText).toContain('SSN 219-09-9999\nCard 4111 1111 1111 1111')
+  })
+})
+
+describe('docs/39 H3 — a contract drafted from a template starts with its fields', () => {
+  it('saves the filled-in variables as field values set from the template, and queues the reading of the rest', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_create_from_template',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: {
+        orgId: org, userId: owner, templateId: ndaTemplate, title: 'H3 NDA', counterpartyName: 'Initech LLC',
+        variables: { our_company: 'Us Inc', counterparty_name: 'Initech LLC', effective_date: '2025-03-01', term: '2 years', governing_law: 'Delaware', payment_terms: 'net 30' },
+      },
+    })
+    expect(res.statusCode).toBe(200)
+    const id = res.json().contractId as string
+    const list = (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/fields`, headers: auth(org, ['ADMIN'], owner) })).json().fields as Array<{ key: string }>
+    const by = Object.fromEntries(list.map(f => [f.key, f]))
+    expect(by.effectiveDate).toMatchObject({ value: '2025-03-01', source: 'variable', locked: true })
+    expect(by.initialTerm).toMatchObject({ value: { value: 2, unit: 'years' }, source: 'variable' })
+    expect(by.governingLaw).toMatchObject({ value: 'Delaware', source: 'variable' })
+    expect(by.counterpartyName).toMatchObject({ value: 'Initech LLC', source: 'variable' })
+    expect(by.paymentTermsDays).toMatchObject({ value: 30, source: 'variable' })
+    // Worked out from the two it was given (F2).
+    expect(by.expiryDate).toMatchObject({ value: '2027-02-28', source: 'calculated' })
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).analysisStatus).toBe('EXTRACTING')
+    const { agentQueue } = await import('../lib/queue.js')
+    const job = (await agentQueue.getJobs(['waiting', 'delayed', 'active', 'prioritized'])).find(j => j?.name === 'extract-ai' && j.data.contractId === id)
+    expect(job?.data).toMatchObject({ triggeredBy: 'template' })
+    await job?.remove()
+  })
+})
+
+describe('docs/39 H2 — a draft keeps its variables', () => {
+  it('marks each value in the text, keeps the template’s variables, fills the fields they name — and changes a term once', async () => {
+    const tpl = await template('H2 services', 'MSA',
+      '<p>{{client}} engages us from {{start}} under {{governing_law}} law. {{client}} pays {{fees}}.</p>',
+      [
+        { key: 'client', label: 'Client', type: 'text', required: true },
+        { key: 'start', label: 'Start date', type: 'date', required: true, field: 'effectiveDate' },
+        { key: 'governing_law', label: 'Governing law', type: 'text', required: false, field: null },
+        { key: 'fees', label: 'Fees', type: 'number', required: false },
+      ])
+    const res = await app.inject({
+      method: 'POST', url: '/api/internal/ai/tools/contract_create_from_template',
+      headers: { 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string },
+      payload: { orgId: org, userId: owner, templateId: tpl, title: 'H2 MSA', variables: { client: 'Initech & Co', start: '2026-06-01', governing_law: 'Delaware' } },
+    })
+    expect(res.statusCode).toBe(200)
+    const id = res.json().contractId as string
+    const version = await prisma.contractVersion.findFirstOrThrow({ where: { contractId: id } })
+    expect(version.htmlContent).toContain('<span data-variable="client">Initech &amp; Co</span> engages us from <span data-variable="start">June 1, 2026</span>')
+    expect(version.htmlContent).toContain('data-variable="fees" data-key="fees">[[fees]]</span>')
+    const contract = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    const drafted = (contract.metadata as { _template?: { id: string; name: string; variables: unknown[] } })._template
+    expect(drafted).toMatchObject({ id: tpl, name: 'H2 services' })
+    expect(drafted?.variables).toHaveLength(4)
+
+    const headers = auth(org, ['ADMIN'], owner)
+    const fields = async () => Object.fromEntries(((await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/fields`, headers })).json().fields as Array<{ key: string }>)
+      .map(f => [f.key, f])) as unknown as Record<string, { value: unknown; source: string | null; quote: string | null }>
+    // "start" fills the field its author named; "governing_law" was named to fill none.
+    let by = await fields()
+    expect(by.effectiveDate).toMatchObject({ value: '2026-06-01', source: 'variable' })
+    expect(by.governingLaw.source).not.toBe('variable')
+
+    const variables = async () => (await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/variables`, headers })).json() as {
+      template: { id: string; name: string } | null
+      variables: Array<{ key: string; label: string; field: { key: string; inStep: boolean; hasValue: boolean } | null }>
+    }
+    let v = await variables()
+    expect(v.template).toEqual({ id: tpl, name: 'H2 services' })
+    expect(v.variables.map(x => x.key)).toEqual(['client', 'start', 'governing_law', 'fees'])
+    const vBy = Object.fromEntries(v.variables.map(x => [x.key, x]))
+    expect(vBy.start).toMatchObject({ label: 'Start date', field: { key: 'effectiveDate', inStep: true, hasValue: true } })
+    expect(vBy.governing_law.field).toBeNull()
+    expect(vBy.fees.field).toMatchObject({ key: 'value', hasValue: false, inStep: true })
+
+    // A term changed in the text reaches the field it fills, the words its quote.
+    const put = (key: string, text: string) => app.inject({ method: 'PUT', url: `/api/v1/contracts/${id}/variables/${key}`, headers, payload: { text } })
+    const moved = await put('start', '1 July 2026')
+    expect(moved.statusCode).toBe(200)
+    expect(moved.json().field).toMatchObject({ key: 'effectiveDate', value: '2026-07-01', source: 'variable', quote: '1 July 2026' })
+    // Words that don't read as the field leave it be, and say which field.
+    expect((await put('start', 'TBC')).json()).toMatchObject({ field: null, unread: { key: 'effectiveDate' } })
+    expect((await fields()).effectiveDate.value).toBe('2026-07-01')
+    // A variable that fills no field changes only the text.
+    expect((await put('governing_law', 'New York')).json()).toEqual({ field: null })
+    expect((await put('start', '  ')).statusCode).toBe(422)
+
+    // The field says July while the saved text says June: out of step, until the text says July too.
+    v = await variables()
+    expect(v.variables.find(x => x.key === 'start')?.field?.inStep).toBe(false)
+    const saved = await app.inject({
+      method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers,
+      payload: { htmlContent: version.htmlContent!.replace('<span data-variable="start">June 1, 2026</span>', '<span data-variable="start">1 July 2026</span>'), changeNote: 'Changed Start date' },
+    })
+    expect(saved.statusCode).toBe(201)
+    v = await variables()
+    expect(v.variables.find(x => x.key === 'start')?.field?.inStep).toBe(true)
+    by = await fields()
+    expect(by.effectiveDate).toMatchObject({ value: '2026-07-01', source: 'variable' })
   })
 })

@@ -20,7 +20,8 @@
  *     DELETE /admin/integrations/slack                 — disconnect
  *
  *   Health (Phase 10 — integration health dashboard):
- *     GET    /admin/integrations/health               — per-webhook health + delivery aggregates
+ *     GET    /admin/integrations/health               — per-webhook health + delivery aggregates,
+ *                                                       and each connected integration's sync health
  *     POST   /admin/integrations/webhooks/:id/deliveries/:deliveryId/retry — requeue a failed delivery
  *
  *   Public:
@@ -41,6 +42,7 @@ import { VALID_API_SCOPES } from '../lib/permissions.js'
 import { isUrlShapeAllowed } from '../lib/ssrf-guard.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { integrationHealth } from '../lib/integrations/health.js'
 
 // Wave 1.5 — reject webhook URLs that target private/localhost/metadata hosts
 // (only enforced when the SSRF guard is active; self-host/dev pass through).
@@ -54,8 +56,11 @@ export const WEBHOOK_EVENTS = [
   'contract.uploaded',
   'contract.updated',
   'contract.executed',
-  // 'contract.expired' removed (H2): nothing in the product moves a contract
-  // to EXPIRED, so a subscriber would wait for an event that never comes.
+  // 'contract.expired' removed (H2). docs/41 Part 18 — every move of stage
+  // (expiry included, by the daily date job) is contract.stage_changed;
+  // whose move it is, contract.turn_changed.
+  'contract.stage_changed',
+  'contract.turn_changed',
   'signature.sent',
   'signature.completed',
   'signature.voided',
@@ -456,6 +461,8 @@ export async function integrationsRoutes(app: FastifyInstance) {
 
     return reply.send({
       webhooks: webhookHealth,
+      // docs/41 Part 20 — connected integrations (Salesforce): syncs, last failure, conflicts.
+      integrations: await integrationHealth(orgId),
       summary: {
         healthy:  webhookHealth.filter(w => w.health === 'healthy').length,
         degraded: webhookHealth.filter(w => w.health === 'degraded').length,

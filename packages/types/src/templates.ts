@@ -12,7 +12,20 @@ export interface VariableDef {
   type: VariableType
   required: boolean
   defaultValue?: string
+  /**
+   * docs/41 P0.4 — the org chose `defaultValue` as its own default for this
+   * term. A legal choice (governing law, venue) is filled from a default only
+   * when this is set; otherwise the draft leaves it as a choice to make
+   * rather than guess (the seed's "Delaware" is a suggestion, not a rule).
+   */
+  orgDefault?: boolean
   options?: string[] // for select type
+  /**
+   * docs/39 H1/H2 — the contract field its value fills (a field key), when
+   * the author named one: a draft's value, and a later change to it, reach
+   * the field. Without it the key is matched to a field by name (H3).
+   */
+  field?: string | null
 }
 
 export interface ConditionalLogic {
@@ -29,6 +42,8 @@ export interface TemplateSection {
   content: string
   conditionalLogic: ConditionalLogic | null
   clauseRefs: string[]
+  /** docs/41 Part 1 — a clause slot: the words are the option of this family drafting picks. */
+  slotFamilyId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -43,6 +58,11 @@ export interface Template {
   isPublished: boolean
   version: number
   usageCount: number
+  /** docs/41 Part 1 — the template drafting uses for its type when nobody picks one. */
+  isDefaultForType?: boolean
+  /** The published snapshot drafts use, and whether edits since are waiting to be published. */
+  publishedVersionId?: string | null
+  hasUnpublishedChanges?: boolean
   createdById: string
   createdAt: string
   updatedAt: string
@@ -95,6 +115,8 @@ export interface PlaybookPosition {
   positionType: PositionType
   content: string
   notes: string | null
+  /** docs/41 Part 16 — offered as an external comment when a contract misses this position. */
+  counterpartyNote?: string | null
   riskThreshold: number
   contractTypes: string[]
   sortOrder: number
@@ -139,4 +161,22 @@ export interface PlaybookTestResult {
     deviation: string
     severity: 'low' | 'medium' | 'high'
   }>
+}
+
+// ─── Legal choices (docs/41 P0.4) ────────────────────────────────────────────
+// Governing law, jurisdiction, venue, forum: terms a person chooses. A draft
+// fills one from a template default only when the org marked that default as
+// its own (VariableDef.orgDefault); otherwise, unless the request names it,
+// it stays a choice to make. The agents service's draft_agent.py keeps the
+// same list.
+
+const LEGAL_CHOICE = /governing[\s_-]*law|choice[\s_-]*of[\s_-]*law|jurisdiction|venue|forum|seat[\s_-]*of[\s_-]*arbitration|arbitration[\s_-]*seat|court[\s_-]*location/i
+const GOVERNING_LAW = /governing[\s_-]*law|choice[\s_-]*of[\s_-]*law|jurisdiction/i
+
+export function isLegalChoiceVariable(v: { key?: string | null; label?: string | null }): boolean {
+  return LEGAL_CHOICE.test(v.key ?? '') || LEGAL_CHOICE.test(v.label ?? '')
+}
+
+export function isGoverningLawVariable(v: { key?: string | null; label?: string | null }): boolean {
+  return GOVERNING_LAW.test(v.key ?? '') || GOVERNING_LAW.test(v.label ?? '')
 }

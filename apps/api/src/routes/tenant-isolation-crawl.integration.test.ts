@@ -78,7 +78,11 @@ async function seedOrgB(): Promise<void> {
   B.template = (await prisma.template.create({ data: { orgId: orgB, name: `${MARK} template`, ...by, sections: { create: [{ title: `${MARK} section`, content: `${MARK} body`, sortOrder: 0 }] } }, include: { sections: true } })).id
   B.section = (await prisma.templateSection.findFirstOrThrow({ where: { templateId: B.template } })).id
   B.category = (await prisma.clauseCategory.create({ data: { orgId: orgB, name: `${MARK} category` } })).id
-  B.libraryItem = (await prisma.clauseLibraryItem.create({ data: { orgId: orgB, categoryId: B.category, title: `${MARK} item`, content: `${MARK} item`, ...by } })).id
+  // docs/41 Part 1 — a clause family with the item as its variant, and a published snapshot.
+  B.family = (await prisma.clauseFamily.create({ data: { orgId: orgB, name: `${MARK} family`, description: MARK, requestKey: 'governingLaw', ...by } })).id
+  B.libraryItem = (await prisma.clauseLibraryItem.create({ data: { orgId: orgB, categoryId: B.category, title: `${MARK} item`, content: `${MARK} item`, familyId: B.family, variantLabel: MARK, isApproved: true, ...by } })).id
+  B.clauseVersion = (await prisma.clauseLibraryVersion.create({ data: { orgId: orgB, itemId: B.libraryItem, version: 1, title: `${MARK} item`, content: `${MARK} item`, ...by } })).id
+  B.templateVersion = (await prisma.templateVersion.create({ data: { orgId: orgB, templateId: B.template, version: 1, snapshot: { name: MARK }, publishedById: user.id } })).id
   B.position = (await prisma.playbookPosition.create({ data: { orgId: orgB, clauseCategoryId: B.category, positionType: 'preferred', content: `${MARK} position`, ...by } })).id
   B.request = (await prisma.contractRequest.create({ data: { orgId: orgB, title: `${MARK} request`, type: 'NDA', requestedById: user.id, description: `${MARK} request` } })).id
   B.workflow = (await prisma.workflowDefinition.create({ data: { orgId: orgB, name: `${MARK} workflow`, ...by } })).id
@@ -98,9 +102,16 @@ async function seedOrgB(): Promise<void> {
   B.shareLink = (await prisma.contractShareLink.create({ data: { orgId: orgB, contractId: B.contract, token: `crawl-${randomUUID()}`, label: `${MARK} link`, expiresAt: new Date(Date.now() + 86_400_000), ...by } })).id
   B.notification = (await prisma.notification.create({ data: { orgId: orgB, userId: user.id, type: 'info', title: `${MARK} note`, body: `${MARK} note`, resourceType: 'contract', resourceId: B.contract } })).id
   B.fieldDef = (await prisma.contractFieldDefinition.create({ data: { orgId: orgB, fieldKey: `orgb_${randomUUID().slice(0, 6)}`, fieldLabel: `${MARK} field`, fieldType: 'text' } })).id
+  // docs/39 — a field someone asked for, a run's undo, a shared view: each Org B's own.
+  B.fieldSuggestion = (await prisma.fieldSuggestion.create({ data: { orgId: orgB, label: `${MARK} suggestion`, fieldKey: 'orgb_suggestion', fieldType: 'text', suggestedById: user.id } })).id
+  B.fieldRun = (await prisma.fieldValueRun.create({ data: { orgId: orgB, kind: 'reanalysis', contractId: B.contract, changes: [{ contractId: B.contract, fieldKey: 'governingLaw', before: { value: MARK }, after: MARK }] } })).id
+  B.savedView = (await prisma.savedView.create({ data: { orgId: orgB, ownerId: user.id, name: `${MARK} view`, shared: true, query: { q: MARK } } })).id
   B.room = (await prisma.diligenceRoom.create({ data: { orgId: orgB, name: `${MARK} room`, description: MARK, ...by } })).id
   B.skill = (await prisma.skill.create({ data: { orgId: orgB, name: `${MARK} skill`, slug: `orgb-${randomUUID().slice(0, 8)}`, description: MARK, ownerType: 'org', contextScope: 'any', systemPrompt: MARK, modelTier: 'default' } })).id
   B.role = (await prisma.role.create({ data: { orgId: orgB, name: `${MARK}-role` } })).id
+  // docs/41 Part 9 — a fact someone answered, and the org's own compliance rules.
+  B.fact = (await prisma.contractFact.create({ data: { orgId: orgB, contractId: B.contract, versionId: version.id, key: 'personal_data', value: true, quote: `${MARK} quote`, confidence: 1, source: 'user', confirmedById: user.id, confirmedAt: new Date() } })).id
+  B.policy = (await prisma.compliancePolicy.create({ data: { orgId: orgB, rules: [{ id: `${MARK}-rule`, framework: 'GDPR', enabled: true, when: [{ fact: 'personal_data', op: 'is_true' }] }], updatedById: user.id } })).id
   B.audit = (await prisma.auditEvent.create({ data: { orgId: orgB, action: 'CONTRACT_VIEWED', resourceType: 'contract', resourceId: B.contract, metadata: { note: MARK } } })).id
 }
 
@@ -109,6 +120,7 @@ const PARAM_TARGET: Record<string, string> = {
   clauseId: 'clause', instanceId: 'instance', versionId: 'version', v1Id: 'version', v2Id: 'version',
   commentId: 'comment', workflowId: 'workflow', contractId: 'contract', srId: 'signatureRequest',
   linkId: 'shareLink', userId: 'user', toolCallId: 'toolCall', deliveryId: 'delivery',
+  familyId: 'family', itemId: 'libraryItem',
 }
 const SEGMENT_TARGET: Record<string, string> = {
   contracts: 'contract', matters: 'matter', counterparties: 'counterparty', templates: 'template',
@@ -118,6 +130,8 @@ const SEGMENT_TARGET: Record<string, string> = {
   threads: 'thread', comments: 'comment', notifications: 'notification', 'field-definitions': 'fieldDef',
   diligence: 'room', rooms: 'room', skills: 'skill', users: 'user', roles: 'role', team: 'user',
   'review-queue': 'contract', audit: 'audit', renewals: 'contract', sections: 'section',
+  'field-suggestions': 'fieldSuggestion', 'field-runs': 'fieldRun', 'saved-views': 'savedView',
+  'clause-families': 'family', variants: 'libraryItem',
 }
 const LITERAL_PARAM: Record<string, string> = { index: '0', provider: 'openai' }
 
@@ -148,6 +162,8 @@ function sink(extra: Record<string, unknown> = {}): Record<string, unknown> {
     invoiceId: B.invoice, threadId: B.thread, sessionId: B.thread, skillId: B.skill, roleId: B.role,
     ownerId: B.user, assigneeId: B.user, assignedToId: B.user, approverId: B.user, delegateToId: B.user,
     categoryId: B.category, clauseCategoryId: B.category, fieldId: B.fieldDef, roomId: B.room, webhookId: B.webhook,
+    familyId: B.family, slotFamilyId: B.family, variantId: B.libraryItem, itemId: B.libraryItem, libraryItemId: B.libraryItem,
+    slots: { [B.family]: B.libraryItem }, slotChoices: { [B.family]: B.libraryItem },
     title: 'QA crawl', name: 'QA crawl', description: 'QA crawl', vendorName: 'QA crawl', amount: 1,
     invoiceDate: new Date().toISOString(), type: 'NDA', contractType: 'NDA', body: 'QA crawl', content: 'QA crawl',
     message: 'QA crawl', userMessage: 'QA crawl', query: 'QA crawl', question: 'QA crawl', q: 'QA crawl',

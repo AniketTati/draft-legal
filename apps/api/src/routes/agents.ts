@@ -10,7 +10,10 @@ import { getPermissionsForRoles, evaluatePermission } from '../lib/permissions.j
 import { createAuditEvent } from '../lib/audit.js'
 import { ChatMessageSchema, AuditAction } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
-import { queueClassifyDocument } from '../lib/queue.js'
+import { resolvePlaybook, positionWhere } from '../lib/playbooks.js'
+import { saveDraftVersion } from '../lib/draft-save.js'
+import { onVersionCreated } from '../lib/analysis-trigger.js'
+import { setValuesFromTemplate } from '../lib/field-store.js'
 import { indexContract } from '../lib/elasticsearch.js'
 import { actingUserId, NO_ACTING_USER } from '../lib/acting-user.js'
 import { assertCostCapNotExceeded, recordCost, estimateCostUsd, CostCapExceededError, recordUsage } from '../lib/costCap.js'
@@ -138,8 +141,11 @@ export async function agentRoutes(app: FastifyInstance) {
     // X9 — read tools that need more than view:contract refuse the caller
     // server-side (internal-ai.ts); don't offer them either.
     if (!evaluatePermission(callerPermissions, 'edit', 'contract').granted) {
-      deniedTools.push('redline_propose', 'redline_propose_batch')
+      // docs/39 C5 — a field's value, like the text, is changed only by those who may.
+      deniedTools.push('redline_propose', 'redline_propose_batch', 'contract_field_set')
     }
+    // C5 — adding a field is configuring the org's contracts.
+    if (!evaluatePermission(callerPermissions, 'configure', 'contract').granted) deniedTools.push('field_create')
     if (!evaluatePermission(callerPermissions, 'view', 'playbook').granted) deniedTools.push('playbook_check')
     if (!evaluatePermission(callerPermissions, 'view', 'workflow').granted) deniedTools.push('approval_list')
     // X44 — the member directory is refused to API keys without the admin scope
@@ -432,24 +438,15 @@ export async function agentRoutes(app: FastifyInstance) {
         const { contractId, title } = body.saveAs
 
         if (contractId) {
-          // Add a new version to existing contract
-          const existing = await prisma.contractVersion.findFirst({
-            where: { contractId },
-            orderBy: { versionNumber: 'desc' },
+          // Add a new version to the existing contract. docs/41 P0.1 — as a
+          // draft from a request is saved: recorded, made current and
+          // analysed (it used to be neither current nor analysed).
+          const saved = await saveDraftVersion({
+            contractId, orgId, userId, result,
+            changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
+            source: 'agent_draft',
           })
-          const nextVersion = (existing?.versionNumber ?? 0) + 1
-
-          const version = await prisma.contractVersion.create({
-            data: {
-              contractId,
-              versionNumber: nextVersion,
-              htmlContent: result.html,
-              plainText: htmlToText(result.html),
-              changeNote: `AI-generated draft (${result.usedTemplateName ?? 'no template'})`,
-              createdById: userId,
-            },
-          })
-          result.versionId = version.id
+          result.versionId = saved.versionId
         } else if (title) {
           // Create a new contract with this draft.
           //
@@ -462,6 +459,11 @@ export async function agentRoutes(app: FastifyInstance) {
           const owner = ownerId && { id: ownerId }
           if (owner) {
             const plainText = htmlToText(result.html)
+            // docs/39 H2 — the template's variables, kept with the draft: its
+            // Variables panel names them and knows which field each one fills.
+            const template = result.usedTemplateId
+              ? await prisma.template.findFirst({ where: { id: result.usedTemplateId, orgId }, select: { id: true, name: true, version: true, variables: true } })
+              : null
             const contract = await prisma.contract.create({
               data: {
                 orgId,
@@ -471,7 +473,9 @@ export async function agentRoutes(app: FastifyInstance) {
                 status: 'DRAFT',
                 createdBy: userId,
                 ...(counterparty && { counterpartyId: counterparty.id, counterpartyName: counterparty.name }),
-                analysisStatus: plainText ? 'CLASSIFYING' : 'DONE',
+                ...(template && { metadata: { _template: { id: template.id, name: template.name, version: template.version, variables: template.variables } } as never }),
+                // docs/41 P0.1 — onVersionCreated below says what happens next.
+                analysisStatus: 'PENDING',
                 versions: {
                   create: {
                     versionNumber: 1,
@@ -510,9 +514,18 @@ export async function agentRoutes(app: FastifyInstance) {
               tags:      contract.tags,
               createdAt: contract.createdAt.toISOString(),
             }).catch(err => app.log.warn({ err }, 'ES index on legacy draft save failed'))
-            if (plainText && contract.versions[0]) {
-              queueClassifyDocument({ contractId: contract.id, versionId: contract.versions[0].id, orgId })
-            }
+            // docs/39 H3 — the values the draft was filled with are its fields
+            // (set from the template); the classify → extract that follows
+            // reads the rest and leaves these alone.
+            await setValuesFromTemplate({
+              orgId, contractId: contract.id, userId,
+              variables: { ...(result.variableValues ?? {}), ...(counterparty ? { counterparty_name: counterparty.name } : {}) },
+              audit: { source: 'template' },
+              templateVariables: (template?.variables ?? null) as Array<{ key: string; field?: string | null }> | null,
+            }).catch(err => app.log.warn({ err }, 'draft template values not saved as fields'))
+            // docs/41 P0.1 — the draft is the contract's current version, and is
+            // analysed (or marked not analysed, with nothing to read).
+            if (contract.versions[0]) await onVersionCreated(contract.id, contract.versions[0].id, 'generated')
           }
         }
       } catch (err) {
@@ -772,20 +785,13 @@ export async function agentRoutes(app: FastifyInstance) {
       return reply.status(400).send({ detail: 'clauseText and clauseCategoryId are required' })
     }
 
-    // Fetch playbook positions from DB
-    const positions = await prisma.playbookPosition.findMany({
-      where: {
-        orgId,
-        clauseCategoryId,
-        ...(contractType ? {
-          OR: [
-            { contractTypes: { isEmpty: true } },
-            { contractTypes: { has: contractType } },
-          ],
-        } : {}),
-      },
+    // Fetch playbook positions from DB: of the playbook a contract of this
+    // type is reviewed against (docs/41 P1), when a type is given.
+    const scoped = contractType ? positionWhere(orgId, await resolvePlaybook(orgId, { type: contractType }), contractType) : { orgId }
+    const positions = scoped ? await prisma.playbookPosition.findMany({
+      where: { AND: [scoped, { clauseCategoryId }] },
       orderBy: { sortOrder: 'asc' },
-    })
+    }) : []
 
     if (!positions.length) {
       return reply.status(404).send({ detail: 'No playbook positions found for this category' })

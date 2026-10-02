@@ -80,6 +80,7 @@ system, and the first question anyone asked was "which of these do I run?"
 | Dataset | Surface | Seam |
 | --- | --- | --- |
 | `draftlegal-extraction` | `/classify`, `/extract_obligations` | agents service |
+| `draftlegal-extraction-fields` | `/review/preview` — the upload extraction, scored per field (`fields_match`, `field_ok:<field>`; docs/39 I1) | agents service |
 | `draftlegal-chat` | `POST /api/v1/agent/chat` | public API — RBAC, cost cap and proxy all in path |
 | `draftlegal-harness-selftest` | none (`stub`) | proves the harness, not the product |
 

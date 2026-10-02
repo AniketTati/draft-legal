@@ -45,7 +45,9 @@ export interface ExtractAiJob {
   versionId:     string
   orgId:         string
   contractType?: string            // injected when user corrects type
-  triggeredBy?:  'upload' | 'retype' | 'manual'
+  triggeredBy?:  'upload' | 'retype' | 'manual' | 'template' | 'exhibit' | 'checkpoint'
+  /** docs/39 A13 — a person set the type: the review keeps it and gives no opinion of its own. */
+  typeLocked?:   boolean
 }
 
 export interface ChunkAndIndexJob {
@@ -107,11 +109,32 @@ export function queueParseDocument(payload: ParseDocumentJob): void {
 }
 
 /** Service 2 — AI extraction: custom fields + open-ended + validate + score. */
-export function queueExtractAi(payload: ExtractAiJob): void {
+export function queueExtractAi(payload: ExtractAiJob, opts: { jobId?: string; delay?: number } = {}): void {
   agentQueue.add('extract-ai', payload, {
-    attempts: 2,
+    // docs/39 A1 — the extraction runs (and is saved) inside the job: a crash,
+    // a model timeout or a refused save is retried, at 15 s and 30 s.
+    attempts: 3,
     backoff: { type: 'exponential', delay: 15000 },
+    // A12 — one read of a contract for exhibits attached together.
+    ...(opts.jobId && { jobId: opts.jobId, removeOnComplete: true, removeOnFail: true }),
+    ...(opts.delay && { delay: opts.delay }),
   }).catch(err => console.warn('[queue] failed to enqueue extract-ai:', err.message))
+}
+
+/** docs/39 A12 — an attachment read as an exhibit of its contract (lib/exhibits.ts). */
+export interface ReadExhibitJob {
+  orgId:      string
+  contractId: string
+  s3Key:      string
+}
+
+export function queueReadExhibit(payload: ReadExhibitJob): void {
+  documentQueue.add('read-exhibit', payload, {
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 8000 },
+    removeOnComplete: true,
+    removeOnFail: 50,
+  }).catch(err => console.warn('[queue] failed to enqueue read-exhibit:', err.message))
 }
 
 /** Service 3 — SOTA legal chunking + pgvector + Elasticsearch index. */
@@ -245,6 +268,48 @@ export function queuePlaybookReview(payload: PlaybookReviewJob): void {
 }
 
 /**
+ * docs/41 Part 9 — which compliance frameworks apply to an analysed version,
+ * and the checks of those that do (lib/version-review-steps.ts). A job of its
+ * own: it may call a model, which the analysis it follows must not wait on.
+ */
+export interface ComplianceReviewJob {
+  contractId: string
+  orgId:      string
+  versionId:  string
+}
+export function queueComplianceReview(payload: ComplianceReviewJob, opts: { again?: boolean } = {}): void {
+  agentQueue.add('compliance-review', payload, {
+    // It never throws (a failed read is recorded as skipped): no retries.
+    attempts: 1,
+    // One per version, like the playbook review (see the jobId note there);
+    // a person asking again gets a job of their own.
+    jobId: `compliance-review-${payload.contractId}-${payload.versionId}${opts.again ? `-${Date.now()}` : ''}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue compliance-review:', err.message))
+}
+
+/**
+ * docs/41 Part 15 — the advice on a counterparty version's changes
+ * (lib/change-advice.ts): one model call, which the analysis never waits on.
+ */
+export interface ChangeAdviceJob {
+  contractId: string
+  orgId:      string
+  versionId:  string
+}
+export function queueChangeAdvice(payload: ChangeAdviceJob): void {
+  agentQueue.add('change-advice', payload, {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10_000 },
+    // One per version: the step itself skips a pair already advised.
+    jobId: `change-advice-${payload.contractId}-${payload.versionId}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue change-advice:', err.message))
+}
+
+/**
  * DD2 — a review after edits: of the version the contract stands on two
  * minutes from now, one per contract per two minutes. The editor saves a
  * version five seconds after typing stops; a review per save would be a
@@ -298,10 +363,17 @@ export interface PlaybookRedlineJob {
   userId:     string
   versionId:  string
   aggression: 'least' | 'moderate' | 'aggressive'
+  /**
+   * docs/41 P1 — "Fix all fixable": the clauses the review's findings name,
+   * with each one's category and issue, instead of working them out again.
+   */
+  targets?: { clauseIds: string[]; hints: Record<string, { category?: string; issue?: string }>; severity?: Record<string, string | null>; findingIds?: Record<string, string> }
 }
 export interface BackfillCustomFieldJob {
   orgId:             string
   fieldDefinitionId: string
+  /** docs/39 D5 — 'recheck' reads again the values the AI found, not only the empty ones. */
+  mode?:             'fill' | 'recheck'
 }
 
 /**
@@ -309,6 +381,101 @@ export interface BackfillCustomFieldJob {
  * second press while it runs is the same job. A failed run is removed first,
  * so pressing again resumes it from its saved cursor.
  */
+/** docs/39 G4 — reading a signed contract for its obligations, in the background. */
+export interface ExtractObligationsJob {
+  orgId:      string
+  contractId: string
+}
+
+/** docs/39 A13 — a retyped contract's new type's own fields (lib/type-fields-read.ts). */
+export interface ExtractTypeFieldsJob {
+  orgId:        string
+  contractId:   string
+  contractType: string
+}
+
+export function queueExtractTypeFields(payload: ExtractTypeFieldsJob): void {
+  agentQueue.add('extract-type-fields', payload, {
+    attempts: 3,
+    backoff:  { type: 'exponential', delay: 10_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  }).catch(err => console.error('[queue] extract-type-fields failed to enqueue:', err))
+}
+
+/** Once per contract while one is waiting or running (the job id says which). */
+export async function queueExtractObligations(payload: ExtractObligationsJob): Promise<boolean> {
+  const jobId = `extract-obligations-${payload.contractId}`
+  const existing = await agentQueue.getJob(jobId)
+  if (existing) {
+    if (!(await existing.isFailed() || await existing.isCompleted())) return false
+    await existing.remove()
+  }
+  await agentQueue.add('extract-obligations', payload, {
+    jobId,
+    attempts: 2,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  })
+  return true
+}
+
+/** docs/39 E3 — an organization's new clause type, found in its contracts read before it (lib/clause-types.ts runDetect). */
+export interface DetectClauseTypeJob {
+  orgId:        string
+  definitionId: string
+}
+
+export function queueDetectClauseType(payload: DetectClauseTypeJob): void {
+  agentQueue.add('detect-clause-type', payload, {
+    // One run per type at a time; a finished one can be run again.
+    jobId: `detect-clause-type-${payload.definitionId}-${Date.now()}`,
+    attempts: 2,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue detect-clause-type:', err.message))
+}
+
+/** docs/39 D6 — a diligence room's column answered for its documents (lib/diligence-columns.ts answerColumn). */
+export interface AnswerDiligenceColumnJob {
+  orgId:    string
+  roomId:   string
+  columnId: string
+  /** The column's run this job is (a newer run's token stops it). */
+  token:    string
+}
+
+export function queueAnswerDiligenceColumn(payload: AnswerDiligenceColumnJob): void {
+  agentQueue.add('answer-diligence-column', payload, {
+    // Asked again, a column runs again: each run is its own job.
+    jobId: `answer-diligence-column-${payload.columnId}-${Date.now()}`,
+    attempts: 2,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue answer-diligence-column:', err.message))
+}
+
+/** docs/39 D6 — a room's document read after its questions were asked (lib/diligence-columns.ts answerDocument). */
+export interface AnswerDiligenceDocumentJob {
+  orgId:      string
+  contractId: string
+  /** The version just read: one job per version, however many steps of its analysis ask for it. */
+  versionId?: string
+}
+
+export function queueAnswerDiligenceDocument(payload: AnswerDiligenceDocumentJob): void {
+  agentQueue.add('answer-diligence-document', payload, {
+    jobId: `answer-diligence-document-${payload.contractId}-${payload.versionId ?? Date.now()}`,
+    attempts: 2,
+    backoff:  { type: 'exponential', delay: 30_000 },
+    removeOnComplete: true,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue answer-diligence-document:', err.message))
+}
+
 export async function queueBackfillCustomField(payload: BackfillCustomFieldJob): Promise<void> {
   const jobId = `backfill-custom-field-${payload.fieldDefinitionId}`
   const existing = await agentQueue.getJob(jobId)
@@ -370,6 +537,11 @@ interface DraftContractJob {
   contractType: string
   counterpartyName?: string
   estimatedValue?: number
+  /** docs/41 P0.4 — the intake classifier's terms (governing law…), passed to drafting. */
+  extractedTerms?: Record<string, unknown>
+  /** docs/41 Part 1 — the template and clause choices the requester picked. */
+  templateId?: string
+  slotChoices?: Record<string, string>
 }
 export function queueDraftContract(payload: DraftContractJob): void {
   agentQueue.add('draft-contract', payload, {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>DL_Generated_Contract_Id__c</fullName>
+    <description>Set when a self-serve type was generated at once.</description>
+    <label>Generated Contract Id</label>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+</CustomField>

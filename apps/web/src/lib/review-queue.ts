@@ -21,7 +21,8 @@ export const DECISION_LABEL: Record<ReviewState, string> = {
   unreviewed: 'Pending',
   reviewed:   'Reviewed',
   resolved:   'Accepted',
-  rejected:   'Rejected',
+  // docs/41 Part 4: a verdict on one clause, not the approver's "Rejected".
+  rejected:   'Not acceptable',
 }
 
 /**

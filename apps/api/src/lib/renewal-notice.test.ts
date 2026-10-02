@@ -92,4 +92,41 @@ describe('amendedRenewalNotice', () => {
     expect(n.autoRenew).toBe(false)
     expect(n.deadline).toBeNull()
   })
+
+  it("carries the amendment's notice as written, by the calendar, and whether it is the non-renewal notice (docs/39 F1)", () => {
+    const n = amendedRenewalNotice(base, [amendment('Amendment No. 1', '2026-06-01', { nonRenewalNotice: { value: 2, unit: 'months' } })])
+    expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-10-14')
+    expect(n).toMatchObject({ noticeLabel: '2 months', noticeConfirmed: true, noticeDays: 61, noticeSetBy: 'Amendment No. 1' })
+  })
+})
+
+describe('which notice stops a renewal (docs/39 F1)', () => {
+  const yearEnd = new Date('2026-12-31T00:00:00.000Z')
+
+  it('uses the non-renewal notice, counting months by the calendar', () => {
+    const n = renewalNotice({ expiryDate: yearEnd, keyTerms: { autoRenew: true, nonRenewalNotice: { value: 3, unit: 'months' } } })
+    expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-09-30')
+    expect(n).toMatchObject({ noticeConfirmed: true, noticeLabel: '3 months', noticeDays: 92 })
+  })
+
+  it('never takes the notice to end early for the notice to stop a renewal', () => {
+    const n = renewalNotice({ expiryDate: yearEnd, keyTerms: { autoRenew: true, terminationNotice: { value: 30, unit: 'days' } } })
+    expect(n.deadline).toBeNull()
+  })
+
+  it('prefers the non-renewal notice over one found before notices were told apart', () => {
+    const n = renewalNotice({ expiryDate: yearEnd, keyTerms: { autoRenew: true, noticePeriodDays: 30, nonRenewalNotice: { value: 90, unit: 'days' } } })
+    expect(n).toMatchObject({ noticeDays: 90, noticeConfirmed: true })
+  })
+
+  it('still counts a notice found before the split, marked unconfirmed', () => {
+    const n = renewalNotice({ expiryDate: yearEnd, keyTerms: { autoRenew: true, noticePeriod: '60 days' } })
+    expect(n.deadline?.toISOString().slice(0, 10)).toBe('2026-11-01')
+    expect(n).toMatchObject({ noticeConfirmed: false, noticeLabel: '60 days' })
+  })
+
+  it('reads the notice as the contract writes it', () => {
+    const n = renewalNotice({ expiryDate: yearEnd, keyTerms: { autoRenew: true, nonRenewalNotice: 'ninety (90) days' } })
+    expect(n.noticeDays).toBe(90)
+  })
 })
