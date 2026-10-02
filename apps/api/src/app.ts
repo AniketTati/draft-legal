@@ -40,6 +40,8 @@ import { contractCounterpartyRoutes } from './routes/contract-counterparty.js'
 import { contractFamilyRoutes } from './routes/contract-family.js'
 import { contractApprovalRoutes } from './routes/contract-approval.js'
 import { contractLifecycleRoutes } from './routes/contract-lifecycle.js'
+import { contractRenewalRoutes } from './routes/contract-renewal.js'
+import { calendarFeedRoutes } from './routes/calendar.js'
 import { inboxRoutes } from './routes/inbox.js'
 import { analysisHealthRoutes, contractAnalysisRunRoutes } from './routes/analysis-health.js'
 import { reviewRoutes } from './routes/review.js'
@@ -300,6 +302,7 @@ export async function buildApp() {
   await app.register(contractFamilyRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractApprovalRoutes, { prefix: '/api/v1/contracts' })
   await app.register(contractLifecycleRoutes, { prefix: '/api/v1/contracts' })
+  await app.register(contractRenewalRoutes, { prefix: '/api/v1/contracts' })
   await app.register(inboxRoutes,           { prefix: '/api/v1/inbox' })
   await app.register(contractAnalysisRunRoutes, { prefix: '/api/v1/contracts' })
   await app.register(reviewRoutes,          { prefix: '/api/v1/contracts' })
@@ -327,6 +330,7 @@ export async function buildApp() {
   await app.register(reviewQueueRoutes,    { prefix: '/api/v1/review-queue' })
   await app.register(obligationRoutes,     { prefix: '/api/v1/obligations' })
   await app.register(renewalRoutes,        { prefix: '/api/v1/renewals' })
+  await app.register(calendarFeedRoutes,   { prefix: '/api/v1' })
   await app.register(invoiceRoutes,        { prefix: '/api/v1/invoices' })
   await app.register(analyticsRoutes,      { prefix: '/api/v1/analytics' })
   await app.register(diligenceRoutes,      { prefix: '/api/v1/diligence' })

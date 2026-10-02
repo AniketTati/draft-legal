@@ -32,7 +32,7 @@ import { fieldExamples } from './field-examples.js'
 import { ourNames } from './counterparty-directory.js'
 import { correctionExamples } from './field-corrections.js'
 import { CORE_FIELDS, typeFieldsFor, type FieldValueType } from '@clm/types'
-import { queueObligationsIfSigned } from './obligation-extract.js'
+import { queueObligationsIfSigned, queueProposedObligations } from './obligation-extract.js'
 import { queueAnswerDiligenceDocument, type ExtractAiJob } from './queue.js'
 import { readExhibits, withExhibits } from './exhibits.js'
 import { customClauseTypesFor } from './clause-types.js'
@@ -256,6 +256,9 @@ export async function runExtractionJob(job: ExtractionJobLike, deps: ExtractionD
     // docs/39 G4 — a signed contract is read for its obligations once analysed.
     await queueObligationsIfSigned(data.orgId, data.contractId)
       .catch(err => console.warn('[extraction] obligations not queued contractId=%s: %s', data.contractId, (err as Error).message))
+    // docs/41 Part 11 — a draft's, as proposed: on a full analysis only, not an edit checkpoint.
+    await queueProposedObligations(data.orgId, data.contractId, { full: data.triggeredBy !== 'checkpoint' && data.triggeredBy !== 'exhibit' })
+      .catch(err => console.warn('[extraction] proposed obligations not queued contractId=%s: %s', data.contractId, (err as Error).message))
     // docs/39 D6 — a diligence room's document, read: the room's questions are asked of it.
     await askRoomQuestions(data)
       .catch(err => console.warn('[extraction] room questions not queued contractId=%s: %s', data.contractId, (err as Error).message))

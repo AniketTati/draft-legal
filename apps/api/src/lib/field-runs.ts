@@ -11,6 +11,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from './prisma.js'
 import { restoreFieldValues, restoreAmendmentValues, type FieldChange } from './field-store.js'
+import { undoRollUp } from './term-history.js'
 
 export const UNDO_DAYS = 30
 
@@ -117,8 +118,25 @@ export async function undoRun(input: { orgId: string; runId: string; userId: str
   let skipped = 0
   for (const [contractId, changes] of byContract) {
     const r = run.kind === 'rollup' ? await restoreAmendmentValues(contractId, changes) : await restoreFieldValues(contractId, changes)
+    if (run.kind === 'rollup' && r) await undoRollUpHistory(input.orgId, contractId, changes, r.restored)
     restored += r?.restored.length ?? 0
     skipped += r ? r.skipped.length : changes.length
   }
   return { ok: true, restored, skipped }
+}
+
+/**
+ * docs/41 Part 13 — an undone roll-up leaves no trace in the term history,
+ * and the obligations its amendment superseded are owed again.
+ */
+async function undoRollUpHistory(orgId: string, contractId: string, changes: RunChange[], restored: string[]): Promise<void> {
+  const byAmendment = new Map<string, string[]>()
+  for (const ch of changes) {
+    if (!ch.fromContractId || !restored.includes(ch.fieldKey)) continue
+    byAmendment.set(ch.fromContractId, [...(byAmendment.get(ch.fromContractId) ?? []), ch.fieldKey])
+  }
+  for (const [amendmentId, keys] of byAmendment) {
+    await undoRollUp(orgId, contractId, amendmentId, keys)
+    await prisma.obligation.updateMany({ where: { orgId, contractId, supersededById: amendmentId }, data: { supersededById: null, supersededAt: null } })
+  }
 }

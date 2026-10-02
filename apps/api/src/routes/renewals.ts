@@ -16,8 +16,9 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { ownContractWhere, portfolioWhere } from '../lib/own-scope-guard.js'
 import { buildCsv } from '../lib/csv.js'
-import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
+import { amendedRenewalNotice, renewsOnItsOwn, RENEWAL_COLUMNS, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { annualValue, totalsByCurrency, type DurationValue } from '@clm/types'
+import { inRenewalWindow, standingDecisions } from '../lib/renewal-decisions.js'
 
 const ListSchema = z.object({
   bucket: z.enum(['all', 'this_week', 'next_30', 'next_60', 'next_90', 'overdue']).default('all'),
@@ -52,8 +53,14 @@ interface RenewalRow {
   // GG4 — `setBy` names the signed amendment that set the notice period, when one did.
   notice: { autoRenew: boolean; days: number | null; label: string | null; confirmed: boolean; deadline: string | null; setBy: string | null }
   // Renewal-specific from metadata
-  renewalDecision:    string | null   // renew | renegotiate | let_expire | pause | unknown
+  // docs/41 Part 14 — the standing RenewalDecision: renew | renegotiate | let_lapse | terminate.
+  renewalDecision:    string | null
   renewalDecisionAt:  string | null
+  noticeSentAt:       string | null
+  actionContractId:   string | null
+  renewalType:        string | null
+  /** In its renewal window: the "Start renewal" moment. */
+  inWindow:           boolean
   renewalAdvice: {
     recommendation: string
     confidence:     string
@@ -90,7 +97,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true,
         counterpartyName: true, expiryDate: true, effectiveDate: true,
-        value: true, currency: true, metadata: true, keyTerms: true,
+        value: true, currency: true, metadata: true, keyTerms: true, ...RENEWAL_COLUMNS,
         ownerId: true,
         owner: { select: { name: true } },
         amendments: {
@@ -117,10 +124,10 @@ export async function renewalRoutes(app: FastifyInstance) {
       pendingOf.set(parent.id, { id: a.id, title: a.title, expiryDate: a.expiryDate.toISOString() })
     }
 
+    const decided = await standingDecisions(orgId, contracts.map(c => c.id))
     const rows: RenewalRow[] = contracts.map(c => {
+      const d = decided.get(c.id)
       const md = (c.metadata ?? {}) as {
-        renewalDecision?:   string | null
-        renewalDecisionAt?: string | null
         renewalAdvice?:     { recommendation?: string; confidence?: string; rationale?: string }
       }
       return {
@@ -146,8 +153,12 @@ export async function renewalRoutes(app: FastifyInstance) {
           const n = amendedRenewalNotice(c, c.amendments)
           return { autoRenew: n.autoRenew, days: n.noticeDays, label: n.noticeLabel, confirmed: n.noticeConfirmed, deadline: n.deadline?.toISOString() ?? null, setBy: n.noticeSetBy }
         })(),
-        renewalDecision:    md.renewalDecision ?? null,
-        renewalDecisionAt:  md.renewalDecisionAt ?? null,
+        renewalDecision:    d?.decision ?? null,
+        renewalDecisionAt:  d?.createdAt.toISOString() ?? null,
+        noticeSentAt:       d?.noticeSentAt?.toISOString() ?? null,
+        actionContractId:   d?.actionContractId ?? null,
+        renewalType:        c.renewalType,
+        inWindow:           inRenewalWindow({ stage: 'active', expiryDate: c.expiryDate, noticeDeadline: c.noticeDeadline, optOutWindowStart: c.optOutWindowStart }, now),
         renewalAdvice:    md.renewalAdvice
           ? {
               recommendation: md.renewalAdvice.recommendation ?? '',
@@ -179,9 +190,7 @@ export async function renewalRoutes(app: FastifyInstance) {
     }
     if (q.status !== 'all') {
       filtered = filtered.filter(r =>
-        q.status === 'decided'
-          ? r.renewalDecision != null && r.renewalDecision !== 'unknown'
-          : r.renewalDecision == null || r.renewalDecision === 'unknown',
+        q.status === 'decided' ? r.renewalDecision != null : r.renewalDecision == null,
       )
     }
 
@@ -231,7 +240,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, counterpartyName: true,
         effectiveDate: true, expiryDate: true, value: true, currency: true,
-        metadata: true, keyTerms: true,
+        metadata: true, keyTerms: true, ...RENEWAL_COLUMNS,
         owner: { select: { name: true, email: true } },
         amendments: {
           where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...ownContractWhere(req) },
@@ -247,8 +256,9 @@ export async function renewalRoutes(app: FastifyInstance) {
       'Days Until Expiry', 'Value', 'Currency', 'AI Recommendation', 'AI Confidence', 'Decision',
       'Auto-Renews', 'Notice Days', 'Notice Period', 'Notice Confirmed', 'Notice Deadline', 'Notice Period Set By',
     ]
+    const decided = await standingDecisions(orgId, contracts.map(c => c.id))
     const rows = contracts.map(c => {
-      const md = (c.metadata ?? {}) as { renewalAdvice?: { recommendation?: string; confidence?: string }; renewalDecision?: string }
+      const md = (c.metadata ?? {}) as { renewalAdvice?: { recommendation?: string; confidence?: string } }
       const days = c.expiryDate ? Math.round((c.expiryDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)) : ''
       const notice = amendedRenewalNotice(c, c.amendments)   // the page's notice, amendments applied
       return [
@@ -261,7 +271,7 @@ export async function renewalRoutes(app: FastifyInstance) {
         c.currency ?? '',
         md.renewalAdvice?.recommendation ?? '',
         md.renewalAdvice?.confidence ?? '',
-        md.renewalDecision ?? '',
+        decided.get(c.id)?.decision ?? '',
         notice.autoRenew ? 'yes' : 'no',
         notice.noticeDays ?? '',
         notice.noticeLabel ?? '',                                   // docs/39 F1 — as written
@@ -296,16 +306,13 @@ export async function renewalRoutes(app: FastifyInstance) {
       prisma.contract.count({ where: { ...base, expiryDate: { gte: now, lte: cut90 } } }),
       prisma.contract.findMany({
         where:  { ...base, expiryDate: { gte: now, lte: cut90 } },
-        select: { value: true, currency: true, metadata: true },
+        select: { id: true, value: true, currency: true },
         take: 500,
       }),
     ])
 
-    let undecided = 0
-    for (const c of totalIn90) {
-      const md = (c.metadata ?? {}) as { renewalDecision?: string | null }
-      if (!md.renewalDecision || md.renewalDecision === 'unknown') undecided++
-    }
+    const decided = await standingDecisions(orgId, totalIn90.map(c => c.id))
+    const undecided = totalIn90.filter(c => !decided.has(c.id)).length
     // docs/39 D4 — per currency; `totalAcvNext90` is the most common
     // currency's own total (it summed every currency together, unlabelled).
     const acvNext90 = totalsByCurrency(totalIn90.map(c => ({ value: c.value?.toString(), currency: c.currency })))

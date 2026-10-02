@@ -29,6 +29,7 @@ import {
   type DurationValue, type CurrencyValue, type PartyValue, type CheckLevel, type VerificationState, type DateOrder,
 } from '@clm/types'
 import { prisma } from './prisma.js'
+import { syncRenewalTermsFor } from './renewal-terms.js'
 import { createAuditEvent } from './audit.js'
 import { reindexContract } from './elasticsearch.js'
 import { fireWebhook } from './webhook-events.js'
@@ -840,6 +841,9 @@ async function commit(
       ...(opts.keepUpdatedAt ? { updatedAt: c.updatedAt } : {}),
     } as never,
   })
+  // docs/41 Part 14 — the renewal columns follow the values they come from
+  // (and an amendment's or renewal's follow onto its parent).
+  await syncRenewalTermsFor(c.orgId, c.id, tx)
   return rows
 }
 

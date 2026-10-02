@@ -5,7 +5,7 @@
  * lookahead window, grouped by month. Each month shows count + total
  * ACV; each row shows counterparty, value, expiryDate, decision state,
  * and links to the contract detail page where the user records a
- * decision (renew | renegotiate | let_expire | pause) via the
+ * decision (renew | renegotiate | let_lapse | terminate) via the
  * RenewalAdviceRailSection.
  *
  * "Calendar" here means a month-grouped timeline, not a Google-style
@@ -27,6 +27,7 @@ import { StatusPill } from '@/components/ui/status-pill'
 import { CountBadge, EmptyState } from '@/components/ui/primitives'
 import { AssistChip } from '@/components/ui/assist'
 import { MEANING_CLASS, type Meaning } from '@/lib/status'
+import { RenewalDecisionDialog } from '@/components/contracts/RenewalDecisionDialog'
 
 type Bucket = 'all' | 'this_week' | 'next_30' | 'next_60' | 'next_90' | 'overdue'
 type StatusFilter = 'all' | 'pending' | 'decided'
@@ -77,6 +78,9 @@ interface RenewalRow {
   pendingAmendment?: { id: string; title: string; expiryDate: string } | null
   renewalDecision:    string | null
   renewalDecisionAt:  string | null
+  noticeSentAt?:      string | null
+  /** docs/41 Part 14 — in its renewal window: "Start renewal". */
+  inWindow?:          boolean
   renewalAdvice: {
     recommendation: string
     confidence:     string
@@ -127,8 +131,9 @@ const BUCKETS: { key: Bucket; label: string; statKey?: 'overdue' | 'thisWeek' | 
 const DECISION_PILL: Record<string, { meaning: Meaning; label: string }> = {
   renew:        { meaning: 'binding', label: 'Renew' },
   renegotiate:  { meaning: 'turn',    label: 'Renegotiate' },
-  let_expire:   { meaning: 'risk',    label: 'Let expire' },
-  pause:        { meaning: 'neutral', label: 'Pause' },
+  // docs/41 Part 14 — not renewing: let it lapse, or end it.
+  let_lapse:    { meaning: 'risk',    label: 'Let it lapse' },
+  terminate:    { meaning: 'risk',    label: 'End it' },
 }
 
 // The model's advice is not the decision, so it wears the assist mark instead of
@@ -245,6 +250,8 @@ export function RenewalsPage() {
    * month group. This is the filter a renewals owner actually wants.
    */
   const [noticeOnly, setNoticeOnly] = useState(false)
+  // docs/41 Part 14 — the decision dialog, for a row.
+  const [deciding, setDeciding] = useState<{ id: string; title: string } | null>(null)
   const noticeAtRiskCount = (data?.data ?? []).filter(r => noticeDeadline(r)?.atRisk).length
   // docs/39 F1/B4 — notice periods found before the notices were told apart.
   const unconfirmedCount = (data?.data ?? []).filter(r => r.notice?.confirmed === false).length
@@ -523,15 +530,19 @@ export function RenewalsPage() {
                           </span>
                         )}
                         {decisionPill ? (
-                          <StatusPill meaning={decisionPill.meaning}>{decisionPill.label}</StatusPill>
+                          <button type="button" onClick={() => setDeciding(r)} title="Change the decision" data-testid={`renewal-decided-${r.id}`}>
+                            <StatusPill meaning={decisionPill.meaning}>{decisionPill.label}{(r.renewalDecision === 'let_lapse' || r.renewalDecision === 'terminate') && !r.noticeSentAt ? ' · notice not sent' : ''}</StatusPill>
+                          </button>
                         ) : (
-                          <Link
-                            to={`/contracts/${r.id}#renewal`}
-                            className="inline-flex items-center gap-1 text-[11.5px] font-medium text-ink-950 hover:text-ink-700"
+                          <Button
+                            size="xs"
+                            variant={r.inWindow ? 'default' : 'outline'}
+                            onClick={() => setDeciding(r)}
+                            data-testid={`renewal-start-${r.id}`}
                           >
-                            <RefreshCw className="size-3.5" />
-                            Decide
-                          </Link>
+                            <RefreshCw />
+                            Start renewal
+                          </Button>
                         )}
                         <Link
                           to={`/contracts/${r.id}`}
@@ -549,6 +560,7 @@ export function RenewalsPage() {
           ))}
         </div>
       )}
+      {deciding && <RenewalDecisionDialog contractId={deciding.id} title={deciding.title} onClose={() => setDeciding(null)} />}
     </div>
   )
 }

@@ -44,6 +44,7 @@ import { onApprovalChange } from '../lib/approval-reset.js'
 import { submitForApproval } from '../lib/approval-flow.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
+import { htmlToText } from '../lib/html-text.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   applyExtraction, extractedFieldsFromPatch, personFieldsFromPatch, setFieldValues,
@@ -64,7 +65,15 @@ import {
   typeFieldsFor,
   ContractType,
   readContractType,
+  normaliseRelationshipType,
+  familyLabel,
+  type RelationshipType,
+  type AmendmentChangeSpec,
+  type AmendmentSpec,
 } from '@clm/types'
+import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml } from '../lib/amendments.js'
+import { nextFamilyNumber, effectiveView } from '../lib/family.js'
+import { createChildContract } from '../lib/child-contract.js'
 import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
@@ -111,6 +120,10 @@ export async function contractRoutes(app: FastifyInstance) {
           { counterpartyName: { contains: query.search, mode: 'insensitive' as const } },
         ],
       })
+    }
+
+    if (query.ids) {
+      andClauses.push({ id: { in: query.ids.split(',').map(s => s.trim()).filter(Boolean).slice(0, 300) } })
     }
 
     // U12 audit (2026-04-29). Numeric metadata facets — OTD and uptime
@@ -562,6 +575,8 @@ export async function contractRoutes(app: FastifyInstance) {
         counterpartyName: counterpartyName || undefined,
         parentContractId: parentContractId || undefined,
         relationshipType: relationshipType || undefined,
+        // docs/41 Part 13 — numbered per agreement ("Amendment No. 2").
+        amendmentNumber: parentContractId ? await nextFamilyNumber(orgId, parentContractId, relationshipType || null) ?? undefined : undefined,
         versions: {
           create: {
             versionNumber: 1,
@@ -1847,12 +1862,13 @@ export async function contractRoutes(app: FastifyInstance) {
         id: true,
         parentContractId: true,
         relationshipType: true,
+        amendmentNumber: true,
         parentContract: {
           select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true, metadata: true },
         },
         amendments: {
           where: { deletedAt: null, orgId, ...ownContractWhere(req) },
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, amendmentNumber: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1884,7 +1900,7 @@ export async function contractRoutes(app: FastifyInstance) {
     // parent lists it in _splitInto, lib/binder-split.ts), as opposed to an
     // amendment, an exhibit or a contract linked by hand.
     const splitInto = (p?.metadata as { _splitInto?: unknown } | null)?._splitInto
-    const splitFromParent = !!parent && contract.relationshipType === 'exhibit_only'
+    const splitFromParent = !!parent && (contract.relationshipType === 'split_part' || contract.relationshipType === 'exhibit')
       && Array.isArray(splitInto) && splitInto.includes(contract.id)
 
     return reply.send({
@@ -1892,6 +1908,9 @@ export async function contractRoutes(app: FastifyInstance) {
       children: contract.amendments,
       siblings,
       relationshipType: contract.relationshipType,
+      // docs/41 Part 13 — "Amendment No. 2", for the banner.
+      amendmentNumber: contract.amendmentNumber,
+      label: familyLabel(contract.relationshipType, contract.amendmentNumber),
       splitFromParent,
     })
   })
@@ -1940,6 +1959,10 @@ export async function contractRoutes(app: FastifyInstance) {
       expiryDate?:       string
       value?:            number | string
       currency?:         string
+      // docs/41 Part 13 — what changes, the template, and its number.
+      changes?:          unknown
+      templateId?:       string | null
+      amendmentNumber?:  number
     }
 
     const parent = await prisma.contract.findFirst({
@@ -1947,7 +1970,7 @@ export async function contractRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, status: true,
         counterpartyId: true, counterpartyName: true,
-        currency: true, matterId: true, diligenceRoomId: true,
+        currency: true, matterId: true, diligenceRoomId: true, effectiveDate: true,
       },
     })
     if (!parent) return reply.status(404).send({ detail: 'Parent contract not found' })
@@ -1955,18 +1978,48 @@ export async function contractRoutes(app: FastifyInstance) {
     const ownerId = actingUserId(req.user)
     if (!ownerId) return reply.status(422).send(NO_ACTING_USER)
 
-    const relationshipType = (body.relationshipType ?? 'amendment').toLowerCase()
-    const ALLOWED = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit_only']
-    if (!ALLOWED.includes(relationshipType)) {
+    // docs/41 Part 13 — one of the family's relationships; older spellings
+    // (`exhibit_only`) read as the one they meant.
+    const relationshipType = normaliseRelationshipType(body.relationshipType ?? 'amendment')
+    const ALLOWED: RelationshipType[] = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit', 'nda', 'other']
+    if (!relationshipType || !ALLOWED.includes(relationshipType)) {
       return reply.status(400).send({ detail: `relationshipType must be one of ${ALLOWED.join(', ')}` })
     }
+    const parsedChanges = AmendmentChangesSchema.safeParse(body.changes ?? [])
+    if (!parsedChanges.success) return reply.status(400).send({ detail: 'Invalid changes', issues: parsedChanges.error.issues })
+    const amendmentNumber = body.amendmentNumber != null && Number.isInteger(Number(body.amendmentNumber)) && Number(body.amendmentNumber) > 0
+      ? Number(body.amendmentNumber)
+      : await nextFamilyNumber(orgId, parent.id, relationshipType)
+    // The parent's words for each clause that changes: the evidence, as in
+    // effect now (an earlier signed amendment's words, when one changed it).
+    const changes: AmendmentChangeSpec[] = []
+    const effective = parsedChanges.data.some(ch => ch.kind === 'clause') ? await effectiveView(orgId, parent.id) : null
+    for (const ch of parsedChanges.data) {
+      if (ch.kind === 'term') { changes.push({ ...ch, from: ch.from ?? null, source: 'user' }); continue }
+      if (ch.action === 'replace' && !ch.newText?.trim()) return reply.status(400).send({ detail: 'Write the new words for each clause that is replaced' })
+      const clause = await prisma.contractClause.findFirst({
+        where: { id: ch.clauseId, version: { contractId: parent.id, contract: { orgId } } },
+        select: { id: true, clauseType: true, sectionRef: true, content: true },
+      })
+      if (!clause) return reply.status(400).send({ detail: 'A clause picked to change isn’t in the agreement' })
+      const inEffect = effective?.sections.find(x => x.clauseId === clause.id)
+      changes.push({
+        kind: 'clause', clauseId: clause.id, clauseType: clause.clauseType, sectionRef: clause.sectionRef, parentText: inEffect?.text || clause.content,
+        newText: ch.action === 'delete' ? '' : ch.newText ?? '', action: ch.action, source: ch.source, instruction: ch.instruction ?? null,
+      })
+    }
+    const template = body.templateId
+      ? await prisma.template.findFirst({ where: { id: body.templateId, orgId, deletedAt: null }, include: { sections: true } })
+      : null
+    if (body.templateId && !template) return reply.status(404).send({ detail: 'Template not found' })
 
     // X25 — inherit the parent's matter only if it is a live matter of this
     // org: a link stored before the fix could name another org's.
     const matterId = parent.matterId && await prisma.matter.count({ where: { id: parent.matterId, orgId, deletedAt: null } })
       ? parent.matterId : null
 
-    const title = (body.title?.trim()) || `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`
+    const label = familyLabel(relationshipType, amendmentNumber)
+    const title = (body.title?.trim()) || (label ? `${label} to ${parent.title}` : `${parent.title} — ${relationshipType.replace(/_/g, ' ')}`)
     // Default type by relationship: amendments inherit parent type;
     // SOWs/order-forms get their own type so users can set it later.
     const type = body.type ?? (relationshipType === 'amendment' ? parent.type : 'OTHER')
@@ -1988,77 +2041,42 @@ export async function contractRoutes(app: FastifyInstance) {
     const escapeHtml = (s: string) =>
       s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-    const created = await prisma.contract.create({
-      data: {
-        orgId, ownerId,
-        title,
-        type,
-        ...initialStage('DRAFT'),
-        analysisStatus: NOT_ANALYSED,
-        parentContractId: parent.id,
-        relationshipType,
-        counterpartyId:   parent.counterpartyId,
-        counterpartyName: parent.counterpartyName,
-        currency:         body.currency ?? parent.currency ?? 'USD',
-        value:            value != null && !isNaN(value) ? value : null,
-        effectiveDate:    body.effectiveDate ? new Date(body.effectiveDate) : undefined,
-        expiryDate:       body.expiryDate ? new Date(body.expiryDate) : undefined,
-        matterId:         matterId ?? undefined,
-        // C11 — an amendment to a diligence-room document stays in that room.
-        diligenceRoomId:  parent.diligenceRoomId ?? undefined,
-        metadata:         body.description ? { amendmentDescription: body.description } : {},
-        versions: {
-          create: {
-            versionNumber: 1,
-            htmlContent:   body.description
-              ? `<p>${escapeHtml(body.description)}</p>`
-              : '<p></p>',
-            plainText:     body.description ?? '',
-            changeNote:    `Initial ${relationshipType} draft`,
-            createdById:   userId,
-          },
-        },
+    // docs/41 Part 13 — drafted from what changes: the operative words built
+    // around the changes, in the org's amendment template when one was chosen.
+    const effectiveDay = body.effectiveDate ? String(body.effectiveDate).slice(0, 10) : null
+    const drafted = changes.length || template
+      ? (template
+        ? amendmentFromTemplate(template as never, {
+          parent_title: parent.title, counterparty_name: parent.counterpartyName, amendment_label: label ?? 'Amendment',
+          effective_date: effectiveDay, parent_effective_date: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
+        }, changes)
+        : amendmentHtml({
+          label: label ?? 'Amendment', parentTitle: parent.title, parentEffectiveDate: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
+          counterpartyName: parent.counterpartyName, effectiveDate: effectiveDay, changes,
+        }))
+      : null
+    const draftedText = drafted ? htmlToText(drafted) : null
+    const amendmentSpec: AmendmentSpec | null = drafted
+      ? { parentId: parent.id, number: amendmentNumber, effectiveDate: effectiveDay, templateId: template?.id ?? null, changes }
+      : null
+    // Created through the one child path (lib/child-contract.ts): its stage on
+    // the record, a drafted amendment read like any draft (P0.1), indexed, announced.
+    const created = await createChildContract({
+      orgId, userId, ownerId, parent, title, type, relationshipType, amendmentNumber, matterId,
+      currency:      body.currency ?? null,
+      value:         value != null && !isNaN(value) ? value : null,
+      effectiveDate: body.effectiveDate ? new Date(body.effectiveDate) : null,
+      expiryDate:    body.expiryDate ? new Date(body.expiryDate) : null,
+      metadata: {
+        ...(body.description ? { amendmentDescription: body.description } : {}),
+        ...(amendmentSpec ? { _amendment: amendmentSpec } : {}),
       },
-      include: { versions: true },
-    })
-    // Set currentVersionId now that the version row has an id.
-    if (created.versions[0]) {
-      await prisma.contract.update({
-        where: { id: created.id },
-        data:  { currentVersionId: created.versions[0].id },
-      })
-    }
-
-    // P81 audit (2026-05-02). Index amendments in ES so they
-    // surface in portfolio_search when users ask about the changed
-    // contract family. Was previously skipped — every "find me the
-    // amendment that adjusted SLAs" query missed.
-    indexContract(created.id, {
-      orgId,
-      title:            created.title,
-      type:             created.type,
-      status:           created.status,
-      counterpartyName: created.counterpartyName ?? undefined,
-      plainText:        body.description ?? '',
-      tags:             [],
-      createdAt:        created.createdAt.toISOString(),
-      effectiveDate:    created.effectiveDate?.toISOString(),
-      expiryDate:       created.expiryDate?.toISOString(),
-    }).catch(err => app.log.warn({ err }, 'ES index on amendment failed'))
-
-    await createAuditEvent({
-      orgId, userId,
-      action: AuditAction.CONTRACT_CREATED,
-      resourceType: 'contract', resourceId: created.id,
-      metadata: { relationshipType, parentContractId: parent.id, source: 'amendment_flow' },
+      html:      drafted ?? (body.description ? `<p>${escapeHtml(body.description)}</p>` : '<p></p>'),
+      plainText: draftedText ?? body.description ?? '',
+      drafted:   !!drafted,
+      source:    'amendment_flow',
       ipAddress: req.ip,
-    })
-    // H2 — `amendment.created` was advertised but never emitted. This route
-    // creates every related document (amendment, SOW, order form, renewal,
-    // exhibit); the event names the relationship so subscribers can filter.
-    fireWebhook(orgId, 'amendment.created', {
-      contractId: created.id, parentContractId: parent.id, relationshipType,
-      title: created.title, type: created.type,
+      log:       app.log,
     })
 
     return reply.status(201).send({
@@ -2068,6 +2086,8 @@ export async function contractRoutes(app: FastifyInstance) {
       status:           created.status,
       parentContractId: parent.id,
       relationshipType,
+      amendmentNumber,
+      label,
     })
   })
 
@@ -2997,35 +3017,7 @@ export async function contractRoutes(app: FastifyInstance) {
     })
   })
 
-  // ── POST /:id/renewal-decision (P5.3) ────────────────────────────────────
-  // Records the owner's decision ("renew"/"renegotiate"/"let_expire"/"pause")
-  // so the renewal scanner stops pinging this contract.
-  app.post('/:id/renewal-decision', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
-    const { id } = req.params as { id: string }
-    const { orgId } = req.user
-    const body = req.body as { decision?: string; note?: string } | undefined
-    const decision = body?.decision
-    if (!decision || !['renew', 'renegotiate', 'let_expire', 'pause', 'unknown'].includes(decision)) {
-      return reply.status(400).send({ detail: 'invalid decision' })
-    }
-
-    const contract = await prisma.contract.findFirst({
-      where: { id, orgId, deletedAt: null },
-      select: { id: true, metadata: true },
-    })
-    if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
-
-    const md = (contract.metadata ?? {}) as Record<string, unknown>
-    const nextMeta: Record<string, unknown> = {
-      ...md,
-      renewalDecision:   decision,
-      renewalDecisionAt: new Date().toISOString(),
-      renewalDecisionNote: body?.note ?? null,
-    }
-    await prisma.contract.update({ where: { id }, data: { metadata: nextMeta as never } })
-
-    return reply.send({ ok: true, decision })
-  })
+  // POST /:id/renewal-decision lives in routes/contract-renewal.ts (docs/41 Part 14).
 }
 
 // Local alias to avoid naming collision with the imported queueEscalation

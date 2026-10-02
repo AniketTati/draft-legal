@@ -35,7 +35,7 @@ import { checkUpload, servableContentType, EVIDENCE_TYPES } from '../lib/file-ty
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
 
 const ListSchema = z.object({
-  status:     z.enum(['OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
+  status:     z.enum(['PROPOSED', 'OPEN', 'COMPLETED', 'OVERDUE', 'WAIVED', 'all']).default('all'),
   type:       z.string().optional(),
   severity:   z.enum(['low', 'medium', 'high']).optional(),
   contractId: z.string().optional(),
@@ -109,6 +109,9 @@ export async function obligationRoutes(app: FastifyInstance) {
 
     const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId), ...reviewWhere(q.review) }
     if (q.status !== 'all') where.status = q.status
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: they
+    // show on their contract, or when asked for, not in the org's list.
+    else if (!q.contractId) where.status = { not: 'PROPOSED' }
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
     if (q.contractId)       where.contractId = q.contractId
@@ -191,6 +194,9 @@ export async function obligationRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const where: Record<string, unknown> = { orgId, ...ownObligationWhere(req, q.contractId), ...reviewWhere(q.review) }
     if (q.status !== 'all') where.status = q.status
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: they
+    // show on their contract, or when asked for, not in the org's list.
+    else if (!q.contractId) where.status = { not: 'PROPOSED' }
     if (q.type)             where.type = q.type
     if (q.severity)         where.severity = q.severity
     if (q.contractId)       where.contractId = q.contractId
@@ -333,6 +339,9 @@ export async function obligationRoutes(app: FastifyInstance) {
     if (!existing) return reply.status(404).send({ detail: 'Obligation not found' })
     if (existing.status === 'COMPLETED') {
       return reply.status(409).send({ detail: 'Already completed' })
+    }
+    if (existing.status === 'PROPOSED') {
+      return reply.status(409).send({ detail: 'This obligation is proposed: it is owed once the contract is signed.' })
     }
     // X45 — who completed it is a user, and a key is none: a key's completion
     // records no one here (its audit event names the key).

@@ -19,7 +19,7 @@ const RELATIONSHIP_TYPES = [
   { value: 'order_form',   label: 'Order Form' },
   { value: 'renewal',      label: 'Renewal' },
   { value: 'nda',          label: 'NDA' },
-  { value: 'exhibit_only', label: 'Exhibit / Schedule' },
+  { value: 'exhibit', label: 'Exhibit / Schedule' },
 ]
 
 interface FileEntry {

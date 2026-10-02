@@ -118,6 +118,8 @@ export function ObligationsRailSection({
     },
   })
   const suggested = obligations.filter(o => o.reviewState === 'SUGGESTED')
+  // docs/41 Part 11 — read from a draft: what it would commit to, owed once signed.
+  const proposed = obligations.filter(o => o.status === 'PROPOSED')
 
   const [showAll, setShowAll] = useState(false)
   const [completeTarget, setCompleteTarget] = useState<{ id: string; description: string } | null>(null)
@@ -145,7 +147,7 @@ export function ObligationsRailSection({
         <div className="text-[12px] text-muted-foreground" data-testid={`obligations-empty-${emptyVariant}`}>
           {emptyVariant === 'pre_execution' && (
             <p className="leading-relaxed">
-              Obligations are extracted once this contract is executed. Until then, focus on negotiation + risk review.
+              This draft’s obligations are read when it is analysed, and shown as proposed until it is signed.
             </p>
           )}
           {emptyVariant === 'low_value_type' && (
@@ -206,6 +208,12 @@ export function ObligationsRailSection({
               )}
             </div>
           )}
+          {proposed.length > 0 && (
+            <p className="mb-2 text-[11px] leading-relaxed text-ink-700" data-testid="obligations-proposed-note">
+              <span className="font-medium text-ink-950">Proposed — confirmed at signing.</span>{' '}
+              What this draft would commit you to. They become obligations to track when it is signed.
+            </p>
+          )}
           <ul data-testid="obligations-list" className="space-y-1.5">
             {visible.map(o => {
               const Icon = TYPE_ICON[o.type] ?? Bell
@@ -240,15 +248,17 @@ export function ObligationsRailSection({
                         {o.description}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
-                        {o.reviewState === 'SUGGESTED' && (
+                        {o.status === 'PROPOSED' ? (
+                          <span className="rounded-chip border border-paper-300 bg-paper-100 px-1 font-medium text-ink-700" data-testid={`obligation-proposed-${o.id}`}>Proposed — confirmed at signing</span>
+                        ) : o.reviewState === 'SUGGESTED' && (
                           <span className="rounded-chip border border-assist-200 bg-assist-50 px-1 font-medium text-assist-700">Suggested</span>
                         )}
                         <span className="font-mono uppercase tracking-wider text-ink-400">{o.type}</span>
                         <span className="text-muted-foreground">· {o.owner}</span>
                         {sectionLabel(o.sectionRef) && <span className="font-mono text-ink-500">{sectionLabel(o.sectionRef)}</span>}
                         {o.dueDate && (
-                          <span className={dueColor}>
-                            {days == null ? new Date(o.dueDate).toLocaleDateString()
+                          <span className={o.status === 'PROPOSED' ? 'text-muted-foreground' : dueColor}>
+                            {days == null || o.status === 'PROPOSED' ? new Date(o.dueDate).toLocaleDateString()
                               : days < 0 ? `${-days}d overdue`
                               : days === 0 ? 'due today'
                               : `due in ${days}d`}
@@ -273,7 +283,7 @@ export function ObligationsRailSection({
                               dismiss
                             </button>
                           </span>
-                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && o.status !== 'PROPOSED' && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setCompleteTarget({ id: o.id, description: o.description }) }}

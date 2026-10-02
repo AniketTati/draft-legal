@@ -14,6 +14,8 @@
  * returned by the extractor becomes the same stored value.
  */
 
+import { RENEWAL_TYPE_OPTIONS } from './family'
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type FieldValueType =
@@ -96,6 +98,18 @@ export const CORE_FIELDS: readonly CoreFieldDef[] = [
   { key: 'nonRenewalNotice', label: 'Non-renewal notice', type: 'duration', group: 'term',
     aliases: ['nonRenewalNoticeDays', 'renewalNoticeDays', 'renewal_notice_days', 'renewalOptOutPeriod'],
     definition: 'How long before the end of a term a party must give notice to stop the contract renewing automatically.' },
+  // docs/41 Part 14 — renewal terms of their own, read with their words and
+  // confirmed by people like every other value (the Contract's renewal
+  // columns are worked out from them: lib/renewal-terms.ts).
+  { key: 'renewalType', label: 'Renewal', type: 'select', group: 'term', options: RENEWAL_TYPE_OPTIONS,
+    aliases: ['renewal_type', 'renewalMechanism'],
+    definition: 'How the contract renews: Automatic (unless a party gives notice), By agreement (only if both sign up again), Evergreen (runs until a party ends it), or None.' },
+  { key: 'optOutWindow', label: 'Earliest notice', type: 'duration', group: 'term',
+    aliases: ['opt_out_window', 'noticeWindowStart'],
+    definition: 'The earliest a party may give notice to stop a renewal, counted back from the end of a term (e.g. "not more than 120 days before"). Only when the contract sets one.' },
+  { key: 'priceUpliftCap', label: 'Renewal price increase cap', type: 'percentage', group: 'commercial',
+    aliases: ['price_uplift_cap', 'renewalPriceCap', 'priceIncreaseCap'],
+    definition: 'The most the price may rise at a renewal, as a percentage (e.g. 5 for 5%).' },
   { key: 'terminationForConvenience', label: 'Termination for convenience', type: 'boolean', group: 'term',
     aliases: ['termination_for_convenience'],
     definition: 'Whether a party may end the contract early without cause.' },

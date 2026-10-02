@@ -14,6 +14,7 @@ from app.routes import draft
 from app.routes import assist
 from app.routes import extract
 from app.routes import redline
+from app.routes import amendment_language
 from app.routes import playbook_review
 from app.routes import approval
 from app.routes import obligations
@@ -137,6 +138,7 @@ app.include_router(renewals.router)
 app.include_router(compliance.router)
 app.include_router(extract_fields.router)
 app.include_router(find_clause.router)  # docs/39 E3
+app.include_router(amendment_language.router)  # docs/41 Part 13
 
 
 @app.get("/health")

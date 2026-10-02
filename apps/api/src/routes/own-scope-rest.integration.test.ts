@@ -243,7 +243,7 @@ describe('own-scope caller (SALES_REP) over REST', () => {
     const fam = await get(`/api/v1/contracts/${mine}/family`, repA)
     expect(fam.statusCode).toBe(200)
     // P0.9 added how it relates to its parent; with none, there is no relation.
-    expect(fam.json()).toEqual({ parent: null, children: [], siblings: [], relationshipType: null, splitFromParent: false })
+    expect(fam.json()).toEqual({ parent: null, children: [], siblings: [], relationshipType: null, amendmentNumber: null, label: null, splitFromParent: false })
 
     const prec = await get(`/api/v1/contracts/${mine}/precedents`, repA)
     expect(prec.statusCode).toBe(200)

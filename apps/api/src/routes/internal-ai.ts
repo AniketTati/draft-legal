@@ -13,6 +13,8 @@
  *   - Cache resolution per (orgId, tier) for ~30s in Redis
  *   - Audit-log every resolution call
  */
+import { termHistory } from '../lib/term-history.js'
+import { effectiveView } from '../lib/family.js'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
@@ -51,7 +53,8 @@ import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope,
 import { manualRefusal, manualSource, manualTarget } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
-import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
+import { standingDecisions } from '../lib/renewal-decisions.js'
+import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, RENEWAL_COLUMNS, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { standingVersion } from '../lib/standing-version.js'
@@ -827,6 +830,27 @@ function benchmarkTerms(keyTerms: unknown): Record<string, string | number | boo
   return Object.keys(set).length ? set : null
 }
 
+/**
+ * docs/41 Part 13 — what a contract's signed amendments changed, for
+ * contract_get: each rolled-up term's value now and its original, and each
+ * section an amendment replaced or deleted. Null when nothing was amended.
+ */
+async function effectiveTermsFor(orgId: string, contractId: string) {
+  const [history, view] = await Promise.all([termHistory(orgId, contractId), effectiveView(orgId, contractId)])
+  const terms = Object.entries(history).flatMap(([key, h]) => {
+    const now = h.values.find(v => v.current)
+    if (!now?.source) return []
+    return [{ key, label: h.label, value: now.display, amendedBy: now.source.label ?? now.source.title, original: h.values[0]?.source ? null : h.values[0]?.display ?? null, quote: now.quote }]
+  })
+  const sections = (view?.sections ?? []).filter(s => s.amendedBy.length).map(s => ({
+    sectionRef: s.sectionRef, clauseType: s.clauseType, deleted: s.deleted,
+    amendedBy: s.amendedBy.map(a => a.label), text: s.text.slice(0, 1500),
+  }))
+  return terms.length || sections.length
+    ? { note: 'These override the key terms and text above: the amendment named made each change.', terms, sections }
+    : null
+}
+
 /** How many of a contract's amendments contract_get shows the text of, and how much of each. */
 const FAMILY_TEXTS = 3
 const FAMILY_TEXT_CHARS = 4_000
@@ -958,6 +982,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     }
 
     const { family, note: familyNote } = await contractFamily(body.orgId, scope, contract)
+    // docs/41 Part 13 — the terms and sections its signed amendments changed,
+    // as in effect now, each naming the amendment and the original.
+    const effective = await effectiveTermsFor(body.orgId, contract.id)
 
     // Grab the current (or latest) version's plaintext. Truncate aggressively.
     const version = contract.currentVersionId
@@ -1015,10 +1042,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       // How this contract hangs off family.parent: amendment | renewal | sow |
-      // order_form | exhibit_only (null when it stands alone).
+      // order_form | exhibit | split_part | nda | other (null when it stands alone).
       relationshipType: contract.relationshipType,
       family,
       ...(familyNote && { familyNote }),
+      ...(effective && { effectiveTerms: await redactJsonAgainst(body.orgId, effective, fullText, { surface: 'contract_get.effectiveTerms', contractId: contract.id }) }),
       version: {
         number:    version?.versionNumber ?? null,
         createdAt: version?.createdAt ?? null,
@@ -3860,6 +3888,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const where: Record<string, unknown> = { orgId: body.orgId, reviewState: { not: 'DISMISSED' } }
     if (scope.kind === 'own') where.contract = { ownerId: scope.userId }
     if (body.contractId) where.contractId = body.contractId
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: only
+    // asked about one contract are they listed (marked PROPOSED).
+    else where.status = { not: 'PROPOSED' }
     if (body.type)       where.type = body.type
 
     // Pull contracts up-front so we can join titles + flag contracts
@@ -4086,7 +4117,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const select = {
       id: true, title: true, type: true, status: true,
       counterpartyName: true, metadata: true, effectiveDate: true,
-      expiryDate: true, value: true, currency: true, keyTerms: true,
+      expiryDate: true, value: true, currency: true, keyTerms: true, ...RENEWAL_COLUMNS,
       // Its amendments and renewals: they can change the notice period.
       amendments: {
         where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...contractScopeWhere(scope) },
@@ -4121,10 +4152,11 @@ export async function internalAiRoutes(app: FastifyInstance) {
       negotiationPoints?: Array<Record<string, unknown>>
       riskFlags?: string[]; timeline?: string; generatedAt?: string
     }
+    // docs/41 Part 14 — the standing decision is a RenewalDecision row.
+    const decided = await standingDecisions(body.orgId, contracts.map(c => c.id))
     const items = contracts.map(c => {
       const md = (c.metadata ?? {}) as {
         renewalAdvice?: Advice
-        renewalDecision?: string
         renewalNotifiedAt?: string
       }
       const expiry = c.expiryDate ? c.expiryDate.getTime() : null
@@ -4146,7 +4178,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
         value:            c.value ? c.value.toString() : null,
         currency:         c.currency,
         renewalAdvice:    md.renewalAdvice ?? null,
-        renewalDecision:  md.renewalDecision ?? null,
+        renewalDecision:  decided.get(c.id)?.decision ?? null,
         renewalNotifiedAt: md.renewalNotifiedAt ?? null,
         autoRenews:       notice.autoRenew,
         noticeDays:       notice.noticeDays,

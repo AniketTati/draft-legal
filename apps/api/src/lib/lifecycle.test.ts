@@ -84,6 +84,23 @@ describe('allowed transitions (property)', () => {
     expect(transitionRefusal({ from: { stage: 'closed', state: 'terminated' }, to: { stage: 'closed', state: 'archived' }, source: 'manual' })).toMatch(/stays/)
   })
 
+  it('a declined approval never moves on to signature or into force, by any source (property)', () => {
+    const declined = { stage: 'approve' as Stage, state: 'declined' as StageState }
+    for (const to of points.filter(p => p.stage === 'sign' || p.stage === 'active')) {
+      for (const source of SOURCES.filter(s => s !== 'undo')) {
+        expect(transitionRefusal({ from: declined, to, source, reason: 'because', isAdmin: true }), `${to.stage}/${to.state} via ${source}`).toMatch(/declined/)
+      }
+    }
+    // The way out stays open: back to drafting, submitted again, or cancelled.
+    expect(transitionRefusal({ from: declined, to: { stage: 'draft', state: 'drafting' }, source: 'approval' })).toBeNull()
+    expect(transitionRefusal({ from: declined, to: { stage: 'approve', state: 'pending' }, source: 'approval' })).toBeNull()
+    expect(transitionRefusal({ from: declined, to: { stage: 'closed', state: 'cancelled' }, source: 'cancel', reason: 'deal off' })).toBeNull()
+    // By hand through the status a client still sends: Approve → Active is refused.
+    expect(manualRefusal(declined, manualTarget('EXECUTED')!)).toMatch(/declined/)
+    // An approved or pending one may still be recorded as signed outside the product.
+    expect(transitionRefusal({ from: { stage: 'approve', state: 'approved' }, to: { stage: 'active', state: 'active' }, source: 'manual' })).toBeNull()
+  })
+
   it('a person\'s moves by hand: approval and signature are the flows\' to set', () => {
     expect(manualRefusal({ stage: 'approve', state: 'pending' }, manualTarget('APPROVED')!)).toMatch(/approval workflow/)
     expect(manualRefusal({ stage: 'approve', state: 'pending' }, manualTarget('REJECTED')!)).toMatch(/approval workflow/)

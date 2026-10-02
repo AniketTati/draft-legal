@@ -19,6 +19,14 @@
  *   GET /api/v1/analytics/by-field?key=&contractType=&currency=
  *     docs/39 D3 — one field's values across the portfolio, as bars that
  *     each open their contracts.
+ *
+ *   GET /api/v1/analytics/{speed|bottlenecks|workload|negotiation|risk|renewals|ai}
+ *       ?from=&to=&type=&ownerId=&paperSource=ours|theirs[&format=csv]
+ *     docs/41 Part 19 — one section of the decision-led page (see
+ *     lib/analytics-sections.ts for what each holds and what the period means).
+ *
+ *   GET /api/v1/analytics/drilldown?metric=section.part.chart&key=&<filters>
+ *     The contracts behind one bar, for the contract list.
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -30,6 +38,9 @@ import { catalogField, fieldCatalog } from '../lib/field-query.js'
 import { CHARTABLE_TYPES, fieldDistribution } from '../lib/field-distribution.js'
 import { loadDirectory } from '../lib/counterparty-directory.js'
 import { compactKey } from '../lib/company-names.js'
+import { permissionScopeFor } from '../middleware/permissions.js'
+import { SECTIONS, loadSection, flatten, drilldown, type AnalyticsContext, type AnalyticsFilters } from '../lib/analytics-sections.js'
+import { sectionCsv, withoutIds, DAY_MS } from '../lib/analytics-metrics.js'
 
 const TimeRangeSchema = z.object({
   // Lookback in days for cycle-time + acceptance KPIs. Defaults to 90.
@@ -58,6 +69,21 @@ interface KpiSummary {
 
   windowDays: number
 }
+
+const DEFAULT_PERIOD_DAYS = 180
+/** The contract list takes the ids in its query string; more than this would not fit. */
+const DRILL_LIMIT = 300
+
+const SectionQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  type: z.string().min(1).optional(),
+  ownerId: z.string().min(1).optional(),
+  paperSource: z.enum(['ours', 'theirs']).optional(),
+  format: z.enum(['json', 'csv']).optional(),
+  metric: z.string().optional(),
+  key: z.string().optional(),
+})
 
 export async function analyticsRoutes(app: FastifyInstance) {
   // ── GET /summary ─────────────────────────────────────────────────────
@@ -106,10 +132,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
       // For cycle time: contracts that EXECUTED inside the window.
       prisma.contract.findMany({
         where: {
-          orgId, deletedAt: null, ...own, status: 'EXECUTED',
-          updatedAt: { gte: windowStart },
+          orgId, deletedAt: null, ...own,
+          executedAt: { gte: windowStart },
         },
-        select: { id: true, createdAt: true, updatedAt: true },
+        select: { id: true, createdAt: true, executedAt: true },
         take: 5_000,
       }),
       // Approvals decided in the window — for acceptance rate.
@@ -127,15 +153,13 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const executedTotalValue = executedTotals[0]?.amount ?? 0
     const dominantCurrency = executedTotals[0]?.currency ?? 'USD'
 
-    // Cycle time — using updatedAt as a proxy for the EXECUTED transition.
-    // signatures.ts hits prisma.contract.update() right when `allSigned` flips
-    // to EXECUTED, so for any contract whose terminal state is EXECUTED the
-    // updatedAt is the execution timestamp (within sub-second precision).
-    // This avoids needing a schema-level executedAt + a migration.
+    // Cycle time — created to executed (docs/41 Part 19). It was measured to
+    // updatedAt, which any later edit moved; executedAt is set once, when the
+    // last signer signs (or the record is marked executed).
     const days: number[] = []
     let withinTarget = 0
     for (const c of executedRecent) {
-      const ms = c.updatedAt.getTime() - c.createdAt.getTime()
+      const ms = c.executedAt!.getTime() - c.createdAt.getTime()
       const d = ms / (24 * 60 * 60 * 1000)
       if (d >= 0) {
         days.push(d)
@@ -334,5 +358,50 @@ export async function analyticsRoutes(app: FastifyInstance) {
       .slice(0, limit)
 
     return reply.send({ data: ranked })
+  })
+
+  // ── docs/41 Part 19: sections organised by decision ────────────────────
+  const parseFilters = (q: Record<string, unknown>): AnalyticsFilters | { error: unknown } => {
+    const r = SectionQuerySchema.safeParse(q)
+    if (!r.success) return { error: r.error.issues }
+    const to = r.data.to ?? new Date()
+    const from = r.data.from ?? new Date(to.getTime() - DEFAULT_PERIOD_DAYS * DAY_MS)
+    if (from > to) return { error: [{ message: 'from is after to' }] }
+    return { from, to, type: r.data.type, ownerId: r.data.ownerId, paperSource: r.data.paperSource }
+  }
+  const contextOf = async (req: import('fastify').FastifyRequest): Promise<AnalyticsContext> => ({
+    orgId: req.user.orgId, userId: req.user.sub, scope: portfolioWhere(req),   // X7, X17
+    canTeam: (await permissionScopeFor(req, 'configure', 'workflow')) === 'org',
+    now: new Date(),
+  })
+
+  for (const name of SECTIONS) {
+    app.get(`/${name}`, { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+      const q = req.query as Record<string, unknown>
+      const f = parseFilters(q)
+      if ('error' in f) return reply.status(400).send({ detail: 'Invalid query', issues: f.error })
+      const parts = await loadSection(name, await contextOf(req), f)
+      if (q.format === 'csv') {
+        return reply
+          .header('Content-Type', 'text/csv; charset=utf-8')
+          .header('Content-Disposition', `attachment; filename="analytics-${name}-${f.from.toISOString().slice(0, 10)}-to-${f.to.toISOString().slice(0, 10)}.csv"`)
+          .send(sectionCsv(flatten(parts)))
+      }
+      return reply.send({
+        section: name,
+        filters: { from: f.from.toISOString(), to: f.to.toISOString(), type: f.type ?? null, ownerId: f.ownerId ?? null, paperSource: f.paperSource ?? null },
+        parts: Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, withoutIds(v)])),
+      })
+    })
+  }
+
+  app.get('/drilldown', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
+    const q = req.query as Record<string, unknown>
+    if (typeof q.metric !== 'string' || typeof q.key !== 'string') return reply.status(400).send({ detail: 'metric and key are required' })
+    const f = parseFilters(q)
+    if ('error' in f) return reply.status(400).send({ detail: 'Invalid query', issues: f.error })
+    const r = await drilldown(q.metric, q.key, await contextOf(req), f)
+    if (!r) return reply.status(404).send({ detail: `No chart ${q.metric}` })
+    return reply.send({ metric: q.metric, key: q.key, label: r.label, total: r.ids.length, ids: r.ids.slice(0, DRILL_LIMIT) })
   })
 }

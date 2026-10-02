@@ -234,6 +234,12 @@ export function transitionRefusal(c: TransitionCheck): string | null {
   if (from.stage === 'closed' && from.state !== 'expired' && from.state !== 'cancelled') {
     return `A ${STATE_LABEL[from.state].toLowerCase()} contract stays closed; only an expired one comes back when its dates change.`
   }
+  // A declined approval means "do not proceed": nothing — by hand, the
+  // assistant or the signing flow — takes it on to signature or into force.
+  // It goes back to drafting (or is submitted again) first.
+  if (from.stage === 'approve' && from.state === 'declined' && (to.stage === 'sign' || to.stage === 'active')) {
+    return 'The approval was declined, so this contract can’t go to signature or be marked signed. Change it and submit it for approval again, or cancel it.'
+  }
   const rule = TRANSITIONS[from.stage][to.stage]
   if (!rule) {
     if (from.stage === 'active' && (to.stage === 'negotiate' || to.stage === 'draft')) {

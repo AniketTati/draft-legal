@@ -1140,7 +1140,7 @@ function SlackSection() {
           </dl>
           <div className="mt-4 pt-4 border-t border-paper-200 text-dense text-ink-500 space-y-1">
             <p>• <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">/contract search &lt;query&gt;</code> works in any channel the app is in.</p>
-            <p>• Approval requests post Approve / Reject buttons via your <button className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700" onClick={() => { /* tab switch hint */ }}>Slack webhook</button> — add one on the Webhooks tab (paste a hooks.slack.com URL) subscribed to <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">approval.submitted</code>.</p>
+            <p>• Approval requests post Approve / Return with a reason buttons via your <button className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700" onClick={() => { /* tab switch hint */ }}>Slack webhook</button> — add one on the Webhooks tab (paste a hooks.slack.com URL) subscribed to <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">approval.submitted</code>.</p>
           </div>
           <div className="mt-4 flex justify-end">
             <button
@@ -1163,7 +1163,7 @@ function SlackSection() {
           body={
             <>
               <code className="font-mono text-[11.5px] text-ink-700">/contract</code> stops
-              responding in every channel, and Approve / Reject buttons in already-posted
+              responding in every channel, and Approve / Return with a reason buttons in already-posted
               approval messages stop working — approvers will have to come back into
               draftLegal. Your signing secret and bot token are deleted; reconnecting means
               pasting them again from the Slack app config.
@@ -1183,7 +1183,7 @@ function SlackSection() {
         <p className="text-dense text-ink-500 mb-3">
           Go to <a href="https://api.slack.com/apps" target="_blank" rel="noreferrer" className="text-ink-950 underline underline-offset-2 decoration-paper-300 hover:decoration-brand-700 hover:text-brand-700">api.slack.com/apps</a> →
           “Create New App” → “From a manifest”, pick your workspace, and paste this manifest. It pre-wires the
-          <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip mx-1">/contract</code> command and the Approve/Reject interactivity URL.
+          <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip mx-1">/contract</code> command and the Approve / Return with a reason interactivity URL.
         </p>
         <div className="relative">
           <pre className="font-mono text-[10.5px] bg-ink-950 text-paper-200 rounded-md p-3 overflow-x-auto max-h-48" data-testid="slack-manifest">{SLACK_MANIFEST}</pre>
@@ -1207,7 +1207,7 @@ function SlackSection() {
         <p className="text-dense text-ink-500 mb-3">
           From the app's <span className="font-medium">Basic Information</span> page copy the <span className="font-medium">Signing Secret</span>;
           the <span className="font-medium">Team ID</span> (starts with T) is in your Slack workspace URL or app install page. The bot token
-          (<span className="font-mono">xoxb-…</span>, after installing the app) is optional but lets Approve/Reject clicks act as the matching draftLegal user.
+          (<span className="font-mono">xoxb-…</span>, after installing the app) is optional but lets Approve / Return with a reason clicks act as the matching draftLegal user.
         </p>
         <div className="space-y-3">
           <div>
@@ -1241,7 +1241,7 @@ function SlackSection() {
           On the <span className="font-medium">Webhooks</span> tab, add your Slack incoming-webhook URL
           (<span className="font-mono">hooks.slack.com/…</span>) subscribed to the events you care about —
           include <code className="font-mono bg-paper-100 text-ink-950 px-1 rounded-chip">approval.submitted</code> to get actionable
-          Approve/Reject cards in the channel.
+          Approve / Return with a reason cards in the channel.
         </p>
       </div>
     </div>

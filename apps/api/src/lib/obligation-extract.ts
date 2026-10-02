@@ -5,6 +5,8 @@
  * Used by:
  *   • POST /contracts/:id/extract-obligations  (manual trigger)
  *   • signature.completed handler              (auto-trigger on EXECUTED)
+ *   • a draft's full analysis                   (docs/41 Part 11: proposed,
+ *     confirmed at signing — see queueProposedObligations)
  *
  * Phase 08 Step 2 — promotes extraction from a manual button to a
  * fire-and-forget event handler so customers don't have to remember to
@@ -102,18 +104,66 @@ export function toObligationRows(
 export async function queueObligationsIfSigned(orgId: string, contractId: string): Promise<boolean> {
   const c = await prisma.contract.findFirst({
     where: { id: contractId, orgId, deletedAt: null, diligenceRoomId: null },
-    select: { status: true, metadata: true },
+    select: { status: true, stage: true, stageState: true, executedAt: true, metadata: true },
   })
   if (!c || ((c.metadata ?? {}) as Record<string, unknown>).obligationsExtractedAt) return false
-  let signed = c.status === 'EXECUTED'
-  if (!signed) {
-    const signedOn = await prisma.contractFieldValue.findUnique({ where: { contractId_fieldKey: { contractId, fieldKey: 'executionDate' } }, select: { value: true } })
-    signed = typeof signedOn?.value === 'string' && signedOn.value !== ''
-  }
-  if (!signed) return false
+  if (!(await readsAsSigned(contractId, c))) return false
   // Loaded here: the queue connects to Redis as it loads, which this module's pure helpers don't need.
   const { queueExtractObligations } = await import('./queue.js')
   return queueExtractObligations({ orgId, contractId })
+}
+
+/**
+ * docs/41 Part 11 — signed: what it promises is owed. Before that (a draft,
+ * a negotiation, an approval) what it would commit to is only proposed.
+ */
+export function isSigned(c: { status: string; stage: string; stageState: string; executedAt: Date | null }): boolean {
+  return c.status === 'EXECUTED' || !!c.executedAt || c.stage === 'active' || (c.stage === 'closed' && c.stageState !== 'cancelled')
+}
+
+/** Signed, or its document gives a signing date (a draft's signature block is left blank). */
+export async function readsAsSigned(contractId: string, c: Parameters<typeof isSigned>[0]): Promise<boolean> {
+  if (isSigned(c)) return true
+  const signedOn = await prisma.contractFieldValue.findUnique({ where: { contractId_fieldKey: { contractId, fieldKey: 'executionDate' } }, select: { value: true } })
+  return typeof signedOn?.value === 'string' && signedOn.value !== ''
+}
+
+/** The stages whose full analysis reads obligations as proposed. */
+export const PROPOSED_STAGES: readonly string[] = ['draft', 'negotiate', 'approve']
+
+/**
+ * docs/41 Part 11 — once its analysis is done, a draft's obligations are
+ * read as proposed: a lawyer sees what the draft commits them to before
+ * signing. Full analyses only (a generated, uploaded or added version, a
+ * retry), never an edit checkpoint, which would be a model run per pause.
+ * True when queued.
+ */
+export async function queueProposedObligations(orgId: string, contractId: string, opts: { full: boolean }): Promise<boolean> {
+  if (!opts.full) return false
+  const c = await prisma.contract.findFirst({
+    where: { id: contractId, orgId, deletedAt: null, diligenceRoomId: null },
+    select: { status: true, stage: true, stageState: true, executedAt: true },
+  })
+  if (!c || !PROPOSED_STAGES.includes(c.stage) || await readsAsSigned(contractId, c)) return false
+  const { queueExtractObligations } = await import('./queue.js')
+  return queueExtractObligations({ orgId, contractId })
+}
+
+/**
+ * docs/41 Part 11 — at signing, what was proposed becomes owed: the
+ * obligations read from the signed version, and any a person confirmed or
+ * dismissed, become OPEN; suggestions read from an earlier version are
+ * dropped (the signed text is what counts, and it is read instead).
+ */
+export async function confirmProposedObligations(orgId: string, contractId: string, versionId: string | null): Promise<number> {
+  const proposed = await prisma.obligation.findMany({
+    where: { orgId, contractId, status: 'PROPOSED' }, select: { id: true, versionId: true, reviewState: true },
+  })
+  const keep = proposed.filter(o => (versionId && o.versionId === versionId) || o.reviewState !== 'SUGGESTED').map(o => o.id)
+  const drop = proposed.filter(o => !keep.includes(o.id)).map(o => o.id)
+  if (drop.length) await prisma.obligation.deleteMany({ where: { orgId, id: { in: drop } } })
+  if (keep.length) await prisma.obligation.updateMany({ where: { orgId, id: { in: keep }, status: 'PROPOSED' }, data: { status: 'OPEN' } })
+  return keep.length
 }
 
 /** Two obligations the same one: their words, case, spacing and punctuation aside. */
@@ -137,7 +187,7 @@ export async function extractObligationsForContract({
     where: { id: contractId, orgId, deletedAt: null },
     select: {
       id: true, type: true, effectiveDate: true, metadata: true,
-      currentVersionId: true,
+      currentVersionId: true, status: true, stage: true, stageState: true, executedAt: true,
     },
   })
   if (!contract) return { ok: false, count: 0, summary: '', error: 'contract not found' }
@@ -148,6 +198,25 @@ export async function extractObligationsForContract({
     select: { id: true },
   }))?.id
   if (!versionId) return { ok: false, count: 0, summary: '', error: null, skippedReason: 'no version' }
+
+  // docs/41 Part 11 — unsigned, what's read is proposed; signed, what was
+  // proposed is owed now, and the signed version isn't read twice.
+  const signed = await readsAsSigned(contractId, contract)
+  const meta = (contract.metadata ?? {}) as Record<string, unknown>
+  if (signed) {
+    const confirmed = await confirmProposedObligations(orgId, contractId, versionId)
+    if (meta.obligationsProposedVersionId === versionId) {
+      const rest: Record<string, unknown> = { ...meta, obligationsExtractedAt: new Date().toISOString() }
+      delete rest.obligationsProposedAt; delete rest.obligationsProposedVersionId
+      await prisma.contract.update({ where: { id: contractId }, data: { metadata: rest as never } })
+      if (confirmed > 0) fireWebhook(orgId, 'obligation.extracted', { contractId, count: confirmed })
+      await createAuditEvent({
+        orgId, userId, action: AuditAction.OBLIGATION_EXTRACTED, resourceType: 'contract', resourceId: contractId,
+        metadata: { count: confirmed, confirmedAtSigning: true, versionId, trigger: userId === 'system' ? 'auto' : 'manual' },
+      })
+      return { ok: true, count: confirmed, summary: String(meta.obligationsSummary ?? ''), error: null }
+    }
+  }
 
   const version = await prisma.contractVersion.findUnique({
     where: { id: versionId },
@@ -205,28 +274,37 @@ export async function extractObligationsForContract({
   // it. A re-read replaces only its own suggestions still open: what a person
   // confirmed, dismissed or completed stays, and isn't suggested again. (It
   // used to delete every open obligation, a confirmed one included.)
+  // A draft's re-read (a new version) replaces the proposals still open in
+  // the same way; ones a person confirmed or dismissed stay.
   const incoming = (parsed.obligations ?? []) as Array<Record<string, unknown>>
   await prisma.obligation.deleteMany({
-    where: { contractId, reviewState: 'SUGGESTED', status: { in: ['OPEN', 'OVERDUE'] } },
+    where: { contractId, reviewState: 'SUGGESTED', status: signed ? { in: ['OPEN', 'OVERDUE'] } : 'PROPOSED' },
   })
   const kept = await prisma.obligation.findMany({ where: { contractId }, select: { description: true, quote: true } })
   const known = new Set(kept.flatMap(k => [sameObligation(k.quote), sameObligation(k.description)]).filter(Boolean))
   const fresh = toObligationRows(incoming, { orgId, contractId })
     .filter(r => !known.has(sameObligation(r.quote)) && !known.has(sameObligation(r.description)))
   if (fresh.length > 0) {
-    await prisma.obligation.createMany({ data: fresh.map(r => ({ ...r, reviewState: 'SUGGESTED' })) })
-    // H2 — advertised to webhook subscribers, never emitted until now.
-    fireWebhook(orgId, 'obligation.extracted', { contractId, count: fresh.length })
+    await prisma.obligation.createMany({
+      data: fresh.map(r => ({ ...r, reviewState: 'SUGGESTED', ...(!signed && { status: 'PROPOSED', versionId }) })),
+    })
+    // H2 — advertised to webhook subscribers, never emitted until now. A
+    // draft's proposals aren't obligations yet: they're announced at signing.
+    if (signed) fireWebhook(orgId, 'obligation.extracted', { contractId, count: fresh.length })
   }
 
   // Update metadata with summary + extraction timestamp.
-  const existing = (contract.metadata ?? {}) as Record<string, unknown>
+  // A draft's read is stamped apart: obligationsExtractedAt means the signed
+  // contract was read (queueObligationsIfSigned reads it once).
   const nextMeta: Record<string, unknown> = {
-    ...existing,
-    obligationsSummary:     parsed.summary ?? null,
-    obligationsExtractedAt: new Date().toISOString(),
+    ...meta,
+    obligationsSummary: parsed.summary ?? null,
+    ...(signed
+      ? { obligationsExtractedAt: new Date().toISOString() }
+      : { obligationsProposedAt: new Date().toISOString(), obligationsProposedVersionId: versionId }),
   }
   delete nextMeta.obligations
+  if (signed) { delete nextMeta.obligationsProposedAt; delete nextMeta.obligationsProposedVersionId }
   await prisma.contract.update({
     where: { id: contractId },
     data:  { metadata: nextMeta as never },
@@ -236,7 +314,7 @@ export async function extractObligationsForContract({
     orgId, userId,
     action: AuditAction.OBLIGATION_EXTRACTED,
     resourceType: 'contract', resourceId: contractId,
-    metadata: { count: fresh.length, found: incoming.length, trigger: userId === 'system' ? 'auto' : 'manual' },
+    metadata: { count: fresh.length, found: incoming.length, trigger: userId === 'system' ? 'auto' : 'manual', ...(!signed && { proposed: true, versionId }) },
   })
 
   return {

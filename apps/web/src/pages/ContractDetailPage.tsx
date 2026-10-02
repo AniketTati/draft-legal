@@ -77,6 +77,7 @@ import { useFieldCatalog } from '@/lib/field-catalog'
 import { ClauseTagPicker } from '@/components/contracts/ClauseTagPicker'
 import { SaveToLibraryPopover } from '@/components/contracts/SaveToLibraryPopover'
 import { AgreementPanel } from '@/components/contracts/AgreementPanel'
+import { FamilyPanel } from '@/components/contracts/FamilyPanel'
 import { AssistMark } from '@/components/ui/assist'
 import { Can } from '@/components/auth/Can'
 import {
@@ -3843,7 +3844,6 @@ export function ContractDetailPage() {
           contractId={id ?? ''}
           expiryDate={contract.expiryDate ?? null}
           advice={(contract.metadata?.renewalAdvice as RenewalAdvice | undefined) ?? null}
-          decision={(contract.metadata?.renewalDecision as string | undefined) ?? null}
           onAfterAdvice={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
           onAfterDecision={() => qc.invalidateQueries({ queryKey: ['contract', id] })}
         />
@@ -3915,6 +3915,8 @@ export function ContractDetailPage() {
         {/* docs/39 B1 — the contract's fields beside its text: every value,
             who set it, and the fix in place (was a read-only list of six). */}
         {/* docs/39 G3 — the agreement this one amends: its changes, set there; or the agreement it may belong to. */}
+        {/* docs/41 Part 13 — the family, the agreement as amended, an amendment's redline. */}
+        {id && <FamilyPanel contractId={id} />}
         {id && <AgreementPanel contractId={id} canEdit={canEditFields} />}
 
         <RailSection title="Fields" defaultOpen>

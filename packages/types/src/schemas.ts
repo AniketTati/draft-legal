@@ -124,6 +124,9 @@ export const ContractFilterSchema = z.object({
   // other structural filters, where the answer is always complete.
   riskScoreMin:  z.coerce.number().min(0).max(100).optional(),
   riskScoreMax:  z.coerce.number().min(0).max(100).optional(),
+  // docs/41 Part 19 — drill-through from an analytics bar: the contracts
+  // behind it, comma-separated (the drill-down caps them at 300).
+  ids: z.string().optional(),
 })
 
 // ─── Requests ────────────────────────────────────────────────────────────────
