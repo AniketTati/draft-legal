@@ -26,3 +26,13 @@ def test_drops_keys_the_template_does_not_have():
 def test_quote_matching_ignores_case_spacing_and_curly_quotes():
     out = keep_quoted([{"key": "counterpartyCountry", "value": "DE", "quote": "acme  GMBH (berlin)"}], REQUEST, {"counterpartyCountry"})
     assert out[0]["value"] == "DE"
+
+
+def test_drops_a_value_that_says_there_is_none():
+    request = "QA NDA no law\nMutual NDA with Initech. Governing law TBD."
+    values = [
+        {"key": "governingLaw", "value": "no law", "quote": "QA NDA no law"},
+        {"key": "governingLaw", "value": "TBD", "quote": "Governing law TBD"},
+        {"key": "counterpartyCountry", "value": "Not specified", "quote": "Mutual NDA with Initech"},
+    ]
+    assert keep_quoted(values, request, {"governingLaw", "counterpartyCountry"}) == []

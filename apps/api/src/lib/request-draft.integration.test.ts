@@ -144,6 +144,18 @@ describe('a request that names New York law', () => {
   })
 })
 
+describe('a request that says there is no law (41: browser QA)', () => {
+  it('is not read as asking for the law "no law": the choice stays open, with no request words for it', async () => {
+    const r = await draftFromRequest({
+      orgId: org, contractId: 'c-nolaw',
+      ctx: ctx({ requestTitle: 'QA NDA no law', requestDescription: 'Mutual NDA with Initech for a partnership.', extractedTerms: { governingLaw: 'no law' } }),
+    }, extractor([{ key: 'governingLaw', value: 'no law', quote: 'QA NDA no law' }]))
+    expect(r.origin!.slots[0]).toMatchObject({ decidedBy: 'unresolved' })
+    expect(r.origin!.slots[0].evidence).toBeFalsy()
+    expect(JSON.stringify(r.origin)).not.toContain('no law')
+  })
+})
+
 describe('deterministic choices', () => {
   it('the same request drafted twice has the same template and variants', async () => {
     const a = await draftFromRequest({ orgId: org, contractId: 'c5', ctx: ctx({ extractedTerms: { governingLaw: 'New York' } }) }, extractor())

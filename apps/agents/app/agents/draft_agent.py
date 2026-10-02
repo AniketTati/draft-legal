@@ -598,15 +598,26 @@ Rules:
 - Include a variable only if the request states its value. Never guess, infer a default, or use general practice.
 - "quote" must be copied character for character from the request.
 - For a country, use its ISO 3166 two-letter code as the value (quote the words that name it).
-- Leave out anything the request does not say."""
+- Leave out anything the request does not say.
+- A mention that says there is no value or that it is undecided ("no law", "law not specified", "TBD") is not a value: leave the variable out."""
 
 
 def _norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')).strip().lower()
 
 
+# A value that says there is none ("no law", "not specified", "TBD"): the API
+# drops these too (apps/api/src/lib/request-values.ts).
+_ABSENT = re.compile(
+    r"^(?:(?:no|none|nil|n/?a|tbd|tbc|tba|unknown|unspecified|undecided|not\s+applicable)\b"
+    r"|not\s+(?:yet\s+)?(?:specified|stated|given|known|decided|chosen|set|agreed)\b"
+    r"|to\s+be\s+(?:determined|decided|confirmed|agreed|advised)\b)",
+    re.IGNORECASE,
+)
+
+
 def keep_quoted(values: list, user_message: str, keys: set[str]) -> list[dict]:
-    """Only the values for known keys whose quote is in the request's own words."""
+    """Only the values for known keys whose quote is in the request's own words, and that name a value."""
     text = _norm_text(user_message)
     out: list[dict] = []
     for v in values or []:
@@ -616,6 +627,8 @@ def keep_quoted(values: list, user_message: str, keys: set[str]) -> list[dict]:
         if key not in keys or value in (None, "") or not isinstance(quote, str) or not quote.strip():
             continue
         if _norm_text(quote) not in text:
+            continue
+        if _ABSENT.match(str(value).strip().strip('"“”\'‘’')):
             continue
         out.append({"key": key, "value": str(value).strip(), "quote": quote.strip()})
     return out

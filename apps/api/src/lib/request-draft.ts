@@ -22,6 +22,7 @@ import { chooseTemplate, planDraft, type DraftPlan, type TemplateChoice } from '
 import { draftSource } from './template-snapshot.js'
 import { quoteIn, sentenceNaming } from './clause-resolution.js'
 import { requestTerms, type DraftAgentResult } from './draft-save.js'
+import { namesAValue } from './request-values.js'
 
 export interface RequestDraftContext {
   requestTitle: string
@@ -72,7 +73,7 @@ function quotedTerms(ctx: RequestDraftContext, text: string): Record<string, { v
   const out: Record<string, { value: string; quote: string }> = {}
   for (const [key, v] of Object.entries(requestTerms(ctx.extractedTerms))) {
     const quote = sentenceNaming(text, [String(v)])
-    if (quote) out[key] = { value: String(v), quote }
+    if (quote && namesAValue(key, String(v), quote)) out[key] = { value: String(v), quote }
   }
   return out
 }
@@ -86,12 +87,15 @@ async function plan(input: {
   const { ctx } = input
   const text = requestTextOf(ctx)
   const classified = quotedTerms(ctx, text)
-  const read = new Map(input.extracted.map(e => [e.key, e]))
+  // A value read from the request's words must name one ("no law" doesn't).
+  const extracted = input.extracted.filter(e => namesAValue(e.key, e.value, e.quote))
+  const read = new Map(extracted.map(e => [e.key, e]))
   // Governing law: the classifier's, else the extractor's — with its words either way.
   const law = classified.governingLaw ?? read.get('governingLaw')
   // A classifier value with no words to show is still offered to the clause
   // slots, which may find it by one of a variant's own names ("NY").
-  const lawRaw = law ?? (typeof ctx.extractedTerms?.governingLaw === 'string' ? { value: ctx.extractedTerms.governingLaw, quote: null } : undefined)
+  const classifiedLaw = ctx.extractedTerms?.governingLaw
+  const lawRaw = law ?? (typeof classifiedLaw === 'string' && namesAValue('governingLaw', classifiedLaw) ? { value: classifiedLaw, quote: null } : undefined)
   const requestValues: Record<string, EvidencedValue | undefined> = lawRaw ? { governingLaw: { value: lawRaw.value, quote: lawRaw.quote, source: 'request' } } : {}
   const country = read.get('counterpartyCountry')
   const facts: ConditionFacts = {
@@ -107,7 +111,7 @@ async function plan(input: {
     term: classified.duration?.value,
     effectiveDate: classified.startDate?.value,
     via: 'request',
-    extracted: input.extracted.filter(e => e.key !== 'governingLaw' && e.key !== 'counterpartyCountry'),
+    extracted: extracted.filter(e => e.key !== 'governingLaw' && e.key !== 'counterpartyCountry'),
     requestValues,
     requestText: text,
     slotChoices: ctx.slotChoices,
