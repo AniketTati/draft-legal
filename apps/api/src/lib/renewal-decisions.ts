@@ -25,6 +25,7 @@ import {
   addDuration, renewalDecisionEffect, renewalDecisionOf, familyLabel, RENEWAL_DECISIONS, RENEWAL_DECISION_LABEL,
   type RenewalDecisionKind, type RenewalType,
 } from '@clm/types'
+import { orgDateOrder } from './org-date-order.js'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
 import { UNIVERSAL_TEMPLATES } from './org-seed/universal/templates.js'
@@ -100,6 +101,8 @@ async function renewalLetter(c: Decided) {
   const newExpiry = c.expiryDate ? addDuration(c.expiryDate, term) : null
   const { html } = generateDocument({
     template,
+    // Dates as the org writes them: the letter said "dated 2025-03-01".
+    style: { dateOrder: await orgDateOrder(c.orgId) },
     variables: {
       senderName: await orgName(c.orgId), recipientName: c.counterpartyName ?? '', agreementName: c.title,
       agreementDate: day(c.effectiveDate) ?? '', currentExpiryDate: day(c.expiryDate) ?? '',
@@ -113,6 +116,7 @@ async function nonRenewalNotice(c: Decided) {
   const { template, id } = await letterTemplate(c.orgId, NON_RENEWAL_NOTICE_TYPE)
   const { html } = generateDocument({
     template,
+    style: { dateOrder: await orgDateOrder(c.orgId) },
     variables: {
       senderName: await orgName(c.orgId), recipientName: c.counterpartyName ?? '', agreementName: c.title,
       agreementDate: day(c.effectiveDate) ?? '', currentExpiryDate: day(c.expiryDate) ?? '',

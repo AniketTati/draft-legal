@@ -310,7 +310,7 @@ describe('docs/39 H2 — a draft keeps its variables', () => {
     expect(res.statusCode).toBe(200)
     const id = res.json().contractId as string
     const version = await prisma.contractVersion.findFirstOrThrow({ where: { contractId: id } })
-    expect(version.htmlContent).toContain('<span data-variable="client">Initech &amp; Co</span> engages us from <span data-variable="start">2026-06-01</span>')
+    expect(version.htmlContent).toContain('<span data-variable="client">Initech &amp; Co</span> engages us from <span data-variable="start">June 1, 2026</span>')
     expect(version.htmlContent).toContain('data-variable="fees" data-key="fees">[[fees]]</span>')
     const contract = await prisma.contract.findUniqueOrThrow({ where: { id } })
     const drafted = (contract.metadata as { _template?: { id: string; name: string; variables: unknown[] } })._template
@@ -354,7 +354,7 @@ describe('docs/39 H2 — a draft keeps its variables', () => {
     expect(v.variables.find(x => x.key === 'start')?.field?.inStep).toBe(false)
     const saved = await app.inject({
       method: 'POST', url: `/api/v1/contracts/${id}/html-version`, headers,
-      payload: { htmlContent: version.htmlContent!.replace('<span data-variable="start">2026-06-01</span>', '<span data-variable="start">1 July 2026</span>'), changeNote: 'Changed Start date' },
+      payload: { htmlContent: version.htmlContent!.replace('<span data-variable="start">June 1, 2026</span>', '<span data-variable="start">1 July 2026</span>'), changeNote: 'Changed Start date' },
     })
     expect(saved.statusCode).toBe(201)
     v = await variables()

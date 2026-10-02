@@ -41,6 +41,9 @@ describe('a value by what it is', () => {
     expect(documentValue('feeAmount', '5000', style, 'number')).toBe('EUR 5,000')
     expect(documentValue('noticeDays', '90', style, 'number')).toBe('90')
     expect(documentValue('purpose', 'evaluating a pilot', style, 'text')).toBe('evaluating a pilot')
+    // No currency known (a draft from a template): the amount isn't given one.
+    expect(documentValue('feeAmount', '5000', { dateOrder: 'DMY' }, 'number')).toBe('5000')
+    expect(documentValue('effectiveDate', '2026-06-01', { dateOrder: 'DMY' })).toBe('1 June 2026')
   })
   it('keeps the variables themselves as stored', () => {
     const vars = { agreementDate: '2025-03-01', renewalTerm: '12 months' }

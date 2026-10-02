@@ -50,7 +50,8 @@ export function documentValue(key: string, value: string, style: DocumentStyle, 
   const def = coreField(key)
   const type = def ? (def.key === 'value' ? 'currency' : def.type) : declaredType
   if (type === 'date' || (!type && DATE_KEY.test(key)) || (type === 'text' && DATE_KEY.test(key))) return documentDate(value, style.dateOrder)
-  if (type === 'currency' || ((!type || type === 'number' || type === 'text') && MONEY_KEY.test(key))) return documentMoney(value, style.currency)
+  // Money only when the currency is known: an amount isn't given one it doesn't have.
+  if (style.currency && (type === 'currency' || ((!type || type === 'number' || type === 'text') && MONEY_KEY.test(key)))) return documentMoney(value, style.currency)
   return value
 }
 

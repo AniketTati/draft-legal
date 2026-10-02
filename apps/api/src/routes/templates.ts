@@ -4,6 +4,7 @@
  * CRUD for contract templates + generate/preview endpoints.
  * Templates are assembled by the template-engine into contract HTML.
  */
+import { orgDateOrder } from '../lib/org-date-order.js'
 import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
@@ -371,7 +372,8 @@ export async function templateRoutes(app: FastifyInstance) {
     const clauseMap = new Map(clauseItems.map(c => [c.id, c]))
     const { slotText, slots } = resolveSlots({ snapshot: source.snapshot, facts: { contractType: source.snapshot.contractType ?? undefined, paperSource: 'ours' } })
 
-    const result = { ...generateDocument({ template, variables, clauseMap, slotText }), slots }
+    // Dates as the org writes them, not as stored (41: browser QA).
+    const result = { ...generateDocument({ template, variables, clauseMap, slotText, style: { dateOrder: await orgDateOrder(orgId) } }), slots }
 
     // Increment usage count
     await prisma.template.update({ where: { id }, data: { usageCount: { increment: 1 } } })

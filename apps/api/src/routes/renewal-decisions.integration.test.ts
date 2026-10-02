@@ -89,6 +89,9 @@ describe('renew as is', () => {
     const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: letter.currentVersionId! } })
     expect(v.htmlContent).toContain('24 months')
     expect(v.htmlContent).toContain('Hooli')
+    // 41 browser QA — its dates as the org writes them, not "dated 2025-01-01".
+    expect(v.htmlContent).toContain('January 1, 2025')
+    expect(v.htmlContent).not.toMatch(/\d{4}-\d{2}-\d{2}/)
     expect(Math.round((letter.expiryDate!.getTime() - Date.now()) / DAY)).toBeGreaterThan(120 + 700)
   })
 
@@ -124,6 +127,7 @@ describe('let it lapse, or end it', () => {
     const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: notice.currentVersionId! } })
     expect(v.htmlContent).toContain('will not renew')
     expect(v.htmlContent).toContain('30')
+    expect(v.htmlContent).not.toMatch(/\d{4}-\d{2}-\d{2}/)
     expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).stageState).toBe('expiring')
 
     const sent = await app.inject({ method: 'POST', url: `/api/v1/contracts/${id}/renewal-decision/notice-sent`, headers: admin(), payload: {} })

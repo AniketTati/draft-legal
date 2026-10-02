@@ -19,6 +19,7 @@
  * side's come from the user or the counterparty's record: "Initech Inc., a
  * Delaware corporation" came from a default both parties' fields carried.
  */
+import { orgDateOrder } from './org-date-order.js'
 import { isLegalChoiceVariable, isGoverningLawVariable, type ConditionFacts, type DraftOrigin, type EvidencedValue, type VariableSource } from '@clm/types'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
@@ -383,7 +384,8 @@ export async function planDraft(input: DraftPlanInput): Promise<DraftPlan> {
     if (key && variables[key] === undefined) set(key, v.value, 'clause_choice')
   }
 
-  const generated = generateDocument({ template, variables, clauseMap, slotText: resolved.slotText })
+  // Dates as the org writes them ("March 1, 2025"), not as stored.
+  const generated = generateDocument({ template, variables, clauseMap, slotText: resolved.slotText, style: { dateOrder: await orgDateOrder(input.orgId) } })
   const counterpartyName = input.counterpartyName?.trim() || null
   const title = input.title?.trim()
     || (counterpartyName ? `${counterpartyName} — ${typeInWords(contractType)}` : `Draft — ${template.name}`)
@@ -453,7 +455,7 @@ export async function renderPlanned(input: {
       ? { ...s, decidedBy: planned.decidedBy, ...(planned.ruleId && { ruleId: planned.ruleId }), ...(planned.rule && { rule: planned.rule }), ...(planned.evidence && { evidence: planned.evidence }) }
       : s
   })
-  const generated = generateDocument({ template, variables: input.variables, clauseMap: new Map(clauseItems.map(c => [c.id, c])), slotText: resolved.slotText })
+  const generated = generateDocument({ template, variables: input.variables, clauseMap: new Map(clauseItems.map(c => [c.id, c])), slotText: resolved.slotText, style: { dateOrder: await orgDateOrder(input.orgId) } })
   const KNOWN = new Set<VariableSource>(['user', 'request_field', 'request_value', 'request_text', 'org_default', 'template_default', 'our_org', 'counterparty_record', 'clause_choice'])
   return {
     html: generated.html,
