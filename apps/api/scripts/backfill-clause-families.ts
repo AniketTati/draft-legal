@@ -91,11 +91,28 @@ async function backfillOrg(orgId: string, adminId: string): Promise<string[]> {
         changed = true
       }
     }
-    if (t.name === 'One-Way Non-Disclosure Agreement (Inbound)') {
-      const term = t.sections.find(s => s.title === 'Term' && s.content === OLD_NDA_TERM)
+    // The seed's NDA "Term" section was its period of confidentiality; it is now
+    // called that, and an NDA gains a real Term and Termination section (the
+    // presence rule requires one). An org's edited wording is kept: only the
+    // old seeded 3-year text is replaced.
+    const period = slotted.sections.find(s => s.title === 'Period of Confidentiality')
+    const termination = slotted.sections.find(s => s.title === 'Term and Termination')
+    if (period && termination) {
+      const term = t.sections.find(s => s.title === 'Term')
       if (term) {
-        did.push(`${t.name}: confidentiality term 3 → 5 years`)
-        if (apply) { await prisma.templateSection.update({ where: { id: term.id }, data: { content: slotted.sections.find(s => s.title === 'Term')!.content } }); changed = true }
+        const oldText = term.content === OLD_NDA_TERM
+        did.push(`${t.name}: "Term" renamed "Period of Confidentiality"${oldText ? ', confidentiality term 3 → 5 years' : ''}`)
+        if (apply) {
+          await prisma.templateSection.update({ where: { id: term.id }, data: { title: period.title, ...(oldText ? { content: period.content } : {}) } })
+          changed = true
+        }
+      }
+      if (!t.sections.some(s => s.title === termination.title)) {
+        did.push(`${t.name}: Term and Termination section added`)
+        if (apply) {
+          await prisma.templateSection.create({ data: { templateId: t.id, title: termination.title, content: termination.content, sortOrder: termination.sortOrder } })
+          changed = true
+        }
       }
     }
     const vars = Array.isArray(t.variables) ? t.variables as Array<Record<string, unknown>> : []
