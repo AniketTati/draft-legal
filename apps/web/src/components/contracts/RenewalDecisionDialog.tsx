@@ -14,6 +14,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, X } from 'lucide-react'
 import { api } from '@/lib/api'
+import { approvalKeys } from '@/lib/approval-keys'
 import { Button } from '@/components/ui/button'
 import { deadlineWords, dayWords, renewalKey, RENEWAL_TYPE_WORDS, type RenewalDecisionKind, type RenewalState } from '@/lib/renewal'
 
@@ -62,6 +63,10 @@ export function RenewalDecisionPanel({
     mutationFn: async () => (await api.post<DecideResponse>(`/contracts/${state.contractId}/renewal-decision`, { decision, reason: reason.trim() || null })).data,
     onSuccess: r => {
       void qc.invalidateQueries({ queryKey: renewalKey(state.contractId) })
+      // The decision moves the contract (Active · Renewing, or Expiring): the
+      // header's stage line read "Active" until a reload.
+      void qc.invalidateQueries({ queryKey: approvalKeys.stage(state.contractId) })
+      void qc.invalidateQueries({ queryKey: ['contract', state.contractId] })
       invalidateRenewalLists(qc)
       onDecided?.(r)
     },
