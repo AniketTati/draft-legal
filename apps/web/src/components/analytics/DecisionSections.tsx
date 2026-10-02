@@ -209,7 +209,7 @@ function Speed({ query }: { query: string }) {
         <DecisionChart title="Our paper vs theirs" decide="Whether starting from our template is worth insisting on." metric="speed.cycle.byPaper" bars={cycle?.charts.byPaper} query={query} format={days} color={b => b.key === 'ours' ? PAINT.brand : PAINT.neutral} detail={extra('p90Days', days)} />
         <DecisionChart title="Cycle time by owner" decide="Who may need help or fewer contracts." metric="speed.cycle.byOwner" bars={cycle?.charts.byOwner} query={query} format={days} />
         <DecisionChart title="Templates in use" decide="Which templates to fix or retire: contracts drafted, with their cycle time and turns." metric="speed.templates.byTemplate" bars={tpl?.charts.byTemplate} query={query} format={v => `${v ?? 0} drafted`} color={PAINT.brand}
-          detail={b => `${days(b.extra?.medianCycleDays)} to sign · ${b.extra?.medianTurns ?? '—'} turns`} emptyLabel="No contracts drafted from a template in this period." />
+          detail={b => `${days(b.extra?.medianCycleDays)} to sign · ${b.extra?.medianTurns ?? '—'} turn${b.extra?.medianTurns === 1 ? '' : 's'}`} emptyLabel="No contracts drafted from a template in this period." />
       </div>
     </DecisionSection>
   )
