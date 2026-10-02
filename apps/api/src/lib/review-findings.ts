@@ -247,6 +247,9 @@ export function computeFindings(input: ReviewInput): ReviewOutput {
       // Its words are still in the document (a new analysis drew the clause's
       // lines differently): not deleted.
       if (nowText.includes(normaliseText(b.content))) continue
+      // A draft's blank ("[[Choose governing law: …]]") filled in since: every
+      // word around the blank is still there, so nothing was deleted.
+      if (/\[\[[\s\S]*?\]\]/.test(b.content) && b.content.split(/\[\[[\s\S]*?\]\]/).map(normaliseText).every(p => !p || nowText.includes(p))) continue
       const info = base({ clauseType: b.clauseType })
       const wholeType = !typesNow.has(b.clauseType)
       if (wholeType && goneTypes.has(b.clauseType)) {
