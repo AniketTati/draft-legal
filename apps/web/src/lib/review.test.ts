@@ -13,7 +13,10 @@ describe('runLine (docs/41 P1)', () => {
   it('names the step a run is on, and the one a run failed at', () => {
     expect(runLine({ analysis: { kind: 'running' }, versionNumber: 1, run: run(), stale: null })?.text).toBe('Analysing — step 1 of 4, reading its fields and clauses…')
     expect(runLine({ analysis: { kind: 'failed' }, versionNumber: 1, run: run({ status: 'failed', failedStepLabel: 'finding and indexing its clauses', error: 'No clauses found' }), stale: null }))
-      .toEqual({ text: 'The analysis failed while finding and indexing its clauses: No clauses found', canRetry: true })
+      .toEqual({ text: 'The analysis failed while finding and indexing its clauses. No clauses were found in the document.', canRetry: true })
+    // 41 browser QA — never the stored error's JSON.
+    expect(runLine({ analysis: { kind: 'failed' }, versionNumber: 1, run: run({ status: 'failed', failedStepLabel: 'reading its fields and clauses', error: 'Failed while saving what was read (attempt 3 of 3): the contract\'s fields were refused (422): {"type":"about:blank","status":422}' }), stale: null })?.text)
+      .toBe('The analysis failed while reading its fields and clauses. What it read couldn’t be saved.')
   })
   it('says nothing when the analysis is done for this version', () => {
     expect(runLine({ analysis: { kind: 'done' }, versionNumber: 1, run: run({ status: 'done', current: null }), stale: null })).toBeNull()

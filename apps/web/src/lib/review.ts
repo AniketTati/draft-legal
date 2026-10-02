@@ -2,6 +2,7 @@
  * docs/41 P1 — the shape of GET /contracts/:id/review, and the small pure
  * helpers the Review panel uses (tested in review.test.ts).
  */
+import { plainFailure } from './analysis-state'
 import type { Meaning } from '@/lib/status'
 
 export type FindingAction = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline' | 'request_exception'
@@ -101,7 +102,9 @@ export function runLine(r: Pick<ContractReview, 'analysis' | 'run' | 'stale' | '
     return { text: run?.current ? `Analysing — step ${run.current.index} of ${run.current.of}, ${run.current.label}…` : 'Analysing…', canRetry: false }
   }
   if (r.analysis.kind === 'failed' || run?.status === 'failed') {
-    return { text: `The analysis failed${run?.failedStepLabel ? ` while ${run.failedStepLabel}` : ''}${run?.error ? `: ${run.error}` : '.'}`, canRetry: true }
+    // Why in words, never the stored error (41: browser QA).
+    const why = plainFailure(run?.error)
+    return { text: `The analysis failed${run?.failedStepLabel ? ` while ${run.failedStepLabel}` : ''}.${why ? ` ${why}` : ''}`, canRetry: true }
   }
   if (r.analysis.kind === 'not_analysed') return { text: "This version hasn't been analysed yet.", canRetry: true }
   return null

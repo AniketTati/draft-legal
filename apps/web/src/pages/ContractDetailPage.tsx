@@ -1,4 +1,5 @@
 import { useClauseTypes } from '@/lib/clause-types'
+import { AnalysisFailedBanner } from '@/components/contracts/AnalysisFailedBanner'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -2367,30 +2368,13 @@ export function ContractDetailPage() {
         </div>
       )}
       {contract?.analysisStatus === 'FAILED' && (
-        <div className="bg-risk-50 border-b border-risk-200 text-risk-700 px-6 py-2.5 flex items-center gap-3 text-body">
-          <AlertCircle className="size-4 flex-shrink-0" />
-          <span className="font-medium whitespace-nowrap flex-shrink-0">
-            {versions.length === 0 ? 'Draft generation failed' : analysis.text}
-          </span>
-          {/* A1 — the extraction job names its step: "Analysis failed while saving what was read (attempt 3 of 3): …" */}
-          {contract.analysisError && (
-            <span className="text-risk-900 min-w-0" data-testid="analysis-error">
-              {/^Failed while /.test(contract.analysisError) ? contract.analysisError.replace(/^Failed /, '') : `— ${contract.analysisError}`}
-            </span>
-          )}
-          <div className="ml-auto">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => analyze.mutate()}
-              disabled={analyze.isPending}
-              className="gap-1.5 text-risk-700 border-risk-200 hover:bg-risk-100 hover:text-risk-900"
-            >
-              {analyze.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              {versions.length === 0 ? 'Retry Draft' : 'Re-analyze'}
-            </Button>
-          </div>
-        </div>
+        <AnalysisFailedBanner
+          contractId={contract.id}
+          analysisError={contract.analysisError}
+          draftFailed={versions.length === 0}
+          onRetry={() => analyze.mutate()}
+          retrying={analyze.isPending}
+        />
       )}
       {/* docs/41 P0.1 — a contract nothing has read, or whose document changed
           after it was read, says so: it used to say DONE, and every check
