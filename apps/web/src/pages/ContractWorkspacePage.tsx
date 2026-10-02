@@ -40,6 +40,7 @@ import { SelectionMenu } from '@/components/contracts/SelectionMenu'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { findInCanvas, revealInCanvas, revealRange } from '@/components/contracts/SourceHighlight'
+import { followUpSend } from '@/components/contracts/sendAfterSave'
 import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 import { WorkspaceDetails } from '@/components/contracts/workspace/WorkspaceDetails'
 import { ChangesView } from '@/components/contracts/workspace/ChangesView'
@@ -170,10 +171,8 @@ export function ContractWorkspacePage() {
       setDraftHtml(null)
       invalidateApproval(qc, id)
       toast.success(r.created ? `Saved as v${r.version.versionNumber}` : 'No changes to save', { description: body.note })
-      if (r.send?.portalUrl) {
-        await navigator.clipboard?.writeText(r.send.portalUrl).catch(() => {})
-        toast.success('Share link copied', { description: r.send.portalUrl, durationMs: 9000 })
-      }
+      // The Word or PDF file it asked for, the link, or why it wasn't sent.
+      if (r.send) await followUpSend(id, r)
       afterSave.current?.()
       afterSave.current = null
     } catch (err) {

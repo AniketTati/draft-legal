@@ -92,7 +92,8 @@ import { familyLine } from '@/lib/family-banner'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { useWorkingCopy } from '@/hooks/useWorkingCopy'
 import { workspacePath } from '@/lib/workspace'
-import { type SaveVersionBody, type SaveVersionResult } from '@/lib/working-copy'
+import { type SaveVersionBody } from '@/lib/working-copy'
+import { followUpSend } from '@/components/contracts/sendAfterSave'
 import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 
 import '@react-pdf-viewer/core/lib/styles/index.css'
@@ -777,7 +778,7 @@ export function ContractDetailPage() {
       setSaveVersionOpen(false)
       invalidateApproval(qc, id)
       toast.success(r.created ? `Saved as v${r.version.versionNumber}` : 'No changes to save', { description: body.note })
-      if (r.send) await followUpSend(id, r)
+      if (r.send) await followUpSend(id, r, { onRedline: setRedlineNotice })
       const then = afterSaveVersion.current
       afterSaveVersion.current = null
       then?.()
@@ -785,32 +786,6 @@ export function ContractDetailPage() {
       setSaveVersionError(serverMessage(err, (err as Error).message || 'Not saved. Try again.'))
     } finally {
       setSavingVersion(false)
-    }
-  }
-
-  /** After Save as version sent it: the download, link or email the person asked for. */
-  const followUpSend = async (contractId: string, r: SaveVersionResult) => {
-    const send = r.send!
-    if (!send.ok) {
-      toast.error(`Saved as v${r.version.versionNumber}, but not sent`, { description: send.detail ?? 'Try sending it again.', durationMs: 9000 })
-      return
-    }
-    if (send.method === 'word') {
-      setRedlineNotice(await downloadForCounterparty(contractId))
-    } else if (send.method === 'pdf') {
-      try {
-        const { url } = (await api.get(`/contracts/${contractId}/download`, { params: { versionId: r.version.id } })).data as { url: string }
-        window.open(url, '_blank', 'noopener')
-      } catch (err) {
-        toast.error('The PDF could not be downloaded', { description: serverMessage(err, 'Try Download from the menu.') })
-      }
-    } else if (send.method === 'email') {
-      toast.success(send.emailDelivered === false ? 'Link made, but the email was not sent' : `Emailed to ${send.emailedTo ?? 'the counterparty'}`, {
-        description: send.emailDelivered === false ? `Email isn't set up. Copy the link and send it yourself: ${send.portalUrl ?? ''}` : undefined, durationMs: 9000,
-      })
-    } else if (send.portalUrl) {
-      await navigator.clipboard?.writeText(send.portalUrl).catch(() => {})
-      toast.success('Share link copied', { description: send.portalUrl, durationMs: 9000 })
     }
   }
 
