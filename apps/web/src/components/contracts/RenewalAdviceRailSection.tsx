@@ -26,6 +26,7 @@ import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
 import { RefreshCw, Repeat, LogOut, Pause, Sparkles, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { RenewalDecisionDialog, NoticeSentButton } from './RenewalDecisionDialog'
+import { ContractWatchers } from './ContractWatchers'
 import { deadlineWords, noticeOutstanding, noticeSentWords, renewalKey, type RenewalState } from '@/lib/renewal'
 
 export interface NegotiationPoint {
@@ -250,6 +251,7 @@ export function RenewalAdviceRailSection({
               {standing ? 'Change decision' : 'Start renewal'}
             </Button>
           )}
+          <ContractWatchers contractId={contractId} />
           {deciding && <RenewalDecisionDialog contractId={contractId} onClose={() => { setDeciding(false); onAfterDecision?.() }} />}
         </div>
 

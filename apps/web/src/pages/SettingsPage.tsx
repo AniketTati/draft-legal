@@ -23,6 +23,7 @@ import { FieldFillDialog } from '@/components/settings/FieldFillDialog'
 import { FieldRecords } from '@/components/settings/FieldRecords'
 import { ClauseTypesSection } from '@/components/settings/ClauseTypesSection'
 import { toast } from '@/components/common/Toaster'
+import { CalendarFeedSection } from '@/components/settings/CalendarFeedSection'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -973,6 +974,8 @@ function NotificationsTab() {
           ))}
         </div>
       </section>
+
+      <CalendarFeedSection />
     </div>
   )
 }
