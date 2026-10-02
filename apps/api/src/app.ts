@@ -30,6 +30,7 @@ import { clauseRoutes } from './routes/clauses.js'
 import { clauseFamilyRoutes } from './routes/clause-families.js'
 import { draftOriginRoutes } from './routes/draft-origin.js'
 import { playbookRoutes } from './routes/playbook.js'
+import { aiSuggestionEventRoutes } from './routes/ai-suggestion-events.js'
 import { commentRoutes } from './routes/comments.js'
 import { shareRoutes } from './routes/share.js'
 import { externalEditRoutes } from './routes/external-edit.js'
@@ -287,6 +288,8 @@ export async function buildApp() {
   await app.register(clauseRoutes,          { prefix: '/api/v1/clauses' })
   await app.register(clauseFamilyRoutes,    { prefix: '/api/v1/clause-families' })
   await app.register(playbookRoutes,        { prefix: '/api/v1/playbook' })
+  // docs/41 Part 16 — what became of each AI suggestion.
+  await app.register(aiSuggestionEventRoutes, { prefix: '/api/v1/ai-suggestion-events' })
   await app.register(commentRoutes,         { prefix: '/api/v1/contracts' })
   await app.register(shareRoutes,           { prefix: '/api/v1/contracts' })
   await app.register(externalEditRoutes,    { prefix: '/api/v1/contracts' })

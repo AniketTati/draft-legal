@@ -185,6 +185,13 @@ describe('golden: Governing Law deleted, and the fixes', () => {
     expect(v3.changeNote).toBe('Added your standard Governing Law language')
     expect(v3.plainText).toContain('governed by the laws of the State of New York.')
     expect((await prisma.reviewFinding.findUniqueOrThrow({ where: { id: findingId } })).status).toBe('resolved')
+    // docs/41 Part 16 — logged as an accepted AI suggestion (written after the reply).
+    let logged = 0
+    for (let i = 0; i < 20 && !logged; i++) {
+      logged = await prisma.aiSuggestionEvent.count({ where: { orgId: org, feature: 'insert_standard', outcome: 'accepted', suggestionId: findingId } })
+      if (!logged) await new Promise(r => setTimeout(r, 50))
+    }
+    expect(logged).toBe(1)
   })
 })
 

@@ -252,6 +252,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'POST /agent/threads/:id/actions/:toolCallId/undo': null,
   'POST /agent/threads/:id/actions/apply': null,
   'POST /agent/threads/:id/turns': null,
+  'POST /ai-suggestion-events': { action: 'view', resource: 'contract' },
   'POST /approvals/:instanceId/decide': { action: 'approve', resource: 'workflow' },
   'POST /approvals/notifications/mark-read': null,
   'POST /approvals/steps/:stepId/decide': { action: 'approve', resource: 'workflow' },

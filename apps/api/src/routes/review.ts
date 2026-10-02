@@ -27,6 +27,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 import { createAuditEvent } from '../lib/audit.js'
+import { recordAiSuggestion } from '../lib/ai-suggestion-events.js'
 import { findingsFor, computeAndStoreFindings, reviewStampOf, baselineWords, type BaselineReason, type PositionVerdict } from '../lib/review-findings.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { computeDraftingFindings, draftingChecked } from '../lib/drafting-findings.js'
@@ -383,6 +384,8 @@ export async function reviewRoutes(app: FastifyInstance) {
       metadata: { findingId: finding.id, kind: finding.kind, title: finding.title, decision: 'standard_inserted', positionId: position.id, versionId },
       ipAddress: req.ip,
     })
+    // docs/41 Part 16 — the playbook's wording, put in: an accepted suggestion.
+    recordAiSuggestion({ orgId, userId, contractId: id, versionId, feature: 'insert_standard', outcome: 'accepted', suggestionId: finding.id })
     return reply.status(201).send({ versionId, versionNumber, positionId: position.id })
   })
 
@@ -413,6 +416,7 @@ export async function reviewRoutes(app: FastifyInstance) {
     }
     // Staged with the contract: apply takes only what was shown, never text sent back by the page.
     await prisma.$executeRaw`UPDATE contracts SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('_findingRedlines', COALESCE(metadata->'_findingRedlines', '{}'::jsonb)), ${['_findingRedlines', finding.id]}::text[], ${JSON.stringify(staged)}::jsonb) WHERE id = ${id}`
+    recordAiSuggestion({ orgId, userId: req.user.sub, contractId: id, versionId: contract.currentVersionId, feature: 'redline_to_position', outcome: 'shown', suggestionId: finding.id })
     return reply.send({ findingId: finding.id, ...staged })
   })
 
@@ -434,6 +438,7 @@ export async function reviewRoutes(app: FastifyInstance) {
       metadata: { findingId: finding.id, kind: finding.kind, title: finding.title, decision: 'redlined', versionId: r.data.newVersionId },
       ipAddress: req.ip,
     })
+    recordAiSuggestion({ orgId, userId, contractId: id, versionId: r.data.newVersionId, feature: 'redline_to_position', outcome: 'accepted', suggestionId: finding.id })
     return reply.status(201).send(r.data)
   })
 

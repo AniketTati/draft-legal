@@ -20,7 +20,7 @@
  *     then says who it is waiting for, and later what they decided.
  * Every status label explains itself on hover.
  */
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { approvalKeys, serverMessage } from '@/lib/approval-keys'
@@ -36,6 +36,7 @@ import {
   type ContractReview, type ReviewFindingView, type ReviewClauseView, type ExceptionView,
 } from '@/lib/review'
 import { FixPreview, type StagedFixes } from './FixPreview'
+import { logAiEventOnce } from '@/lib/ai-events'
 import { BookOpen, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 
 const ADVICE_WORDS: Record<string, string> = { accept: 'AI suggests accepting', counter: 'AI suggests a counter', reject: 'AI suggests pushing back' }
@@ -162,6 +163,13 @@ export function ReviewPanel({
   const fixStatus = meta._playbookRedlineStatus as string | undefined
   const staged = meta._playbookRedline as StagedFixes | undefined
   const stagedHere = staged && staged.versionId === r?.versionId && fixStatus === 'DONE' ? staged : null
+  // docs/41 Part 16 — the fix-all rewrites, shown (taking or passing them over is logged where they are applied).
+  useEffect(() => {
+    if (!stagedHere) return
+    for (const p of stagedHere.proposals) {
+      logAiEventOnce(`fix_all:${contractId}:${stagedHere.stagedAt ?? stagedHere.versionId}:${p.clauseId}`, { contractId, versionId: stagedHere.versionId, feature: 'fix_all', outcome: 'shown', suggestionId: p.clauseId })
+    }
+  }, [stagedHere, contractId])
   const line = r ? runLine(r) : null
   const batch = r ? fixable(needs) : []
   const exceptions = useExceptionLines(contractId, r ? [...needs, ...missing, ...compliance, ...r.groups.accepted] : [])

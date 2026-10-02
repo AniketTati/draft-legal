@@ -9,6 +9,7 @@
  * person saves a version when they are ready (lib/changes.ts has how each
  * decision changes the text).
  */
+import { logAiEvent } from '@/lib/ai-events'
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Download, Loader2, MessageSquare, Undo2, Wand2 } from 'lucide-react'
@@ -94,13 +95,15 @@ export function ChangesView({ contractId, canEdit, onApply, onComment }: {
     meta: { errorHandled: true },
     mutationFn: async (c: Change) => {
       const f = findingFor(c, findings)
-      const r = await api.post<{ counterText: string; counterNote: string }>(`/contracts/${contractId}/changes/counter`, {
+      const r = await api.post<{ counterText: string; counterNote: string; suggestionId?: string }>(`/contracts/${contractId}/changes/counter`, {
         ourText: c.before, theirText: c.after, clauseType: f?.clauseType ?? null,
       })
       return { c, ...r.data }
     },
-    onSuccess: async ({ c, counterText, counterNote }) => {
+    onSuccess: async ({ c, counterText, counterNote, suggestionId }) => {
       await decide(c, { kind: 'counter', text: counterText })
+      // docs/41 Part 16 — the drafted counter went into the draft changes.
+      logAiEvent({ contractId, feature: 'counter', outcome: 'accepted', suggestionId: suggestionId ?? null })
       toast.success('Counter put in your draft changes', { description: `${counterNote} Their words were: “${c.after || c.before}”`, durationMs: 9000 })
     },
     onError: err => toast.error('No counter drafted', { description: serverMessage(err, 'Try again.') }),

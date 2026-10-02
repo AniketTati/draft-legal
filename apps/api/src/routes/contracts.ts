@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { recordAiSuggestions } from '../lib/ai-suggestion-events.js'
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
@@ -2557,6 +2558,13 @@ export async function contractRoutes(app: FastifyInstance) {
         } as never,
       },
     })
+
+    // docs/41 Part 16 — "Fix all fixable": each staged rewrite taken or passed over.
+    const taken = new Set(changes.map(c => c.clauseId))
+    void recordAiSuggestions([...byId.keys()].map(clauseId => ({
+      orgId, userId, contractId, versionId: result.data.newVersionId ?? null, feature: 'fix_all' as const,
+      outcome: taken.has(clauseId) ? 'accepted' as const : 'dismissed' as const, suggestionId: clauseId,
+    })))
 
     return reply.send(result.data)
   })

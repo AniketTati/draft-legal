@@ -8,6 +8,7 @@ import { useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { Editor } from '@tiptap/react'
 import { api } from '@/lib/api'
+import { logAiEvent } from '@/lib/ai-events'
 import { useCanRequest } from '@/lib/permissions'
 import { approvalKeys, serverMessage } from '@/lib/approval-keys'
 import type { ContractReview, ReviewFindingView } from '@/lib/review'
@@ -129,7 +130,10 @@ export function useSelectionActions(o: SelectionActionsOptions): { editorActions
         selectedText={ai?.text}
         selectionRange={ai ? { from: ai.from, to: ai.to } : null}
         contractId={o.contractId}
-        onOutcome={o.onAiOutcome}
+        onOutcome={(outcome, suggestionId) => {
+          logAiEvent({ contractId: o.contractId, versionId: o.versionId, feature: 'ask_ai', outcome, suggestionId })
+          o.onAiOutcome?.(outcome, suggestionId)
+        }}
       />
       <ReasonDialog
         open={!!exceptionFor}

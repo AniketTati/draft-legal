@@ -26,6 +26,8 @@ import { computeVersionDiff, DiffTooLargeError } from '../lib/diff.js'
 import { counterChange } from '../lib/change-advice.js'
 import { CostCapExceededError } from '../lib/costCap.js'
 import { askAiDrafts } from '../lib/ask-ai.js'
+import { recordAiSuggestion } from '../lib/ai-suggestion-events.js'
+import { randomUUID } from 'node:crypto'
 
 const counterBody = z.object({
   ourText: z.string().max(20_000).default(''),
@@ -105,7 +107,10 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
     try {
       const draft = await counterChange({ orgId, contract, ourText, theirText, clauseType })
       if (!draft.counterText) return reply.status(502).send({ detail: 'No counter could be drafted for this change. Try again, or write one.' })
-      return reply.send(draft)
+      // docs/41 Part 16 — the web logs what became of it under this id.
+      const suggestionId = randomUUID()
+      recordAiSuggestion({ orgId, userId: req.user.sub, contractId: id, feature: 'counter', outcome: 'shown', suggestionId })
+      return reply.send({ ...draft, suggestionId })
     } catch (err) {
       if (err instanceof CostCapExceededError) return reply.status(429).send({ detail: 'Today\'s AI budget is used up. Try again tomorrow.' })
       req.log.warn({ err }, 'counter draft failed')

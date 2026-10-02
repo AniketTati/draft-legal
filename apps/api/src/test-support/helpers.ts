@@ -144,6 +144,7 @@ export async function cleanupOrg(orgId: string): Promise<void> {
   await del(() => prisma.contractShareLink.deleteMany({ where: { orgId } }))
   await del(() => prisma.contractComment.deleteMany({ where: { orgId, parentId: { not: null } } }))
   await del(() => prisma.contractComment.deleteMany({ where: { orgId } }))
+  await del(() => prisma.aiSuggestionEvent.deleteMany({ where: { orgId } }))
   await del(() => prisma.notification.deleteMany({ where: { orgId } }))
   await del(() => prisma.auditEvent.deleteMany({ where: { orgId } }))
   await del(() => prisma.contractFieldValue.deleteMany({ where: { orgId } }))

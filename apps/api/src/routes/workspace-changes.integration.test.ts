@@ -89,7 +89,7 @@ describe('POST /contracts/:id/changes/counter', () => {
       payload: { ourText: 'Liability is capped at the fees paid.', theirText: 'Liability is uncapped.', clauseType: 'liability' },
     })
     expect(r.statusCode).toBe(200)
-    expect(r.json()).toEqual({ counterText: 'Liability is capped at twelve months of fees.', counterNote: 'Meets them halfway on the cap.' })
+    expect(r.json()).toEqual({ counterText: 'Liability is capped at twelve months of fees.', counterNote: 'Meets them halfway on the cap.', suggestionId: expect.any(String) })
     expect(agents.calls).toHaveLength(1)
     expect(agents.calls[0].path).toBe('/redline/counter')
     expect(agents.calls[0].body).toMatchObject({ ourText: 'Liability is capped at the fees paid.', theirText: 'Liability is uncapped.', clauseType: 'liability', orgId: org })

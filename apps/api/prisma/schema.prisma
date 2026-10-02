@@ -34,6 +34,7 @@ model Organization {
   contractExhibits    ContractExhibit[]
   analysisRuns        AnalysisRun[]
   contractWorkingCopies ContractWorkingCopy[]
+  aiSuggestionEvents    AiSuggestionEvent[]
   reviewFindings      ReviewFinding[]
   contractFacts       ContractFact[]
   compliancePolicy    CompliancePolicy?
@@ -261,6 +262,7 @@ model Contract {
   exhibits          ContractExhibit[]
   analysisRuns      AnalysisRun[]
   workingCopy       ContractWorkingCopy?
+  aiSuggestionEvents AiSuggestionEvent[]
   reviewFindings    ReviewFinding[]
   facts             ContractFact[]
 
@@ -619,6 +621,31 @@ model ContractWorkingCopy {
 
   @@index([orgId])
   @@map("contract_working_copies")
+}
+
+/// docs/41 Part 16 — what became of each AI suggestion: shown, accepted,
+/// edited before use, or dismissed. One row per outcome, so acceptance can be
+/// read per feature ("every AI insertion is logged").
+model AiSuggestionEvent {
+  id           String   @id @default(cuid())
+  orgId        String
+  contractId   String
+  versionId    String?
+  userId       String
+  /// ask_ai | counter | insert_standard | redline_to_position | fix_all | amendment_language | draft
+  feature      String
+  /// shown | accepted | edited | dismissed
+  outcome      String
+  /// Ties the outcomes of one suggestion together.
+  suggestionId String?
+  at           DateTime @default(now())
+
+  org      Organization @relation(fields: [orgId], references: [id])
+  contract Contract     @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId, at])
+  @@index([orgId, feature, outcome])
+  @@map("ai_suggestion_events")
 }
 
 model AnalysisRun {
