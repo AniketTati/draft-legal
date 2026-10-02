@@ -206,7 +206,12 @@ model Contract {
   counterpartyId    String?
   counterpartyName  String?
   parentContractId  String? // For amendments — links to parent contract
-  relationshipType  String? // amendment | sow | order_form | renewal | nda | exhibit_only
+  // docs/41 Part 13 — one of packages/types family.ts RELATIONSHIP_TYPES:
+  // amendment | renewal | sow | order_form | exhibit | split_part | nda | other
+  // (a CHECK constraint holds it to them; `exhibit_only` became exhibit or split_part).
+  relationshipType  String?
+  // Numbered per parent and relationship ("Amendment No. 2"), by date; editable.
+  amendmentNumber   Int?
   attachments       Json      @default("[]") // [{filename, s3Key, mimeType, size, label}]
   value             Decimal?
   currency          String?   @default("USD")
@@ -214,6 +219,19 @@ model Contract {
   expiryDate        DateTime?
   // docs/41 P0.10 — when it became EXECUTED (lib/status-change.ts statusData).
   executedAt        DateTime?
+  // docs/41 Part 14 — the renewal terms, worked out from the contract's
+  // field values and its signed amendments (lib/renewal-terms.ts), so lists,
+  // the daily scan, the calendar feed and analytics read one stored answer.
+  renewalType       String? // auto | manual | evergreen | none
+  renewalTermMonths Int?
+  noticeDays        Int?
+  // The last day to give notice so it doesn't renew (auto), or to decide (manual).
+  noticeDeadline    DateTime?
+  // The earliest day notice may be given, when the contract sets a window.
+  optOutWindowStart DateTime?
+  priceUpliftCap    Float?
+  // Every renewal value it has was confirmed by a person (field-capture's trust model).
+  renewalConfirmed  Boolean   @default(false)
   jurisdiction      String? // Governing law jurisdiction (dedicated column for ES filtering)
   ownerId           String
   createdBy         String? // User who created (may differ from owner)
@@ -261,6 +279,9 @@ model Contract {
   analysisRuns      AnalysisRun[]
   reviewFindings    ReviewFinding[]
   facts             ContractFact[]
+  termValues        ContractTermValue[]
+  renewalDecisions  RenewalDecision[]
+  watchers          ContractWatcher[]
 
   // P9 Step 4 — Diligence Room link. When set, this contract is part of
   // a bulk-upload diligence batch (Harvey Vault equivalent) and is hidden
@@ -276,6 +297,9 @@ model Contract {
   @@index([orgId, jurisdiction])
   @@index([orgId, matterId])
   @@index([orgId, expiryDate])
+  @@index([orgId, noticeDeadline])
+  @@index([orgId, executedAt])
+  @@index([parentContractId])
   @@index([diligenceRoomId])
   @@map("contracts")
 }
@@ -1115,6 +1139,12 @@ model Obligation {
   reviewState   String    @default("CONFIRMED") // SUGGESTED | CONFIRMED | DISMISSED
   reviewedAt    DateTime?
   reviewedById  String?
+
+  // ── docs/41 Part 13 — the clause it came from was replaced by an amendment ──
+  // The amendment (a Contract id) whose roll-up a person confirmed; the
+  // obligation stays on the record but is no longer owed.
+  supersededById String?
+  supersededAt   DateTime?
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
@@ -2086,4 +2116,99 @@ model IdentityLink {
   @@unique([orgId, provider, subject])
   @@index([userId])
   @@map("identity_links")
+}
+
+/// docs/41 Part 13 — a contract's term values over time: the original value
+/// and each value an amendment set, so the effective value is current and
+/// the original is one click away ("Show amended values"). The current
+/// value itself stays in ContractFieldValue (source 'amendment',
+/// fromContractId), which every reader already reads; this is its history.
+/// Written when a person confirms an amendment's roll-up
+/// (lib/term-history.ts), undone with it.
+model ContractTermValue {
+  id               String    @id @default(cuid())
+  orgId            String
+  /// The contract whose term it is (the parent).
+  contractId       String
+  key              String
+  label            String?
+  value            Json?
+  display          String    @default("")
+  quote            String?
+  /// The contract that set it: null for the contract's own (original) value.
+  sourceContractId String?
+  effectiveFrom    DateTime?
+  /// The value that replaced it, when one did.
+  supersededById   String?
+  supersededAt     DateTime?
+  createdById      String?
+  createdAt        DateTime  @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId, key])
+  @@index([sourceContractId])
+  @@map("contract_term_values")
+}
+
+/// docs/41 Part 14 — a decision about a contract's renewal, and the action
+/// it started: renew as is (a renewal letter or amendment for one that
+/// doesn't renew on its own), renegotiate (a renewal draft linked to it), or
+/// let it lapse / end it (a non-renewal notice, tracked until sent).
+model RenewalDecision {
+  id               String    @id @default(cuid())
+  orgId            String
+  contractId       String
+  /// renew | renegotiate | terminate
+  decision         String
+  decidedById      String
+  reason           String?
+  /// The contract the action made (renewal letter, renewal draft, notice).
+  actionContractId String?
+  /// The notice deadline when it was decided, and whether it was decided in time.
+  noticeDeadline   DateTime?
+  decidedInTime    Boolean?
+  /// A non-renewal notice: when it was sent, and whether before the deadline.
+  noticeSentAt     DateTime?
+  noticeSentInTime Boolean?
+  /// Superseded by a later decision (the latest one stands).
+  supersededAt     DateTime?
+  createdAt        DateTime  @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, contractId])
+  @@index([orgId, createdAt])
+  @@map("renewal_decisions")
+}
+
+/// docs/41 Part 14 — people who follow a contract besides its owner: they
+/// get its renewal reminders and see its dates in their calendar feed.
+model ContractWatcher {
+  id         String   @id @default(cuid())
+  orgId      String
+  contractId String
+  userId     String
+  createdAt  DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@unique([contractId, userId])
+  @@index([orgId, userId])
+  @@map("contract_watchers")
+}
+
+/// docs/41 Part 14 — a person's calendar feed (.ics). The feed URL carries a
+/// signed token naming this row's version; rotating the link bumps it, and
+/// every older link stops working.
+model CalendarFeed {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String   @unique
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  rotatedAt DateTime @default(now())
+
+  @@index([orgId])
+  @@map("calendar_feeds")
 }

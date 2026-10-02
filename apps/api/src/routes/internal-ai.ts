@@ -1015,7 +1015,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
       riskScore:        contract.riskScore,
       riskFactors:      contract.riskFactors,
       // How this contract hangs off family.parent: amendment | renewal | sow |
-      // order_form | exhibit_only (null when it stands alone).
+      // order_form | exhibit | split_part | nda | other (null when it stands alone).
       relationshipType: contract.relationshipType,
       family,
       ...(familyNote && { familyNote }),

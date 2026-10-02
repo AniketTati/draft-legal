@@ -18,7 +18,7 @@
  * the screens can ask which notice it is. Months count by the calendar:
  * "3 months" before 31 December is 30 September, not 90 days back.
  */
-import { formatFieldValue, parseDuration, subtractDuration, type DurationUnit, type DurationValue } from '@clm/types'
+import { formatFieldValue, parseDuration, subtractDuration, FOLLOWS_PARENT, type DurationUnit, type DurationValue } from '@clm/types'
 
 const UNITS = new Set<DurationUnit>(['days', 'weeks', 'months', 'years'])
 
@@ -179,5 +179,5 @@ export function amendedRenewalNotice(
  * RENEWS_ON_ITS_OWN wraps it so for spreading.
  */
 export const renewsOnItsOwn = {
-  OR: [{ relationshipType: null }, { relationshipType: { notIn: ['amendment', 'exhibit_only'] } }],
+  OR: [{ relationshipType: null }, { relationshipType: { notIn: [...FOLLOWS_PARENT] } }],
 }

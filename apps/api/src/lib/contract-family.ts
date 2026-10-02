@@ -16,8 +16,9 @@ import { prisma } from './prisma.js'
 import { compactKey } from './company-names.js'
 import { renewsOnItsOwn } from './renewal-notice.js'
 
-export const RELATIONSHIP_TYPES = ['amendment', 'sow', 'order_form', 'renewal', 'exhibit_only'] as const
-export type RelationshipType = typeof RELATIONSHIP_TYPES[number]
+// docs/41 Part 13 — the fixed set lives in packages/types family.ts.
+export { RELATIONSHIP_TYPES, type RelationshipType } from '@clm/types'
+import type { RelationshipType } from '@clm/types'
 
 /**
  * Contracts that renew on their own: not an amendment or an exhibit, which

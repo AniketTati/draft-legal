@@ -67,7 +67,7 @@ async function handleDetectBinder(data: DetectBinderJob): Promise<void> {
     where: { id: contractId },
     select: { parentContractId: true, relationshipType: true },
   })
-  if (contractMeta?.parentContractId || contractMeta?.relationshipType === 'exhibit_only') {
+  if (contractMeta?.parentContractId || contractMeta?.relationshipType === 'split_part') {
     console.info(
       '[agent-worker] detect-binder: skipping %s (already a split child: parent=%s, rel=%s)',
       contractId, contractMeta.parentContractId, contractMeta.relationshipType,
