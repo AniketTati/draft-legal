@@ -320,7 +320,10 @@ section('5. Partial failures are reported, not styled as success')
   const sigPage   = read('apps/web/src/pages/SignaturesPage.tsx')
 
   check('bulk approve does not auto-close when something failed',
-    /if \([^)]*(length === 0|!failed)[^)]*\)\s*setTimeout\(\(\) => onDone/.test(stripTs(approvals)),
+    // The close must hang on there being no failures. The dialog's callback was
+    // renamed onClose when the inbox replaced the queue (docs/41 Part 6), and it
+    // may be passed directly or wrapped: accept either name and either form.
+    /if \([^)]*(length === 0|!failed)[^)]*\)\s*setTimeout\((\(\) => )?on(Done|Close)\b/.test(stripTs(approvals)),
     'an unconditional setTimeout(onDone, 600) closed the dialog over a failure count rendered in emerald success green'  )
   check('bulk approve keeps the server-side reason',
     !/catch\s*\{\s*failed\+\+\s*\}/.test(stripTs(approvals)),
