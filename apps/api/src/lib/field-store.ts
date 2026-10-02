@@ -1962,11 +1962,12 @@ function readingsIn(ev: Record<string, unknown>): ExtractedField['candidates'] {
 
 /**
  * A draft's open blank ("[[Choose governing law: …]]", "[[effectiveDate]]")
- * read back as a field's value. It says the term is still to be chosen, so it
- * is no value: storing it put the blank's words in the Governing law column.
+ * read back as a field's value, alone or inside it ("courts located in
+ * [[venueLocation]]"). The term is still to be chosen, so it is no value:
+ * storing it put the blank's words in the Governing law column.
  */
 export function blankAsNull(v: unknown): unknown {
-  return typeof v === 'string' && /^\s*\[\[[\s\S]*\]\]\s*$/.test(v) ? null : v
+  return typeof v === 'string' && /\[\[[^\]]*\]\]/.test(v) ? null : v
 }
 
 export function extractedFieldsFromPatch(body: Record<string, unknown>, customKeys: ReadonlySet<string>): ExtractedField[] {
