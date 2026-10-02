@@ -234,7 +234,9 @@ async function apiWrite(method: 'PATCH' | 'POST', path: string, orgId: string, b
   const res = await fetch(`${API_INTERNAL_URL}${path}`, {
     method,
     headers: {
-      'content-type': 'application/json',
+      // Only with a body: Fastify refuses an empty JSON body with 400, which
+      // is what the bodiless chunk request got, so no analysis finished.
+      ...(body !== undefined && { 'content-type': 'application/json' }),
       'x-internal-service': 'agents',
       'x-internal-secret': INTERNAL_SECRET,
       // Y1 — the write runs in the contract's tenant.
