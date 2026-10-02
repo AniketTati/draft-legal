@@ -19,6 +19,7 @@ import { ViewsMenu, useSavedViews, type SavedView, type ViewQuery } from '@/comp
 import { VERIFICATION_LABELS, decodeFieldFilters, encodeFieldFilters, type CatalogField, type ContractSort, type FieldFilter } from '@clm/types'
 import { Upload, Search, FileText, ChevronRight, SlidersHorizontal, X, Loader2, PenSquare, RefreshCcw, ArrowUp, ArrowDown, Download, CircleCheck } from 'lucide-react'
 import { toast } from '@/components/common/Toaster'
+import { openPathFor } from '@/lib/workspace'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -884,7 +885,7 @@ export function ContractsPage() {
                       // Don't double-navigate when the click started on the
                       // <Link> or a button inside the row.
                       if ((e.target as HTMLElement).closest('a, button')) return
-                      navigate(`/contracts/${c.id}`)
+                      navigate(openPathFor(c))
                     }}
                     style={grid}
                     className="grid gap-4 items-center px-6 py-2 border-b border-paper-100 hover:bg-paper-50 cursor-pointer transition-colors group"
@@ -895,7 +896,7 @@ export function ContractsPage() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-2">
                           <Link
-                            to={`/contracts/${c.id}`}
+                            to={openPathFor(c)}
                             className="text-[13px] font-medium text-ink-950 truncate hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                             onClick={(e) => e.stopPropagation()}
                           >

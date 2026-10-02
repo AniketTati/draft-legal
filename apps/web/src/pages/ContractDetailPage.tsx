@@ -21,7 +21,7 @@ import {
   ChevronDown, ChevronUp, ChevronRight, CheckSquare,
   Link, Link2, Paperclip, Trash2, ExternalLink, Scissors, RefreshCw,
   FileEdit, Share2, ArrowLeftRight, X, PenLine, GitBranch,
-  PanelRightClose, PanelRightOpen, FileDown, LocateFixed, FileDiff,
+  PanelRightClose, PanelRightOpen, FileDown, LocateFixed, FileDiff, Maximize2,
 } from 'lucide-react'
 import { expiryLabel, relativeTime } from '@/components/contracts/dates'
 import { toast } from '@/components/common/Toaster'
@@ -91,6 +91,7 @@ import { analysisLine } from '@/lib/analysis-state'
 import { familyLine } from '@/lib/family-banner'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { useWorkingCopy } from '@/hooks/useWorkingCopy'
+import { workspacePath } from '@/lib/workspace'
 import { type SaveVersionBody, type SaveVersionResult } from '@/lib/working-copy'
 import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 
@@ -1724,6 +1725,11 @@ export function ContractDetailPage() {
               still has compare-menu-item as a backup for narrower
               widths.
             */}
+            {/* docs/41 Part 16 (C2) — the full-screen workspace (lib/workspace.ts says which contracts open there first). */}
+            <Button variant="outline" size="sm" onClick={() => navigate(workspacePath(id!))} className="gap-1.5" data-testid="open-workspace-btn" title="Work on this contract full screen: the document, its review and its changes">
+              <Maximize2 className="size-4" />
+              Open workspace
+            </Button>
             <Button
               variant="ghost"
               size="sm"

@@ -28,6 +28,8 @@ interface CommentsPanelProps {
   portalMode?: boolean
   portalToken?: string
   permissions?: string[]
+  /** docs/41 Part 15 — a comment started from a change in the workspace: its quote, ready to add to. */
+  initialBody?: string
 }
 
 function timeAgo(iso: string) {
@@ -200,10 +202,10 @@ function CommentThread({
 }
 
 export function CommentsPanel({
-  contractId, versionId, clauseRef, portalMode = false, portalToken, permissions = [],
+  contractId, versionId, clauseRef, portalMode = false, portalToken, permissions = [], initialBody,
 }: CommentsPanelProps) {
   const qc = useQueryClient()
-  const [body, setBody] = useState('')
+  const [body, setBody] = useState(initialBody ?? '')
   const [authorName, setAuthorName] = useState('')
   const [clauseRefInput, setClauseRefInput] = useState(clauseRef ?? '')
   const [filter, setFilter] = useState<'all' | 'unresolved' | 'resolved'>('unresolved')

@@ -14,6 +14,7 @@ import { NotFoundPage } from '@/pages/NotFoundPage'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
 import { ContractsPage } from '@/pages/ContractsPage'
 import { ContractDetailPage } from '@/pages/ContractDetailPage'
+import { ContractWorkspacePage } from '@/pages/ContractWorkspacePage'
 import { RequestsPage } from '@/pages/RequestsPage'
 import { CounterpartiesPage } from '@/pages/CounterpartiesPage'
 import { CounterpartyDetailPage } from '@/pages/CounterpartyDetailPage'
@@ -105,6 +106,17 @@ export default function App() {
         rollout is a single commit.
       */}
       <Route path="/sign/:token" element={<SignerPortal />} />
+      {/* docs/41 Part 16 (C2) — the contract workspace is full screen: no app rail. */}
+      <Route
+        path="/contracts/:id/workspace"
+        element={
+          <ProtectedRoute>
+            <ErrorBoundary label="the workspace">
+              <ContractWorkspacePage />
+            </ErrorBoundary>
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/*"
         element={
