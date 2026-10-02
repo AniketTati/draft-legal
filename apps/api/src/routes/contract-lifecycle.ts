@@ -73,6 +73,30 @@ const SHOWN_ELSEWHERE = new Set<string>([
   AuditAction.COMMENT_RESOLVED, AuditAction.CONTRACT_VIEWED, AuditAction.PORTAL_VIEWED,
 ])
 
+/** Stored state that isn't a term a person reads ("metadata", "fieldConfidence"): left out of History. */
+const UNSHOWN_FIELDS = new Set(['metadata', 'overallConfidence', 'fieldConfidence', 'analysisStatus', 'analysisError', 'currentVersionId', 'updatedAt'])
+const FIELD_WORDS: Record<string, string> = { counterpartyName: 'counterparty', keyTerms: 'key terms', riskScore: 'risk score', riskFactors: 'risks', jurisdiction: 'governing law' }
+const ACTION_WORDS: Record<string, string> = {
+  document_edited: 'edited the document', set_from_template: 'filled in', set_from_highlight: 'filled in from the document',
+  set_from_import: 'imported', corrected: 'corrected', verified: 'checked', verified_all: 'checked every field',
+}
+const fieldWords = (k: string) => FIELD_WORDS[k] ?? k.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase()
+
+/**
+ * "Legal Counsel changed set_from_template", "Someone changed title, metadata,
+ * fieldConfidence…": History showed the stored names. In words now, and a
+ * change with no person is the analysis's.
+ */
+function updatedTitle(who: string | null, m: Record<string, unknown>): string {
+  const changes = Array.isArray(m.changes) ? (m.changes as string[]).filter(k => !UNSHOWN_FIELDS.has(k)) : null
+  const actor = who ?? (changes ? 'The analysis' : 'Someone')
+  if (changes) return changes.length ? `${actor} updated ${changes.map(fieldWords).join(', ')}` : `${actor} updated it`
+  const action = typeof m.action === 'string' ? m.action : null
+  const field = typeof m.field === 'string' ? m.field : null
+  if (action && ACTION_WORDS[action]) return `${actor} ${ACTION_WORDS[action]}${field && action !== 'document_edited' && action !== 'verified_all' ? ` ${fieldWords(field)}` : ''}`
+  return `${actor} changed ${action ? action.replace(/_/g, ' ') : 'it'}`
+}
+
 /** Pure: an audit event of the contract as a history item, or null when it isn't shown. */
 export function historyItemOf(e: { id: string; action: string; createdAt: Date; userId: string | null; metadata: unknown }, name: (id: string | null) => string | null): HistoryItem | null {
   if (SHOWN_ELSEWHERE.has(e.action)) return null
@@ -139,7 +163,7 @@ export function historyItemOf(e: { id: string; action: string; createdAt: Date; 
     case AuditAction.CONTRACT_CREATED:
       return { ...base, group: 'system', kind: 'created', title: `${who ?? 'Someone'} created it`, meta: m }
     case AuditAction.CONTRACT_UPDATED:
-      return { ...base, group: 'system', kind: 'updated', title: `${who ?? 'Someone'} changed ${Array.isArray(m.changes) ? (m.changes as string[]).join(', ') : str(m.action) ?? 'it'}`, meta: m }
+      return { ...base, group: 'system', kind: 'updated', title: updatedTitle(who, m), meta: m }
     default:
       return { ...base, group: 'system', kind: e.action.toLowerCase(), title: e.action.replace(/_/g, ' ').toLowerCase().replace(/^./, c => c.toUpperCase()), meta: m }
   }
