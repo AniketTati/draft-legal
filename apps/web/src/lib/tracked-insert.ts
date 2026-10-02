@@ -12,8 +12,9 @@
  */
 import type { Editor } from '@tiptap/react'
 import type { Node as PMNode } from '@tiptap/pm/model'
-import { revealRange } from '@/components/contracts/SourceHighlight'
+import { findInCanvas, revealRange } from '@/components/contracts/SourceHighlight'
 import type { AiEvent, AiFeature } from '@/lib/ai-events'
+import type { CounterAnchor } from '@/lib/changes'
 
 export interface InsertRange { from: number; to: number }
 
@@ -50,6 +51,23 @@ export function insertAsTrackedChange(
     inserted.set(ai.contractId, list)
   }
   return placed
+}
+
+/**
+ * Changes mode's Counter: the drafted wording as a suggestion in place of
+ * their words, or beside the gap where they only removed words. Null when
+ * the anchor's words aren't in the document.
+ */
+export function insertCounter(
+  editor: Editor | null, anchor: CounterAnchor, text: string,
+  ai: { contractId: string; suggestionId?: string | null; versionId?: string | null },
+): InsertRange | null {
+  const found = findInCanvas(editor, anchor.quote)
+  if (!found || !text.trim()) return null
+  const words = text.trim()
+  const range = anchor.at === 'replace' ? found : anchor.at === 'after' ? { from: found.to, to: found.to } : { from: found.from, to: found.from }
+  const put = anchor.at === 'after' ? ` ${words}` : anchor.at === 'before' ? `${words} ` : words
+  return insertAsTrackedChange(editor, range, put, { ...ai, feature: 'counter' })
 }
 
 /** Replace `range` with `text`, untracked. */

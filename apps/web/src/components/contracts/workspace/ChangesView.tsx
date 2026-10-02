@@ -20,7 +20,7 @@ import { toast } from '@/components/common/Toaster'
 import { serverMessage } from '@/lib/approval-keys'
 import { sanitizeHtml } from '@/lib/sanitize'
 import type { ContractReview, ReviewFindingView } from '@/lib/review'
-import { applyDecisions, changeKey, changesOf, findingFor, taggedDiff, type Change, type ChangeDecision } from '@/lib/changes'
+import { applyDecisions, changeKey, changesOf, counterAnchor, findingFor, taggedDiff, type Change, type ChangeDecision, type CounterAnchor } from '@/lib/changes'
 
 export interface ChangesResponse {
   baseline: { versionId: string; versionNumber: number; reason: string; words: string } | null
@@ -32,13 +32,22 @@ export interface ChangesResponse {
   pendingSuggestions?: number
 }
 
+/** A counter drafted but not put in the document: its message holds the wording. */
+class NotPlaced extends Error {}
+
 export const changesKey = (contractId: string, baseline: string) => ['contract-changes', contractId, baseline] as const
 
-export function ChangesView({ contractId, canEdit, onApply, onComment }: {
+export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment }: {
   contractId: string
   canEdit: boolean
   /** Put this text in the draft changes; false when it could not be saved. */
   onApply: (html: string) => Promise<boolean>
+  /**
+   * Put a drafted counter in the document as a suggestion (tracked), at the
+   * anchor; false when the words to put it by could not be found. Without
+   * it, a counter rewrites the draft changes as plain text.
+   */
+  onCounter?: (counter: { text: string; anchor: CounterAnchor; suggestionId: string | null }) => Promise<boolean>
   /** Start a comment on these words. */
   onComment: (quote: string) => void
 }) {
@@ -100,15 +109,30 @@ export function ChangesView({ contractId, canEdit, onApply, onComment }: {
       const r = await api.post<{ counterText: string; counterNote: string; suggestionId?: string }>(`/contracts/${contractId}/changes/counter`, {
         ourText: c.before, theirText: c.after, clauseType: f?.clauseType ?? null,
       })
-      return { c, ...r.data }
+      const { counterText, counterNote, suggestionId = null } = r.data
+      // Put in as a suggestion beside their words, for review like any other
+      // AI wording. The work is done here, not in onSuccess: putting it in
+      // leaves Changes mode, which unmounts this view.
+      const anchor = onCounter ? counterAnchor(diffHtml, c) : null
+      if (onCounter) {
+        const placed = !!anchor && await onCounter({ text: counterText, anchor, suggestionId })
+        if (!placed) throw new NotPlaced(`Their words weren't found in the document. Put the counter in yourself: “${counterText}”`)
+        decideFinding(findingFor(c, findings), { kind: 'counter', text: counterText })
+      } else {
+        await decide(c, { kind: 'counter', text: counterText })
+      }
+      // docs/41 Part 16 — the drafted counter went into the document.
+      logAiEvent({ contractId, feature: 'counter', outcome: 'accepted', suggestionId })
+      return { c, counterNote, tracked: !!onCounter }
     },
-    onSuccess: async ({ c, counterText, counterNote, suggestionId }) => {
-      await decide(c, { kind: 'counter', text: counterText })
-      // docs/41 Part 16 — the drafted counter went into the draft changes.
-      logAiEvent({ contractId, feature: 'counter', outcome: 'accepted', suggestionId: suggestionId ?? null })
-      toast.success('Counter put in your draft changes', { description: `${counterNote} Their words were: “${c.after || c.before}”`, durationMs: 9000 })
+    onSuccess: ({ c, counterNote, tracked }) => {
+      toast.success(tracked ? 'Counter put in as a suggestion' : 'Counter put in your draft changes', { description: `${counterNote} Their words were: “${c.after || c.before}”`, durationMs: 9000 })
     },
-    onError: err => toast.error('No counter drafted', { description: serverMessage(err, 'Try again.') }),
+    onError: err => {
+      // Drafted but not placed: the person still gets the wording.
+      if (err instanceof NotPlaced) toast.error('Counter not put in', { description: err.message, durationMs: 12000 })
+      else toast.error('No counter drafted', { description: serverMessage(err, 'Try again.') })
+    },
   })
 
   const download = useMutation({

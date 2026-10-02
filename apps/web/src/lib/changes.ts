@@ -113,3 +113,30 @@ export function findingFor<F extends { kind: string; evidence: { quote?: string;
     ?? about.find(f => before.length >= 3 && norm(f.evidence.baselineQuote).includes(before))
     ?? null
 }
+
+/**
+ * Where a counter goes in the document, which reads as the diff's new side:
+ * in place of their words, or, when they only removed words, just after (or
+ * before) the words beside the gap in the same paragraph. Null when there is
+ * nothing to find it by.
+ */
+export type CounterAnchor = { quote: string; at: 'replace' | 'after' | 'before' }
+const BLOCK_EDGE = /<\/?(?:p|li|h[1-6]|div|td|th|tr|blockquote|ul|ol|table)\b[^>]*>|<br\s*\/?>/gi
+const CONTEXT_CHARS = 60
+
+/** The document's words in a stretch of the diff: deletions dropped, insertions kept. */
+const docText = (html: string) => textOf(html.replace(/<del\b[^>]*>[\s\S]*?<\/del>/g, ' '))
+
+export function counterAnchor(diffHtml: string, c: Change): CounterAnchor | null {
+  if (c.after) return { quote: c.after, at: 'replace' }
+  const beforeHtml = diffHtml.slice(0, c.start).split(BLOCK_EDGE).pop() ?? ''
+  const lead = docText(beforeHtml)
+  if (lead) return { quote: lead.length > CONTEXT_CHARS ? lead.slice(lead.indexOf(' ', lead.length - CONTEXT_CHARS) + 1) : lead, at: 'after' }
+  const afterHtml = diffHtml.slice(c.end).split(BLOCK_EDGE)[0] ?? ''
+  const tail = docText(afterHtml)
+  if (tail) {
+    const cut = tail.length > CONTEXT_CHARS ? tail.lastIndexOf(' ', CONTEXT_CHARS) : -1
+    return { quote: cut > 0 ? tail.slice(0, cut) : tail, at: 'before' }
+  }
+  return null
+}

@@ -15,7 +15,8 @@ import { SuggestionPopover } from '../SuggestionPopover'
 import { SuggestionsBar, suggestingByDefault, suggestionPeople } from './SuggestionsBar'
 import { mergePeople } from './CommentsView'
 import { TrackChanges, suggestionsIn } from '@/components/editor/TrackChanges'
-import { aiEditsAtSave, insertAsTrackedChange } from '@/lib/tracked-insert'
+import { aiEditsAtSave, insertAsTrackedChange, insertCounter } from '@/lib/tracked-insert'
+import { changesOf, counterAnchor } from '@/lib/changes'
 
 const change = { id: 'c1', kind: 'insertion' as const, authorName: 'Asha', at: '2026-10-02T09:05:00.000Z', text: 'twenty', rect: { left: 10, bottom: 20 } }
 
@@ -108,6 +109,49 @@ describe('AI wording as a suggestion', () => {
     expect(aiEditsAtSave('k2', editor.state.doc)).toEqual([{ contractId: 'k2', versionId: null, feature: 'ask_ai', outcome: 'edited', suggestionId: 'sg2' }])
     // Logged once: forgotten after the save.
     expect(aiEditsAtSave('k2', editor.state.doc)).toEqual([])
+    editor.destroy()
+  })
+})
+
+describe("Changes mode's Counter as a suggestion (fix-up 20)", () => {
+  const editorWith = (html: string) => {
+    const editor = new Editor({ extensions: [StarterKit, TrackChanges], content: html })
+    editor.commands.setSuggesting(false, { id: 'u1', name: 'Asha' })
+    return editor
+  }
+
+  it('replaces their words with the counter, tracked, and remembers it for the save', () => {
+    const diff = '<p>Liability is <del>capped at fees</del><ins>unlimited</ins>.</p>'
+    const anchor = counterAnchor(diff, changesOf(diff)[0])!
+    expect(anchor).toEqual({ quote: 'unlimited', at: 'replace' })
+    const editor = editorWith('<p>Liability is unlimited.</p>')
+    const placed = insertCounter(editor as never, anchor, 'capped at twice the fees', { contractId: 'k3', suggestionId: 'sg3' })
+    expect(placed).not.toBeNull()
+    expect(suggestionsIn(editor.state.doc).map(c => [c.kind, c.text])).toEqual([['deletion', 'unlimited'], ['insertion', 'capped at twice the fees']])
+    editor.commands.setContent('<p>Liability is capped at fees.</p>')
+    expect(aiEditsAtSave('k3', editor.state.doc)).toEqual([{ contractId: 'k3', versionId: null, feature: 'counter', outcome: 'edited', suggestionId: 'sg3' }])
+    editor.destroy()
+  })
+
+  it('where they only removed words, goes in after the words before the gap', () => {
+    const diff = '<p>One.</p><p>The supplier shall pay <del>all costs</del> promptly.</p>'
+    const anchor = counterAnchor(diff, changesOf(diff)[0])!
+    expect(anchor).toEqual({ quote: 'The supplier shall pay', at: 'after' })
+    const editor = editorWith('<p>One.</p><p>The supplier shall pay promptly.</p>')
+    insertCounter(editor as never, anchor, 'reasonable costs', { contractId: 'k4' })
+    expect(suggestionsIn(editor.state.doc).map(c => [c.kind, c.text])).toEqual([['insertion', ' reasonable costs']])
+    editor.destroy()
+  })
+
+  it('at the start of a paragraph, goes in before the words after the gap', () => {
+    const diff = '<p><del>Subject to clause 4,</del> the fee is due.</p>'
+    expect(counterAnchor(diff, changesOf(diff)[0])).toEqual({ quote: 'the fee is due.', at: 'before' })
+  })
+
+  it('puts nothing in when their words are not in the document', () => {
+    const editor = editorWith('<p>Something else entirely.</p>')
+    expect(insertCounter(editor as never, { quote: 'unlimited', at: 'replace' }, 'capped', { contractId: 'k5' })).toBeNull()
+    expect(suggestionsIn(editor.state.doc)).toEqual([])
     editor.destroy()
   })
 })

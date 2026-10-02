@@ -23,7 +23,8 @@ import { currentVersionOf } from '@/lib/current-version'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { useAuthStore } from '@/store/auth'
 import { logAiEvent } from '@/lib/ai-events'
-import { aiEditsAtSave } from '@/lib/tracked-insert'
+import { aiEditsAtSave, insertCounter } from '@/lib/tracked-insert'
+import type { CounterAnchor } from '@/lib/changes'
 import { SuggestionsBar, suggestingByDefault, suggestionPeople, useSuggestions } from '@/components/contracts/workspace/SuggestionsBar'
 import { useWorkingCopy } from '@/hooks/useWorkingCopy'
 import { type SaveVersionBody } from '@/lib/working-copy'
@@ -145,6 +146,17 @@ export function ContractWorkspacePage() {
     editorRef.current?.commands.setContent(next, { emitUpdate: false })
     draft.change(next)
     return draft.flush()
+  }
+
+  /**
+   * Changes mode's Counter (C4): back to the document, then the drafted
+   * wording goes in as a suggestion by their words, like any AI wording.
+   */
+  const putCounter = async ({ text, anchor, suggestionId }: { text: string; anchor: CounterAnchor; suggestionId: string | null }) => {
+    setChangesMode(false)
+    const editor = await liveEditor(editorRef)
+    if (!editor || !id) return false
+    return !!insertCounter(editor, anchor, text, { contractId: id, suggestionId, versionId: contract?.currentVersionId ?? null })
   }
 
   // Typing not yet saved when the tab closes; ⌘S saves now.
@@ -271,6 +283,7 @@ export function ContractWorkspacePage() {
                   contractId={id}
                   canEdit={canEdit}
                   onApply={replaceDocument}
+                  onCounter={canEdit ? putCounter : undefined}
                   onComment={quote => startComment({ body: `“${quote.slice(0, 400)}” ` })}
                 />
               ) : (
@@ -407,4 +420,18 @@ export function ContractWorkspacePage() {
       />
     </div>
   )
+}
+
+/** The document's editor once it is mounted again (leaving Changes mode remounts it); null after 5 s. */
+function liveEditor(ref: { current: Editor | null }, waitMs = 5000): Promise<Editor | null> {
+  const until = Date.now() + waitMs
+  return new Promise(resolve => {
+    const look = () => {
+      const e = ref.current
+      if (e && !e.isDestroyed) return resolve(e)
+      if (Date.now() > until) return resolve(null)
+      setTimeout(look, 50)
+    }
+    look()
+  })
 }
