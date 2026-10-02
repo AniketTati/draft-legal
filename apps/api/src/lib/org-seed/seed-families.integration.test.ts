@@ -46,6 +46,9 @@ describe('a freshly seeded org', () => {
     expect(defaults).toEqual([
       { name: 'Master Services Agreement (Buy-Side)', contractType: 'MSA' },
       { name: 'Mutual Non-Disclosure Agreement', contractType: 'NDA' },
+      // The renewal decision's letters (41: Part 14) draft from these.
+      { name: 'Notice of non-renewal', contractType: 'NON_RENEWAL_NOTICE' },
+      { name: 'Renewal letter', contractType: 'RENEWAL_LETTER' },
       { name: 'Statement of Work (Generic)', contractType: 'SOW' },
       { name: 'Mutual Termination Letter', contractType: 'Termination' },
     ])
