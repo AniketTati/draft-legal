@@ -311,6 +311,27 @@ export function ContractsPage() {
   // of the raw ISO date). Only used for the expiry filter today.
   const filterLabelFromUrl = searchParams.get('filterLabel') ?? undefined
 
+  // docs/41 Part 19 — opened from an Analytics bar: the contracts behind it.
+  const drill = searchParams.get('drill')
+  const drillKey = searchParams.get('drillKey') ?? ''
+  const drillLabel = searchParams.get('drillLabel') ?? 'From Analytics'
+  const drillQuery = searchParams.get('dq') ?? ''
+  const { data: drillIds } = useQuery<string[]>({
+    queryKey: ['analytics-drilldown', drill, drillKey, drillQuery],
+    enabled: !!drill,
+    queryFn: async () => {
+      const q = new URLSearchParams(drillQuery)
+      q.set('metric', drill!)
+      q.set('key', drillKey)
+      return (await api.get(`/analytics/drilldown?${q.toString()}`)).data.ids as string[]
+    },
+  })
+  const clearDrill = () => {
+    const next = new URLSearchParams(searchParams)
+    for (const k of ['drill', 'drillKey', 'drillLabel', 'dq']) next.delete(k)
+    setSearchParams(next, { replace: true })
+  }
+
   // What a saved view would keep of the list as it is now.
   const currentView: ViewQuery = {
     filters: filters as Record<string, unknown>,
@@ -401,13 +422,15 @@ export function ContractsPage() {
     if (filters.uptimeBand === 'four_nines')  q.uptimeSlaMin = 99.99
     if (filters.checked) q.checked = filters.checked
     if (filters.importBatch) q.importBatch = filters.importBatch
+    // An empty bar lists nothing; an empty id list would mean no filter at all.
+    if (drill) q.ids = drillIds?.length ? drillIds : ['none']
     if (fieldFilters.length) q.where = fieldFilters
     if (columns.length) q.columns = columns
     if (sort) q.sort = sort
     return q
   }
 
-  const hasFilters = activeFilterCount > 0 || !!debouncedSearch || fieldFilters.length > 0
+  const hasFilters = activeFilterCount > 0 || !!debouncedSearch || fieldFilters.length > 0 || !!drill
 
   // B.6.9 — Route choice.
   // Plain /contracts hits Postgres directly and is always correct for
@@ -438,12 +461,17 @@ export function ContractsPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useInfiniteQuery({
-    queryKey: ['contracts', debouncedSearch, filters, needsEs, fieldFilters, columns, sort],
+    queryKey: ['contracts', debouncedSearch, filters, needsEs, fieldFilters, columns, sort, drill, drillIds],
+    // A drill-down lists nothing until its contracts are known.
+    enabled: !drill || !!drillIds,
     initialPageParam: 0,
     queryFn: async ({ pageParam }) => {
       if (needsEs) {
         const found = (await api.post('/search/advanced', searchQuery())).data
-        const ids: string[] = (found?.data ?? []).map((c: { id: string }) => c.id)
+        const hits: string[] = (found?.data ?? []).map((c: { id: string }) => c.id)
+        // Searching inside a drill-down: the hits among its contracts.
+        const inDrill = hits.filter(id => drillIds?.includes(id))
+        const ids = drill ? (inDrill.length ? inDrill : ['none']) : hits
         const page = (await api.post('/contracts/query', { ...listQuery(), ids, limit: ES_MAX })).data
         // One page: the index can't page past ES_MAX, and the footer says so.
         return { ...page, hasMore: false, highlights: found?.highlights ?? {}, searchTotal: found?.total ?? ids.length }
@@ -652,6 +680,9 @@ export function ContractsPage() {
           )}
           {filters.checked && (
             <FilterChip label={VERIFICATION_LABELS[filters.checked]} onRemove={() => setFilters(f => ({ ...f, checked: undefined }))} />
+          )}
+          {drill && (
+            <FilterChip label={`Analytics: ${drillLabel}`} onRemove={clearDrill} />
           )}
           {filters.importBatch && (
             <FilterChip label="From an import" onRemove={() => setFilters(f => ({ ...f, importBatch: undefined }))} />
