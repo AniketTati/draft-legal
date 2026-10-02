@@ -10,7 +10,7 @@
  * B.5.3 — edit toggle flips `editable` on this same component.
  * B.5.8 — bubble menu + slash commands attach here in edit mode.
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/react'
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
@@ -42,6 +42,8 @@ import { MARGIN_CLASSIFIER_ENABLED } from '@/lib/feature-flags'
 import DefinedTermGuard from '../editor/DefinedTermGuard'
 import { SourceHighlight } from './SourceHighlight'
 import { Variable } from '../editor/VariableMark'
+import { TrackChanges, suggestionsIn, type SuggestionAuthor } from '../editor/TrackChanges'
+import { SuggestionPopover, type OpenSuggestion } from './SuggestionPopover'
 import { selectionIcon, selectionItems, selectionOf, type SelectionActionsProps, type TextSelection } from './SelectionMenu'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -81,6 +83,8 @@ export function DocumentCanvas({
   onSetField,
   onVariableClick,
   selectionActions,
+  suggesting = false,
+  suggestionAuthor = null,
   className,
 }: {
   state: CanvasState
@@ -111,6 +115,10 @@ export function DocumentCanvas({
    *  Ask AI · Tag clause · Make variable · Request exception …). When given,
    *  they replace the bubble's own Set-field and Ask-AI buttons. */
   selectionActions?: SelectionActionsProps
+  /** docs/41 Part 16 (C4) — edits become suggestions by `suggestionAuthor`
+   *  (tracked changes) rather than changing the words outright. */
+  suggesting?: boolean
+  suggestionAuthor?: SuggestionAuthor | null
   className?: string
 }) {
   const html = state.kind === 'ready' ? normalizeHtml(state.html) : ''
@@ -135,6 +143,7 @@ export function DocumentCanvas({
         RiskHighlights, // B.5.5 — renders red/blue decorations per riskClauses
         SourceHighlight, // docs/39 B2 — "show in document" for a field's value
         Variable, // docs/39 H2 — a draft's terms stay marked with their variable
+        TrackChanges, // docs/41 C4 — suggestions (<ins>/<del>) and suggestion mode
         // P6.1 — Ghost-text completion. Only fires when editable=true.
         GhostCompletion.configure({
           contractType: 'general commercial',
@@ -188,6 +197,15 @@ export function DocumentCanvas({
   useEffect(() => {
     editor?.setEditable(editable, false)
   }, [editable, editor])
+
+  // C4 — suggestion mode follows the prop; only an editor that edits suggests.
+  useEffect(() => {
+    if (!editor) return
+    editor.commands.setSuggesting(suggesting && editable && !!suggestionAuthor, suggestionAuthor)
+  }, [editor, suggesting, editable, suggestionAuthor])
+
+  // C4 — the suggestion clicked, shown with Accept / Reject.
+  const [openSuggestion, setOpenSuggestion] = useState<OpenSuggestion | null>(null)
 
   // Expose the editor to the parent once it's ready (for undo/redo etc.)
   useEffect(() => {
@@ -257,6 +275,16 @@ export function DocumentCanvas({
       }
       return
     }
+    // C4 — a click on a suggestion (not the end of a selection) opens it.
+    const sugg = editor && (window.getSelection()?.isCollapsed ?? true) ? target.closest('.suggestion[data-change-id]') as HTMLElement | null : null
+    if (sugg) {
+      const id = sugg.dataset.changeId!
+      const kind = sugg.tagName === 'INS' ? 'insertion' : 'deletion'
+      const found = suggestionsIn(editor!.state.doc).find(c => c.id === id && c.kind === kind)
+      const r = sugg.getBoundingClientRect()
+      if (found) setOpenSuggestion({ id, kind, authorName: found.authorName, at: found.at, text: found.text, rect: { left: r.left, bottom: r.bottom } })
+      return
+    }
     // docs/39 H2 — a click on a variable, not the end of a selection made across it.
     const variable = !editable && onVariableClick ? target.closest('[data-variable]') as HTMLElement | null : null
     if (variable?.dataset.variable && (window.getSelection()?.isCollapsed ?? true)) onVariableClick!(variable.dataset.variable)
@@ -303,6 +331,15 @@ export function DocumentCanvas({
       >
         <EditorContent editor={editor} />
       </article>
+      {openSuggestion && editor && (
+        <SuggestionPopover
+          change={openSuggestion}
+          canDecide={editable}
+          onAccept={id => { editor.commands.acceptSuggestion(id); setOpenSuggestion(null) }}
+          onReject={id => { editor.commands.rejectSuggestion(id); setOpenSuggestion(null) }}
+          onClose={() => setOpenSuggestion(null)}
+        />
+      )}
 
       {/*
         B.5.8 — Floating bubble menu on text selection. Only active when

@@ -69,9 +69,11 @@ type Ask =
   | { kind: 'declined' }
 
 export function StatusBanner({
-  contractId, onSubmit, onSendForSignature, onReviewChanges, onOpenHistory,
+  contractId, onSubmit, onSendForSignature, onReviewChanges, onOpenHistory, pendingSuggestions = 0,
 }: {
   contractId: string
+  /** C4 — suggestions in the document nobody has accepted or rejected yet. */
+  pendingSuggestions?: number
   /** Opens the page's Submit-for-approval dialog. */
   onSubmit: () => void
   onSendForSignature: () => void
@@ -196,6 +198,11 @@ export function StatusBanner({
             data-testid="draft-changes-chip"
           >
             Unsaved draft changes
+          </span>
+        )}
+        {pendingSuggestions > 0 && (
+          <span className="text-[11.5px] text-ink-700 tabular-nums" title="Findings read the document as if they were accepted" data-testid="stage-suggestions">
+            {pendingSuggestions} suggestion{pendingSuggestions === 1 ? '' : 's'} pending
           </span>
         )}
         {s.exceptions.open > 0 && (

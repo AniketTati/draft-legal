@@ -33,7 +33,7 @@ function Seg<T extends string>({ value, options, onChange, label }: {
   )
 }
 
-export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, onPerson, activeId, onShow }: {
+export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, onPerson, suggestionAuthors, activeId, onShow }: {
   contractId: string
   canEdit: boolean
   /** A comment started from the document (a selection, a change, a finding). */
@@ -42,13 +42,15 @@ export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, 
   /** "Document discussion" by person: their comments are highlighted here and in the margin. */
   person: string | null
   onPerson: (p: string | null) => void
+  /** C4 — people with suggestions in the document: listed too, their suggestions highlighted. */
+  suggestionAuthors?: Array<{ id: string; name: string; count: number }>
   activeId?: string | null
   onShow?: (t: CommentThreadData) => void
 }) {
   const { data, isLoading } = useThreads(contractId)
   const [filter, setFilter] = useState<ThreadFilter>({ status: 'open', visibility: 'all' })
   const threads = useMemo(() => data?.data ?? [], [data])
-  const people = useMemo(() => peopleIn(threads), [threads])
+  const people = useMemo(() => mergePeople(peopleIn(threads), suggestionAuthors ?? []), [threads, suggestionAuthors])
   const shown = filterThreads(threads, filter)
 
   return (
@@ -113,4 +115,15 @@ export function CommentsReadList({ contractId, onOpenWorkspace }: { contractId: 
       ))}
     </div>
   )
+}
+
+/** Commenters and suggestion authors in one list, counting both. */
+export function mergePeople(a: Array<{ id: string; name: string; count: number }>, b: Array<{ id: string; name: string; count: number }>) {
+  const by = new Map(a.map(p => [p.id, { ...p }]))
+  for (const p of b) {
+    const had = by.get(p.id)
+    if (had) had.count += p.count
+    else by.set(p.id, { ...p })
+  }
+  return [...by.values()].sort((x, y) => y.count - x.count)
 }

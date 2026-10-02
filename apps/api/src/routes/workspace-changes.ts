@@ -4,7 +4,8 @@
  *   GET  /api/v1/contracts/:id/changes?baseline=<versionId|origin>
  *        what changed since the baseline, in the document as it stands now
  *        (the draft changes when there are any, else the current version):
- *        → { baseline, against, diffHtml, stats, options }
+ *        → { baseline, against, diffHtml, stats, options, pendingSuggestions }
+ *        Both sides read as if their pending suggestions (C4) were accepted.
  *        The default baseline is the review's (lib/review-findings.ts
  *        resolveBaseline: the last version sent or approved, else the one
  *        before); "origin" is the version first generated from the template.
@@ -21,6 +22,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes } from '../lib/own-scope-guard.js'
 import { getWorkingCopy } from '../lib/working-copy.js'
+import { acceptedHtml, countSuggestions } from '../lib/suggestions.js'
 import { resolveBaseline, baselineWords, type BaselineReason } from '../lib/review-findings.js'
 import { computeVersionDiff, DiffTooLargeError } from '../lib/diff.js'
 import { counterChange } from '../lib/change-advice.js'
@@ -75,13 +77,17 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
 
     const copy = await getWorkingCopy(orgId, id)
     const nowRow = await prisma.contractVersion.findUnique({ where: { id: current.id }, select: { htmlContent: true } })
-    const nowHtml = copy?.html ?? nowRow?.htmlContent ?? ''
+    const rawNow = copy?.html ?? nowRow?.htmlContent ?? ''
+    // C4 — changes are read as if the pending suggestions were accepted
+    // (lib/suggestions); how many are pending is said beside them.
+    const pendingSuggestions = countSuggestions(rawNow).total
+    const nowHtml = acceptedHtml(rawNow)
     const against = { kind: copy ? 'draft' as const : 'version' as const, versionId: current.id, versionNumber: current.versionNumber }
     const options = {
       originVersionId: origin?.id ?? null,
       versions: versions.map(v => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt, changeNote: v.changeNote, fromCounterparty: /^(portal|email):/.test(v.createdById) })),
     }
-    if (!base) return reply.send({ baseline: null, against, diffHtml: '', stats: { insertions: 0, deletions: 0 }, options })
+    if (!base) return reply.send({ baseline: null, against, diffHtml: '', stats: { insertions: 0, deletions: 0 }, options, pendingSuggestions })
 
     const baseRow = await prisma.contractVersion.findUnique({ where: { id: base.versionId }, select: { versionNumber: true, htmlContent: true } })
     if (!baseRow?.htmlContent?.trim()) return reply.status(409).send({ detail: 'The baseline version is still being read. Try again in a moment.' })
@@ -89,10 +95,11 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
       versionId: base.versionId, versionNumber: baseRow.versionNumber, reason: base.reason,
       words: base.reason === 'chosen' ? `v${baseRow.versionNumber}` : baselineWords(base.reason),
     }
-    if (baseRow.htmlContent === nowHtml) return reply.send({ baseline, against, diffHtml: nowHtml, stats: { insertions: 0, deletions: 0 }, options })
-    const diff = await computeVersionDiff(baseRow.htmlContent, nowHtml).catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
+    const baseHtml = acceptedHtml(baseRow.htmlContent)
+    if (baseHtml === nowHtml) return reply.send({ baseline, against, diffHtml: nowHtml, stats: { insertions: 0, deletions: 0 }, options, pendingSuggestions })
+    const diff = await computeVersionDiff(baseHtml, nowHtml).catch(err => { if (err instanceof DiffTooLargeError) return null; throw err })
     if (!diff) return reply.status(422).send({ detail: new DiffTooLargeError().message })
-    return reply.send({ baseline, against, diffHtml: diff.diffHtml, stats: diff.stats, options })
+    return reply.send({ baseline, against, diffHtml: diff.diffHtml, stats: diff.stats, options, pendingSuggestions })
   })
 
   app.post('/:id/changes/counter', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {

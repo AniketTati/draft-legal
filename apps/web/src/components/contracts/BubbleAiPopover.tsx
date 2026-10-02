@@ -204,7 +204,7 @@ export function BubbleAiPopover({ editor, open, onClose, selectedText: incomingT
         <AskAiDrafts
           contractId={contractId}
           selectedText={selected}
-          onInsertTracked={text => { insertAsTrackedChange(editor, selectionRange ?? null, text); onClose() }}
+          onInsertTracked={(text, suggestionId) => { insertAsTrackedChange(editor, selectionRange ?? null, text, { contractId, feature: 'ask_ai', suggestionId }); onClose() }}
           onReplace={text => { replaceRange(editor, selectionRange ?? null, text); onClose() }}
           onOutcome={onOutcome}
         />

@@ -20,7 +20,8 @@ export const pageOf = (page: number, count: number) => (count ? ((page % count) 
 export function AskAiDrafts({ contractId, selectedText, onInsertTracked, onReplace, onOutcome, initial }: {
   contractId: string
   selectedText: string
-  onInsertTracked: (text: string) => void
+  /** The draft's words, and the suggestion they came from (for the edited outcome). */
+  onInsertTracked: (text: string, suggestionId?: string) => void
   onReplace: (text: string) => void
   /** What became of the drafts (docs/41: every AI insertion is logged). */
   onOutcome?: (outcome: AskAiOutcome, suggestionId: string) => void
@@ -87,7 +88,7 @@ export function AskAiDrafts({ contractId, selectedText, onInsertTracked, onRepla
           <p className="text-[12.5px] leading-relaxed text-ink-950 whitespace-pre-wrap" data-testid="ask-ai-text">{d.text}</p>
           {d.rationale && <p className="text-[11.5px] text-ink-500" data-testid="ask-ai-rationale">Why: {d.rationale}</p>}
           <div className="flex flex-wrap gap-1">
-            <Button size="xs" variant="assist" onClick={() => done('accepted', () => onInsertTracked(d.text))} data-testid="ask-ai-insert-tracked">Insert as tracked change</Button>
+            <Button size="xs" variant="assist" onClick={() => done('accepted', () => onInsertTracked(d.text, result?.suggestionId))} data-testid="ask-ai-insert-tracked">Insert as tracked change</Button>
             <Button size="xs" variant="outline" onClick={() => done('accepted', () => onReplace(d.text))} data-testid="ask-ai-replace"><Replace className="size-3" />Replace</Button>
             <Button
               size="xs"

@@ -28,6 +28,8 @@ export interface ChangesResponse {
   diffHtml: string
   stats: { insertions: number; deletions: number }
   options: { originVersionId: string | null; versions: Array<{ id: string; versionNumber: number; changeNote: string | null; fromCounterparty: boolean }> }
+  /** C4 — suggestions still pending in the document; the changes read as if they were accepted. */
+  pendingSuggestions?: number
 }
 
 export const changesKey = (contractId: string, baseline: string) => ['contract-changes', contractId, baseline] as const
@@ -130,6 +132,10 @@ export function ChangesView({ contractId, canEdit, onApply, onComment }: {
   }
 
   const d = q.data
+  // C4 — Keep original and Counter rewrite the document from this reading,
+  // which has the pending suggestions accepted: they wait until those are decided.
+  const pending = d?.pendingSuggestions ?? 0
+  const waitTitle = pending ? `Accept or reject the ${pending} pending suggestion${pending === 1 ? '' : 's'} in the document first` : undefined
   const failure = (q.error as { response?: { data?: { detail?: string } } } | null)?.response?.data?.detail
   return (
     <div className="flex flex-col gap-3" data-testid="changes-view">
@@ -157,6 +163,12 @@ export function ChangesView({ contractId, canEdit, onApply, onComment }: {
         )}
       </div>
 
+      {pending > 0 && (
+        <p className="text-dense text-ink-700 rounded-md border border-attention-200 bg-attention-50 px-3 py-2" data-testid="changes-pending-suggestions">
+          {pending} suggestion{pending === 1 ? ' is' : 's are'} still pending in the document. The changes here read as if {pending === 1 ? 'it were' : 'they were'} accepted;
+          decide {pending === 1 ? 'it' : 'them'} in the document before keeping the original or countering a change.
+        </p>
+      )}
       {q.isLoading && <div className="flex items-center gap-2 text-ink-500 text-dense"><Loader2 className="size-4 animate-spin" />Comparing…</div>}
       {q.isError && <p className="text-dense text-attention-700">{failure ?? 'The changes could not be shown. Try again.'}</p>}
       {d && !d.baseline && <p className="text-dense text-ink-500">There is no earlier version to compare with.</p>}
@@ -194,8 +206,8 @@ export function ChangesView({ contractId, canEdit, onApply, onComment }: {
                   {done ? <div className="mt-1 text-binding-700 inline-flex items-center gap-1"><Check className="size-3" />Accepted</div> : canEdit && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       <Button size="xs" variant="outline" disabled={!!busy} onClick={() => decide(c, { kind: 'accept' })} data-testid={`change-accept-${c.id}`}><Check />Accept change</Button>
-                      <Button size="xs" variant="outline" disabled={!!busy} onClick={() => decide(c, { kind: 'keep' })} data-testid={`change-keep-${c.id}`}><Undo2 />Keep original</Button>
-                      <Button size="xs" variant="outline" disabled={!!busy || counter.isPending} onClick={() => counter.mutate(c)} data-testid={`change-counter-${c.id}`}>
+                      <Button size="xs" variant="outline" disabled={!!busy || pending > 0} title={waitTitle} onClick={() => decide(c, { kind: 'keep' })} data-testid={`change-keep-${c.id}`}><Undo2 />Keep original</Button>
+                      <Button size="xs" variant="outline" disabled={!!busy || counter.isPending || pending > 0} title={waitTitle} onClick={() => counter.mutate(c)} data-testid={`change-counter-${c.id}`}>
                         {counter.isPending && counter.variables?.id === c.id ? <Loader2 className="animate-spin" /> : <Wand2 />}Counter…
                       </Button>
                       <Button size="xs" variant="ghost" onClick={() => onComment(c.after || c.before)} data-testid={`change-comment-${c.id}`}><MessageSquare />Comment</Button>

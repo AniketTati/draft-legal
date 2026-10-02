@@ -16,6 +16,7 @@ import { lockOf, lockedBody } from './external-edit.js'
 import { afterEdit } from './version-refresh.js'
 import { onApprovalChange, type ApprovalOverride } from './approval-reset.js'
 import { htmlToText } from './html-text.js'
+import { acceptedHtml } from './suggestions.js'
 import { renderHtmlToPdfAndStore } from './gotenberg.js'
 
 /**
@@ -75,7 +76,8 @@ export async function createHtmlVersion(a: CreateHtmlVersionArgs): Promise<Creat
     return { ok: true, created: false, version: standing, fromVersionId: standing.id }
   }
 
-  const plainText = htmlToText(htmlContent)
+  // C4 — the text the analysis reads: pending suggestions as if accepted (lib/suggestions).
+  const plainText = htmlToText(acceptedHtml(htmlContent))
   const version = await prisma.contractVersion.create({
     data: {
       contractId: id,

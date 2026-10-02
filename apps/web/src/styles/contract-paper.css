@@ -345,3 +345,28 @@
     background: transparent;
   }
 }
+
+/* docs/41 Part 16 (C4) — suggestions (TrackChanges): inserted words
+   underlined, deleted words struck through, in their author's colour.
+   Six colours, picked by the author's id (colourOf). */
+.document-canvas .suggestion { --sugg: 214 80% 42%; cursor: pointer; text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+.document-canvas .suggestion[data-color="1"] { --sugg: 152 60% 32%; }
+.document-canvas .suggestion[data-color="2"] { --sugg: 280 55% 45%; }
+.document-canvas .suggestion[data-color="3"] { --sugg: 24 85% 42%; }
+.document-canvas .suggestion[data-color="4"] { --sugg: 340 70% 45%; }
+.document-canvas .suggestion[data-color="5"] { --sugg: 190 75% 32%; }
+.document-canvas ins.suggestion {
+  color: hsl(var(--sugg));
+  text-decoration: underline hsl(var(--sugg));
+  background: hsl(var(--sugg) / 0.06);
+}
+.document-canvas del.suggestion {
+  color: hsl(var(--sugg) / 0.8);
+  text-decoration: line-through hsl(var(--sugg));
+}
+/* "Document discussion" picked this person: their suggestions stand out. */
+.document-canvas .suggestion--focus {
+  background: hsl(var(--attention, 45 95% 50%) / 0.25);
+  box-shadow: 0 0 0 1px hsl(var(--attention, 45 95% 50%) / 0.5);
+  border-radius: 2px;
+}

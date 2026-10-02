@@ -9,7 +9,7 @@
  * Where it opens from: lib/workspace.ts (openPathFor) says which contracts
  * open here and why.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, GitCompareArrows, History, Loader2 } from 'lucide-react'
@@ -20,7 +20,11 @@ import { Button } from '@/components/ui/button'
 import { toast } from '@/components/common/Toaster'
 import { useCanRequest, usePermission } from '@/lib/permissions'
 import { currentVersionOf } from '@/lib/current-version'
-import { invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
+import { useAuthStore } from '@/store/auth'
+import { logAiEvent } from '@/lib/ai-events'
+import { aiEditsAtSave } from '@/lib/tracked-insert'
+import { SuggestionsBar, suggestingByDefault, suggestionPeople, useSuggestions } from '@/components/contracts/workspace/SuggestionsBar'
 import { useWorkingCopy } from '@/hooks/useWorkingCopy'
 import { type SaveVersionBody } from '@/lib/working-copy'
 import { DocumentCanvas, type CanvasState } from '@/components/contracts/DocumentCanvas'
@@ -94,6 +98,18 @@ export function ContractWorkspacePage() {
   const clauses = clausesData?.data ?? []
   const canEdit = mayEdit && !contract?.externalEdit
 
+  // ── Suggestion mode (C4): on by itself while negotiating, a toggle otherwise ──
+  const { data: stageData } = useQuery<{ stage: string }>({
+    queryKey: approvalKeys.stage(id ?? ''),
+    queryFn: () => api.get(`/contracts/${id}/stage`).then(r => r.data),
+    enabled: !!id,
+  })
+  const forcedSuggesting = suggestingByDefault(stageData?.stage)
+  const [suggestingChoice, setSuggestingChoice] = useState(false)
+  const suggesting = forcedSuggesting || suggestingChoice
+  const me = useAuthStore(s => s.user)
+  const suggestionAuthor = useMemo(() => (me ? { id: me.id, name: me.name || me.email || 'Someone' } : null), [me])
+
   // ── The document and its draft changes (C1) ──────────────────────────────
   const editorRef = useRef<Editor | null>(null)
   // The editor as state too, so the margin re-places threads once it exists.
@@ -147,6 +163,8 @@ export function ContractWorkspacePage() {
     setSaving(true)
     setSaveError(null)
     try {
+      // AI wording someone changed before this save: logged as "edited".
+      for (const e of aiEditsAtSave(id, editorRef.current?.state.doc)) logAiEvent(e)
       const r = await draft.saveVersion(body)
       setSaveOpen(false)
       setDraftHtml(null)
@@ -192,6 +210,13 @@ export function ContractWorkspacePage() {
     canEdit, onComment: startComment, tag: true,
   })
 
+  // "Document discussion": the person's suggestions are highlighted too.
+  const suggestions = useSuggestions(editorReady)
+  const suggestionAuthors = useMemo(() => suggestionPeople(suggestions), [suggestions])
+  useEffect(() => {
+    if (editorReady && !editorReady.isDestroyed) editorReady.commands.setSuggestionFocus(person)
+  }, [editorReady, person, suggestions.length])
+
   const showThread = (t: CommentThreadData) => {
     setActiveThread(t.id)
     const r = t.anchor ? findInCanvas(editorRef.current, t.anchor.quote, t.anchorStart ?? t.anchor.start) : null
@@ -218,6 +243,9 @@ export function ContractWorkspacePage() {
         <h1 className="text-body font-semibold text-ink-950 truncate" data-testid="workspace-title">{contract.title}</h1>
         {canEdit && <span className="text-[11.5px] text-ink-500" data-testid="workspace-draft-state">{draftStatusText(draft.saveState)}</span>}
         <div className="ml-auto flex items-center gap-1.5">
+          {!changesMode && (
+            <SuggestionsBar editor={editorReady} count={suggestions.length} suggesting={suggesting} forced={forcedSuggesting} canEdit={canEdit} onToggle={setSuggestingChoice} />
+          )}
           <Button size="sm" variant={changesMode ? 'default' : 'outline'} onClick={() => setChangesMode(!changesMode)} aria-pressed={changesMode} data-testid="workspace-changes-toggle">
             <GitCompareArrows />Changes
           </Button>
@@ -232,6 +260,7 @@ export function ContractWorkspacePage() {
         onSendForSignature={() => setSignatureOpen(true)}
         onReviewChanges={() => setChangesMode(true)}
         onOpenHistory={() => setHistoryOpen(true)}
+        pendingSuggestions={suggestions.length}
       />
 
       <div className="flex-1 min-h-0 flex">
@@ -253,6 +282,8 @@ export function ContractWorkspacePage() {
                   onChange={next => { if (canvasState.kind === 'ready' && canEdit) draft.change(next) }}
                   riskClauses={clauses.map(c => ({ id: c.id, content: c.content, riskRating: c.riskRating ?? null }))}
                   selectionActions={selection.editorActions}
+                  suggesting={suggesting}
+                  suggestionAuthor={suggestionAuthor}
                 />
               )}
             </div>
@@ -321,8 +352,9 @@ export function ContractWorkspacePage() {
                 draft={commentDraft}
                 onDraftDone={() => setCommentDraft(null)}
                 person={person}
-                // C4: also highlight this person's tracked changes (suggestion marks carry the author).
+                // C4: the person's suggestions are highlighted in the document too.
                 onPerson={setPerson}
+                suggestionAuthors={suggestionAuthors}
                 activeId={activeThread}
                 onShow={showThread}
               />
