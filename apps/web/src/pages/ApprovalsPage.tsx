@@ -24,6 +24,7 @@ import { api } from '@/lib/api'
 import { approvalKeys, invalidateApproval, serverMessage } from '@/lib/approval-keys'
 import { usePermission } from '@/lib/permissions'
 import { ApprovalCard } from '@/components/approvals/ApprovalCard'
+import { recommendationText } from '@/lib/recommendation'
 import { WorkflowDefinitionList } from '@/components/approvals/WorkflowDefinitionList'
 import { Inbox, Settings2, Loader2, AlertTriangle, Users, Clock, ListChecks, ArrowRight, CheckCircle2, XCircle, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -288,6 +289,12 @@ function MineRow({ row, cardOf, onDone }: { row: InboxRow; cardOf: Map<string, Q
           <div className="text-[11.5px] text-ink-500 mt-0.5 truncate">
             {row.type}{row.counterpartyName ? ` · ${row.counterpartyName}` : ''}{value ? ` · ${value}` : ''} · {row.line}
           </div>
+          {/* The same words as the contract's decision strip, so the queue says why before it is opened. */}
+          {primary.kind === 'approve' && card && recommendationText(card.instance.approvalRecommendation, card.instance.recommendationReasons) && (
+            <p className="mt-1 text-[11.5px] text-ink-600 truncate" title={card.instance.recommendationReasons?.join('; ') || undefined} data-testid="inbox-recommendation">
+              AI: {recommendationText(card.instance.approvalRecommendation, card.instance.recommendationReasons)}
+            </p>
+          )}
           {primary.detail && (
             <p className="mt-1.5 text-dense text-ink-700">
               {primary.kind === 'fix_and_resubmit' || primary.kind === 'decide_declined' ? <>Reason: “{primary.detail}”</> : primary.detail}
