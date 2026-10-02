@@ -29,7 +29,8 @@ async function main() {
     }
     // Read-only, but never leave anything behind.
     throw Object.assign(new Error('rollback'), { counts: out })
-  }).catch(err => {
+    // Twenty round trips to a remote database outlast Prisma's 5 s default.
+  }, { timeout: 60_000, maxWait: 15_000 }).catch(err => {
     if (err?.message === 'rollback') return err.counts as Array<[string, number | string]>
     throw err
   })
