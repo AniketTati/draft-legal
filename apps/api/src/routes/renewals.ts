@@ -16,7 +16,7 @@ import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { ownContractWhere, portfolioWhere } from '../lib/own-scope-guard.js'
 import { buildCsv } from '../lib/csv.js'
-import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
+import { amendedRenewalNotice, renewsOnItsOwn, RENEWAL_COLUMNS, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { annualValue, totalsByCurrency, type DurationValue } from '@clm/types'
 
 const ListSchema = z.object({
@@ -90,7 +90,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true,
         counterpartyName: true, expiryDate: true, effectiveDate: true,
-        value: true, currency: true, metadata: true, keyTerms: true,
+        value: true, currency: true, metadata: true, keyTerms: true, ...RENEWAL_COLUMNS,
         ownerId: true,
         owner: { select: { name: true } },
         amendments: {
@@ -231,7 +231,7 @@ export async function renewalRoutes(app: FastifyInstance) {
       select: {
         id: true, title: true, type: true, counterpartyName: true,
         effectiveDate: true, expiryDate: true, value: true, currency: true,
-        metadata: true, keyTerms: true,
+        metadata: true, keyTerms: true, ...RENEWAL_COLUMNS,
         owner: { select: { name: true, email: true } },
         amendments: {
           where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...ownContractWhere(req) },

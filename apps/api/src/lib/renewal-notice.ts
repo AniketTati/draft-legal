@@ -18,7 +18,7 @@
  * the screens can ask which notice it is. Months count by the calendar:
  * "3 months" before 31 December is 30 September, not 90 days back.
  */
-import { formatFieldValue, parseDuration, subtractDuration, FOLLOWS_PARENT, type DurationUnit, type DurationValue } from '@clm/types'
+import { formatFieldValue, parseDuration, subtractDuration, renewalTypeOf, FOLLOWS_PARENT, type DurationUnit, type DurationValue, type RenewalType } from '@clm/types'
 
 const UNITS = new Set<DurationUnit>(['days', 'weeks', 'months', 'years'])
 
@@ -28,7 +28,7 @@ const UNITS = new Set<DurationUnit>(['days', 'weeks', 'months', 'years'])
  * counts: "30-60 days" would be a guess about which bound binds, and people
  * diarise against this date.
  */
-function asDuration(raw: unknown): DurationValue | null {
+export function asDuration(raw: unknown): DurationValue | null {
   if (raw === null || raw === undefined || raw === '') return null
   if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? { value: Math.round(raw), unit: 'days' } : null
   if (typeof raw === 'object' && !Array.isArray(raw)) {
@@ -68,8 +68,26 @@ export function noticeDaysOf(kt: Record<string, unknown> | null | undefined): nu
 const daysIn = ({ value, unit }: DurationValue) =>
   Math.round(unit === 'days' ? value : unit === 'weeks' ? value * 7 : unit === 'months' ? value * 30 : value * 365)
 
-/** keyTerms.autoRenew as a real boolean — a corrected "no" is not auto-renewing. */
+/**
+ * docs/41 Part 14 — how the contract renews, from its terms: the renewal
+ * type when it says one, otherwise "auto" when it auto-renews; null when it
+ * says neither (a "no" to auto-renewal doesn't say whether it renews by
+ * agreement or not at all).
+ */
+export function renewalTypeOfTerms(kt: Record<string, unknown> | null | undefined): RenewalType | null {
+  const t = renewalTypeOf(kt?.renewalType)
+  if (t) return t
+  return autoRenewFlag(kt) ? 'auto' : null
+}
+
+/** keyTerms.autoRenew as a real boolean — a corrected "no" is not auto-renewing. A stated renewal type wins. */
 export function isAutoRenew(kt: Record<string, unknown> | null | undefined): boolean {
+  const t = renewalTypeOf(kt?.renewalType)
+  if (t) return t === 'auto'
+  return autoRenewFlag(kt)
+}
+
+function autoRenewFlag(kt: Record<string, unknown> | null | undefined): boolean {
   const v = kt?.autoRenew
   if (typeof v === 'boolean') return v
   if (typeof v === 'string') return ['yes', 'true', 'y', '1', 'auto', 'automatic'].includes(v.trim().toLowerCase())
@@ -79,6 +97,8 @@ export function isAutoRenew(kt: Record<string, unknown> | null | undefined): boo
 
 export interface RenewalNotice {
   autoRenew:  boolean
+  /** docs/41 Part 14 — auto, manual, evergreen or none; null when the contract doesn't say. */
+  renewalType: RenewalType | null
   /** Notice-to-stop-renewal period in whole days; null when not extracted. */
   noticeDays: number | null
   /** The notice as the contract states it: "90 days", "3 months". */
@@ -88,7 +108,10 @@ export interface RenewalNotice {
    * it may be the notice to end early instead. Ask before relying on it.
    */
   noticeConfirmed: boolean
-  /** expiry − notice (by the calendar); null unless auto-renewing with both known. */
+  /**
+   * expiry − notice (by the calendar); null unless it renews (automatically,
+   * or by agreement: the last day to tell them) with both known.
+   */
   deadline:   Date | null
 }
 
@@ -102,15 +125,17 @@ const termsOf = (keyTerms: unknown): Record<string, unknown> | null =>
  */
 function noticeFrom(
   expiryDate: Date | null,
-  autoRenew: boolean,
+  renewalType: RenewalType | null,
   period: { notice: DurationValue; confirmed: boolean } | null,
 ): RenewalNotice {
-  const deadline = autoRenew && period && expiryDate ? subtractDuration(expiryDate, period.notice) : null
+  const renews = renewalType === 'auto' || renewalType === 'manual'
+  const deadline = renews && period && expiryDate ? subtractDuration(expiryDate, period.notice) : null
   const noticeDays = period
     ? (expiryDate && deadline ? Math.round((expiryDate.getTime() - deadline.getTime()) / 86_400_000) : daysIn(period.notice))
     : null
   return {
-    autoRenew,
+    autoRenew: renewalType === 'auto',
+    renewalType,
     noticeDays,
     noticeLabel: period ? formatFieldValue('duration', period.notice) : null,
     noticeConfirmed: period?.confirmed ?? false,
@@ -120,11 +145,20 @@ function noticeFrom(
 
 export function renewalNotice(c: { expiryDate: Date | null; keyTerms: unknown }): RenewalNotice {
   const kt = termsOf(c.keyTerms)
-  return noticeFrom(c.expiryDate, isAutoRenew(kt), renewalNoticePeriod(kt))
+  return noticeFrom(c.expiryDate, renewalTypeOfTerms(kt), renewalNoticePeriod(kt))
 }
 
 /** The linked contracts that change a contract's terms (Contract.amendments of these types). */
 export const TERM_CHANGERS = ['amendment', 'renewal']
+
+/**
+ * docs/41 Part 14 — the stored renewal columns (lib/renewal-terms.ts keeps
+ * them), for a select that feeds amendedRenewalNotice: it reads them first.
+ */
+export const RENEWAL_COLUMNS = {
+  renewalType: true, renewalTermMonths: true, noticeDays: true, noticeDeadline: true,
+  optOutWindowStart: true, priceUpliftCap: true, renewalConfirmed: true,
+} as const
 
 /** A child of the contract, as renewal views load it. */
 export interface TermChanger {
@@ -149,11 +183,11 @@ export interface TermChanger {
  * the amendment's.)
  */
 export function amendedRenewalNotice(
-  c: { expiryDate: Date | null; keyTerms: unknown },
+  c: { expiryDate: Date | null; keyTerms: unknown; noticeDeadline?: Date | null; noticeDays?: number | null; renewalType?: string | null },
   changers: TermChanger[] = [],
 ): RenewalNotice & { noticeSetBy: string | null } {
   const base = termsOf(c.keyTerms)
-  let autoRenew = isAutoRenew(base)
+  let type = renewalTypeOfTerms(base)
   let period = renewalNoticePeriod(base)
   let noticeSetBy: string | null = null
   const inOrder = changers
@@ -163,10 +197,25 @@ export function amendedRenewalNotice(
     const kt = termsOf(a.keyTerms)
     const p = renewalNoticePeriod(kt)
     if (p) { period = p; noticeSetBy = a.title }
-    // An amendment silent on auto-renewal leaves it as it was.
-    if (kt?.autoRenew != null && kt.autoRenew !== '') autoRenew = isAutoRenew(kt)
+    // An amendment silent on how it renews leaves it as it was.
+    const t = renewalTypeOf(kt?.renewalType)
+    if (t) type = t
+    else if (kt?.autoRenew != null && kt.autoRenew !== '') type = isAutoRenew(kt) ? 'auto' : (type === 'auto' ? null : type)
   }
-  return { ...noticeFrom(c.expiryDate, autoRenew, period), noticeSetBy }
+  const n = { ...noticeFrom(c.expiryDate, type, period), noticeSetBy }
+  // docs/41 Part 14 — the stored columns win (lib/renewal-terms.ts keeps them
+  // from the same values, amendments applied); a contract not yet synced is
+  // worked out here.
+  if (c.noticeDeadline !== undefined && (c.noticeDeadline || c.renewalType)) {
+    const ct = renewalTypeOf(c.renewalType)
+    return {
+      ...n,
+      ...(ct ? { renewalType: ct, autoRenew: ct === 'auto' } : {}),
+      deadline: c.noticeDeadline ?? null,
+      noticeDays: c.noticeDays ?? n.noticeDays,
+    }
+  }
+  return n
 }
 
 /**

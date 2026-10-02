@@ -22,6 +22,7 @@ import {
 import { prisma } from './prisma.js'
 import { recordStageChange, type StagePosition } from './status-change.js'
 import { createAuditEvent } from './audit.js'
+import { syncRenewalTermsFor } from './renewal-terms.js'
 
 export interface StageTarget {
   stage: Stage
@@ -138,6 +139,11 @@ export async function transition(a: TransitionArgs): Promise<TransitionResult> {
     orgId: a.orgId, contractId: c.id, from, to, userId: a.userId, source: a.source,
     reason: a.reason?.trim() || null, versionId: a.versionId ?? c.currentVersionId, extra: a.extra,
   })
+  // docs/41 Part 14 — a signed (or ended) amendment or renewal moves its
+  // parent's notice deadline: only a signed one changes the terms.
+  if (from.stage !== to.stage && (from.stage === 'active' || to.stage === 'active')) {
+    await syncRenewalTermsFor(a.orgId, c.id).catch(err => console.warn('[renewal-terms] not synced contractId=%s: %s', c.id, (err as Error).message))
+  }
   return { ok: true, changed: true, from, to }
 }
 

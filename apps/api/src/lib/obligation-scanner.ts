@@ -22,7 +22,7 @@ import { prisma } from './prisma.js'
 import { queueNotification } from './queue.js'
 import { createAuditEvent } from './audit.js'
 import { AuditAction } from '@clm/types'
-import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS } from './renewal-notice.js'
+import { amendedRenewalNotice, renewsOnItsOwn, TERM_CHANGERS, RENEWAL_COLUMNS } from './renewal-notice.js'
 import { fireWebhook } from './webhook-events.js'
 
 export interface ScanOptions {
@@ -285,7 +285,7 @@ export async function scanRenewals(
     select: {
       id: true, orgId: true, title: true, ownerId: true,
       counterpartyName: true, metadata: true, expiryDate: true,
-      type: true, value: true, currency: true, keyTerms: true,
+      type: true, value: true, currency: true, keyTerms: true, ...RENEWAL_COLUMNS,
       amendments: {
         where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS } },
         select: { title: true, relationshipType: true, status: true, keyTerms: true, effectiveDate: true, createdAt: true },

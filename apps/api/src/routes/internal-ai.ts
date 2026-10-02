@@ -53,7 +53,7 @@ import { resolveCallerScope, contractScopeWhere, scopeOwnerId, type CallerScope,
 import { manualRefusal, manualSource, manualTarget } from '../lib/contract-status.js'
 import { lockOf, lockedBody } from '../lib/external-edit.js'
 import { htmlBlocks } from '../lib/ooxml/html-blocks.js'
-import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, TERM_CHANGERS } from '../lib/renewal-notice.js'
+import { amendedRenewalNotice, isAutoRenew, noticeDaysOf, renewsOnItsOwn, RENEWAL_COLUMNS, TERM_CHANGERS } from '../lib/renewal-notice.js'
 import { evaluatePlaybookRules, dedupeViolations, pickWorstSeverity, ruleCountOf, ruleTextsFor, type PlaybookRules, type RuleTexts } from '../lib/playbook-rules.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { standingVersion } from '../lib/standing-version.js'
@@ -4113,7 +4113,7 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const select = {
       id: true, title: true, type: true, status: true,
       counterpartyName: true, metadata: true, effectiveDate: true,
-      expiryDate: true, value: true, currency: true, keyTerms: true,
+      expiryDate: true, value: true, currency: true, keyTerms: true, ...RENEWAL_COLUMNS,
       // Its amendments and renewals: they can change the notice period.
       amendments: {
         where: { deletedAt: null, relationshipType: { in: TERM_CHANGERS }, ...contractScopeWhere(scope) },
