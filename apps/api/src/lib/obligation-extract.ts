@@ -96,6 +96,16 @@ export function toObligationRows(
 }
 
 /**
+ * Sets and removes only these metadata keys, in the database. The read takes
+ * a minute, and writing back the metadata read before it erased what other
+ * steps wrote meanwhile: the analysis stamp, so a finished analysis showed as
+ * "Not analysed".
+ */
+async function patchMetadata(contractId: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
+  await prisma.$executeRaw`UPDATE contracts SET metadata = (COALESCE(metadata, '{}'::jsonb) - ${remove}::text[]) || ${JSON.stringify(set)}::jsonb WHERE id = ${contractId}`
+}
+
+/**
  * docs/39 G4 — after its analysis, a signed contract is read for its
  * obligations: executed in the app or uploaded as signed, or its document
  * gives a signing date (a draft's signature block is left blank). Once only;
@@ -206,9 +216,7 @@ export async function extractObligationsForContract({
   if (signed) {
     const confirmed = await confirmProposedObligations(orgId, contractId, versionId)
     if (meta.obligationsProposedVersionId === versionId) {
-      const rest: Record<string, unknown> = { ...meta, obligationsExtractedAt: new Date().toISOString() }
-      delete rest.obligationsProposedAt; delete rest.obligationsProposedVersionId
-      await prisma.contract.update({ where: { id: contractId }, data: { metadata: rest as never } })
+      await patchMetadata(contractId, { obligationsExtractedAt: new Date().toISOString() }, ['obligationsProposedAt', 'obligationsProposedVersionId'])
       if (confirmed > 0) fireWebhook(orgId, 'obligation.extracted', { contractId, count: confirmed })
       await createAuditEvent({
         orgId, userId, action: AuditAction.OBLIGATION_EXTRACTED, resourceType: 'contract', resourceId: contractId,
@@ -296,19 +304,12 @@ export async function extractObligationsForContract({
   // Update metadata with summary + extraction timestamp.
   // A draft's read is stamped apart: obligationsExtractedAt means the signed
   // contract was read (queueObligationsIfSigned reads it once).
-  const nextMeta: Record<string, unknown> = {
-    ...meta,
+  await patchMetadata(contractId, {
     obligationsSummary: parsed.summary ?? null,
     ...(signed
       ? { obligationsExtractedAt: new Date().toISOString() }
       : { obligationsProposedAt: new Date().toISOString(), obligationsProposedVersionId: versionId }),
-  }
-  delete nextMeta.obligations
-  if (signed) { delete nextMeta.obligationsProposedAt; delete nextMeta.obligationsProposedVersionId }
-  await prisma.contract.update({
-    where: { id: contractId },
-    data:  { metadata: nextMeta as never },
-  })
+  }, ['obligations', ...(signed ? ['obligationsProposedAt', 'obligationsProposedVersionId'] : [])])
 
   await createAuditEvent({
     orgId, userId,
