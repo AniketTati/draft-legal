@@ -712,11 +712,23 @@ export function reviewStampOf(metadata: unknown): ReviewStamp | null {
 /**
  * The findings of a version, worked out now if they never were (a version
  * edited since its analysis, or analysed before findings existed: the old
- * `_presence` stamp is not read).
+ * `_presence` stamp is not read) — or, for the contract's current version
+ * while unsigned, if a presence rule changed since they were (docs/41
+ * fix-up 9: rule changes take effect on the next read, not all at once).
  */
 export async function findingsFor(contractId: string, versionId: string) {
-  const version = await prisma.contractVersion.findFirst({ where: { id: versionId, contractId }, select: { metadata: true } })
+  const version = await prisma.contractVersion.findFirst({
+    where: { id: versionId, contractId },
+    select: { metadata: true, contract: { select: { orgId: true, currentVersionId: true, executedAt: true } } },
+  })
   if (!version) return []
-  if (!reviewStampOf(version.metadata)) await computeAndStoreFindings(contractId, versionId)
+  const stamp = reviewStampOf(version.metadata)
+  if (!stamp || await rulesChangedSince(version.contract, versionId, stamp)) await computeAndStoreFindings(contractId, versionId)
   return prisma.reviewFinding.findMany({ where: { contractId, versionId }, orderBy: { createdAt: 'asc' } })
+}
+
+/** A presence rule of the org changed after this current, unsigned version was reviewed. */
+async function rulesChangedSince(c: { orgId: string; currentVersionId: string | null; executedAt: Date | null }, versionId: string, stamp: ReviewStamp): Promise<boolean> {
+  if (c.currentVersionId !== versionId || c.executedAt) return false
+  return !!await prisma.clauseCategory.findFirst({ where: { orgId: c.orgId, presenceChangedAt: { gt: new Date(stamp.computedAt) } }, select: { id: true } })
 }

@@ -15,6 +15,7 @@ import { modelFetch } from '../lib/model-boundary.js'
 import { defaultPlaybookId, bumpPlaybookVersion, resolvePlaybook, positionWhere } from '../lib/playbooks.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
+import { CategoryRulesSchema, approverError, rulesUpdate } from '../lib/clause-category-rules.js'
 
 const POSITION_TYPES = ['preferred', 'acceptable', 'fallback', 'walkaway'] as const
 
@@ -199,6 +200,33 @@ export async function playbookRoutes(app: FastifyInstance) {
     await prisma.playbookPosition.delete({ where: { id } })
     await bumpPlaybookVersion(existing.playbookId)
     return reply.status(204).send()
+  })
+
+  // ── A category's rules (docs/41 fix-up 9) ────────────────────────────────
+  // Whether contracts must have the clause, for which types, and who decides
+  // exceptions — set beside the positions. Findings follow on the next review
+  // read of each unsigned contract (lib/clause-category-rules.ts).
+  app.patch('/categories/:id/rules', { preHandler: requirePermission('edit', 'playbook') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { orgId, sub: userId } = req.user
+    const body = CategoryRulesSchema.safeParse(req.body ?? {})
+    if (!body.success) return reply.status(400).send({ detail: 'Presence is required, not allowed or optional; contract types are a list of names.' })
+    const existing = await prisma.clauseCategory.findFirst({ where: { id, orgId } })
+    if (!existing) return reply.status(404).send({ detail: 'Category not found' })
+    const bad = await approverError(orgId, body.data)
+    if (bad) return reply.status(400).send({ detail: bad })
+
+    const updated = await prisma.clauseCategory.update({
+      where: { id },
+      data: { ...body.data, ...rulesUpdate(existing, body.data) },
+      select: { id: true, name: true, presence: true, presenceContractTypes: true, presenceChangedAt: true, approverUserId: true, approverRoleId: true },
+    })
+    createAuditEvent({
+      orgId, userId, action: AuditAction.PLAYBOOK_CHANGED, resourceType: 'clause_category', resourceId: id,
+      metadata: { rules: Object.keys(body.data), presence: updated.presence, presenceContractTypes: updated.presenceContractTypes },
+      ipAddress: req.ip,
+    }).catch(() => {})
+    return reply.send(updated)
   })
 
   // ── Playbooks (docs/41 P1, Part 3) ───────────────────────────────────────

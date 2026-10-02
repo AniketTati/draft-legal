@@ -234,6 +234,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'PATCH /field-definitions/:id': { action: 'configure', resource: 'contract' },
   'PATCH /matters/:id': { action: 'edit', resource: 'contract' },
   'PATCH /organization': { action: 'configure', resource: 'integration' },
+  'PATCH /playbook/categories/:id/rules': { action: 'edit', resource: 'playbook' },
   'PATCH /playbook/playbooks/:id': { action: 'edit', resource: 'playbook' },
   'PATCH /playbook/positions/:id': { action: 'edit', resource: 'playbook' },
   'PATCH /requests/:id': { action: 'edit', resource: 'request' },

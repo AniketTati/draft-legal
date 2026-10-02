@@ -922,6 +922,8 @@ model ClauseCategory {
   // for it yet. Applies to the contract types listed ([] = every type).
   presence              String   @default("optional")
   presenceContractTypes String[] @default([])
+  /// When the presence rule last changed: a version reviewed before it is reviewed again when next read.
+  presenceChangedAt     DateTime?
   // docs/41 Part 7 — who decides an exception to this category's positions:
   // a person, or every holder of a role (the first to decide claims it).
   approverUserId        String?

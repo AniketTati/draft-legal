@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { clauseTypeLabel } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
+import { approverError, rulesUpdate } from '../lib/clause-category-rules.js'
 import { requirePermission, permissionScopeFor } from '../middleware/permissions.js'
 import { recordClauseVersion, updateClauseItem } from '../lib/clause-library-versions.js'
 
@@ -28,14 +29,6 @@ const CreateCategorySchema = z.object({
 })
 
 const UpdateCategorySchema = CreateCategorySchema.partial()
-
-/** A clause approver must be a member, or a role, of the org (never another org's). */
-async function approverError(orgId: string, body: { approverUserId?: string | null; approverRoleId?: string | null }): Promise<string | null> {
-  if (body.approverUserId && body.approverRoleId) return 'Name a person or a role to decide exceptions, not both.'
-  if (body.approverUserId && !await prisma.user.count({ where: { id: body.approverUserId, orgId, deletedAt: null } })) return 'That person is not a member of this organization.'
-  if (body.approverRoleId && !await prisma.role.count({ where: { id: body.approverRoleId, OR: [{ orgId }, { orgId: null }] } })) return 'That role is not one of this organization’s.'
-  return null
-}
 
 const CreateClauseSchema = z.object({
   categoryId: z.string().min(1),
@@ -140,13 +133,12 @@ export async function clauseRoutes(app: FastifyInstance) {
     const bad = await approverError(orgId, body)
     if (bad) return reply.status(400).send({ detail: bad })
 
-    // Naming one clears the other: a category has one kind of approver.
+    // Naming one clears the other; a presence rule that changed is stamped (lib/clause-category-rules.ts).
     const updated = await prisma.clauseCategory.update({
       where: { id },
       data: {
         ...body,
-        ...(body.approverUserId && { approverRoleId: null }),
-        ...(body.approverRoleId && { approverUserId: null }),
+        ...rulesUpdate(existing, body),
       },
     })
     return reply.send(updated)
