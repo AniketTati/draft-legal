@@ -162,6 +162,30 @@ export function revealInCanvas(editor: Editor | null, text: string, occurrence =
   return false
 }
 
+/**
+ * docs/41 Part 16 — where a comment's words are in the canvas: the passage
+ * worded like `text` nearest `nearChar` (its old place in the plain text),
+ * as editor positions, or null when the words are no longer there.
+ */
+export function findInCanvas(editor: Editor | null, text: string, nearChar = 0): { from: number; to: number } | null {
+  if (!editor || editor.isDestroyed || !text?.trim()) return null
+  const { text: flat, pos } = flatten(editor.state.doc)
+  const hay = normalize(flat)
+  const needle = normalize(text).norm.trim()
+  if (needle.length < 2) return null
+  let best = -1
+  for (let at = hay.norm.indexOf(needle); at >= 0; at = hay.norm.indexOf(needle, at + 1)) {
+    if (best < 0 || Math.abs(hay.map[at] - nearChar) < Math.abs(hay.map[best] - nearChar)) best = at
+  }
+  if (best < 0) return null
+  return { from: pos[hay.map[best]], to: pos[hay.map[best + needle.length - 1]] + 1 }
+}
+
+/** The selection's place in the document's plain text, for a comment's anchor. */
+export function charOffsetAt(editor: Editor, from: number): number {
+  return editor.state.doc.textBetween(0, Math.max(0, from), ' ').length
+}
+
 /** Highlight the canvas between two positions and scroll it into view (docs/39 H2: a variable's place). */
 export function revealRange(editor: Editor | null, from: number, to: number): boolean {
   const view = viewOf(editor)

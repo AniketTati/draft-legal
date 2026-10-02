@@ -30,7 +30,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { UploadModal } from '@/components/contracts/UploadModal'
-import { CommentsPanel } from '@/components/contracts/CommentsPanel'
+import { CommentsReadList } from '@/components/contracts/workspace/CommentsView'
 import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
@@ -3297,7 +3297,8 @@ export function ContractDetailPage() {
         {/* ─── Comments ───────────────────────────────────────────────────── */}
         {tab === 'comments' && (
           <div className="p-6 max-w-3xl mx-auto">
-            <CommentsPanel contractId={id!} />
+            {/* docs/41 Part 16 — threads are written in the workspace, beside their words. */}
+            <CommentsReadList contractId={id!} onOpenWorkspace={() => navigate(workspacePath(id!))} />
           </div>
         )}
 

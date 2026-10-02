@@ -27,10 +27,13 @@ import { DocumentCanvas, type CanvasState } from '@/components/contracts/Documen
 import { StatusBanner } from '@/components/contracts/StatusBanner'
 import { HistoryDrawer } from '@/components/contracts/HistoryDrawer'
 import { ReviewPanel } from '@/components/contracts/review/ReviewPanel'
-import { CommentsPanel } from '@/components/contracts/CommentsPanel'
+import { CommentsView } from '@/components/contracts/workspace/CommentsView'
+import { MarginComments } from '@/components/contracts/workspace/MarginComments'
+import type { CommentDraft } from '@/components/contracts/workspace/CommentComposer'
+import { useThreads, type CommentThreadData } from '@/lib/comments'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
-import { revealInCanvas } from '@/components/contracts/SourceHighlight'
+import { findInCanvas, revealInCanvas, revealRange } from '@/components/contracts/SourceHighlight'
 import { LeaveDraftPrompt, SaveVersionDialog, WorkingCopyConflictDialog, draftStatusText, type LeaveChoice } from '@/components/contracts/WorkingCopyDialogs'
 import { WorkspaceDetails } from '@/components/contracts/workspace/WorkspaceDetails'
 import { ChangesView } from '@/components/contracts/workspace/ChangesView'
@@ -61,7 +64,14 @@ export function ContractWorkspacePage() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [submitOpen, setSubmitOpen] = useState(false)
   const [signatureOpen, setSignatureOpen] = useState(false)
-  const [commentQuote, setCommentQuote] = useState<string | null>(null)
+  // docs/41 Part 16 — margin comments: a comment being started, the person
+  // picked in "Document discussion", and the thread last shown.
+  const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
+  const [person, setPerson] = useState<string | null>(null)
+  const [activeThread, setActiveThread] = useState<string | null>(null)
+  const [marginBox, setMarginBox] = useState<HTMLDivElement | null>(null)
+  const { data: threadsData } = useThreads(id ?? '')
+  const startComment = (d: CommentDraft) => { setCommentDraft(d); setPanel('comments') }
 
   const mayEdit = useCanRequest('PUT /contracts/:id/working-copy')
   const canEditFields = useCanRequest('PUT /contracts/:id/fields/:key')
@@ -84,6 +94,8 @@ export function ContractWorkspacePage() {
 
   // ── The document and its draft changes (C1) ──────────────────────────────
   const editorRef = useRef<Editor | null>(null)
+  // The editor as state too, so the margin re-places threads once it exists.
+  const [editorReady, setEditorReady] = useState<Editor | null>(null)
   const draft = useWorkingCopy(id, {
     onSaveError: (err) => {
       const data = (err as { response?: { data?: { code?: string; detail?: string } } })?.response?.data
@@ -172,6 +184,13 @@ export function ContractWorkspacePage() {
     }
   }
 
+  const showThread = (t: CommentThreadData) => {
+    setActiveThread(t.id)
+    const r = t.anchor ? findInCanvas(editorRef.current, t.anchor.quote, t.anchorStart ?? t.anchor.start) : null
+    if (r) revealRange(editorRef.current, r.from, r.to)
+    else toast.info('Not found in the document', { description: 'Its words are no longer in the document.' })
+  }
+
   const showInDocument = (target: { clauseId?: string | null; quote?: string | null }) => {
     const found = jumpTo(target, { root: document, clauses, reveal: text => revealInCanvas(editorRef.current, text) })
     if (!found) toast.info('Not found in the document', { description: 'Its words may have changed since it was analysed.' })
@@ -209,22 +228,39 @@ export function ContractWorkspacePage() {
 
       <div className="flex-1 min-h-0 flex">
         <main className="flex-1 min-w-0 overflow-y-auto" data-testid="workspace-document">
-          <div className="max-w-[860px] mx-auto py-6 px-4">
-            {changesMode ? (
-              <ChangesView
-                contractId={id}
-                canEdit={canEdit}
-                onApply={replaceDocument}
-                onComment={quote => { setCommentQuote(`“${quote.slice(0, 400)}” `); setPanel('comments') }}
-              />
-            ) : (
-              <DocumentCanvas
-                state={canvasState}
-                editable={canEdit && loaded}
-                onReady={editor => { editorRef.current = editor }}
-                onChange={next => { if (canvasState.kind === 'ready' && canEdit) draft.change(next) }}
-                riskClauses={clauses.map(c => ({ id: c.id, content: c.content, riskRating: c.riskRating ?? null }))}
-              />
+          <div className="flex gap-4 max-w-[1160px] mx-auto py-6 px-4">
+            <div className="flex-1 min-w-0 max-w-[860px] mx-auto">
+              {changesMode ? (
+                <ChangesView
+                  contractId={id}
+                  canEdit={canEdit}
+                  onApply={replaceDocument}
+                  onComment={quote => startComment({ body: `“${quote.slice(0, 400)}” ` })}
+                />
+              ) : (
+                <DocumentCanvas
+                  state={canvasState}
+                  editable={canEdit && loaded}
+                  onReady={editor => { editorRef.current = editor; setEditorReady(editor) }}
+                  onChange={next => { if (canvasState.kind === 'ready' && canEdit) draft.change(next) }}
+                  riskClauses={clauses.map(c => ({ id: c.id, content: c.content, riskRating: c.riskRating ?? null }))}
+                />
+              )}
+            </div>
+            {/* Threads beside their words; on a narrow screen they are in the Comments view only. */}
+            {!changesMode && (
+              <div ref={setMarginBox} className="hidden xl:block w-[260px] shrink-0" data-testid="workspace-margin">
+                <MarginComments
+                  contractId={id}
+                  editor={editorReady}
+                  container={marginBox}
+                  threads={threadsData?.data ?? []}
+                  canEdit={canEdit}
+                  person={person}
+                  activeId={activeThread}
+                  onActivate={t => { setPanel('comments'); showThread(t) }}
+                />
+              </div>
             )}
           </div>
         </main>
@@ -263,8 +299,19 @@ export function ContractWorkspacePage() {
                 beforeChange={() => draft.flush()}
               />
             )}
-            {/* Temporary: C3 replaces this with threads in the margin. */}
-            {panel === 'comments' && <CommentsPanel key={commentQuote ?? ''} contractId={id} initialBody={commentQuote ?? undefined} />}
+            {panel === 'comments' && (
+              <CommentsView
+                contractId={id}
+                canEdit={canEdit}
+                draft={commentDraft}
+                onDraftDone={() => setCommentDraft(null)}
+                person={person}
+                // C4: also highlight this person's tracked changes (suggestion marks carry the author).
+                onPerson={setPerson}
+                activeId={activeThread}
+                onShow={showThread}
+              />
+            )}
           </div>
         </aside>
       </div>
