@@ -44,9 +44,21 @@ export interface StageView {
   exceptions: { open: number }
   returned: { outcome: 'returned' | 'declined'; by: { id: string; name: string } | null; reason: string | null; at: string | null } | null
   latestVersion: { id: string; number: number; fromCounterparty: boolean; at: string } | null
+  /** docs/41 Part 15 — what the counterparty's latest version brought, once its findings are in. */
+  counterparty?: { versionNumber: number; changes: number; needAttention: number; missingRequired: number; advised: boolean } | null
   moves: Array<{ to: { stage: string; state: string }; label: string; needsReason: boolean; tone?: 'danger' }>
   canCancel: boolean
   canUndoCancel: boolean
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/** "Counterparty sent v5 — 12 changes, 3 need attention, 1 required clause missing". */
+export function counterpartyLine(c: NonNullable<StageView['counterparty']>): string {
+  const parts = [plural(c.changes, 'change')]
+  if (c.needAttention) parts.push(`${c.needAttention} need${c.needAttention === 1 ? 's' : ''} attention`)
+  if (c.missingRequired) parts.push(`${plural(c.missingRequired, 'required clause')} missing`)
+  return `Counterparty sent v${c.versionNumber} — ${parts.join(', ')}`
 }
 
 type Ask =
@@ -63,7 +75,7 @@ export function StatusBanner({
   /** Opens the page's Submit-for-approval dialog. */
   onSubmit: () => void
   onSendForSignature: () => void
-  /** Shows the counterparty's changes (the Negotiate view). */
+  /** Shows the counterparty's changes (the workspace's Changes mode). */
   onReviewChanges: () => void
   onOpenHistory: () => void
 }) {
@@ -164,6 +176,12 @@ export function StatusBanner({
           {s.stage === 'closed' ? `${s.stageLabel} · ${s.stateLabel}` : s.line}
           {s.turnOwner?.isMe && <span className="ml-1 font-semibold">(you)</span>}
         </span>
+
+        {s.counterparty && s.next?.kind === 'review_changes' && (
+          <span className="text-dense text-ink-950" data-testid="stage-counterparty" title={s.counterparty.advised ? undefined : 'AI advice on their changes is still being worked out.'}>
+            {counterpartyLine(s.counterparty)}
+          </span>
+        )}
 
         {s.approvals && ['approve', 'sign'].includes(s.stage) && s.approvals.total > 0 && (
           <span className="text-[11.5px] text-ink-500 tabular-nums" data-testid="stage-approvals">Approvals {s.approvals.approved} of {s.approvals.total}</span>

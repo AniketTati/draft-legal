@@ -26,7 +26,7 @@ import { moduleLogger } from './logger.js'
 const log = moduleLogger('analysis')
 
 /** The steps of an analysis, in the order they run. */
-export const RUN_STEPS = ['parse', 'classify', 'extract', 'carry', 'index', 'findings', 'drafting', 'compliance', 'position_check'] as const
+export const RUN_STEPS = ['parse', 'classify', 'extract', 'carry', 'index', 'findings', 'drafting', 'compliance', 'position_check', 'change_advice'] as const
 export type RunStepName = typeof RUN_STEPS[number]
 
 /** What each step is called on screen. */
@@ -40,6 +40,7 @@ export const STEP_LABEL: Record<RunStepName, string> = {
   drafting: 'checking its defined terms',
   compliance: 'checking the compliance rules that apply',
   position_check: 'checking changed clauses against your positions',
+  change_advice: 'advising on the counterparty\'s changes',
 }
 
 /**
@@ -48,7 +49,7 @@ export const STEP_LABEL: Record<RunStepName, string> = {
  * run's, but leaves the contract analysed (lib/agent-job-failure.ts keeps
  * follow-on failures off the contract's status).
  */
-export const FOLLOW_ON_STEPS = new Set<RunStepName>(['drafting', 'compliance', 'position_check'])
+export const FOLLOW_ON_STEPS = new Set<RunStepName>(['drafting', 'compliance', 'position_check', 'change_advice'])
 
 export type RunStatus = 'queued' | 'running' | 'done' | 'failed' | 'superseded'
 export type StepStatus = 'running' | 'done' | 'retrying' | 'failed' | 'skipped'
@@ -258,6 +259,7 @@ export const JOB_STEP: Record<string, RunStepName> = {
   'chunk-and-index': 'index',
   'playbook-review': 'position_check',
   'compliance-review': 'compliance',
+  'change-advice': 'change_advice',
 }
 
 /**

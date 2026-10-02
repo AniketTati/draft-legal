@@ -569,6 +569,10 @@ model ReviewFinding {
   evidence          Json      @default("{}")
   /// deterministic | llm
   source            String
+  /// docs/41 Part 15 — the model's advice on a counterparty's change (lib/change-advice.ts):
+  /// { recommendation: accept | counter | reject, reasoning, severity, ourText, theirText,
+  ///   counterText, counterNote, baselineVersionId, at }
+  advice            Json?
   /// open | resolved | accepted | exception_requested | exception_approved | exception_declined
   status            String    @default("open")
   resolvedById      String?

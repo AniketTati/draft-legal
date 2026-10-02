@@ -18,7 +18,7 @@ import { docsToSplitSpecs } from '../lib/binder-pages.js'
 import { onAgentJobFailed } from '../lib/agent-job-failure.js'
 import { complianceStep } from '../lib/version-review-steps.js'
 import { redlineTargets, uncheckedClauses, redlineClearNote, type ReviewFinding } from '../lib/playbook-redline-targets.js'
-import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, ComplianceReviewJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
+import type { DetectBinderJob, ClassifyDocumentJob, ExtractAiJob, ClassifyRequestJob, SplitBinderJob, RedlineAnalysisJob, ApprovalSummaryJob, PlaybookReviewJob, ComplianceReviewJob, ChangeAdviceJob, PlaybookRedlineJob, BackfillCustomFieldJob, ExtractObligationsJob, ExtractTypeFieldsJob, DetectClauseTypeJob, AnswerDiligenceColumnJob, AnswerDiligenceDocumentJob } from '../lib/queue.js'
 import { extractObligationsForContract } from '../lib/obligation-extract.js'
 import { runCustomFieldBackfill, type ExtractedField } from '../lib/custom-field-backfill.js'
 import { readTypeFields, clearTypeFieldsMark } from '../lib/type-fields-read.js'
@@ -815,6 +815,11 @@ export const agentWorker = new Worker(
       // docs/41 Part 9 — which compliance frameworks apply, their checks and findings.
       const data = job.data as ComplianceReviewJob
       await runJobStep(job, data, () => complianceStep(data.contractId, data.versionId))
+    } else if (job.name === 'change-advice') {
+      // docs/41 Part 15 — the model's advice on a counterparty version's changes, on their findings.
+      const data = job.data as ChangeAdviceJob
+      const { changeAdviceStep } = await import('../lib/change-advice.js')
+      await runJobStep(job, data, () => changeAdviceStep(data.contractId, data.versionId))
     } else if (job.name === 'approval-summary') {
       await handleApprovalSummary(job.data as ApprovalSummaryJob)
     } else if (job.name === 'draft-contract') {

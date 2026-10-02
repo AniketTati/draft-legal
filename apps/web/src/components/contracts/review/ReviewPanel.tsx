@@ -38,6 +38,8 @@ import {
 import { FixPreview, type StagedFixes } from './FixPreview'
 import { BookOpen, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 
+const ADVICE_WORDS: Record<string, string> = { accept: 'AI suggests accepting', counter: 'AI suggests a counter', reject: 'AI suggests pushing back' }
+
 const SEVERITY_CLS: Record<string, string> = {
   critical: 'text-risk-700 bg-risk-50 border-risk-200',
   high: 'text-risk-700 bg-risk-50 border-risk-200',
@@ -376,6 +378,16 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, ex
           : f.title}
       </div>
       <div className="text-ink-700 mt-0.5">{f.explanation}</div>
+      {/* docs/41 Part 15 — the model's advice on the counterparty's change, with its suggested counter. */}
+      {f.advice && (
+        <div className="mt-1 text-assist-700 inline-flex items-start gap-1" data-testid={`finding-advice-${f.id}`}>
+          <AssistMark className="size-[5px] mt-1" />
+          <span>
+            <span className="font-medium">{ADVICE_WORDS[f.advice.recommendation] ?? 'Counter'}.</span> {f.advice.reasoning}
+            {f.advice.counterText && <span className="block text-ink-700">Suggested counter: “{f.advice.counterText}”</span>}
+          </span>
+        </div>
+      )}
       {f.evidence.quote && (
         <blockquote className="mt-1 border-l-2 border-paper-300 pl-2 text-ink-950 whitespace-pre-wrap">{f.evidence.quote}</blockquote>
       )}

@@ -290,6 +290,26 @@ export function queueComplianceReview(payload: ComplianceReviewJob, opts: { agai
 }
 
 /**
+ * docs/41 Part 15 — the advice on a counterparty version's changes
+ * (lib/change-advice.ts): one model call, which the analysis never waits on.
+ */
+export interface ChangeAdviceJob {
+  contractId: string
+  orgId:      string
+  versionId:  string
+}
+export function queueChangeAdvice(payload: ChangeAdviceJob): void {
+  agentQueue.add('change-advice', payload, {
+    attempts: 2,
+    backoff: { type: 'exponential', delay: 10_000 },
+    // One per version: the step itself skips a pair already advised.
+    jobId: `change-advice-${payload.contractId}-${payload.versionId}`,
+    removeOnComplete: 100,
+    removeOnFail:     50,
+  }).catch(err => console.warn('[queue] failed to enqueue change-advice:', err.message))
+}
+
+/**
  * DD2 — a review after edits: of the version the contract stands on two
  * minutes from now, one per contract per two minutes. The editor saves a
  * version five seconds after typing stops; a review per save would be a

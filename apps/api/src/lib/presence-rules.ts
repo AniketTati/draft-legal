@@ -179,5 +179,8 @@ export async function afterAnalysis(contractId: string, versionId: string): Prom
   const { draftingStep, queueComplianceStep } = await import('./version-review-steps.js')
   await draftingStep(contractId, versionId)
   await queueComplianceStep(contractId, versionId).catch(err => console.warn('[presence] compliance step not queued contractId=%s: %s', contractId, (err as Error).message))
+  // docs/41 Part 15 — a counterparty's version: the model's advice on each of their changes.
+  const { queueChangeAdviceStep } = await import('./change-advice.js')
+  await queueChangeAdviceStep(contractId, versionId).catch(err => console.warn('[presence] change advice not queued contractId=%s: %s', contractId, (err as Error).message))
   return review
 }

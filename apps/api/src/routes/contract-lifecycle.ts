@@ -30,6 +30,7 @@ import { positionOf, transition } from '../lib/lifecycle.js'
 import { manualRefusal, manualSource } from '../lib/contract-status.js'
 import { approvalProgress, roleIdsOf, isNegative } from '../lib/workflow-engine.js'
 import { openExceptions } from '../lib/approval-flow.js'
+import { counterpartySummary } from '../lib/change-advice.js'
 
 interface Move { to: StagePoint; label: string; needsReason: boolean; tone?: 'danger' }
 
@@ -230,7 +231,7 @@ export async function contractLifecycleRoutes(app: FastifyInstance) {
       case 'negotiate':
         if (p.stageState === 'returned') next = { kind: 'resubmit', label: 'Fix and resubmit', enabled: editable }
         else if (p.stage === 'negotiate' && p.stageState === 'with_counterparty') next = null
-        else if (p.stage === 'negotiate' && theirs) next = { kind: 'review_changes', label: 'Review their changes', enabled: true }
+        else if (p.stage === 'negotiate' && theirs) next = { kind: 'review_changes', label: 'Review changes', enabled: true }
         else next = { kind: 'submit', label: 'Submit for approval', enabled: editable }
         break
       case 'approve':
@@ -246,6 +247,9 @@ export async function contractLifecycleRoutes(app: FastifyInstance) {
         break
       default: next = null
     }
+
+    // docs/41 Part 15 — what the counterparty's version brought: its changes and what they need.
+    const counterparty = theirs && latest ? await counterpartySummary(c.id, latest) : null
 
     const isAdmin = (req.user.roles ?? []).includes('ADMIN')
     const moves = editable
@@ -268,6 +272,7 @@ export async function contractLifecycleRoutes(app: FastifyInstance) {
       exceptions: { open: exceptions.length },
       returned,
       latestVersion: latest ? { id: latest.id, number: latest.versionNumber, fromCounterparty: theirs, at: latest.createdAt } : null,
+      counterparty,
       moves,
       canCancel,
       canUndoCancel,

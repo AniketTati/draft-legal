@@ -166,6 +166,8 @@ export async function reviewRoutes(app: FastifyInstance) {
       clauseId: f.clauseId, clauseType: f.clauseType, categoryId: f.categoryId, positionId: f.positionId,
       ...statusText(DONE.has(f.status) ? (f.status === 'accepted' ? 'accepted' : 'resolved') : STATUS_OF_KIND[f.kind] ?? 'not_met'),
       resolvedById: f.resolvedById, resolvedAt: f.resolvedAt, resolutionNote: f.resolutionNote,
+      // docs/41 Part 15 — the model's advice on a counterparty's change (lib/change-advice.ts).
+      advice: f.advice ?? null,
       actions: actionsOf(f),
     })
 
