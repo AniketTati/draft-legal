@@ -29,10 +29,11 @@ describe('the contract page', () => {
     expect(original).not.toContain('versions[0]')
   })
 
-  it('compares the current version with the one before it by default', () => {
-    const negotiate = page.slice(page.indexOf("if (tab === 'negotiate' && versions.length >= 2"), page.indexOf("if (tab !== 'negotiate' && (diffV1Id || diffV2Id))"))
-    expect(negotiate).toContain('diffDefaults.v2')
-    expect(page).toMatch(/<RedlinePanel[\s\S]{0,600}defaultV2Id=\{diffDefaults\.v2\}/)
+  it('compares in the workspace, from the review\'s baseline by default (docs/41 Part 15)', () => {
+    expect(page).toContain('workspacePath(id!, { changes: true })')
+    expect(page).not.toContain('<RedlinePanel')
+    const changes = readFileSync(join(__dirname, '../components/contracts/workspace/ChangesView.tsx'), 'utf8')
+    expect(changes).toContain("params: baseline ? { baseline } : {}")
   })
 
   it('keeps the review drawer on its clause across a new version, and shows a mark the server moved there', () => {

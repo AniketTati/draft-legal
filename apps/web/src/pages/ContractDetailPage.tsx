@@ -30,7 +30,6 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { UploadModal } from '@/components/contracts/UploadModal'
-import { DiffViewer } from '@/components/contracts/DiffViewer'
 import { CommentsPanel } from '@/components/contracts/CommentsPanel'
 import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
@@ -44,7 +43,6 @@ import { DefinedTermsGlossary, useDefinedTerms } from '@/components/contracts/De
 import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
 import { OriginRailSection } from '@/components/contracts/OriginRailSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
-import { RedlinePanel } from '@/components/contracts/RedlinePanel'
 import { StatusPill } from '@/components/contracts/StatusPill'
 import { RailSection } from '@/components/contracts/RailSection'
 import { DocumentCanvas, type CanvasState } from '@/components/contracts/DocumentCanvas'
@@ -60,7 +58,6 @@ import { classifyRisk } from '@/components/contracts/RiskDecorations'
 import { DecisionStrip } from '@/components/contracts/DecisionStrip'
 import { StatusBanner } from '@/components/contracts/StatusBanner'
 import { HistoryDrawer } from '@/components/contracts/HistoryDrawer'
-import { CompareMode } from '@/components/contracts/CompareMode'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { CreateAmendmentDialog } from '@/components/contracts/CreateAmendmentDialog'
@@ -198,7 +195,7 @@ const CLAUSE_FLAG_LABELS: Record<string, string> = {
 
 // U.4.4 — 'ask' removed; the rail handles per-contract Q&A.
 // docs/41 Part 12 — Versions, Activity and Approval are in the History drawer now.
-type Tab = 'overview' | 'document' | 'clauses' | 'negotiate' | 'comments'
+type Tab = 'overview' | 'document' | 'clauses' | 'comments'
 
 // ─── Moves by hand ─────────────────────────────────────────────────────────────
 // docs/41 Part 18 — the moves a person makes by hand (start negotiating,
@@ -623,7 +620,10 @@ export function ContractDetailPage() {
 
   // B.5.13 — Compare Versions mode (full-screen overlay).
   // Elevated from a buried tab to a first-class mode per docs/26 State 9.
-  const [compareOpen, setCompareOpen] = useState(false)
+  // docs/41 Part 15 (C2) — Compare, Review their changes and the history's
+  // compare open the workspace's Changes mode (it replaced the Compare
+  // overlay, the Negotiate tab and the redline panel).
+  const openChanges = () => navigate(workspacePath(id!, { changes: true }))
 
   // B.5.16 — Responsive rail behaviour.
   //   xl+   (≥1280)  → static two-column layout (rail visible).
@@ -1225,22 +1225,6 @@ export function ContractDetailPage() {
 
   // Negotiation (Phase 05)
   const [showShareDialog, setShowShareDialog] = useState(false)
-  const [diffV1Id, setDiffV1Id] = useState('')
-  const [diffV2Id, setDiffV2Id] = useState('')
-
-  const diffQuery = useQuery({
-    queryKey: ['contract-diff', id, diffV1Id, diffV2Id],
-    queryFn: () => api.get(`/contracts/${id}/versions/${diffV1Id}/diff/${diffV2Id}`).then(r => r.data),
-    enabled: !!diffV1Id && !!diffV2Id && diffV1Id !== diffV2Id && tab === 'negotiate',
-    // X32 — a pair too large to diff took the whole time limit to say so.
-    retry: (count, err) => (err as { response?: { status?: number } })?.response?.status !== 422 && count < 1,
-  })
-
-  const redlineMutation = useMutation({
-    mutationFn: ({ v1Id, v2Id }: { v1Id: string; v2Id: string }) =>
-      api.post(`/contracts/${id}/redline`, { v1Id, v2Id }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['contract', id] }),
-  })
 
   // Attachments
   const attachFileRef = useRef<HTMLInputElement>(null)
@@ -1316,9 +1300,6 @@ export function ContractDetailPage() {
     { analysisStatus: contract?.analysisStatus ?? '', analysisError: contract?.analysisError, currentVersionId: contract?.currentVersionId ?? null, metadata: contract?.metadata },
     { currentVersionNumber: (standing as { versionNumber?: number } | undefined)?.versionNumber ?? null, checkpointSoon: true },
   )
-  // …and the version before it: what the negotiation diff compares by default.
-  const standingIdx = standing ? versions.findIndex((v: { id: string }) => v.id === standing.id) : 0
-  const diffDefaults = { v2: versions[standingIdx]?.id as string | undefined, v1: versions[standingIdx + 1]?.id as string | undefined }
 
   // U.1.2 — does the current version have an actual PDF/source file? When
   // null it's a text-only / template-generated contract — the Original
@@ -1436,7 +1417,6 @@ export function ContractDetailPage() {
 
   const visibleTabs = useMemo(() => {
     const tabs: Tab[] = ['overview', 'clauses', 'document']
-    if (versions.length >= 2) tabs.push('negotiate')
     tabs.push('comments')
     return tabs
   }, [versions.length])
@@ -1454,17 +1434,6 @@ export function ContractDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, id])
 
-  // Auto-populate version dropdowns when switching to negotiate tab
-  useEffect(() => {
-    if (tab === 'negotiate' && versions.length >= 2 && !diffV1Id && !diffV2Id) {
-      setDiffV1Id(diffDefaults.v1 ?? versions[1]?.id ?? '')
-      setDiffV2Id(diffDefaults.v2 ?? versions[0]?.id ?? '')
-    }
-    if (tab !== 'negotiate' && (diffV1Id || diffV2Id)) {
-      setDiffV1Id('')
-      setDiffV2Id('')
-    }
-  }, [tab, versions.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (isLoading) {
     return (
@@ -1542,9 +1511,6 @@ export function ContractDetailPage() {
       {canCreateFields ? 'Track as field' : 'Suggest as field'}
     </button>
   )
-  const redlineMeta = (customMeta._redlineAnalysis ?? null) as any
-  const redlineStatus = (customMeta._redlineStatus ?? null) as string | null
-  const isAnalyzingRedlines = redlineStatus === 'ANALYZING'
 
   // Suggested questions used to live here for the in-page Ask tab
   // (U.4.4 deleted). When we add per-contract suggested prompts on
@@ -1735,7 +1701,7 @@ export function ContractDetailPage() {
               size="sm"
               disabled={versions.length < 2}
               onClick={() => {
-                setCompareOpen(true)
+                openChanges()
                 track('compare_opened', { versionCount: versions.length })
               }}
               className="gap-1.5 text-ink-500 hover:text-ink-950"
@@ -1932,7 +1898,7 @@ export function ContractDetailPage() {
                     disabled={versions.length < 2}
                     onSelect={() => {
                       if (versions.length < 2) return
-                      setCompareOpen(true)
+                      openChanges()
                       track('compare_opened', { versionCount: versions.length, source: 'actions_menu' })
                     }}
                     data-testid="compare-menu-item"
@@ -2299,11 +2265,7 @@ export function ContractDetailPage() {
           contractId={id}
           onSubmit={() => setSendForReviewOpen(true)}
           onSendForSignature={() => setSendForSignatureOpen(true)}
-          onReviewChanges={() => {
-            const [latest, before] = versions as Array<{ id: string }>
-            if (latest && before) { setDiffV1Id(before.id); setDiffV2Id(latest.id) }
-            setTab('negotiate')
-          }}
+          onReviewChanges={openChanges}
           onOpenHistory={() => setHistoryOpen(true)}
         />
       )}
@@ -2502,7 +2464,7 @@ export function ContractDetailPage() {
             </span>
             <div className="ml-auto flex items-center gap-1.5 shrink-0">
               {versions.length > 1 && (
-                <Button size="xs" variant="ghost" onClick={() => setCompareOpen(true)} data-testid="tracked-changes-compare">
+                <Button size="xs" variant="ghost" onClick={() => openChanges()} data-testid="tracked-changes-compare">
                   <ArrowLeftRight className="size-3.5" /> Compare versions
                 </Button>
               )}
@@ -3332,81 +3294,6 @@ export function ContractDetailPage() {
           )
         })()}
 
-        {/* ─── Negotiate ─────────────────────────────────────────────────── */}
-        {tab === 'negotiate' && (
-          <div className="p-6 space-y-6">
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-              {/* Left: Diff viewer */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-section text-ink-950">Version diff</p>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={diffV1Id}
-                      onChange={e => setDiffV1Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
-                    >
-                      <option value="">v1 (baseline)</option>
-                      {versions.map((v: any) => (
-                        <option key={v.id} value={v.id}>v{v.versionNumber}</option>
-                      ))}
-                    </select>
-                    <span className="text-dense text-ink-400">vs</span>
-                    <select
-                      value={diffV2Id}
-                      onChange={e => setDiffV2Id(e.target.value)}
-                      className="text-dense text-ink-950 bg-card border border-paper-300 rounded-md px-2 py-1 focus:outline-none focus:border-brand-700 focus:ring-[3px] focus:ring-brand-700/15"
-                    >
-                      <option value="">v2 (redlines)</option>
-                      {versions.map((v: any) => (
-                        <option key={v.id} value={v.id}>v{v.versionNumber}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                {diffQuery.isLoading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <Loader2 className="size-5 animate-spin text-ink-400" />
-                  </div>
-                ) : diffQuery.isError ? (
-                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-500 text-body">
-                    {(diffQuery.error as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-                      ?? 'The comparison could not be loaded.'}
-                  </div>
-                ) : diffQuery.data ? (
-                  <DiffViewer
-                    diffHtml={diffQuery.data.diffHtml}
-                    stats={diffQuery.data.stats}
-                    v1Label={`v${versions.find((v: any) => v.id === diffV1Id)?.versionNumber ?? '1'}`}
-                    v2Label={`v${versions.find((v: any) => v.id === diffV2Id)?.versionNumber ?? '2'}`}
-                  />
-                ) : (
-                  <div className="bg-card border border-paper-200 rounded-card p-8 text-center text-ink-400 text-body">
-                    Select two versions above to view tracked changes
-                  </div>
-                )}
-              </div>
-
-              {/* Right: Redline AI panel */}
-              <div>
-                <RedlinePanel
-                  analysis={redlineMeta}
-                  isAnalyzing={isAnalyzingRedlines}
-                  failure={redlineStatus === 'FAILED' ? String(customMeta._redlineError ?? 'The analysis did not complete.') : null}
-                  versions={versions.map((v: any) => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt }))}
-                  defaultV1Id={diffDefaults.v1}
-                  defaultV2Id={diffDefaults.v2}
-                  onRequestAnalysis={(v1Id, v2Id) => {
-                    setDiffV1Id(v1Id)
-                    setDiffV2Id(v2Id)
-                    redlineMutation.mutate({ v1Id, v2Id })
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ─── Comments ───────────────────────────────────────────────────── */}
         {tab === 'comments' && (
           <div className="p-6 max-w-3xl mx-auto">
@@ -4188,17 +4075,14 @@ export function ContractDetailPage() {
                   {attachMutation.isPending ? 'Attaching…' : 'Attach'}
                 </button>
               )}
-              {/* X51 — the tab bar shows only outside the document view, and the
-                  way out was Clauses' "View all" or an approval: a contract with
-                  no extracted clauses could never open Negotiate to analyze its
-                  redlines. (The header's Compare is a different view, CompareMode.) */}
+              {/* docs/41 Part 15 — what changed between versions is the workspace's Changes mode. */}
               {versions.length >= 2 && (
                 <button
-                  onClick={() => setTab('negotiate')}
-                  data-testid="rail-history-negotiate"
+                  onClick={openChanges}
+                  data-testid="rail-history-changes"
                   className="text-[11px] font-semibold text-ink-950 hover:underline"
                 >
-                  Negotiate
+                  Changes
                 </button>
               )}
             </span>
@@ -4301,7 +4185,7 @@ export function ContractDetailPage() {
           contractId={id}
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          onCompare={(previousId, versionId) => { setDiffV1Id(previousId); setDiffV2Id(versionId); setTab('negotiate') }}
+          onCompare={() => openChanges()}
           onDownload={(versionId) => handleDownload(versionId)}
         />
       )}
@@ -4605,27 +4489,6 @@ export function ContractDetailPage() {
         }}
       />
 
-      {/*
-        B.5.13 — Compare Versions fullscreen mode. See docs/26 State 9.
-        We render conditionally on `id` being present (same guard as the
-        palette) so we don't mount the mode during the initial loading
-        flash. Entering is cheap (no data fetched until user picks two
-        versions that differ); exiting is Esc or the × button.
-      */}
-      {id && (
-        <CompareMode
-          open={compareOpen}
-          onClose={() => setCompareOpen(false)}
-          contractId={id}
-          versions={versions.map((v: any) => ({
-            id:            v.id,
-            versionNumber: v.versionNumber,
-            createdAt:     v.createdAt,
-            authorName:    v.createdByName ?? v.authorName ?? null,
-            changeNote:    v.changeNote ?? null,
-          }))}
-        />
-      )}
 
       {/*
         B.5.17 — First-visit guide. Dismissible three-step walkthrough

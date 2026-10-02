@@ -87,5 +87,10 @@ describe('the Changes view', () => {
     expect(html).toContain('AI: Counter. An uncapped liability is outside your playbook.')
     for (const a of ['accept', 'keep', 'counter', 'comment']) expect(html).toContain(`data-testid="change-${a}-ch0"`)
     expect(html).toContain('Word with tracked changes')
+    // docs/41 Part 4 — a choice between their words and ours, not an approval verdict: never "Reject".
+    const labels = [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1].replace(/<[^>]+>/g, '').trim())
+    expect(labels).toContain('Accept change')
+    expect(labels).toContain('Keep original')
+    expect(labels.some(l => /reject/i.test(l))).toBe(false)
   })
 })

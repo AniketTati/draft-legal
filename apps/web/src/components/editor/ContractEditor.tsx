@@ -589,8 +589,8 @@ export function ContractEditor({
     // `Authorization: Bearer`, there is no cookie fallback, and only the axios
     // client attaches the token — so this 401'd every single time. Then
     // `if (!resp?.ok) return` swallowed it, which is why the buttons appeared
-    // to do nothing at all rather than to fail. CompareMode.tsx is the correct
-    // pattern and its own comment already named this file as the anti-pattern.
+    // to do nothing at all rather than to fail. The workspace's ChangesView
+    // downloads the same way, through the axios client.
     setExportError(null)
     try {
       const res = await api.post(
