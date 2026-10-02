@@ -344,6 +344,9 @@ export function computeFindings(input: ReviewInput): ReviewOutput {
   const typesNow = new Set(current.map(c => c.clauseType))
   for (const f of input.carriedDeleted ?? []) {
     if (f.kind !== 'deleted' || !f.clauseType || typesNow.has(f.clauseType) || out.some(o => o.key === f.key)) continue
+    // The whole clause type is gone now: its finding already says so, and a
+    // "Part of …" carried beside it repeated the same deletion.
+    if (out.some(o => o.kind === 'deleted' && o.key === `deleted|${f.clauseType}`)) continue
     out.push({ ...f })
   }
 
