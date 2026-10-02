@@ -93,7 +93,7 @@ export class SalesforceClient {
     if (res.status === 204) return null as T
 
     const text = await res.text()
-    let parsed: unknown = null
+    let parsed: unknown
     try { parsed = text ? JSON.parse(text) : null } catch { parsed = text }
     const first = Array.isArray(parsed) ? parsed[0] as { errorCode?: string; message?: string } | undefined : undefined
     const errorCode = first?.errorCode

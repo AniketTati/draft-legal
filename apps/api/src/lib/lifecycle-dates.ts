@@ -57,7 +57,7 @@ export function dateMove(c: { stage: string; stageState: string; expiryDate: Dat
 export function renewedExpiry(expiry: Date, months: number, now: Date): { to: Date; renewals: number } {
   // Counted from the old date each time, so a 31st stays the 31st where the month has one.
   let renewals = 0
-  let to = expiry
+  let to: Date
   do { renewals++; to = addDuration(expiry, { value: months * renewals, unit: 'months' }) } while (to.getTime() <= now.getTime() && renewals < 100)
   return { to, renewals }
 }

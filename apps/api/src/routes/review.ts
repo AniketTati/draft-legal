@@ -368,8 +368,8 @@ export async function reviewRoutes(app: FastifyInstance) {
       ? await prisma.contractClause.findFirst({ where: { id: finding.clauseId, versionId: contract.currentVersionId! }, select: { id: true } })
       : null
 
-    let versionId: string | null = null
-    let versionNumber: number | null = null
+    let versionId: string
+    let versionNumber: number
     if (clauseOnVersion) {
       // The clause's words become the position's, as one new version.
       const r = await applyClauseBatch({ orgId, userId, contractId: id, changes: [{ clauseId: clauseOnVersion.id, proposedText: htmlToText(position.content).trim(), rationale: `Your standard ${name} language` }], rationale: `inserted your standard ${name} language` })

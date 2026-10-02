@@ -80,7 +80,7 @@ export async function complianceApplicabilityRoutes(app: FastifyInstance) {
     })
     // The answer may make a framework apply: check it now. A failed check
     // doesn't undo the answer; the rail shows it and offers a retry.
-    let checks: { ran: string[]; error?: string } = { ran: [] }
+    let checks: { ran: string[]; error?: string }
     try {
       checks = await runApplicableChecks({ orgId, contractId: id, userId: req.user.sub })
     } catch (err) {

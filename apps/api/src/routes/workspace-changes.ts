@@ -72,7 +72,7 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
     })
 
     // The baseline: the one asked for, else the review's, else the version before.
-    let base: { versionId: string; reason: BaselineReason | 'chosen' } | null = null
+    let base: { versionId: string; reason: BaselineReason | 'chosen' } | null
     if (asked === 'origin') {
       if (!origin) return reply.status(404).send({ detail: 'This contract was not generated from a template.' })
       base = { versionId: origin.id, reason: 'origin' }
