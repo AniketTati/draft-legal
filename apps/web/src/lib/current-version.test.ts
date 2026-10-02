@@ -33,7 +33,8 @@ describe('the contract page', () => {
     expect(page).toContain('workspacePath(id!, { changes: true })')
     expect(page).not.toContain('<RedlinePanel')
     const changes = readFileSync(join(__dirname, '../components/contracts/workspace/ChangesView.tsx'), 'utf8')
-    expect(changes).toContain("params: baseline ? { baseline } : {}")
+    // No baseline asked: the server's default (the review's); fix-up 21 adds a saved version as the newer side.
+    expect(changes).toContain("params: { ...(baseline && { baseline }), ...(current && { current }) }")
   })
 
   it('keeps the review drawer on its clause across a new version, and shows a mark the server moved there', () => {
