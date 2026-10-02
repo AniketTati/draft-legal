@@ -108,15 +108,24 @@ export async function salesforceAdminRoutes(app: FastifyInstance) {
     const cfg = salesforceAppConfig()
     if (!cfg) return reply.status(503).send({ detail: 'Salesforce is not set up on this server yet (SALESFORCE_CLIENT_ID and SALESFORCE_CLIENT_SECRET).' })
     let body
-    try { body = z.object({ loginUrl: z.string().max(200).optional(), sandbox: z.boolean().optional() }).parse(req.body ?? {}) }
+    try { body = z.object({ loginUrl: z.string().max(200).optional(), sandbox: z.boolean().optional(), reconnect: z.boolean().optional() }).parse(req.body ?? {}) }
     catch (err) { return invalid(reply, err) }
     const loginUrl = normaliseLoginUrl(body.loginUrl ?? (body.sandbox ? SANDBOX_LOGIN_URL : DEFAULT_LOGIN_URL))
     if (!loginUrl) return reply.status(400).send({ detail: 'Use login.salesforce.com, test.salesforce.com or your My Domain (https://<name>.my.salesforce.com).' })
+    // Moving a workspace to another Salesforce org would leave its field map,
+    // sync history and record links pointing at the old one: disconnect first.
+    // `reconnect` signs in again to the same org (an expired token); the
+    // callback refuses any other org.
+    const current = await getConnection(req.user.orgId, 'salesforce')
+    const bound = current && ['connected', 'error'].includes(current.status) && current.externalOrgId ? current.externalOrgId : null
+    if (bound && !body.reconnect) {
+      return reply.status(409).send({ detail: `Salesforce is already connected (org ${bound}). To connect a different Salesforce org, disconnect this one first.` })
+    }
 
     const nonce = crypto.randomBytes(16).toString('base64url')
     const { verifier, challenge } = pkcePair()
     await redis.set(verifierKey(nonce), verifier, 'EX', STATE_TTL_S)
-    const state = signToken('salesforce-oauth-state', { o: req.user.orgId, u: req.user.sub, n: nonce, l: loginUrl }, STATE_TTL_S)
+    const state = signToken('salesforce-oauth-state', { o: req.user.orgId, u: req.user.sub, n: nonce, l: loginUrl, ...(bound ? { x: bound } : {}) }, STATE_TTL_S)
     return reply.send({ url: authorizeUrl({ loginUrl, clientId: cfg.clientId, redirectUri: cfg.redirectUri, state, codeChallenge: challenge }) })
   })
 
@@ -341,7 +350,7 @@ export async function salesforcePublicRoutes(app: FastifyInstance) {
     const q = req.query as { code?: string; state?: string; error?: string; error_description?: string }
     const back = (params: Record<string, string>) =>
       reply.redirect(`${appBase()}/admin/integrations?${new URLSearchParams({ tab: 'salesforce', ...params })}`)
-    const claims = verifyToken<SignedClaims & { o: string; u: string; n: string; l: string }>('salesforce-oauth-state', q.state)
+    const claims = verifyToken<SignedClaims & { o: string; u: string; n: string; l: string; x?: string }>('salesforce-oauth-state', q.state)
     if (!claims) return back({ error: 'The sign-in link expired or was changed. Start again from Connect.' })
     // One use only: the verifier goes with the first callback that claims it.
     const verifier = await redis.getdel(verifierKey(claims.n))
@@ -367,6 +376,23 @@ export async function salesforcePublicRoutes(app: FastifyInstance) {
       select: { id: true },
     }))
     if (taken) return back({ error: 'That Salesforce org is already connected to another draftLegal workspace.' })
+    // Disconnect first (see /connect): a sign-in to another org than the one
+    // this workspace is bound to — or was asked to reconnect — changes nothing.
+    const current = await withoutTenantGuard(() => prisma.integrationConnection.findFirst({
+      where: { orgId: claims.o, provider: 'salesforce' }, select: { status: true, externalOrgId: true },
+    }))
+    const bound = claims.x ?? (current && ['connected', 'error'].includes(current.status) ? current.externalOrgId : null)
+    if (bound && !sameSalesforceId(bound, sfOrgId)) {
+      return back({ error: `You signed in to a different Salesforce org than the one connected (${bound}). To switch orgs, disconnect Salesforce first, then connect the other org.` })
+    }
+    // Connecting a new org after a disconnect: the open conflicts were raised by
+    // the old org's values, so they no longer apply.
+    if (current?.externalOrgId && !sameSalesforceId(current.externalOrgId, sfOrgId)) {
+      await withoutTenantGuard(() => prisma.integrationConflict.updateMany({
+        where: { orgId: claims.o, provider: 'salesforce', status: 'open' },
+        data: { status: 'dismissed', resolvedById: claims.u, resolvedAt: new Date() },
+      }))
+    }
 
     const data = {
       status: 'connected', externalOrgId: sfOrgId, instanceUrl: token.instance_url, loginUrl: claims.l,

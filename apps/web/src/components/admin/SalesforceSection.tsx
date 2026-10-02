@@ -121,6 +121,13 @@ export function SalesforceSection() {
     onSuccess: ({ url }) => window.location.assign(url),
   })
 
+  // Signing in again to the same Salesforce org (an expired token). Another
+  // org is refused: the workspace disconnects first.
+  const reconnect = useMutation({
+    mutationFn: async () => api.post('/admin/integrations/salesforce/connect', { loginUrl: data?.loginUrl ?? undefined, reconnect: true }).then(r => r.data as { url: string }),
+    onSuccess: ({ url }) => window.location.assign(url),
+  })
+
   const disconnect = useMutation({
     mutationFn: async () => api.delete('/admin/integrations/salesforce'),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['salesforce-status'] }),
@@ -162,8 +169,13 @@ export function SalesforceSection() {
             <div className="flex justify-between"><dt className="text-ink-500">Connected</dt><dd className="text-[11px] tabular-nums text-ink-700">{when(data.connectedAt)}</dd></div>
             <div className="flex justify-between"><dt className="text-ink-500">Last sync</dt><dd className="text-[11px] tabular-nums text-ink-700">{when(data.lastSyncAt)}</dd></div>
           </dl>
-          <div className="mt-4 flex justify-between items-center">
-            <p className="text-dense text-ink-500">Contracts update their Salesforce record within a minute of each change.</p>
+          <div className="mt-4 flex justify-between items-center gap-2">
+            <p className="text-dense text-ink-500 flex-1">Contracts update their Salesforce record within a minute of each change. To connect a different Salesforce org, disconnect this one first.</p>
+            {data.status === 'error' && (
+              <Button size="sm" variant="outline" onClick={() => reconnect.mutate()} disabled={reconnect.isPending} data-testid="salesforce-reconnect">
+                Sign in again
+              </Button>
+            )}
             <button
               onClick={() => setConfirmDisconnect(true)}
               data-testid="salesforce-disconnect"
