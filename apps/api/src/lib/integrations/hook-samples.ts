@@ -17,7 +17,7 @@ export const SAMPLE_DATA: Record<string, Record<string, unknown>> = {
   'signature.completed':  { contractId: 'cmb1example0contract', signatureRequestId: 'cmb1example0sigreq', signerCount: 2, completedAt: '2026-10-01T14:03:00.000Z' },
   'signature.voided':     { contractId: 'cmb1example0contract', signatureRequestId: 'cmb1example0sigreq', reason: 'Jane Doe declined: wrong entity' },
   'approval.submitted':   { contractId: 'cmb1example0contract', title: 'Order Form — Acme Corp', type: 'ORDER_FORM', value: 45000, currency: 'USD', instanceId: 'cmb1example0approval', stepId: 'cmb1example0step', stepName: 'Legal review', approverId: 'cmb1example0user' },
-  'approval.decided':     { instanceId: 'cmb1example0approval', contractId: 'cmb1example0contract', stepId: 'cmb1example0step', decision: 'APPROVED', instanceStatus: 'APPROVED', decidedBy: 'cmb1example0user' },
+  'approval.decided':     { instanceId: 'cmb1example0approval', contractId: 'cmb1example0contract', stepId: 'cmb1example0step', decision: 'APPROVED', outcome: 'approved', instanceStatus: 'APPROVED', decidedBy: 'cmb1example0user' },
   'obligation.extracted': { contractId: 'cmb1example0contract', count: 4 },
   'obligation.completed': { obligationId: 'cmb1example0obligation', contractId: 'cmb1example0contract', type: 'PAYMENT', completedAt: '2026-10-01T09:00:00.000Z', hasEvidence: true },
   'obligation.overdue':   { contractId: 'cmb1example0contract', obligationId: 'cmb1example0obligation', description: 'Deliver the quarterly security report', dueDate: '2026-09-30', daysOverdue: 1 },
