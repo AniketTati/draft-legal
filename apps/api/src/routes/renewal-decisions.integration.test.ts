@@ -155,6 +155,32 @@ describe('let it lapse, or end it', () => {
     expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).stageState).toBe('auto_renewed')
   })
 
+  it('moves the expiry on by the renewal term when it renews on its own, with the notice deadline and a record (fix-up 16)', async () => {
+    const id = await signed('Renews yearly', 10, { renewalType: 'Automatic', renewalTerm: '12 months', nonRenewalNotice: '30 days' })
+    const was = (await prisma.contract.findUniqueOrThrow({ where: { id } })).expiryDate!
+    const day = (d: Date) => d.toISOString().slice(0, 10)
+    const next = new Date(was); next.setUTCMonth(next.getUTCMonth() + 12)
+    const r = await scanStageDates({ orgId: org, now: new Date(Date.now() + 11 * DAY) })
+    expect(r.errors).toEqual([])
+    const c = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    expect(c.stageState).toBe('auto_renewed')
+    expect(day(c.expiryDate!)).toBe(day(next))
+    expect(day(c.noticeDeadline!)).toBe(day(new Date(c.expiryDate!.getTime() - 30 * DAY)))
+    const fv = await prisma.contractFieldValue.findFirstOrThrow({ where: { contractId: id, fieldKey: 'expiryDate' } })
+    expect(fv).toMatchObject({ source: 'renewal', value: day(next) })
+    const ev = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' }, orderBy: { createdAt: 'desc' } })
+    expect(ev.metadata).toMatchObject({ source: 'auto_renewal', action: 'renewed_expiry', from: day(was), to: day(next), months: 12 })
+    const moved = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'STAGE_CHANGED' }, orderBy: { createdAt: 'desc' } })
+    expect(JSON.stringify(moved.metadata)).toContain(`it now runs to ${day(next)}`)
+    // The renewed term nears its end like the first, and renews again.
+    await scanStageDates({ orgId: org, now: new Date(c.expiryDate!.getTime() - 10 * DAY) })
+    expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).stageState).toBe('expiring')
+    await scanStageDates({ orgId: org, now: new Date(c.expiryDate!.getTime() + DAY) })
+    const again = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    expect(again.stageState).toBe('auto_renewed')
+    expect(again.expiryDate!.getTime()).toBeGreaterThan(c.expiryDate!.getTime())
+  })
+
   it('has no notice to mark sent without a decision not to renew', async () => {
     const id = await signed('No notice', 100, { renewalType: 'Automatic' })
     await decide(id, 'renew')

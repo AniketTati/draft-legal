@@ -477,7 +477,7 @@ model ContractFieldValue {
   valueText    String?
   valueNumber  Float?
   valueDate    DateTime?
-  source       String    @default("ai") // ai | user | highlight | variable | amendment | import
+  source       String    @default("ai") // ai | user | highlight | variable | amendment | import | renewal
   confidence   Float?
   quote        String?
   section      String?

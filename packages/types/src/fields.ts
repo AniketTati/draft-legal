@@ -36,7 +36,8 @@ export type FieldColumn = 'effectiveDate' | 'expiryDate' | 'value' | 'currency' 
  * amendment, import) are never overwritten by extraction; `calculated` (an end
  * date worked out from a start date and a term) is recalculated like the AI's.
  */
-export type FieldSource = 'ai' | 'calculated' | 'user' | 'highlight' | 'variable' | 'amendment' | 'import'
+// 'renewal' — fix-up 16: an expiry date an automatic renewal moved on.
+export type FieldSource = 'ai' | 'calculated' | 'user' | 'highlight' | 'variable' | 'amendment' | 'import' | 'renewal'
 
 /** What kind of field a value belongs to. */
 export type FieldKind = 'core' | 'type' | 'custom'

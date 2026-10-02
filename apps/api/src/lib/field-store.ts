@@ -1457,6 +1457,47 @@ export async function applyAmendmentValues(input: {
 }
 
 /**
+ * Fix-up 16 — an automatic renewal moves the expiry date on: the expiryDate
+ * value becomes the new end of term, source 'renewal' (a re-analysis keeps
+ * it: the document still states the first term), the column and the renewal
+ * columns (notice deadline) follow in the same commit, and it is on the record.
+ * Null when the contract isn't found.
+ */
+export async function renewExpiry(input: {
+  orgId: string; contractId: string; to: string; months: number; renewals: number; termFrom: string
+}): Promise<{ from: string | null; to: string } | null> {
+  const result = await prisma.$transaction(async tx => {
+    const loaded = await loadInTx(tx, input.contractId, input.orgId)
+    if (!loaded) return null
+    const { c, defs, rows } = loaded
+    const def = resolveDef(defs, 'expiryDate')
+    if (!def) return null
+    const before = rows.find(r => r.fieldKey === def.key)
+    const data = {
+      value: input.to, ...projections('date', input.to), valueType: 'date', source: 'renewal', confidence: 1,
+      quote: null, section: null, issue: null, anchor: Prisma.JsonNull, verifiedAt: null, verifiedById: null, rejectedAt: null,
+      suggestion: Prisma.JsonNull, candidates: Prisma.JsonNull, fromContractId: null,
+    }
+    await tx.contractFieldValue.upsert({
+      where: { contractId_fieldKey: { contractId: c.id, fieldKey: def.key } },
+      create: { orgId: c.orgId, contractId: c.id, fieldKey: def.key, kind: def.kind, ...data },
+      update: data,
+    })
+    await commit(tx, c, defs, { keepUpdatedAt: true })
+    const from = c.expiryDate ? c.expiryDate.toISOString().slice(0, 10) : (typeof before?.value === 'string' ? before.value : null)
+    return { from, to: input.to }
+  })
+  if (!result) return null
+  reindexContract(input.contractId).catch(err => console.warn('[field-store] re-index failed contractId=%s: %s', input.contractId, (err as Error).message))
+  fireWebhook(input.orgId, 'contract.updated', { contractId: input.contractId, changes: ['expiryDate'], source: 'system' })
+  await createAuditEvent({
+    orgId: input.orgId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: input.contractId,
+    metadata: { source: 'auto_renewal', action: 'renewed_expiry', from: result.from, to: result.to, months: input.months, renewals: input.renewals, termFrom: input.termFrom },
+  })
+  return result
+}
+
+/**
  * G3 — a roll-up's changes put back (lib/field-runs.ts): each value still as
  * the amendment set it returns to what it was, who had checked it included;
  * one a person or a later amendment has changed since stays.
