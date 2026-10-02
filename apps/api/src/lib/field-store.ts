@@ -1960,6 +1960,15 @@ function readingsIn(ev: Record<string, unknown>): ExtractedField['candidates'] {
   return Array.isArray(ev.candidates) ? (ev.candidates.filter(c => c && typeof c === 'object') as NonNullable<ExtractedField['candidates']>) : null
 }
 
+/**
+ * A draft's open blank ("[[Choose governing law: …]]", "[[effectiveDate]]")
+ * read back as a field's value. It says the term is still to be chosen, so it
+ * is no value: storing it put the blank's words in the Governing law column.
+ */
+function blankAsNull(v: unknown): unknown {
+  return typeof v === 'string' && /^\s*\[\[[\s\S]*\]\]\s*$/.test(v) ? null : v
+}
+
 export function extractedFieldsFromPatch(body: Record<string, unknown>, customKeys: ReadonlySet<string>): ExtractedField[] {
   const out = new Map<string, ExtractedField>()
   const kt = obj(body.keyTerms)
@@ -1970,7 +1979,7 @@ export function extractedFieldsFromPatch(body: Record<string, unknown>, customKe
     const ev = obj(fc[k])
     // The canonical key beats an older spelling of it.
     if (out.has(def.key) && k !== def.key) continue
-    out.set(def.key, { key: def.key, kind: 'core', value: v, confidence: ev.confidence as number | undefined, quote: ev.quote as string | undefined, section: ev.section as string | undefined, issue: ev.issue as string | undefined, candidates: readingsIn(ev) })
+    out.set(def.key, { key: def.key, kind: 'core', value: blankAsNull(v), confidence: ev.confidence as number | undefined, quote: ev.quote as string | undefined, section: ev.section as string | undefined, issue: ev.issue as string | undefined, candidates: readingsIn(ev) })
   }
   for (const col of COLUMN_KEYS) {
     if (!(col in body)) continue
@@ -1979,12 +1988,12 @@ export function extractedFieldsFromPatch(body: Record<string, unknown>, customKe
     const ev = obj(fc[def.key])
     const partiesEv = col === 'counterpartyName' ? obj(fc.parties) : {}
     const src = Object.keys(ev).length ? ev : partiesEv
-    out.set(def.key, { key: def.key, kind: 'core', value: body[col], confidence: src.confidence as number | undefined, quote: src.quote as string | undefined, section: src.section as string | undefined })
+    out.set(def.key, { key: def.key, kind: 'core', value: blankAsNull(body[col]), confidence: src.confidence as number | undefined, quote: src.quote as string | undefined, section: src.section as string | undefined })
   }
   const md = obj(body.metadata)
   for (const [k, e] of Object.entries(obj(md._typeFields))) {
     const entry = obj(e)
-    out.set(`type:${k}`, { key: k, kind: 'type', value: entry.value, confidence: entry.confidence as number | undefined, quote: entry.quote as string | undefined, label: entry.label as string | undefined, issue: entry.issue as string | undefined, candidates: readingsIn(entry) })
+    out.set(`type:${k}`, { key: k, kind: 'type', value: blankAsNull(entry.value), confidence: entry.confidence as number | undefined, quote: entry.quote as string | undefined, label: entry.label as string | undefined, issue: entry.issue as string | undefined, candidates: readingsIn(entry) })
   }
   const customEvidence = obj(md._customFieldEvidence)
   for (const k of customKeys) {
