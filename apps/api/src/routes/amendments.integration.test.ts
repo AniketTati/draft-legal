@@ -120,6 +120,17 @@ describe('drafting an amendment from what changes', () => {
   })
 })
 
+describe('before it is signed', () => {
+  it('refuses the roll-up, naming the amendment, and says so on the changes it reads', async () => {
+    const changes = (await req('GET', `/${a1}/amendment-changes`)).json()
+    expect(changes).toMatchObject({ signed: false, label: 'Amendment No. 1' })
+    const r = await req('POST', `/${a1}/amendment-changes/apply`, { keys: ['paymentTermsDays'], supersedeObligationIds: [ob] })
+    expect(r.statusCode).toBe(409)
+    expect(r.json()).toMatchObject({ code: 'AMENDMENT_NOT_SIGNED', detail: 'Roll up once Amendment No. 1 is signed.' })
+    expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBeNull()
+  })
+})
+
 describe('once it is signed', () => {
   beforeAll(async () => {
     const patch = (id: string, keyTerms: Record<string, unknown>, fieldConfidence: Record<string, unknown>) =>
@@ -156,6 +167,7 @@ describe('once it is signed', () => {
 
   it('rolls a confirmed term up, keeps the original one click away, and supersedes the replaced clause’s obligation', async () => {
     const changes = (await req('GET', `/${a1}/amendment-changes`)).json()
+    expect(changes.signed).toBe(true)
     expect(changes.changes.find((c: { key: string }) => c.key === 'paymentTermsDays')).toBeTruthy()
     expect(changes.obligations.map((o: { id: string }) => o.id)).toEqual([ob])
     const r = await req('POST', `/${a1}/amendment-changes/apply`, { keys: ['paymentTermsDays'], supersedeObligationIds: [ob] })
