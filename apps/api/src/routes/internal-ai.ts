@@ -3888,6 +3888,9 @@ export async function internalAiRoutes(app: FastifyInstance) {
     const where: Record<string, unknown> = { orgId: body.orgId, reviewState: { not: 'DISMISSED' } }
     if (scope.kind === 'own') where.contract = { ownerId: scope.userId }
     if (body.contractId) where.contractId = body.contractId
+    // docs/41 Part 11 — a draft's proposed obligations aren't owed yet: only
+    // asked about one contract are they listed (marked PROPOSED).
+    else where.status = { not: 'PROPOSED' }
     if (body.type)       where.type = body.type
 
     // Pull contracts up-front so we can join titles + flag contracts

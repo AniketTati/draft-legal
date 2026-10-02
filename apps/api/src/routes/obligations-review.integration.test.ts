@@ -30,7 +30,8 @@ vi.mock('../lib/model-boundary.js', async importOriginal => ({
 }))
 
 import { queueExtractObligations } from '../lib/queue.js'
-import { queueObligationsIfSigned } from '../lib/obligation-extract.js'
+import { queueObligationsIfSigned, queueProposedObligations, extractObligationsForContract } from '../lib/obligation-extract.js'
+import { modelFetch } from '../lib/model-boundary.js'
 import { getApp, closeApp, makeOrg, makeUser, makeContract, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
@@ -146,5 +147,91 @@ describe('signed contracts are read for their obligations', () => {
     expect(r.statusCode).toBeLessThan(300)
     const id = r.json().id ?? r.json().contract?.id
     expect((await prisma.contract.findUniqueOrThrow({ where: { id } })).status).toBe('EXECUTED')
+  })
+})
+
+describe('a draft\'s obligations are proposed, and confirmed at signing (docs/41 Part 11)', () => {
+  type Row = { id: string; description: string; status: string; reviewState: string; versionId: string | null }
+  const rows = (contractId: string) => prisma.obligation.findMany({ where: { contractId }, orderBy: { description: 'asc' } }) as Promise<Row[]>
+  const reads = () => vi.mocked(modelFetch).mock.calls.filter(c => String(c[0]).endsWith('/extract_obligations')).length
+  const newVersion = async (contractId: string, n: number) => {
+    const v = await prisma.contractVersion.create({ data: { contractId, versionNumber: n, createdById: owner, plainText: `Version ${n}. The Customer shall pay monthly.` } })
+    await prisma.contract.update({ where: { id: contractId }, data: { currentVersionId: v.id } })
+    return v.id
+  }
+  const sign = (contractId: string) => prisma.contract.update({ where: { id: contractId }, data: { status: 'EXECUTED', stage: 'active', stageState: 'active', executedAt: new Date() } })
+  let draft: string
+
+  it('reads a draft\'s obligations as proposed: on its contract, not in the org\'s list, and not completable', async () => {
+    draft = await withText('Proposed supply MSA')
+    found.obligations = [ob('Pay the monthly fee', 'The Customer shall pay monthly.'), ob('Send a usage report', 'Provider shall report usage.')]
+    expect((await app.inject({ method: 'POST', url: `/api/v1/contracts/${draft}/extract-obligations`, headers: admin() })).statusCode).toBe(200)
+    const v1 = (await prisma.contract.findUniqueOrThrow({ where: { id: draft } })).currentVersionId
+    expect((await rows(draft)).map(o => [o.status, o.reviewState, o.versionId])).toEqual([['PROPOSED', 'SUGGESTED', v1], ['PROPOSED', 'SUGGESTED', v1]])
+    const meta = (await prisma.contract.findUniqueOrThrow({ where: { id: draft } })).metadata as Record<string, unknown>
+    expect(meta).toMatchObject({ obligationsProposedVersionId: v1 })
+    expect(meta.obligationsExtractedAt).toBeUndefined()
+
+    expect((await list(`&contractId=${draft}`))).toHaveLength(2)
+    const ids = (await rows(draft)).map(o => o.id)
+    expect((await list()).filter(o => ids.includes(o.id))).toEqual([])
+    expect((await list('&status=PROPOSED')).filter(o => ids.includes(o.id))).toHaveLength(2)
+    const [first] = await rows(draft)
+    const done = await app.inject({ method: 'POST', url: `/api/v1/obligations/${first.id}/complete`, headers: admin(), payload: {} })
+    expect(done.statusCode).toBe(409)
+    expect(done.json().detail).toMatch(/owed once the contract is signed/)
+  })
+
+  it('a new version replaces the proposals still open; one a person confirmed stays', async () => {
+    const pay = (await rows(draft)).find(o => o.description.startsWith('Pay'))!
+    expect((await app.inject({ method: 'POST', url: `/api/v1/obligations/${pay.id}/confirm`, headers: admin(), payload: {} })).statusCode).toBe(200)
+    const v2 = await newVersion(draft, 2)
+    found.obligations = [ob('Pay the monthly fee', 'The Customer shall pay monthly.'), ob('Keep insurance in force', 'Provider shall maintain insurance.')]
+    await extractObligationsForContract({ orgId: org, contractId: draft, userId: 'system' })
+    expect((await rows(draft)).map(o => [o.description, o.status, o.reviewState, o.versionId === v2])).toEqual([
+      ['Keep insurance in force', 'PROPOSED', 'SUGGESTED', true],
+      ['Pay the monthly fee', 'PROPOSED', 'CONFIRMED', false],
+    ])
+  })
+
+  it('at signing, the signed version\'s proposals become obligations without reading it again', async () => {
+    vi.mocked(queueExtractObligations).mockClear()
+    await sign(draft)
+    const before = reads()
+    const r = await extractObligationsForContract({ orgId: org, contractId: draft, userId: 'system' })
+    expect(r).toMatchObject({ ok: true, count: 2 })
+    expect(reads()).toBe(before)
+    expect((await rows(draft)).map(o => [o.description, o.status])).toEqual([['Keep insurance in force', 'OPEN'], ['Pay the monthly fee', 'OPEN']])
+    const meta = (await prisma.contract.findUniqueOrThrow({ where: { id: draft } })).metadata as Record<string, unknown>
+    expect(meta.obligationsExtractedAt).toBeTruthy()
+    expect(meta.obligationsProposedVersionId).toBeUndefined()
+    expect(await queueObligationsIfSigned(org, draft)).toBe(false)
+  })
+
+  it('signed on a version never read: older proposals are dropped (a confirmed one kept) and the signed text is read', async () => {
+    const id = await withText('Proposed then changed SOW')
+    found.obligations = [ob('Deliver the reports', 'Provider shall deliver reports.'), ob('Pay on delivery', 'Customer shall pay on delivery.')]
+    await extractObligationsForContract({ orgId: org, contractId: id, userId: 'system' })
+    const reports = (await rows(id)).find(o => o.description.startsWith('Deliver'))!
+    await app.inject({ method: 'POST', url: `/api/v1/obligations/${reports.id}/confirm`, headers: admin(), payload: {} })
+    await newVersion(id, 2)
+    await sign(id)
+    found.obligations = [ob('Deliver the reports', 'Provider shall deliver reports.'), ob('Pay within 30 days', 'Customer shall pay within 30 days.')]
+    const before = reads()
+    await extractObligationsForContract({ orgId: org, contractId: id, userId: 'system' })
+    expect(reads()).toBe(before + 1)
+    expect((await rows(id)).map(o => [o.description, o.status, o.reviewState])).toEqual([
+      ['Deliver the reports', 'OPEN', 'CONFIRMED'],
+      ['Pay within 30 days', 'OPEN', 'SUGGESTED'],
+    ])
+  })
+
+  it('a draft is read after a full analysis only, never an edit checkpoint, and a signed one not as proposed', async () => {
+    vi.mocked(queueExtractObligations).mockClear()
+    const id = await withText('Checkpoint MSA')
+    expect(await queueProposedObligations(org, id, { full: false })).toBe(false)
+    expect(await queueProposedObligations(org, id, { full: true })).toBe(true)
+    expect(await queueProposedObligations(org, await withText('Signed one', 'EXECUTED'), { full: true })).toBe(false)
+    expect(vi.mocked(queueExtractObligations).mock.calls.map(c => c[0].contractId)).toEqual([id])
   })
 })

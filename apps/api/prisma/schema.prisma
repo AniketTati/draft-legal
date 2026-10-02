@@ -1122,7 +1122,9 @@ model Obligation {
   sectionRef    String?
 
   // ── Lifecycle state ──
-  status         String    @default("OPEN") // OPEN | COMPLETED | OVERDUE | WAIVED
+  // PROPOSED: read from a draft (docs/41 Part 11), not owed until the
+  // contract is signed; at signing it becomes OPEN.
+  status         String    @default("OPEN") // PROPOSED | OPEN | COMPLETED | OVERDUE | WAIVED
   completedAt    DateTime?
   completedById  String?
   completionNote String?   @db.Text
@@ -1145,6 +1147,9 @@ model Obligation {
   // obligation stays on the record but is no longer owed.
   supersededById String?
   supersededAt   DateTime?
+
+  // ── docs/41 Part 11 — the version a proposed obligation was read from ──
+  versionId     String?
 
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
