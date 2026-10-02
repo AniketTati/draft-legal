@@ -3,8 +3,9 @@
  * Phase 4 UI — a reviewer downloads the redline as Word.
  *
  * The API check proves the bytes are right. This proves a person can get them:
- * open Compare, pick two versions, press the button, and have a real .docx land
- * on disk.
+ * open the workspace's Changes mode (Compare was folded into it, docs/41 Part 15),
+ * where the baseline is the older version, press the Word button, and have a
+ * real .docx land on disk.
  *
  * That last part is the point of driving a browser here rather than asserting
  * on the DOM. A download can fail in ways no rendering check sees — a missing
@@ -73,51 +74,43 @@ await page.waitForLoadState('networkidle').catch(() => {})
 const skip = page.locator('text=Skip setup').first()
 if (await skip.count()) { await skip.click().catch(() => {}); await page.waitForTimeout(900) }
 
-await page.goto(`${WEB}/contracts/${contract.id}`, { waitUntil: 'domcontentloaded' })
+await page.goto(`${WEB}/contracts/${contract.id}/workspace?mode=changes`, { waitUntil: 'domcontentloaded' })
 await page.waitForLoadState('networkidle').catch(() => {})
 await page.waitForTimeout(1500)
 
-// ─── 1. Compare opens on two versions ───────────────────────────────────────
+// ─── 1. Changes mode opens on two versions ──────────────────────────────────
 
-section('1. A reviewer can open Compare')
+section('1. A reviewer can open Changes mode')
 {
-  const btn = page.locator('button:has-text("Compare")').first()
-  check('the Compare entry point is present', await btn.count() > 0)
-  if (await btn.count()) {
-    await btn.click()
-    await page.waitForTimeout(2500)
-  }
-  await shot('1-compare')
-  const body = await page.locator('body').innerText()
+  const view = page.locator('[data-testid=changes-view]')
+  check('the workspace opens in Changes mode', await view.count() > 0)
+  check('a baseline can be chosen', await page.locator('[data-testid=changes-baseline]').count() > 0)
+  await page.waitForTimeout(1500)
+  await shot('1-changes')
   check('the diff renders rather than an empty state',
-    !/Only one version exists/i.test(body), 'two versions were seeded')
-
-  // Found by looking at the screenshot rather than by an assertion: every
-  // version chip read "Unknown". CompareMode's whole premise is attribution —
-  // who proposed this change — and the versions route returned only the raw
-  // createdById while the UI read createdByName.
-  check('each version names its author, not "Unknown"',
-    !/Unknown/.test(body), 'the version chips should carry a real name')
+    await page.locator('[data-testid=changes-none]').count() === 0, 'two versions were seeded')
+  // The old Compare showed version chips that read "Unknown" when the versions
+  // route lost the author's name. Keep the guard on the new surface.
+  check('no version is attributed to "Unknown"',
+    !/Unknown/.test(await view.innerText().catch(() => '')))
 }
 
 // ─── 2. The download control is reachable ───────────────────────────────────
 
-section('2. The Word export is offered where the versions are chosen')
+section('2. The Word export is offered beside the baseline')
 {
-  const dl = page.locator('[data-testid=download-redline-docx]')
+  const dl = page.locator('[data-testid=changes-download-word]')
   const present = await dl.count() > 0
-  check('the "Word (tracked)" button is present', present,
-    'it belongs beside the version pickers — that is where the two ids exist')
-  if (present) {
-    check('it is enabled once two versions are selected', await dl.first().isEnabled())
-  }
+  check('the "Word with tracked changes" button is present', present,
+    'it belongs beside the baseline picker, where both version ids exist')
+  if (present) check('it is enabled', await dl.first().isEnabled())
 }
 
 // ─── 3. Pressing it delivers a real .docx ───────────────────────────────────
 
 section('3. The download actually arrives, and is a Word file')
 {
-  const dl = page.locator('[data-testid=download-redline-docx]')
+  const dl = page.locator('[data-testid=changes-download-word]')
   let saved = ''
   let suggested = ''
   if (await dl.count()) {
@@ -160,8 +153,9 @@ section('4. The surface is clean')
 {
   const fatal = errors.filter(e => /is not a function|Cannot read|undefined is not/i.test(e))
   check('no fatal console errors', fatal.length === 0, fatal.slice(0, 2).join(' | ') || 'clean')
-  check('no download error banner shown',
-    await page.locator('[data-testid=docx-download-error]').count() === 0)
+  // The Changes view reports a failed download as a toast, not a banner.
+  check('no "Not downloaded" toast shown',
+    await page.locator('text=Not downloaded').count() === 0)
 }
 
 await browser.close()

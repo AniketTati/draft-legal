@@ -152,7 +152,7 @@ describe('golden: Governing Law deleted, and the fixes', () => {
     const f = r.groups.needsAttention[0]
     expect(f).toMatchObject({ kind: 'deleted', title: 'Governing Law — deleted since v1 (required)', label: 'Deleted since v1', reviewStatus: 'deleted' })
     expect(f.evidence.baselineQuote).toBe(GOV)
-    expect(f.actions).toEqual(['insert_standard', 'accept', 'resolve'])
+    expect(f.actions).toEqual(['insert_standard', 'accept', 'request_exception', 'resolve'])
     expect(r.recommendation.reasons[0].findingIds).toEqual([f.id])
     findingId = f.id
   })
@@ -238,7 +238,7 @@ describe('not detected, tagged', () => {
     await analysed(id, v1, 3)
     let r = (await getReview(id)).json()
     const missing = r.groups.notDetected[0]
-    expect(missing).toMatchObject({ kind: 'missing_required', title: 'Governing Law — not detected', label: 'Not detected', actions: ['tag_clause', 'insert_standard', 'resolve'] })
+    expect(missing).toMatchObject({ kind: 'missing_required', title: 'Governing Law — not detected', label: 'Not detected', actions: ['tag_clause', 'insert_standard', 'request_exception', 'resolve'] })
     expect((await post(`/contracts/${id}/findings/${missing.id}/accept`, {}, as(org, ['LEGAL_COUNSEL'], counsel))).statusCode).toBe(409)
     const tagged = await post(`/contracts/${id}/findings/${missing.id}/tag`, { text: GOV })
     expect(tagged.statusCode).toBe(200)

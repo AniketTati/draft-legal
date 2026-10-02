@@ -267,7 +267,7 @@ section('3. Replace All cannot corrupt the markup')
 // middleware/auth.ts accepts only `Authorization: Bearer`, there is no cookie
 // fallback, and only the axios client attaches the token. So window.open, a
 // bare <a href="/api/...">, and plain fetch() are all automatic 401s against a
-// guarded route. CompareMode is the correct pattern and its own comment
+// guarded route. ChangesView (formerly CompareMode) is the correct pattern; CompareMode's comment
 // already named ContractEditor as the anti-pattern.
 
 section('4. Editor and contract downloads are authenticated and handled')
