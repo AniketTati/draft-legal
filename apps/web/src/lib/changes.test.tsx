@@ -93,4 +93,24 @@ describe('the Changes view', () => {
     expect(labels).toContain('Keep original')
     expect(labels.some(l => /reject/i.test(l))).toBe(false)
   })
+
+  it("compares two saved versions read-only, from History's Compare (fix-up 21)", () => {
+    const qc = new QueryClient()
+    const changes: ChangesResponse = {
+      baseline: { versionId: 'v1', versionNumber: 1, reason: 'chosen', words: 'v1' },
+      against: { kind: 'version', versionId: 'v2', versionNumber: 2, latest: false },
+      diffHtml: DIFF, stats: { insertions: 2, deletions: 2 },
+      options: { originVersionId: null, versions: [{ id: 'v2', versionNumber: 2, changeNote: null, fromCounterparty: true }, { id: 'v1', versionNumber: 1, changeNote: null, fromCounterparty: false }] },
+    }
+    qc.setQueryData(changesKey('k2', 'v1', 'v2'), changes)
+    qc.setQueryData(['contract-review', 'k2'], { groups: { needsAttention: [], notDetected: [], accepted: [], compliance: [], drafting: [] } })
+    const html = renderToString(<QueryClientProvider client={qc}><ChangesView contractId="k2" canEdit initialBaseline="v1" current="v2" onShowLatest={vi.fn()} onApply={vi.fn()} onComment={vi.fn()} /></QueryClientProvider>).replace(/<!-- -->/g, '')
+    expect(html).toContain('to v2')
+    expect(html).toContain('data-testid="changes-saved-versions"')
+    expect(html).toContain('Compare with the document')
+    expect(html).toMatch(/3 changes</)
+    for (const a of ['accept', 'keep', 'counter']) expect(html).not.toContain(`data-testid="change-${a}-ch0"`)
+    // The baseline picked is the one selected.
+    expect(html).toMatch(/<option value="v1" selected/)
+  })
 })

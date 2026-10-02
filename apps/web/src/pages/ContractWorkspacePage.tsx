@@ -67,7 +67,19 @@ export function ContractWorkspacePage() {
   const qc = useQueryClient()
   const [params, setParams] = useSearchParams()
   const changesMode = params.get('mode') === 'changes'
-  const setChangesMode = (on: boolean) => setParams(p => { const n = new URLSearchParams(p); if (on) n.set('mode', 'changes'); else n.delete('mode'); return n }, { replace: true })
+  // ?baseline= and ?current= pick the versions compared (History's "Compare with vN").
+  const changesBaseline = params.get('baseline') ?? ''
+  const changesCurrent = params.get('current') ?? ''
+  const setChangesMode = (on: boolean, pair?: { baseline?: string; current?: string }) => setParams(p => {
+    const n = new URLSearchParams(p)
+    n.delete('baseline'); n.delete('current')
+    if (on) {
+      n.set('mode', 'changes')
+      if (pair?.baseline) n.set('baseline', pair.baseline)
+      if (pair?.current) n.set('current', pair.current)
+    } else n.delete('mode')
+    return n
+  }, { replace: true })
   const [panel, setPanel] = useState<WorkspacePanel>('review')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [submitOpen, setSubmitOpen] = useState(false)
@@ -280,7 +292,11 @@ export function ContractWorkspacePage() {
             <div className="flex-1 min-w-0 max-w-[860px] mx-auto">
               {changesMode ? (
                 <ChangesView
+                  key={`${changesBaseline}|${changesCurrent}`}
                   contractId={id}
+                  initialBaseline={changesBaseline}
+                  current={changesCurrent}
+                  onShowLatest={() => setChangesMode(true, { baseline: changesBaseline })}
                   canEdit={canEdit}
                   onApply={replaceDocument}
                   onCounter={canEdit ? putCounter : undefined}
@@ -382,7 +398,7 @@ export function ContractWorkspacePage() {
         contractId={id}
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
-        onCompare={() => { setHistoryOpen(false); setChangesMode(true) }}
+        onCompare={(previousId, versionId) => { setHistoryOpen(false); setChangesMode(true, { baseline: previousId, current: versionId }) }}
         onDownload={versionId => {
           api.get(`/contracts/${id}/download`, { params: { versionId } })
             .then(r => window.open((r.data as { url: string }).url, '_blank', 'noopener'))

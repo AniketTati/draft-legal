@@ -9,6 +9,9 @@
  *        The default baseline is the review's (lib/review-findings.ts
  *        resolveBaseline: the last version sent or approved, else the one
  *        before); "origin" is the version first generated from the template.
+ *        &current=<versionId> compares against that saved version instead
+ *        (History's "Compare with vN"); against.latest says whether it is
+ *        the document as it stands, which only then takes decisions.
  *   POST /api/v1/contracts/:id/changes/counter { ourText, theirText, clauseType? }
  *        counter wording for one change, with why (lib/change-advice.ts).
  *
@@ -44,7 +47,10 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
   app.get('/:id/changes', { preHandler: requirePermission('view', 'contract') }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const { orgId } = req.user
-    const { baseline: asked } = z.object({ baseline: z.string().min(1).max(64).optional() }).parse(req.query)
+    const { baseline: asked, current: askedCurrent } = z.object({
+      baseline: z.string().min(1).max(64).optional(),
+      current: z.string().min(1).max(64).optional(),
+    }).parse(req.query)
     const contract = await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true, currentVersionId: true } })
     if (!contract) return reply.status(404).send({ detail: 'Contract not found' })
 
@@ -53,8 +59,12 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
       orderBy: { versionNumber: 'desc' },
       select: { id: true, versionNumber: true, createdAt: true, changeNote: true, createdById: true },
     })
-    const current = versions.find(v => v.id === contract.currentVersionId) ?? versions[0]
-    if (!current) return reply.status(409).send({ detail: 'This contract has no version yet.' })
+    const latest = versions.find(v => v.id === contract.currentVersionId) ?? versions[0]
+    if (!latest) return reply.status(409).send({ detail: 'This contract has no version yet.' })
+    // A saved version asked for as the newer side; else the document as it stands.
+    const current = askedCurrent ? versions.find(v => v.id === askedCurrent) : latest
+    if (!current) return reply.status(404).send({ detail: 'Version not found' })
+    const isLatest = !askedCurrent
     const origin = await prisma.contractVersion.findFirst({
       where: { contractId: id, htmlContent: { contains: 'data-fp="' } },
       orderBy: { versionNumber: 'asc' },
@@ -75,14 +85,15 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
       base = b ? { versionId: b.versionId, reason: b.reason } : before ? { versionId: before.id, reason: 'analysed' } : null
     }
 
-    const copy = await getWorkingCopy(orgId, id)
+    const copy = isLatest ? await getWorkingCopy(orgId, id) : null
     const nowRow = await prisma.contractVersion.findUnique({ where: { id: current.id }, select: { htmlContent: true } })
+    if (!isLatest && !nowRow?.htmlContent?.trim()) return reply.status(409).send({ detail: 'That version is still being read. Try again in a moment.' })
     const rawNow = copy?.html ?? nowRow?.htmlContent ?? ''
     // C4 — changes are read as if the pending suggestions were accepted
     // (lib/suggestions); how many are pending is said beside them.
     const pendingSuggestions = countSuggestions(rawNow).total
     const nowHtml = acceptedHtml(rawNow)
-    const against = { kind: copy ? 'draft' as const : 'version' as const, versionId: current.id, versionNumber: current.versionNumber }
+    const against = { kind: copy ? 'draft' as const : 'version' as const, versionId: current.id, versionNumber: current.versionNumber, latest: isLatest }
     const options = {
       originVersionId: origin?.id ?? null,
       versions: versions.map(v => ({ id: v.id, versionNumber: v.versionNumber, createdAt: v.createdAt, changeNote: v.changeNote, fromCounterparty: /^(portal|email):/.test(v.createdById) })),

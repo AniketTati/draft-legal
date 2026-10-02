@@ -66,6 +66,8 @@ describe('where a contract opens', () => {
     for (const stage of ['draft', 'negotiate', 'approve']) expect(openPathFor({ id: 'k1', stage })).toBe('/contracts/k1/workspace')
     for (const stage of ['request', 'sign', 'active', 'closed', null]) expect(openPathFor({ id: 'k1', stage })).toBe('/contracts/k1')
     expect(workspacePath('k1', { changes: true })).toBe('/contracts/k1/workspace?mode=changes')
+    // History's "Compare with vN": that pair of versions (fix-up 21).
+    expect(workspacePath('k1', { changes: true, baseline: 'v1', current: 'v3' })).toBe('/contracts/k1/workspace?mode=changes&baseline=v1&current=v3')
   })
 })
 

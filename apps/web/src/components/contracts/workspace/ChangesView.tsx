@@ -24,7 +24,8 @@ import { applyDecisions, changeKey, changesOf, counterAnchor, findingFor, tagged
 
 export interface ChangesResponse {
   baseline: { versionId: string; versionNumber: number; reason: string; words: string } | null
-  against: { kind: 'draft' | 'version'; versionId: string; versionNumber: number }
+  /** latest: false when comparing two saved versions (History's Compare), which takes no decisions. */
+  against: { kind: 'draft' | 'version'; versionId: string; versionNumber: number; latest?: boolean }
   diffHtml: string
   stats: { insertions: number; deletions: number }
   options: { originVersionId: string | null; versions: Array<{ id: string; versionNumber: number; changeNote: string | null; fromCounterparty: boolean }> }
@@ -35,11 +36,17 @@ export interface ChangesResponse {
 /** A counter drafted but not put in the document: its message holds the wording. */
 class NotPlaced extends Error {}
 
-export const changesKey = (contractId: string, baseline: string) => ['contract-changes', contractId, baseline] as const
+export const changesKey = (contractId: string, baseline: string, current = '') => ['contract-changes', contractId, baseline, current] as const
 
-export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment }: {
+export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment, initialBaseline = '', current = '', onShowLatest }: {
   contractId: string
   canEdit: boolean
+  /** The baseline to open on (?baseline=): a version id, 'origin', or '' for the review's. */
+  initialBaseline?: string
+  /** A saved version to compare against (?current=) instead of the document as it stands. */
+  current?: string
+  /** Back to the document as it stands, from comparing two saved versions. */
+  onShowLatest?: () => void
   /** Put this text in the draft changes; false when it could not be saved. */
   onApply: (html: string) => Promise<boolean>
   /**
@@ -53,15 +60,15 @@ export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment
 }) {
   const qc = useQueryClient()
   // '' is the review's baseline; 'origin' the version generated from the template.
-  const [baseline, setBaseline] = useState('')
+  const [baseline, setBaseline] = useState(initialBaseline)
   const [selected, setSelected] = useState<string | null>(null)
   // Accepted changes stay in the diff (the document has their words): marked by their words.
   const [accepted, setAccepted] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<string | null>(null)
 
   const q = useQuery<ChangesResponse>({
-    queryKey: changesKey(contractId, baseline),
-    queryFn: () => api.get(`/contracts/${contractId}/changes`, { params: baseline ? { baseline } : {} }).then(r => r.data),
+    queryKey: changesKey(contractId, baseline, current),
+    queryFn: () => api.get(`/contracts/${contractId}/changes`, { params: { ...(baseline && { baseline }), ...(current && { current }) } }).then(r => r.data),
     meta: { errorHandled: true },
   })
   const review = useQuery<ContractReview>({
@@ -160,6 +167,8 @@ export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment
   // which has the pending suggestions accepted: they wait until those are decided.
   const pending = d?.pendingSuggestions ?? 0
   const waitTitle = pending ? `Accept or reject the ${pending} pending suggestion${pending === 1 ? '' : 's'} in the document first` : undefined
+  // Two saved versions: read-only, since decisions rewrite the document as it stands.
+  const decidable = d?.against.latest !== false
   const failure = (q.error as { response?: { data?: { detail?: string } } } | null)?.response?.data?.detail
   return (
     <div className="flex flex-col gap-3" data-testid="changes-view">
@@ -178,7 +187,8 @@ export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment
             <option key={v.id} value={v.id}>v{v.versionNumber}{v.fromCounterparty ? ' · from the counterparty' : ''}{v.changeNote ? ` · ${v.changeNote}` : ''}</option>
           ))}
         </select>
-        {d && <span className="text-ink-500 tabular-nums" data-testid="changes-count">{open.length} change{open.length === 1 ? '' : 's'} to decide{accepted.size ? ` · ${accepted.size} accepted` : ''}</span>}
+        {d && !decidable && <span className="text-ink-700" data-testid="changes-against">to v{d.against.versionNumber}</span>}
+        {d && <span className="text-ink-500 tabular-nums" data-testid="changes-count">{decidable ? `${open.length} change${open.length === 1 ? '' : 's'} to decide${accepted.size ? ` · ${accepted.size} accepted` : ''}` : `${changes.length} change${changes.length === 1 ? '' : 's'}`}</span>}
         {d?.against.kind === 'draft' && <span className="text-[11.5px] text-ink-500">Shown with your draft changes</span>}
         {d?.baseline && (
           <Button size="xs" variant="ghost" className="ml-auto" onClick={() => download.mutate()} disabled={download.isPending} title={`A Word file with tracked changes from v${d.baseline.versionNumber} to v${d.against.versionNumber}${d.against.kind === 'draft' ? ' (saved versions only, not your draft changes)' : ''}`} data-testid="changes-download-word">
@@ -187,7 +197,13 @@ export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment
         )}
       </div>
 
-      {pending > 0 && (
+      {d && !decidable && (
+        <p className="text-dense text-ink-700 rounded-md border border-paper-200 bg-paper-50 px-3 py-2 flex flex-wrap items-center gap-2" data-testid="changes-saved-versions">
+          Comparing two saved versions. To accept or counter a change, compare with the document as it stands.
+          {onShowLatest && <Button size="xs" variant="outline" onClick={onShowLatest} data-testid="changes-show-latest">Compare with the document</Button>}
+        </p>
+      )}
+      {decidable && pending > 0 && (
         <p className="text-dense text-ink-700 rounded-md border border-attention-200 bg-attention-50 px-3 py-2" data-testid="changes-pending-suggestions">
           {pending} suggestion{pending === 1 ? ' is' : 's are'} still pending in the document. The changes here read as if {pending === 1 ? 'it were' : 'they were'} accepted;
           decide {pending === 1 ? 'it' : 'them'} in the document before keeping the original or countering a change.
@@ -227,7 +243,7 @@ export function ChangesView({ contractId, canEdit, onApply, onCounter, onComment
                       {f.advice && <span className="block text-assist-700">AI: {ADVICE_WORDS[f.advice.recommendation] ?? f.advice.recommendation}. {f.advice.reasoning}</span>}
                     </div>
                   )}
-                  {done ? <div className="mt-1 text-binding-700 inline-flex items-center gap-1"><Check className="size-3" />Accepted</div> : canEdit && (
+                  {done ? <div className="mt-1 text-binding-700 inline-flex items-center gap-1"><Check className="size-3" />Accepted</div> : canEdit && decidable && (
                     <div className="mt-1.5 flex flex-wrap gap-1">
                       <Button size="xs" variant="outline" disabled={!!busy} onClick={() => decide(c, { kind: 'accept' })} data-testid={`change-accept-${c.id}`}><Check />Accept change</Button>
                       <Button size="xs" variant="outline" disabled={!!busy || pending > 0} title={waitTitle} onClick={() => decide(c, { kind: 'keep' })} data-testid={`change-keep-${c.id}`}><Undo2 />Keep original</Button>

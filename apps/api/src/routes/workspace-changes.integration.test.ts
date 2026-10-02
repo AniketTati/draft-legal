@@ -72,11 +72,26 @@ describe('GET /contracts/:id/changes', () => {
     expect(r.json().diffHtml).toMatch(/<ins[^>]*>[^<]*twice/)
   })
 
+  it("compares two saved versions for History's Compare, leaving the draft changes out (fix-up 21)", async () => {
+    const c = await negotiated()
+    await prisma.contractWorkingCopy.create({ data: { orgId: org, contractId: c.id, baseVersionId: c.v2, html: '<p>Liability is capped at twice the fees paid.</p>', revision: 1, updatedById: user } })
+    const r = await app.inject({ method: 'GET', url: `/api/v1/contracts/${c.id}/changes?baseline=${c.v1}&current=${c.v2}`, headers: as() })
+    expect(r.statusCode).toBe(200)
+    expect(r.json().against).toEqual({ kind: 'version', versionId: c.v2, versionNumber: 2, latest: false })
+    expect(r.json().baseline).toMatchObject({ versionId: c.v1, reason: 'chosen' })
+    expect(r.json().diffHtml).toMatch(/<ins[^>]*>[^<]*uncapped/)
+    expect(r.json().diffHtml).not.toMatch(/twice/)
+    // Without it, the document as it stands.
+    const now = await app.inject({ method: 'GET', url: `/api/v1/contracts/${c.id}/changes?baseline=${c.v1}`, headers: as() })
+    expect(now.json().against).toMatchObject({ kind: 'draft', latest: true })
+  })
+
   it('is not found for another org, or for a version of another contract', async () => {
     const c = await negotiated()
     const other = await negotiated()
     expect((await app.inject({ method: 'GET', url: `/api/v1/contracts/${c.id}/changes`, headers: as(outsider, otherOrg) })).statusCode).toBe(404)
     expect((await app.inject({ method: 'GET', url: `/api/v1/contracts/${c.id}/changes?baseline=${other.v1}`, headers: as() })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: `/api/v1/contracts/${c.id}/changes?current=${other.v2}`, headers: as() })).statusCode).toBe(404)
   })
 })
 

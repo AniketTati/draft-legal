@@ -4174,7 +4174,7 @@ export function ContractDetailPage() {
           contractId={id}
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
-          onCompare={() => openChanges()}
+          onCompare={(baseline, current) => navigate(workspacePath(id!, { changes: true, baseline, current }))}
           onDownload={(versionId) => handleDownload(versionId)}
         />
       )}

@@ -13,8 +13,12 @@
 /** The stages a contract opens in the workspace. */
 export const WORKSPACE_STAGES = ['draft', 'negotiate', 'approve'] as const
 
-export const workspacePath = (id: string, opts: { changes?: boolean } = {}) =>
-  `/contracts/${id}/workspace${opts.changes ? '?mode=changes' : ''}`
+/** The workspace; in Changes mode, optionally comparing `baseline` with the saved version `current`. */
+export function workspacePath(id: string, opts: { changes?: boolean; baseline?: string; current?: string } = {}): string {
+  if (!opts.changes) return `/contracts/${id}/workspace`
+  const q = new URLSearchParams({ mode: 'changes', ...(opts.baseline && { baseline: opts.baseline }), ...(opts.current && { current: opts.current }) })
+  return `/contracts/${id}/workspace?${q}`
+}
 
 /** Where a contract opens from a list or a link: the workspace while it is worked on. */
 export function openPathFor(c: { id: string; stage?: string | null }): string {
