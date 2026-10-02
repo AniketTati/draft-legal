@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 // docs/41 P0.1 — with edit checkpoints off, an edit that changed a clause
 // asks for the playbook review itself (with them on, the checkpoint's
 // analysis includes it).
+const checkpointMs = process.env.ANALYSIS_CHECKPOINT_MS
 process.env.ANALYSIS_CHECKPOINT_MS = '0'
 
 // Kept off the shared Redis queue, which the dev API's workers also consume.
@@ -65,6 +66,9 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // The suite shares one process: leave checkpoints on for the files after this one.
+  if (checkpointMs === undefined) delete process.env.ANALYSIS_CHECKPOINT_MS
+  else process.env.ANALYSIS_CHECKPOINT_MS = checkpointMs
   await prisma.playbookPosition.deleteMany({ where: { orgId: org } })
   await prisma.clauseCategory.deleteMany({ where: { orgId: org } })
   await cleanupAll()
