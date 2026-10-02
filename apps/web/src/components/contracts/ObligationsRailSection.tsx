@@ -33,6 +33,8 @@ export interface ObligationShape {
   notifiedAt?: string | null
   /** docs/39 G4 — found by the AI: suggested until a person confirms it. */
   reviewState?: 'SUGGESTED' | 'CONFIRMED' | 'DISMISSED'
+  /** Fix-up 13 — the amendment that replaced the clause it came from: on the record, no longer owed. */
+  replacedBy?: { contractId: string; label: string } | null
 }
 
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -248,7 +250,9 @@ export function ObligationsRailSection({
                         {o.description}
                       </div>
                       <div className="mt-0.5 flex items-center gap-1.5 flex-wrap text-[10px]">
-                        {o.status === 'PROPOSED' ? (
+                        {o.replacedBy ? (
+                          <span className="rounded-chip border border-paper-300 bg-paper-100 px-1 font-medium text-ink-700" data-testid={`obligation-replaced-${o.id}`}>Replaced by {o.replacedBy.label}</span>
+                        ) : o.status === 'PROPOSED' ? (
                           <span className="rounded-chip border border-paper-300 bg-paper-100 px-1 font-medium text-ink-700" data-testid={`obligation-proposed-${o.id}`}>Proposed — confirmed at signing</span>
                         ) : o.reviewState === 'SUGGESTED' && (
                           <span className="rounded-chip border border-assist-200 bg-assist-50 px-1 font-medium text-assist-700">Suggested</span>
@@ -257,8 +261,8 @@ export function ObligationsRailSection({
                         <span className="text-muted-foreground">· {o.owner}</span>
                         {sectionLabel(o.sectionRef) && <span className="font-mono text-ink-500">{sectionLabel(o.sectionRef)}</span>}
                         {o.dueDate && (
-                          <span className={o.status === 'PROPOSED' ? 'text-muted-foreground' : dueColor}>
-                            {days == null || o.status === 'PROPOSED' ? new Date(o.dueDate).toLocaleDateString()
+                          <span className={o.status === 'PROPOSED' || o.replacedBy ? 'text-muted-foreground' : dueColor}>
+                            {days == null || o.status === 'PROPOSED' || o.replacedBy ? new Date(o.dueDate).toLocaleDateString()
                               : days < 0 ? `${-days}d overdue`
                               : days === 0 ? 'due today'
                               : `due in ${days}d`}
@@ -283,7 +287,7 @@ export function ObligationsRailSection({
                               dismiss
                             </button>
                           </span>
-                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && o.status !== 'PROPOSED' && (
+                        ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && o.status !== 'PROPOSED' && !o.replacedBy && (
                           <button
                             type="button"
                             onClick={(e) => { e.stopPropagation(); setCompleteTarget({ id: o.id, description: o.description }) }}

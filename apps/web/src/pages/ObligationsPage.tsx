@@ -45,6 +45,8 @@ interface ApiObligation {
   completedAt:      string | null
   notifiedAt:       string | null
   reviewState:      'SUGGESTED' | 'CONFIRMED' | 'DISMISSED'
+  /** Fix-up 13 — the amendment that replaced the clause it came from: on the record, no longer owed. */
+  replacedBy?:      { contractId: string; label: string } | null
   contract: {
     id: string
     title: string
@@ -124,7 +126,7 @@ function dueLabel(iso: string | null, status: string): { text: string; tone: str
  * be overdue, however long ago its date was.
  */
 function isOverdue(o: ApiObligation): boolean {
-  if (o.status === 'COMPLETED' || o.status === 'WAIVED') return false
+  if (o.status === 'COMPLETED' || o.status === 'WAIVED' || o.replacedBy) return false
   const d = daysUntil(o.dueDate)
   return d != null && d < 0
 }
@@ -472,7 +474,13 @@ export function ObligationsPage() {
                     <td className="px-3 py-2">
                       {/* An overdue obligation reads as risk here whatever the
                           stored status says — see isOverdue. */}
-                      <StatusPill status={o.status} meaning={overdue ? 'risk' : undefined} />
+                      {o.replacedBy ? (
+                        <Link to={`/contracts/${o.replacedBy.contractId}`} className="text-[11.5px] text-ink-500 hover:text-ink-950 hover:underline underline-offset-2" data-testid={`replaced-by-${o.id}`}>
+                          Replaced by {o.replacedBy.label}
+                        </Link>
+                      ) : (
+                        <StatusPill status={o.status} meaning={overdue ? 'risk' : undefined} />
+                      )}
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
                       {/* Anything not yet discharged can be completed. Gating on
@@ -500,7 +508,7 @@ export function ObligationsPage() {
                             <X className="size-3.5" />
                           </button>
                         </span>
-                      ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && (
+                      ) : o.status !== 'COMPLETED' && o.status !== 'WAIVED' && !o.replacedBy && (
                         <Button
                           type="button"
                           variant="outline"

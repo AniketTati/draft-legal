@@ -179,11 +179,23 @@ describe('once it is signed', () => {
     expect(h.values[1]).toMatchObject({ current: true, source: { contractId: a1, label: 'Amendment No. 1' } })
     expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBe(a1)
 
+    // Fix-up 13 — on the record as replaced, out of the open views and counts.
+    const obs = (url: string) => app.inject({ method: 'GET', url: `/api/v1/obligations${url}`, headers: admin() }).then(x => x.json())
+    expect((await obs('')).data.find((o: { id: string }) => o.id === ob)).toMatchObject({ status: 'OPEN', replacedBy: { contractId: a1, label: 'Amendment No. 1' } })
+    expect((await obs('?bucket=open')).data.map((o: { id: string }) => o.id)).not.toContain(ob)
+    expect((await obs('?status=OPEN')).data.map((o: { id: string }) => o.id)).not.toContain(ob)
+    expect((await obs('/stats')).open).toBe(0)
+    expect((await req('GET', `/${parent}/obligations`)).json().data[0].replacedBy).toMatchObject({ label: 'Amendment No. 1' })
+    const csv = await app.inject({ method: 'GET', url: '/api/v1/obligations/export', headers: admin() })
+    expect(csv.body).toContain('Replaced by Amendment No. 1')
+
     // Undone, the history goes and the obligation is owed again.
     const undo = await app.inject({ method: 'POST', url: `/api/v1/field-runs/${r.json().runId}/undo`, headers: admin() })
     expect(undo.statusCode).toBe(200)
     expect((await req('GET', `/${parent}/term-history`)).json().terms).toEqual({})
     expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBeNull()
+    expect((await obs('/stats')).open).toBe(1)
+    expect((await obs('?bucket=open')).data[0]).toMatchObject({ id: ob, replacedBy: null })
   })
 })
 

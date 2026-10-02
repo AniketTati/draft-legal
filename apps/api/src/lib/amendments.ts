@@ -271,3 +271,27 @@ export function amendmentRedlineItems(
     return { index, kind: 'clause', name: name[0].toUpperCase() + name.slice(1), action: ch.action, current, proposed, segments: redlineSegments(current, proposed) }
   })
 }
+
+// ─── Obligations an amendment replaced ───────────────────────────────────────
+
+export interface ReplacedBy { contractId: string; label: string }
+
+/**
+ * Fix-up 13 — each superseded obligation with the amendment that replaced it
+ * ("Amendment No. 2"), so a list shows "Replaced by Amendment No. 2" rather
+ * than Open. Obligations still owed get `replacedBy: null`.
+ */
+export async function withReplacedBy<T extends { supersededById: string | null }>(orgId: string, items: T[]): Promise<Array<T & { replacedBy: ReplacedBy | null }>> {
+  const ids = [...new Set(items.map(o => o.supersededById).filter((x): x is string => !!x))]
+  const rows = ids.length
+    ? await prisma.contract.findMany({ where: { id: { in: ids }, orgId }, select: { id: true, relationshipType: true, amendmentNumber: true } })
+    : []
+  const label = new Map(rows.map(r => [r.id, familyLabel(r.relationshipType, r.amendmentNumber) ?? 'an amendment']))
+  return items.map(o => ({
+    ...o,
+    replacedBy: o.supersededById ? { contractId: o.supersededById, label: label.get(o.supersededById) ?? 'an amendment' } : null,
+  }))
+}
+
+/** Fix-up 13 — the status a list or export shows for an obligation an amendment replaced. */
+export const replacedStatus = (r: ReplacedBy | null, status: string) => r ? `Replaced by ${r.label}` : status

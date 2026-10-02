@@ -65,6 +65,8 @@ async function autoMatchInvoice(orgId: string, invoice: {
       orgId,
       status: 'OPEN',
       type:   'payment',
+      // Fix-up 13 — not one an amendment replaced: it is no longer owed.
+      supersededAt: null,
       // A live contract only — and, for own scope, one the caller owns. X17 —
       // never a diligence room's: its obligations are a target's, and a match
       // would let reconciling our invoice close them.
