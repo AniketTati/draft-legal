@@ -131,7 +131,7 @@ export function formatForSlack(event: string, data: Record<string, unknown>): Sl
       }
     }
     case 'approval.submitted': {
-      // Phase 10 — actionable approval card. The Approve/Reject buttons
+      // Phase 10 — actionable approval card. The Approve / Return with a reason buttons
       // post back to /api/v1/slack/interactions (configure Interactivity
       // on the Slack app); the URL button always works as a fallback.
       const title = typeof data.title === 'string' ? data.title : String(data.contractId ?? 'Contract')

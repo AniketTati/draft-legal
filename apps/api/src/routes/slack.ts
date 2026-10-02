@@ -2,7 +2,7 @@
  * Slack routes (Phase 10 — Slack bot).
  *
  *   POST /slack/commands      — `/contract search <query>` slash command
- *   POST /slack/interactions  — Approve / Reject button clicks on
+ *   POST /slack/interactions  — Approve / Return with a reason button clicks on
  *                               approval.submitted messages
  *
  * Both endpoints are PUBLIC (Slack calls them) and authenticated by the
@@ -103,7 +103,7 @@ export async function slackRoutes(app: FastifyInstance) {
     return reply.send(searchResultBlocks(query, contracts, totalMatching))
   })
 
-  // ── POST /interactions — block_actions (Approve / Reject buttons) ────
+  // ── POST /interactions — block_actions (Approve / Return with a reason buttons) ────
   app.post('/interactions', { bodyLimit: SLACK_BODY_LIMIT }, async (req, reply) => {
     const body = req.body as Record<string, string>
     let payload: {
@@ -154,7 +154,7 @@ export async function slackRoutes(app: FastifyInstance) {
 
     // docs/41 Part 4 — a return needs a reason, and the Slack app has no
     // dialog to ask for one (no views.open / view_submission handling). So
-    // Reject from Slack doesn't decide: it links to the contract, where the
+    // Return from Slack doesn't decide: it links to the contract, where the
     // approver returns it (changes needed) or declines it, with a reason.
     // Approve decides here, as POST /approvals/:instanceId/decide does.
     const instance = await prisma.approvalInstance.findFirst({
