@@ -25,6 +25,12 @@ describe('an automatic renewal', () => {
     expect(dateMove({ ...base, stageState: 'auto_renewed', expiryDate: at('2027-10-01'), termMonths: 12 }, now)).toBeNull()
   })
 
+  it('leaves a contract we decided to renew as Renewing, not Expiring, until its end date (fix-up 18)', () => {
+    expect(dateMove({ ...base, stageState: 'renewing', expiryDate: at('2026-10-20') }, now)).toBeNull()
+    expect(dateMove({ ...base, stageState: 'renewing', expiryDate: at('2026-10-01'), termMonths: 12 }, now)).toBe('auto_renewed')
+    expect(dateMove({ ...base, autoRenew: false, stageState: 'renewing', expiryDate: at('2026-10-01') }, now)).toBe('expired')
+  })
+
   it('moves the expiry on by the term, as many terms as it takes to be in the future', () => {
     expect(renewedExpiry(at('2026-10-01'), 12, now)).toEqual({ to: at('2027-10-01'), renewals: 1 })
     expect(renewedExpiry(at('2026-01-31'), 3, now)).toEqual({ to: at('2026-10-31'), renewals: 3 })

@@ -24,7 +24,8 @@ export const STAGE_STATES = {
   negotiate: ['with_us', 'with_counterparty', 'returned'],
   approve:   ['pending', 'approved', 'declined'],
   sign:      ['out_for_signature', 'declined', 'voided'],
-  active:    ['active', 'expiring', 'auto_renewed'],
+  // 'renewing' — fix-up 18: we decided to renew (or renegotiate); not "expiring".
+  active:    ['active', 'expiring', 'auto_renewed', 'renewing'],
   closed:    ['expired', 'terminated', 'superseded', 'cancelled', 'archived'],
 } as const satisfies Record<Stage, readonly string[]>
 
@@ -271,7 +272,7 @@ export const STATE_LABEL: Record<StageState, string> = {
   with_us: 'With us', with_counterparty: 'With the counterparty',
   pending: 'Waiting for approval', approved: 'Approved', declined: 'Declined',
   out_for_signature: 'Out for signature', voided: 'Signature voided',
-  active: 'Active', expiring: 'Expiring soon', auto_renewed: 'Renewed automatically',
+  active: 'Active', expiring: 'Expiring soon', auto_renewed: 'Renewed automatically', renewing: 'Renewing',
   expired: 'Expired', terminated: 'Terminated', superseded: 'Superseded', cancelled: 'Cancelled', archived: 'Archived',
 }
 

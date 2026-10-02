@@ -3,7 +3,8 @@
  *
  *   | Decision    | What happens                                                    |
  *   |-------------|-----------------------------------------------------------------|
- *   | renew       | Renews on its own: recorded, and on the calendar feed; nothing  |
+ *   | renew       | Active · Renewing (not Expiring), and then:                     |
+ *   |             | Renews on its own: recorded, and on the calendar feed; nothing  |
  *   |             | drafted. Otherwise: a renewal letter extending the term, from   |
  *   |             | the org's "Renewal letter" template, as a renewal child.        |
  *   | renegotiate | A renewal draft from the agreement's effective text (its words  |
@@ -204,12 +205,14 @@ export async function decideRenewal(a: DecideInput): Promise<DecideResult> {
     })
   })
   // Not renewing: it shows as expiring from now (the date job ends it at its end date).
-  if (kind === 'let_lapse' || kind === 'terminate') {
-    await transition({
-      orgId: a.orgId, contractId: c.id, to: { stage: 'active', state: 'expiring' }, source: 'system', userId: a.userId,
-      onlyFrom: ['active'], reason: kind === 'terminate' ? 'we decided to end it' : 'we decided to let it lapse',
-    })
-  }
+  // Fix-up 18 — renewing (or renegotiating): Active · Renewing, no longer
+  // "Expiring soon", and the date job leaves it there until its end date.
+  await transition({
+    orgId: a.orgId, contractId: c.id, source: 'system', userId: a.userId, onlyFrom: ['active'],
+    to: { stage: 'active', state: kind === 'let_lapse' || kind === 'terminate' ? 'expiring' : 'renewing' },
+    reason: kind === 'terminate' ? 'we decided to end it' : kind === 'let_lapse' ? 'we decided to let it lapse'
+      : kind === 'renew' ? 'we decided to renew it' : 'we decided to renegotiate it',
+  })
   await createAuditEvent({
     orgId: a.orgId, userId: a.userId, action: AuditAction.RENEWAL_DECIDED, resourceType: 'contract', resourceId: c.id,
     metadata: {
