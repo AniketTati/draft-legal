@@ -575,7 +575,7 @@ export interface ComputedReview {
 export async function computeAndStoreFindings(contractId: string, versionId: string): Promise<ComputedReview | null> {
   const contract = await prisma.contract.findUnique({
     where: { id: contractId },
-    select: { id: true, orgId: true, type: true, playbookId: true, metadata: true },
+    select: { id: true, orgId: true, type: true, playbookId: true, metadata: true, parentContractId: true, relationshipType: true },
   })
   const version = await prisma.contractVersion.findFirst({
     where: { id: versionId, contractId },
@@ -628,9 +628,13 @@ export async function computeAndStoreFindings(contractId: string, versionId: str
     take: 50,
   })
   const latestOther = carriedDeleted[0]?.versionId
+  // An amendment or exhibit changes or adds to its agreement, whose clauses
+  // still govern: the type's required clauses (Term, Limitation of Liability)
+  // aren't missing from it. It carried its parent's type, so it was told they were.
+  const partOfParent = !!contract.parentContractId && ['amendment', 'exhibit'].includes(contract.relationshipType ?? '')
   const result = computeFindings({
     contractType: contract.type,
-    categories,
+    categories: partOfParent ? categories.map(c => ({ ...c, presence: 'optional' })) : categories,
     positions,
     current,
     currentText: version.plainText,
