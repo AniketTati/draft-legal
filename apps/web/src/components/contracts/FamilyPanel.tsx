@@ -5,7 +5,7 @@
  * effective view (its words and terms as its signed amendments left them);
  * on an amendment drafted here, its redline against the agreement.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
@@ -53,8 +53,20 @@ function Member({ m, currentId, depth }: { m: FamilyMember; currentId: string; d
   )
 }
 
-export function FamilyPanel({ contractId }: { contractId: string }) {
+/**
+ * `reveal` — fix-up 15: bumped by the page's "View family" link; each new
+ * value opens the section on the family and scrolls it into view.
+ */
+export function FamilyPanel({ contractId, reveal = 0 }: { contractId: string; reveal?: number }) {
   const [view, setView] = useState<'family' | 'effective' | 'redline'>('family')
+  const anchor = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!reveal) return
+    setView('family')
+    // After the rail has opened (a drawer below xl), so there is somewhere to scroll to.
+    const t = setTimeout(() => anchor.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+    return () => clearTimeout(t)
+  }, [reveal])
   const { data } = useQuery({
     queryKey: ['contract-family-tree', contractId],
     queryFn: async () => (await api.get<{ root: FamilyMember; currentId: string }>(`/contracts/${contractId}/family-tree`)).data,
@@ -66,7 +78,9 @@ export function FamilyPanel({ contractId }: { contractId: string }) {
   const hasRedline = !isRoot && (redline.data?.items.length ?? 0) > 0
 
   return (
-    <RailSection title="Contract family" count={familySize(data.root) + 1} defaultOpen>
+    <div ref={anchor} className="scroll-mt-2">
+    {/* Keyed by the reveal: a section someone folded opens again when asked for. */}
+    <RailSection key={reveal} title="Contract family" count={familySize(data.root) + 1} defaultOpen>
       <div className="space-y-2" data-testid="family-panel">
         {(signedChangers && isRoot) || hasRedline ? (
           <div className="flex gap-1">
@@ -85,5 +99,6 @@ export function FamilyPanel({ contractId }: { contractId: string }) {
         )}
       </div>
     </RailSection>
+    </div>
   )
 }

@@ -636,6 +636,8 @@ export function ContractDetailPage() {
   const isXl = useMediaQuery(BREAKPOINTS.xl)
   const isMd = useMediaQuery(BREAKPOINTS.md)
   const [railOpen, setRailOpen] = useState(false)
+  // Fix-up 15 — bumped by the family banner's "View family": the rail's family section opens and scrolls into view.
+  const [familyReveal, setFamilyReveal] = useState(0)
 
   // Esc closes the mobile/tablet rail.
   useEffect(() => {
@@ -2554,6 +2556,15 @@ export function ContractDetailPage() {
               {familyData.parent.title}
             </button>
             {line.note && <span className="ml-auto text-[10.5px] text-ink-500">{line.note}</span>}
+            {/* Fix-up 15 — the whole family, in the rail's Contract family section. */}
+            <button
+              type="button"
+              onClick={() => { if (isXl) setRailCollapsed(false); else setRailOpen(true); setFamilyReveal(n => n + 1) }}
+              data-testid="family-view-link"
+              className={cn('text-dense font-medium text-ink-950 hover:underline underline-offset-2 flex-shrink-0', !line.note && 'ml-auto')}
+            >
+              View family
+            </button>
           </div>
         )
       })()}
@@ -3919,7 +3930,7 @@ export function ContractDetailPage() {
             who set it, and the fix in place (was a read-only list of six). */}
         {/* docs/39 G3 — the agreement this one amends: its changes, set there; or the agreement it may belong to. */}
         {/* docs/41 Part 13 — the family, the agreement as amended, an amendment's redline. */}
-        {id && <FamilyPanel contractId={id} />}
+        {id && <FamilyPanel contractId={id} reveal={familyReveal} />}
         {id && <AgreementPanel contractId={id} canEdit={canEditFields} />}
 
         <RailSection title="Fields" defaultOpen>
