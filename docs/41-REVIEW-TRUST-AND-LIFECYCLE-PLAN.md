@@ -754,6 +754,18 @@ recommendation is a **policy over the findings, never a free model opinion**.
 5. A clause cut by more than X% (for example "half of Exclusions") is a
    **material modification** finding, even if what is left still reads fine.
 
+**As built (fix-up 9, setting the rules)**
+- The Playbook page shows each category's rules beside its positions: Required /
+  Not allowed / Optional, the contract types it applies to (none picked means all),
+  and the clause approver (a person or a role). They save through
+  `PATCH /playbook/categories/:id/rules` (edit:playbook); the Clauses page still
+  sets them through `PATCH /clauses/categories/:id` (edit:clause).
+- Changing a presence rule stamps `ClauseCategory.presenceChangedAt`. No findings
+  are recomputed then. A contract's current version is reviewed again the next time
+  its review is read (`findingsFor`), when the version was reviewed before the
+  stamp. What people decided on findings is kept. Old versions and signed contracts
+  keep the findings they had. Changing only the approver re-reviews nothing.
+
 **Recommendation policy**
 The labels are derived, not chosen by an LLM.
 

@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { ClauseCategory, PlaybookPosition } from '@clm/types'
 import { PlaybookSwitcher } from '@/components/playbook/PlaybookSwitcher'
+import { CategoryRulesPanel, type RulesCategory } from '@/components/playbook/CategoryRulesPanel'
+import { flattenCategories } from '@/lib/clause-approver'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -629,6 +631,13 @@ export function PlaybookPage() {
                   </div>
                 </div>
               )
+            })()}
+
+            {/* docs/41 fix-up 9 — whether contracts must have this clause, and who decides exceptions. */}
+            {(() => {
+              const all = flattenCategories(categories as unknown as RulesCategory[])
+              const current = all.find(c => c.id === selectedCategoryId)
+              return current ? <CategoryRulesPanel category={current} all={all} /> : null
             })()}
 
             {showTest && <TestPanel categoryId={selectedCategoryId} />}

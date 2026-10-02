@@ -18,7 +18,8 @@ import {
   type ApproverCategory, type NamedRole, type NamedUser,
 } from '@/lib/clause-approver'
 
-export function CategoryApproverField({ category, all }: { category: ApproverCategory; all: ApproverCategory[] }) {
+/** `saveUrl`: where the choice is saved — the Clauses page (edit:clause) by default, the Playbook page passes its own (edit:playbook). */
+export function CategoryApproverField({ category, all, saveUrl }: { category: ApproverCategory; all: ApproverCategory[]; saveUrl?: string }) {
   const qc = useQueryClient()
   const [editing, setEditing] = useState(false)
   const current = approverChoice(category)
@@ -41,7 +42,7 @@ export function CategoryApproverField({ category, all }: { category: ApproverCat
 
   const save = useMutation({
     meta: { errorHandled: true },
-    mutationFn: (value: string) => api.patch(`/clauses/categories/${category.id}`, approverPatch(value)).then(r => r.data),
+    mutationFn: (value: string) => api.patch(saveUrl ?? `/clauses/categories/${category.id}`, approverPatch(value)).then(r => r.data),
     onSuccess: () => {
       setEditing(false)
       qc.invalidateQueries({ queryKey: ['clause-categories'] })

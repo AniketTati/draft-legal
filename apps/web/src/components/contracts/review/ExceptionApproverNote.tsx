@@ -40,7 +40,9 @@ export function ExceptionApproverText({ title, approver, error, canSetApprover }
 }
 
 export function ExceptionApproverNote({ contractId, findingId, title }: { contractId: string; findingId: string; title: string }) {
-  const canSetApprover = useCanRequest('PATCH /clauses/categories/:id')
+  const onPlaybook = useCanRequest('PATCH /playbook/categories/:id/rules')
+  const onClauses = useCanRequest('PATCH /clauses/categories/:id')
+  const canSetApprover = onPlaybook || onClauses
   const q = useQuery<ExceptionApprover>({
     queryKey: exceptionApproverKey(contractId, findingId),
     queryFn: () => api.get(`/contracts/${contractId}/findings/${findingId}/exception-approver`).then(r => r.data),
