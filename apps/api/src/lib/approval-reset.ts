@@ -258,16 +258,19 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
     await Promise.all(laterPending.map(s => cancelEscalation(s.id)))
   }
   const again = toReset.filter(s => s.stepOrder === firstOrder)
-  const recreated: Array<{ id: string; approverId: string | null }> = []
+  const recreated: Array<{ id: string; approverId: string | null; approverRoleId: string | null; orgId: string }> = []
   for (const s of again) {
+    // A pooled step goes back to its role: whoever claimed it last time is one
+    // of the pool again, not the step's approver.
+    const pooled = !!s.approverRoleId
     const fresh = await prisma.approvalStep.create({
       data: {
         approvalInstanceId: instance.id, orgId: a.orgId, contractId: a.contractId, kind: 'approval',
-        stepOrder: s.stepOrder, stepName: s.stepName, approverId: s.approverId, status: 'PENDING',
+        stepOrder: s.stepOrder, stepName: s.stepName, approverId: pooled ? null : s.approverId, approverRoleId: s.approverRoleId, status: 'PENDING',
         escalateAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
       },
     })
-    recreated.push({ id: fresh.id, approverId: s.approverId })
+    recreated.push({ id: fresh.id, approverId: fresh.approverId, approverRoleId: fresh.approverRoleId, orgId: a.orgId })
   }
   await prisma.approvalInstance.update({
     where: { id: instance.id },
@@ -301,6 +304,19 @@ async function apply(a: ChangeArgs, out: ChangeOutcome): Promise<ChangeOutcome> 
       body: `${label} — your approval of "${contract.title}" was reset${s.stepOrder === firstOrder ? '. Please review it again.' : ' and will be asked again after the earlier step.'}`,
       resourceType: 'contract', resourceId: a.contractId,
     })
+  }
+  // The rest of a pool whose step came back: any one of them can decide it.
+  const told = new Set(toReset.map(s => s.approverId).filter(Boolean))
+  for (const step of recreated.filter(r => r.approverRoleId)) {
+    for (const userId of await deciderIdsOf(step, prisma)) {
+      if (told.has(userId)) continue
+      told.add(userId)
+      queueNotification({
+        orgId: a.orgId, userId, type: 'APPROVAL_REQUEST', title: 'Approval needed again',
+        body: `${label} — "${contract.title}" needs approval again. Any one of your role can decide.`,
+        resourceType: 'contract', resourceId: a.contractId,
+      })
+    }
   }
   return out
 }

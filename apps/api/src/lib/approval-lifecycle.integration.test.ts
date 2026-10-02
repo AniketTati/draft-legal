@@ -191,6 +191,32 @@ describe('pooled role approvals and step orders (docs/41 Part 6)', () => {
     expect((await contractOf(id)).stageState).toBe('approved')
   })
 
+  it('a claimed role step that resets goes back to the role, not to the person who claimed it', async () => {
+    // approver and second hold DEAL_DESK (granted above).
+    const id = await contract()
+    await prisma.contract.update({ where: { id }, data: { value: 1000 } })
+    const s = await submit(id, await workflow([{ order: 0, roleRequired: 'DEAL_DESK' }]))
+    const instanceId = s.json().instanceId as string
+    const claimed = await prisma.approvalStep.findUniqueOrThrow({ where: { id: s.json().steps[0].id } })
+    expect((await decide(instanceId, claimed.id, second, 'APPROVED')).statusCode).toBe(200)
+    expect((await contractOf(id)).stageState).toBe('approved')
+
+    vi.mocked(queueNotification).mockClear()
+    const patched = await app.inject({ method: 'PATCH', url: `/api/v1/contracts/${id}`, headers: H(owner, ['LEGAL_OPS']), payload: { value: 2000 } })
+    expect(patched.statusCode).toBe(200)
+    const [again] = await pendingSteps(instanceId)
+    expect(again.id).not.toBe(claimed.id)
+    expect(again).toMatchObject({ approverId: null, approverRoleId: claimed.approverRoleId })
+    // Any holder may decide it again, and the rest of the pool is told.
+    for (const who of [approver, second]) {
+      const queue = (await app.inject({ method: 'GET', url: '/api/v1/approvals/my-queue', headers: H(who) })).json()
+      expect(queue.data.map((d: { stepId: string }) => d.stepId)).toContain(again.id)
+    }
+    expect(notes().find(n => n.userId === approver)?.body).toMatch(/needs approval again/)
+    expect((await decide(instanceId, again.id, approver, 'APPROVED')).statusCode).toBe(200)
+    expect((await prisma.approvalStep.findUniqueOrThrow({ where: { id: again.id } })).approverId).toBe(approver)
+  })
+
   it('moves to the next step that exists when step numbers skip (0, 2, 5)', async () => {
     const wf = await workflow([{ order: 0, approverId: approver }, { order: 2, approverId: second }, { order: 5, approverId: clauseApprover }])
     const id = await contract()
