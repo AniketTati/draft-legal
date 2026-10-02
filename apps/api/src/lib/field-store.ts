@@ -1965,7 +1965,7 @@ function readingsIn(ev: Record<string, unknown>): ExtractedField['candidates'] {
  * read back as a field's value. It says the term is still to be chosen, so it
  * is no value: storing it put the blank's words in the Governing law column.
  */
-function blankAsNull(v: unknown): unknown {
+export function blankAsNull(v: unknown): unknown {
   return typeof v === 'string' && /^\s*\[\[[\s\S]*\]\]\s*$/.test(v) ? null : v
 }
 

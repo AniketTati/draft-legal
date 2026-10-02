@@ -36,6 +36,7 @@ import { queueObligationsIfSigned, queueProposedObligations } from './obligation
 import { queueAnswerDiligenceDocument, type ExtractAiJob } from './queue.js'
 import { readExhibits, withExhibits } from './exhibits.js'
 import { customClauseTypesFor } from './clause-types.js'
+import { blankAsNull } from './field-store.js'
 
 export type ExtractionStep = 'reading' | 'extracting' | 'saving'
 
@@ -192,11 +193,26 @@ async function askRoomQuestions(data: ExtractAiJob): Promise<void> {
   if (c?.diligenceRoomId) queueAnswerDiligenceDocument({ orgId: data.orgId, contractId: data.contractId, versionId: data.versionId })
 }
 
+/**
+ * A draft's open blanks read back as values ("[[effectiveDate]]" as the
+ * effective date) are no values: the PATCH's date check refused the whole
+ * save, so a draft with an empty date was never analysed.
+ */
+function withoutDraftBlanks(contract: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(contract)) out[k] = blankAsNull(v)
+  const kt = contract.keyTerms
+  if (kt && typeof kt === 'object' && !Array.isArray(kt)) {
+    out.keyTerms = Object.fromEntries(Object.entries(kt as Record<string, unknown>).map(([k, v]) => [k, blankAsNull(v)]))
+  }
+  return out
+}
+
 async function save(deps: ExtractionDeps, data: ExtractAiJob, run: ReviewRun): Promise<void> {
   const { contractId, versionId, orgId } = data
   if (Object.keys(run.contract).length) {
     // X23 — `versionId` is the version the text was read from, which PII tokens are restored against.
-    const r = await deps.api('PATCH', `/api/v1/contracts/${contractId}?versionId=${encodeURIComponent(versionId)}`, orgId, run.contract)
+    const r = await deps.api('PATCH', `/api/v1/contracts/${contractId}?versionId=${encodeURIComponent(versionId)}`, orgId, withoutDraftBlanks(run.contract))
     if (r.status >= 300) throw new ExtractionStepError('saving', `the contract's fields were refused (${r.status}): ${r.text.slice(0, 200)}`)
   }
   if (run.version.clauseSegments?.length || run.version.clauseFlags) {
