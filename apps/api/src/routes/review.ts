@@ -39,7 +39,7 @@ import { isClauseType } from '../lib/clause-types.js'
 import { applyClauseBatch } from '../lib/clause-apply.js'
 import { proposeClauseAlternatives } from '../lib/clause-propose.js'
 import { htmlToText } from '../lib/html-text.js'
-import { requestException, EXCEPTION_KINDS } from '../lib/approval-flow.js'
+import { requestException, exceptionApproverFor, EXCEPTION_KINDS } from '../lib/approval-flow.js'
 
 type Action = 'accept' | 'resolve' | 'reopen' | 'tag_clause' | 'insert_standard' | 'redline' | 'request_exception'
 
@@ -316,6 +316,16 @@ export async function reviewRoutes(app: FastifyInstance) {
     const r = await requestException({ orgId, contractId: id, findingId, userId, reason: body.data.reason })
     if (!r.ok) return reply.status(r.status).send({ detail: r.error, ...(r.code && { code: r.code }) })
     return reply.status(201).send({ stepId: r.stepId, approverIds: r.approverIds })
+  })
+  // Who would decide, for the dialog before asking: a person's name or a
+  // role's, or the same NO_CLAUSE_APPROVER refusal the request would give.
+  app.get('/:id/findings/:findingId/exception-approver', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { orgId } = req.user
+    const { id, findingId } = req.params as { id: string; findingId: string }
+    if (!await contractOf(orgId, id)) return reply.status(404).send({ detail: 'Contract not found' })
+    const r = await exceptionApproverFor({ orgId, contractId: id, findingId })
+    if (!r.ok) return reply.status(r.status).send({ detail: r.error, ...(r.code && { code: r.code }) })
+    return reply.send({ kind: r.kind, name: r.name, category: r.category })
   })
 
   // ── Tag: the required clause is there, under another heading ────────────

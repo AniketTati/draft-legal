@@ -120,6 +120,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'GET /contracts/:id/family': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/family-tree': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/fields': { action: 'view', resource: 'contract' },
+  'GET /contracts/:id/findings/:findingId/exception-approver': { action: 'edit', resource: 'contract' },
   'GET /contracts/:id/history': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/integration-conflicts': { action: 'view', resource: 'contract' },
   'GET /contracts/:id/obligations': { action: 'view', resource: 'contract' },

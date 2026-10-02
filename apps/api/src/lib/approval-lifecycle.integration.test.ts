@@ -364,6 +364,27 @@ describe('clause exceptions (docs/41 Part 7)', () => {
     expect(res.json()).toMatchObject({ code: 'NO_CLAUSE_APPROVER' })
   })
 
+  it('tells the dialog who will decide: the named person, the role, or that no one is named', async () => {
+    const { id, category, finding } = await withFinding()
+    const who = () => app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/findings/${finding}/exception-approver`, headers: H(owner) })
+    const none = await who()
+    expect(none.statusCode).toBe(422)
+    expect(none.json()).toMatchObject({ code: 'NO_CLAUSE_APPROVER' })
+    expect(none.json().detail).toContain('Playbook page')
+
+    await prisma.user.update({ where: { id: clauseApprover }, data: { name: 'Clara Approver' } })
+    await prisma.clauseCategory.update({ where: { id: category }, data: { approverUserId: clauseApprover } })
+    expect((await who()).json()).toMatchObject({ kind: 'user', name: 'Clara Approver' })
+
+    const role = await prisma.role.create({ data: { orgId: org, name: `Deal desk ${Math.random()}` } })
+    await prisma.clauseCategory.update({ where: { id: category }, data: { approverUserId: null, approverRoleId: role.id } })
+    expect((await who()).json()).toMatchObject({ code: 'NO_CLAUSE_APPROVER' }) // no one holds it yet
+    await prisma.userRole.create({ data: { userId: clauseApprover, roleId: role.id } })
+    expect((await who()).json()).toMatchObject({ kind: 'role', name: role.name })
+
+    expect((await app.inject({ method: 'GET', url: `/api/v1/contracts/${id}/findings/nope/exception-approver`, headers: H(owner) })).statusCode).toBe(404)
+  })
+
   it('requested → in the approver\'s inbox, the policy says Needs exception, and signing waits; approved → it can be signed', async () => {
     const { id, category, finding } = await withFinding()
     const set = await app.inject({ method: 'PATCH', url: `/api/v1/clauses/categories/${category}`, headers: H(owner), payload: { approverUserId: clauseApprover } })

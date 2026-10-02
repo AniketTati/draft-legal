@@ -15,6 +15,7 @@ import type { ContractReview, ReviewFindingView } from '@/lib/review'
 import type { DraftVariables } from '@/lib/draft-variables'
 import { toast } from '@/components/common/Toaster'
 import { ReasonDialog } from '@/components/common/ReasonDialog'
+import { ExceptionApproverNote } from '@/components/contracts/review/ExceptionApproverNote'
 import { ClauseTagPicker } from '@/components/contracts/ClauseTagPicker'
 import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
 import type { AskAiOutcome } from '@/components/contracts/AskAiDrafts'
@@ -138,7 +139,7 @@ export function useSelectionActions(o: SelectionActionsOptions): { editorActions
       <ReasonDialog
         open={!!exceptionFor}
         title="Request exception"
-        intro={<>“{exceptionFor?.title}” goes to the person who decides exceptions for this kind of clause. They see your reason.</>}
+        intro={exceptionFor ? <ExceptionApproverNote contractId={o.contractId} findingId={exceptionFor.id} title={exceptionFor.title} /> : null}
         label="Why should this be allowed?"
         placeholder="For example: the customer is a public body and can't accept a cap above fees."
         confirmLabel="Request exception"

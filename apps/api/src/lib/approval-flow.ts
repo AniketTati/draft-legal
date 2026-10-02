@@ -342,6 +342,41 @@ async function clauseApprover(orgId: string, categoryId: string | null): Promise
   return null
 }
 
+type ResolvedApprover = { ok: true; userId: string | null; roleId: string | null; category: string | null; holders: string[] }
+
+/**
+ * Who would decide an exception on a finding of this category, and the people
+ * that is — or the 422 that says no one is named (or no one holds the role).
+ * Shared by the request and by the dialog that shows who will decide.
+ */
+async function resolveExceptionApprover(orgId: string, categoryId: string | null): Promise<FlowError | ResolvedApprover> {
+  const approver = await clauseApprover(orgId, categoryId)
+  if (!approver) {
+    const name = categoryId ? (await prisma.clauseCategory.findFirst({ where: { id: categoryId, orgId }, select: { name: true } }))?.name : null
+    return {
+      ok: false, status: 422, code: 'NO_CLAUSE_APPROVER',
+      error: `No one is named to decide exceptions for ${name ? `“${name}”` : 'this clause'}. An admin can name a clause approver on the Playbook page.`,
+    }
+  }
+  const holders = approver.userId ? [approver.userId] : await holdersOf(approver.roleId!, orgId, prisma)
+  if (!holders.length) return { ok: false, status: 422, code: 'NO_CLAUSE_APPROVER', error: `No one holds the role that decides exceptions for “${approver.category}”.` }
+  return { ok: true, ...approver, holders }
+}
+
+/** For the Request exception dialog: the person, or the role, who will decide; or why no one can. */
+export async function exceptionApproverFor(a: { orgId: string; contractId: string; findingId: string }): Promise<FlowError | { ok: true; kind: 'user' | 'role'; name: string; category: string | null }> {
+  const finding = await prisma.reviewFinding.findFirst({ where: { id: a.findingId, orgId: a.orgId, contractId: a.contractId }, select: { categoryId: true } })
+  if (!finding) return { ok: false, status: 404, error: 'Finding not found' }
+  const r = await resolveExceptionApprover(a.orgId, finding.categoryId)
+  if (!r.ok) return r
+  if (r.userId) {
+    const u = await prisma.user.findFirst({ where: { id: r.userId, orgId: a.orgId }, select: { name: true, email: true } })
+    return { ok: true, kind: 'user', name: u?.name || u?.email || 'the clause approver', category: r.category }
+  }
+  const role = await prisma.role.findFirst({ where: { id: r.roleId!, OR: [{ orgId: a.orgId }, { orgId: null }] }, select: { name: true } })
+  return { ok: true, kind: 'role', name: role?.name ?? 'the approver role', category: r.category }
+}
+
 export async function requestException(a: { orgId: string; contractId: string; findingId: string; userId: string; reason: string }): Promise<FlowError | { ok: true; stepId: string; approverIds: string[] }> {
   const reason = a.reason?.trim()
   if (!reason) return { ok: false, status: 400, error: 'Say why an exception is needed.' }
@@ -354,16 +389,9 @@ export async function requestException(a: { orgId: string; contractId: string; f
   if (finding.status !== 'open' && finding.status !== 'exception_declined') return { ok: false, status: 409, code: 'ALREADY_DECIDED', error: finding.status === 'exception_requested' ? 'An exception was already asked for.' : 'This finding was already dealt with.' }
   if (!EXCEPTION_KINDS.has(finding.kind)) return { ok: false, status: 409, code: 'NOT_EXCEPTIONABLE', error: 'An exception can be asked for a clause position, not for this kind of finding.' }
 
-  const approver = await clauseApprover(a.orgId, finding.categoryId)
-  if (!approver) {
-    const name = finding.categoryId ? (await prisma.clauseCategory.findFirst({ where: { id: finding.categoryId, orgId: a.orgId }, select: { name: true } }))?.name : null
-    return {
-      ok: false, status: 422, code: 'NO_CLAUSE_APPROVER',
-      error: `No one is named to decide exceptions for ${name ? `“${name}”` : 'this clause'}. An admin can name a clause approver in Clauses → categories.`,
-    }
-  }
-  const holders = approver.userId ? [approver.userId] : await holdersOf(approver.roleId!, a.orgId, prisma)
-  if (!holders.length) return { ok: false, status: 422, code: 'NO_CLAUSE_APPROVER', error: `No one holds the role that decides exceptions for “${approver.category}”.` }
+  const approver = await resolveExceptionApprover(a.orgId, finding.categoryId)
+  if (!approver.ok) return approver
+  const holders = approver.holders
 
   const step = await prisma.approvalStep.create({
     data: {

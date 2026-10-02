@@ -25,6 +25,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { approvalKeys, serverMessage } from '@/lib/approval-keys'
 import { ReasonDialog } from '@/components/common/ReasonDialog'
+import { ExceptionApproverNote } from './ExceptionApproverNote'
 import { toast } from '@/components/common/Toaster'
 import { RailSection } from '@/components/contracts/RailSection'
 import { Button } from '@/components/ui/button'
@@ -470,7 +471,7 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, ex
       <ReasonDialog
         open={mode === 'exception'}
         title="Request exception"
-        intro={<>“{f.title}” goes to the person who decides exceptions for this kind of clause. They see your reason.</>}
+        intro={mode === 'exception' ? <ExceptionApproverNote contractId={contractId} findingId={f.id} title={f.title} /> : null}
         label="Why should this be allowed?"
         placeholder="For example: the customer is a public body and can't accept a cap above fees."
         confirmLabel="Request exception"
