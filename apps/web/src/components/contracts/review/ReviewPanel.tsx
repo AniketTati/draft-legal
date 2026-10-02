@@ -411,7 +411,7 @@ function FindingCard({ f, contractId, canEdit, onJump, onShowText, onChanged, ex
       )}
       {f.evidence.baselineQuote && (
         f.kind === 'deleted'
-          ? <details className="mt-1" open><summary className="cursor-pointer text-ink-500">Deleted text</summary><blockquote className="mt-1 border-l-2 border-risk-200 pl-2 text-ink-700 whitespace-pre-wrap line-through decoration-risk-600/40">{f.evidence.baselineQuote}</blockquote></details>
+          ? <details className="mt-1" open><summary className="cursor-pointer text-ink-500">Deleted text</summary><blockquote className={`mt-1 border-l-2 border-risk-200 pl-2 text-ink-700 whitespace-pre-wrap ${/— was not filled in$/.test(f.evidence.baselineQuote) ? 'italic' : 'line-through decoration-risk-600/40'}`}>{f.evidence.baselineQuote}</blockquote></details>
           : <details className="mt-1"><summary className="cursor-pointer text-ink-500">Before</summary><blockquote className="mt-1 border-l-2 border-paper-300 pl-2 text-ink-700 whitespace-pre-wrap">{f.evidence.baselineQuote}</blockquote></details>
       )}
       {f.evidence.relatedQuote && (

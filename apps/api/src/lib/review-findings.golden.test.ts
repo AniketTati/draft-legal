@@ -373,3 +373,19 @@ describe('browser QA (41): blanks and deletions', () => {
     expect(findings.filter(f => f.kind === 'deleted').map(f => f.key)).toEqual(['deleted|governing_law'])
   })
 })
+
+describe('browser QA (41): a deleted clause that was a blank in v1', () => {
+  it('shows the clause and that it was not filled in, never the blank\'s markup', () => {
+    const v1 = [clause('confidentiality', CONF), clause('governing_law', '[[Choose governing law: Delaware · New York · England and Wales]]')]
+    const { findings } = review([clause('confidentiality', CONF)], v1)
+    const deleted = findings.find(f => f.key === 'deleted|governing_law')!
+    expect(deleted.title).toBe('Governing Law — deleted since v1 (required)')
+    expect(deleted.evidence.baselineQuote).toBe('Governing Law — was not filled in')
+  })
+
+  it('a blank inside words is said so, the words kept', () => {
+    const v1 = [clause('confidentiality', CONF), clause('governing_law', 'This Agreement is governed by the laws of [[Choose governing law: Delaware · New York]], without regard to its conflict-of-laws principles.')]
+    const deleted = review([clause('confidentiality', CONF)], v1).findings.find(f => f.key === 'deleted|governing_law')!
+    expect(deleted.evidence.baselineQuote).toBe('This Agreement is governed by the laws of (not filled in), without regard to its conflict-of-laws principles.')
+  })
+})

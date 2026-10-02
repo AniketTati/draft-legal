@@ -163,6 +163,21 @@ export interface ClausePair { before: ClauseIn; after: ClauseIn; likeness: numbe
  * most words in common first; a clause re-typed by a new analysis pairs too
  * when nearly all its words are shared.
  */
+const DRAFT_BLANK = /\[\[[^\]]*\]\]/g
+
+/**
+ * docs/41 browser QA — a deleted clause's words as the "Before" box shows
+ * them. When the baseline still had a draft blank ("[[Choose governing law:
+ * Delaware · New York · …]]"), the box showed the blank's markup: a clause
+ * that was only a blank was not filled in, and a blank inside words is said so.
+ */
+export function asBaselineWords(content: string, label: string): string {
+  if (!content.includes('[[')) return content
+  const around = content.replace(DRAFT_BLANK, ' ').replace(/\s+/g, ' ').trim()
+  if (words(around) < 6) return `${label} — was not filled in`
+  return content.replace(DRAFT_BLANK, '(not filled in)')
+}
+
 export function pairClauses(before: ClauseIn[], after: ClauseIn[]): { pairs: ClausePair[]; gone: ClauseIn[]; added: ClauseIn[] } {
   const bags = new Map<string, Set<string>>()
   const bag = (c: ClauseIn) => { let b = bags.get(c.id); if (!b) { b = wordBag(c.content); bags.set(c.id, b) } return b }
@@ -249,13 +264,18 @@ export function computeFindings(input: ReviewInput): ReviewOutput {
       if (nowText.includes(normaliseText(b.content))) continue
       // A draft's blank ("[[Choose governing law: …]]") filled in since: every
       // word around the blank is still there, so nothing was deleted.
-      if (/\[\[[\s\S]*?\]\]/.test(b.content) && b.content.split(/\[\[[\s\S]*?\]\]/).map(normaliseText).every(p => !p || nowText.includes(p))) continue
+      // A clause that was only a blank has no words to look for: filled in if
+      // its type is still there, deleted if not.
+      if (/\[\[[\s\S]*?\]\]/.test(b.content)) {
+        const around = b.content.split(/\[\[[\s\S]*?\]\]/).map(normaliseText).filter(Boolean)
+        if (around.length ? around.every(p => nowText.includes(p)) : typesNow.has(b.clauseType)) continue
+      }
       const info = base({ clauseType: b.clauseType })
       const wholeType = !typesNow.has(b.clauseType)
       if (wholeType && goneTypes.has(b.clauseType)) {
         // One finding per clause type gone: its text grows.
         const f = out.find(x => x.kind === 'deleted' && x.key === `deleted|${b.clauseType}`)
-        if (f) f.evidence.baselineQuote = short(`${f.evidence.baselineQuote ?? ''}\n\n${b.content}`, 2000)
+        if (f) f.evidence.baselineQuote = short(`${f.evidence.baselineQuote ?? ''}\n\n${asBaselineWords(b.content, info.label)}`, 2000)
         continue
       }
       if (wholeType) goneTypes.add(b.clauseType)
@@ -268,7 +288,7 @@ export function computeFindings(input: ReviewInput): ReviewOutput {
         explanation: wholeType
           ? `This clause was in ${since} and is not in this version.${info.required ? ' Your playbook requires it for this type of contract.' : ''}`
           : `These words were in ${since} and are not in this version.`,
-        evidence: { baselineQuote: short(b.content, 2000), sectionRef: b.sectionRef },
+        evidence: { baselineQuote: short(asBaselineWords(b.content, info.label), 2000), sectionRef: b.sectionRef },
         source: 'deterministic',
       })
     }
