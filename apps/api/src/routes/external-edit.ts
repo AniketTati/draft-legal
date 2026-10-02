@@ -186,7 +186,7 @@ export async function externalEditRoutes(app: FastifyInstance) {
     let extracted: Awaited<ReturnType<typeof extractDocument>>
     let review: Awaited<ReturnType<typeof readDocxReview>>
     try {
-      ;[extracted, review] = await Promise.all([extractDocument(file, MIME.DOCX, filename), readDocxReview(file)])
+      ;[extracted, review] = await Promise.all([extractDocument(file, MIME.DOCX, filename, { suggestions: true }), readDocxReview(file)])
     } catch (err) {
       return reply.status(422).send({ code: 'WORD_FILE_UNREADABLE', detail: err instanceof DocxError ? err.message : 'That Word file could not be read.' })
     }

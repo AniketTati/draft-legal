@@ -75,6 +75,8 @@ const HEADINGS: Record<string, (typeof HeadingLevel)[keyof typeof HeadingLevel]>
 }
 
 const attr = (n: Node, name: string) => n.attrs?.find(a => a.name === name)?.value
+/** Word renders control characters and stray quotes badly (as revision-author.ts). */
+const cleanAuthor = (name: string) => name.replace(/[\x00-\x1F\x7F]/g, '').replace(/"/g, "'").trim().slice(0, 120)
 const isText = (n: Node) => n.nodeName === '#text'
 
 /**
@@ -132,12 +134,12 @@ export class DocxMapper {
 
   constructor(private meta: RevisionMeta) {}
 
-  private stamp() {
-    return { id: this.ids.next(), author: this.meta.author, date: this.meta.date }
+  private stamp(who: RevisionMeta = this.meta) {
+    return { id: this.ids.next(), author: who.author, date: who.date }
   }
 
   /** Build the run(s) for one piece of text under a revision + formatting state. */
-  private runsFor(text: string, rev: Rev, fmt: Fmt): (TextRun | InsertedTextRun | DeletedTextRun | ExternalHyperlink)[] {
+  private runsFor(text: string, rev: Rev, fmt: Fmt, who: RevisionMeta = this.meta): (TextRun | InsertedTextRun | DeletedTextRun | ExternalHyperlink)[] {
     if (!text) return []
     // Preserve hard breaks inside a run rather than collapsing them: a .txt
     // contract is one <pre> and its newlines are its only structure.
@@ -151,8 +153,8 @@ export class DocxMapper {
 
     const made = parts.flatMap((part, i) => {
       const opts = { ...style, text: part, ...(i > 0 ? { break: 1 } : {}) }
-      if (rev === 'ins') return [new InsertedTextRun({ ...opts, ...this.stamp() })]
-      if (rev === 'del') return [new DeletedTextRun({ ...opts, ...this.stamp() })]
+      if (rev === 'ins') return [new InsertedTextRun({ ...opts, ...this.stamp(who) })]
+      if (rev === 'del') return [new DeletedTextRun({ ...opts, ...this.stamp(who) })]
       return [new TextRun(opts)]
     })
 
@@ -161,15 +163,32 @@ export class DocxMapper {
     return fmt.link ? [new ExternalHyperlink({ children: made, link: fmt.link })] : made
   }
 
+  /**
+   * docs/41 C4 — a suggestion made in the editor carries its own author and
+   * time (<ins data-author data-time>): its revision is theirs, not the
+   * version author's. Anything else keeps who it inherited.
+   */
+  private whoOf(n: Node, inherited: RevisionMeta): RevisionMeta {
+    if (n.nodeName !== 'ins' && n.nodeName !== 'del') return inherited
+    const author = cleanAuthor(attr(n, 'data-author') ?? '')
+    const time = attr(n, 'data-time')
+    const at = time ? new Date(time) : null
+    if (!author && !at) return inherited
+    return {
+      author: author || inherited.author,
+      date: at && !Number.isNaN(at.getTime()) ? at.toISOString().replace(/\.\d{3}Z$/, 'Z') : inherited.date,
+    }
+  }
+
   /** Walk inline content, accumulating runs. */
-  private inline(nodes: Node[], rev: Rev, fmt: Fmt, out: any[] = []): any[] {
+  private inline(nodes: Node[], rev: Rev, fmt: Fmt, out: any[] = [], who: RevisionMeta = this.meta): any[] {
     for (const n of nodes) {
-      if (isText(n)) { out.push(...this.runsFor(n.value ?? '', rev, fmt)); continue }
+      if (isText(n)) { out.push(...this.runsFor(n.value ?? '', rev, fmt, who)); continue }
       if (n.nodeName === 'br') { out.push(new TextRun({ break: 1 })); continue }
 
       // <ins>/<del> can nest inside formatting and vice versa; track both.
       const nextRev: Rev = n.nodeName === 'ins' ? 'ins' : n.nodeName === 'del' ? 'del' : rev
-      this.inline(n.childNodes ?? [], nextRev, fmtFor(n, fmt), out)
+      this.inline(n.childNodes ?? [], nextRev, fmtFor(n, fmt), out, this.whoOf(n, who))
     }
     return out
   }

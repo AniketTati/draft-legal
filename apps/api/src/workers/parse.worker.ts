@@ -53,7 +53,7 @@ async function handleParseDocument(data: ParseDocumentJob): Promise<StepOutcome 
   // Full text extraction — no char limit
   let extracted: Awaited<ReturnType<typeof extractDocument>>
   try {
-    extracted = await extractDocument(buffer, mimeType, filename, { onOcrProgress: async (done, of) => { await markOcr({ done, of }) } })
+    extracted = await extractDocument(buffer, mimeType, filename, { suggestions: true, onOcrProgress: async (done, of) => { await markOcr({ done, of }) } })
   } finally {
     await markOcr(null)
   }

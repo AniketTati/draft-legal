@@ -1,5 +1,7 @@
 import { createRequire } from 'module'
 import mammoth from 'mammoth'
+import { docxTrackedParagraphs } from './ooxml/docx-redline.js'
+import { withSuggestions } from './ooxml/docx-suggestions.js'
 import { zipInflatedSize, MAX_OFFICE_INFLATED_BYTES } from './file-type.js'
 import { normalizeTextBullets } from './html-normalize.js'
 import { ocrInBatches, type BatchReply, type PageQuality, type PageStart } from './ocr-batches.js'
@@ -72,6 +74,9 @@ export type ExtractResult = {
 export interface ExtractOptions {
   /** A7 — a scan's pages read so far, of all to read. */
   onOcrProgress?(done: number, of: number): Promise<void> | void
+  /** docs/41 C4 — a Word file's tracked changes kept as suggestions in the
+   *  HTML (lib/ooxml/docx-suggestions), for a contract's version. */
+  suggestions?: boolean
 }
 
 /**
@@ -109,7 +114,7 @@ export async function extractDocument(
   }
 
   if (is(DOCX, '.docx')) {
-    return extractDocx(buffer)
+    return extractDocx(buffer, opts)
   }
 
   if (is('text/plain', '.txt')) {
@@ -233,7 +238,7 @@ async function extractPdf(buffer: Buffer, opts: ExtractOptions = {}): Promise<Ex
   return { plainText, htmlContent, mimeType: 'application/pdf' }
 }
 
-async function extractDocx(buffer: Buffer): Promise<ExtractResult> {
+async function extractDocx(buffer: Buffer, opts: ExtractOptions = {}): Promise<ExtractResult> {
   // X13 — refuse a zip bomb before mammoth expands it (files stored before
   // the upload check existed, or reached some other way).
   if (zipInflatedSize(buffer, MAX_OFFICE_INFLATED_BYTES) === null) {
@@ -241,11 +246,17 @@ async function extractDocx(buffer: Buffer): Promise<ExtractResult> {
   }
   const result = await mammoth.convertToHtml({ buffer })
   const plainText = await mammoth.extractRawText({ buffer })
+  // Lists re-saved as "\t•\t" text read as lists again, so a returned
+  // file compares by what changed, not by its bullets.
+  let htmlContent = normalizeTextBullets(result.value)
+  if (opts.suggestions) {
+    // A file we can't read for its changes still reads as mammoth read it.
+    const tracked = await docxTrackedParagraphs(buffer).catch(() => [])
+    htmlContent = withSuggestions(htmlContent, tracked).html
+  }
   return {
     plainText: plainText.value.replace(/\s+/g, ' ').trim(),
-    // Lists re-saved as "\t•\t" text read as lists again, so a returned
-    // file compares by what changed, not by its bullets.
-    htmlContent: normalizeTextBullets(result.value),
+    htmlContent,
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   }
 }
