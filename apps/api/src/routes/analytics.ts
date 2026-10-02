@@ -106,10 +106,10 @@ export async function analyticsRoutes(app: FastifyInstance) {
       // For cycle time: contracts that EXECUTED inside the window.
       prisma.contract.findMany({
         where: {
-          orgId, deletedAt: null, ...own, status: 'EXECUTED',
-          updatedAt: { gte: windowStart },
+          orgId, deletedAt: null, ...own,
+          executedAt: { gte: windowStart },
         },
-        select: { id: true, createdAt: true, updatedAt: true },
+        select: { id: true, createdAt: true, executedAt: true },
         take: 5_000,
       }),
       // Approvals decided in the window — for acceptance rate.
@@ -127,15 +127,13 @@ export async function analyticsRoutes(app: FastifyInstance) {
     const executedTotalValue = executedTotals[0]?.amount ?? 0
     const dominantCurrency = executedTotals[0]?.currency ?? 'USD'
 
-    // Cycle time — using updatedAt as a proxy for the EXECUTED transition.
-    // signatures.ts hits prisma.contract.update() right when `allSigned` flips
-    // to EXECUTED, so for any contract whose terminal state is EXECUTED the
-    // updatedAt is the execution timestamp (within sub-second precision).
-    // This avoids needing a schema-level executedAt + a migration.
+    // Cycle time — created to executed (docs/41 Part 19). It was measured to
+    // updatedAt, which any later edit moved; executedAt is set once, when the
+    // last signer signs (or the record is marked executed).
     const days: number[] = []
     let withinTarget = 0
     for (const c of executedRecent) {
-      const ms = c.updatedAt.getTime() - c.createdAt.getTime()
+      const ms = c.executedAt!.getTime() - c.createdAt.getTime()
       const d = ms / (24 * 60 * 60 * 1000)
       if (d >= 0) {
         days.push(d)
