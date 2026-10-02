@@ -71,7 +71,7 @@ import {
   type AmendmentChangeSpec,
   type AmendmentSpec,
 } from '@clm/types'
-import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml } from '../lib/amendments.js'
+import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml, closingAfterChanges, withReplacedBy } from '../lib/amendments.js'
 import { nextFamilyNumber, effectiveView } from '../lib/family.js'
 import { createChildContract } from '../lib/child-contract.js'
 import { modelFetch } from '../lib/model-boundary.js'
@@ -2057,7 +2057,7 @@ export async function contractRoutes(app: FastifyInstance) {
       : null
     const draftedText = drafted ? htmlToText(drafted) : null
     const amendmentSpec: AmendmentSpec | null = drafted
-      ? { parentId: parent.id, number: amendmentNumber, effectiveDate: effectiveDay, templateId: template?.id ?? null, changes }
+      ? { parentId: parent.id, number: amendmentNumber, effectiveDate: effectiveDay, templateId: template?.id ?? null, changes, endsBefore: closingAfterChanges(drafted, changes) }
       : null
     // Created through the one child path (lib/child-contract.ts): its stage on
     // the record, a drafted amendment read like any draft (P0.1), indexed, announced.
@@ -2833,7 +2833,8 @@ export async function contractRoutes(app: FastifyInstance) {
     })
     const md = (contract.metadata ?? {}) as Record<string, unknown>
     return reply.send({
-      data: items,
+      // Fix-up 13 — one an amendment replaced says which ("Replaced by Amendment No. 2").
+      data: await withReplacedBy(orgId, items),
       summary:     (md.obligationsSummary as string | null) ?? null,
       extractedAt: (md.obligationsExtractedAt as string | null) ?? null,
     })

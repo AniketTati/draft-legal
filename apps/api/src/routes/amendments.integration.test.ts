@@ -120,6 +120,17 @@ describe('drafting an amendment from what changes', () => {
   })
 })
 
+describe('before it is signed', () => {
+  it('refuses the roll-up, naming the amendment, and says so on the changes it reads', async () => {
+    const changes = (await req('GET', `/${a1}/amendment-changes`)).json()
+    expect(changes).toMatchObject({ signed: false, label: 'Amendment No. 1' })
+    const r = await req('POST', `/${a1}/amendment-changes/apply`, { keys: ['paymentTermsDays'], supersedeObligationIds: [ob] })
+    expect(r.statusCode).toBe(409)
+    expect(r.json()).toMatchObject({ code: 'AMENDMENT_NOT_SIGNED', detail: 'Roll up once Amendment No. 1 is signed.' })
+    expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBeNull()
+  })
+})
+
 describe('once it is signed', () => {
   beforeAll(async () => {
     const patch = (id: string, keyTerms: Record<string, unknown>, fieldConfidence: Record<string, unknown>) =>
@@ -135,6 +146,18 @@ describe('once it is signed', () => {
     expect(r.items[0]).toMatchObject({ kind: 'clause', name: 'Section 5', current: FEES, proposed: 'Payment is due within forty-five (45) days of invoice.' })
     expect(r.items[0].segments).toEqual(expect.arrayContaining([{ op: 'delete', text: 'thirty (30) ' }, { op: 'insert', text: 'forty-five (45) ' }]))
     expect(r.items[1]).toMatchObject({ kind: 'term', name: 'Expiry date', current: '2025-12-31', proposed: '2027-12-31' })
+  })
+
+  it('still finds the words being signed after an editor save drops the marker and adds a suggestion (fix-up 14)', async () => {
+    const c = await prisma.contract.findUniqueOrThrow({ where: { id: a1 }, select: { currentVersionId: true, metadata: true } })
+    expect((c.metadata as { _amendment: { endsBefore?: string } })._amendment.endsBefore).toMatch(/^except as amended/)
+    const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: c.currentVersionId! } })
+    const saved = v.htmlContent!.replace(/ data-amendment-[a-z]+="\d+"/g, '').replace(/ data-ai-suggested="true"/g, '')
+      .replace('forty-five (45)', '<del data-change-id="s1">forty-five (45)</del><ins data-change-id="s1">sixty (60)</ins>')
+    await prisma.contractVersion.update({ where: { id: v.id }, data: { htmlContent: saved } })
+    const r = (await req('GET', `/${a1}/amendment-redline`)).json()
+    expect(r.items[0]).toMatchObject({ name: 'Section 5', proposed: 'Payment is due within sixty (60) days of invoice.' })
+    await prisma.contractVersion.update({ where: { id: v.id }, data: { htmlContent: v.htmlContent } })
   })
 
   it('marks the amended section in the parent’s effective view, and leaves the rest as written', async () => {
@@ -156,6 +179,7 @@ describe('once it is signed', () => {
 
   it('rolls a confirmed term up, keeps the original one click away, and supersedes the replaced clause’s obligation', async () => {
     const changes = (await req('GET', `/${a1}/amendment-changes`)).json()
+    expect(changes.signed).toBe(true)
     expect(changes.changes.find((c: { key: string }) => c.key === 'paymentTermsDays')).toBeTruthy()
     expect(changes.obligations.map((o: { id: string }) => o.id)).toEqual([ob])
     const r = await req('POST', `/${a1}/amendment-changes/apply`, { keys: ['paymentTermsDays'], supersedeObligationIds: [ob] })
@@ -167,11 +191,23 @@ describe('once it is signed', () => {
     expect(h.values[1]).toMatchObject({ current: true, source: { contractId: a1, label: 'Amendment No. 1' } })
     expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBe(a1)
 
+    // Fix-up 13 — on the record as replaced, out of the open views and counts.
+    const obs = (url: string) => app.inject({ method: 'GET', url: `/api/v1/obligations${url}`, headers: admin() }).then(x => x.json())
+    expect((await obs('')).data.find((o: { id: string }) => o.id === ob)).toMatchObject({ status: 'OPEN', replacedBy: { contractId: a1, label: 'Amendment No. 1' } })
+    expect((await obs('?bucket=open')).data.map((o: { id: string }) => o.id)).not.toContain(ob)
+    expect((await obs('?status=OPEN')).data.map((o: { id: string }) => o.id)).not.toContain(ob)
+    expect((await obs('/stats')).open).toBe(0)
+    expect((await req('GET', `/${parent}/obligations`)).json().data[0].replacedBy).toMatchObject({ label: 'Amendment No. 1' })
+    const csv = await app.inject({ method: 'GET', url: '/api/v1/obligations/export', headers: admin() })
+    expect(csv.body).toContain('Replaced by Amendment No. 1')
+
     // Undone, the history goes and the obligation is owed again.
     const undo = await app.inject({ method: 'POST', url: `/api/v1/field-runs/${r.json().runId}/undo`, headers: admin() })
     expect(undo.statusCode).toBe(200)
     expect((await req('GET', `/${parent}/term-history`)).json().terms).toEqual({})
     expect((await prisma.obligation.findUniqueOrThrow({ where: { id: ob } })).supersededById).toBeNull()
+    expect((await obs('/stats')).open).toBe(1)
+    expect((await obs('?bucket=open')).data[0]).toMatchObject({ id: ob, replacedBy: null })
   })
 })
 

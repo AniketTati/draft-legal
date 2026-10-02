@@ -42,6 +42,9 @@ interface ChangesResponse {
   obligations?: Array<{ id: string; description: string; quote: string; sectionRef: string | null; superseded: boolean }>
   /** The latest roll-up from this contract that can still be undone. */
   lastRun?: { id: string; createdAt: string; count: number } | null
+  /** Fix-up 12 — only a signed amendment is rolled up; `label` names it ("Amendment No. 2"). */
+  signed?: boolean
+  label?: string
 }
 
 interface Suggestion { id: string; title: string; type: string; effectiveDate: string | null; reasons: string[] }
@@ -159,7 +162,7 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
                     <CheckCircle2 className="size-3.5 mt-0.5 text-brand-700 shrink-0" aria-label="On the agreement" />
                   ) : (
                     <input
-                      type="checkbox" className="mt-0.5 accent-ink-950" checked={chosen.has(c.key)} disabled={!canEdit}
+                      type="checkbox" className="mt-0.5 accent-ink-950" checked={chosen.has(c.key)} disabled={!canEdit || family.signed === false}
                       onChange={() => toggle(c.key)} aria-label={`Set ${c.label} on the agreement`}
                     />
                   )}
@@ -189,7 +192,7 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
                     {o.superseded ? (
                       <CheckCircle2 className="size-3.5 mt-0.5 text-ink-400 shrink-0" aria-label="No longer owed" />
                     ) : (
-                      <input type="checkbox" className="mt-0.5 accent-ink-950" checked={dropped.has(o.id)} disabled={!canEdit}
+                      <input type="checkbox" className="mt-0.5 accent-ink-950" checked={dropped.has(o.id)} disabled={!canEdit || family.signed === false}
                         onChange={() => toggleDrop(o.id)} aria-label={`Mark ${o.description} as no longer owed`} />
                     )}
                     <div className="min-w-0 flex-1">
@@ -201,7 +204,12 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
               </ul>
             </div>
           )}
-          {canEdit && (pending.length > 0 || owed.length > 0) && (
+          {canEdit && (pending.length > 0 || owed.length > 0) && family.signed === false && (
+            <p className="text-[11.5px] text-ink-700 bg-paper-50 border border-paper-200 rounded-md px-2.5 py-2" data-testid="agreement-unsigned">
+              Roll up once {family.label ?? 'this amendment'} is signed. Until then the agreement keeps its own terms.
+            </p>
+          )}
+          {canEdit && (pending.length > 0 || owed.length > 0) && family.signed !== false && (
             <>
               <p className="text-[11px] text-ink-500">Tick what it changes. The agreement keeps them, marked as amended, and its original values stay one click away. Ticked obligations are kept on record but no longer owed.</p>
               <div className="flex justify-end">

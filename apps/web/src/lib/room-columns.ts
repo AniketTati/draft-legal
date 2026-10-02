@@ -118,6 +118,7 @@ export function answerSource(kind: RoomColumnView['kind'], cell: Pick<RoomCell, 
     case 'variable': return 'Filled in from the template'
     case 'amendment': return 'Set from an amendment'
     case 'import': return 'Imported'
+    case 'renewal': return 'Moved on by an automatic renewal'
     default: return 'Set by a person'
   }
 }

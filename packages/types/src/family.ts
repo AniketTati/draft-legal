@@ -99,6 +99,11 @@ export interface AmendmentSpec {
   effectiveDate: string | null
   templateId: string | null
   changes: AmendmentChangeSpec[]
+  /**
+   * The first words of the block after the changes as drafted: where the
+   * last change's words end when the editor has dropped the markers.
+   */
+  endsBefore?: string | null
 }
 
 // ─── Renewals ────────────────────────────────────────────────────────────────

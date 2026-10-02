@@ -110,6 +110,21 @@ describe('the renewal scan', () => {
   })
 })
 
+describe('the reminder’s words (fix-up 17)', () => {
+  it('says "auto-renews" only for a contract that renews automatically', async () => {
+    const byAgreement = await makeContract(orgB, ownerB, { title: 'By Agreement MSA', status: 'EXECUTED' })
+    await prisma.contract.update({
+      where: { id: byAgreement },
+      data: { expiryDate: new Date(Date.now() + 100 * DAY), keyTerms: { renewalType: 'manual', noticePeriodDays: 90 } },
+    })
+    await scanRenewals({ orgId: orgB, force: true })
+    const body = (id: string) => (reminders(id).at(-1) as unknown as { body: string }).body
+    expect(body(byAgreement)).not.toMatch(/auto-renew/i)
+    expect(body(byAgreement)).toMatch(/renews only if both sides agree: tell them by \d{4}-\d{2}-\d{2}/)
+    expect(body(otherOrg)).toMatch(/auto-renews unless/)
+  })
+})
+
 describe('the calendar feed', () => {
   const tokenOf = (url: string) => url.split('/calendar/')[1].replace(/\.ics$/, '')
   const feed = async (token: string) => (await getApp()).inject({ method: 'GET', url: `/api/v1/calendar/${token}.ics` })

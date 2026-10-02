@@ -17,7 +17,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import { AuditAction } from '@clm/types'
+import { AuditAction, familyLabel } from '@clm/types'
 import { prisma } from '../lib/prisma.js'
 import { requirePermission } from '../middleware/permissions.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
@@ -25,15 +25,19 @@ import { parentSuggestions, wouldLoop, RELATIONSHIP_TYPES } from '../lib/contrac
 import { amendmentChanges, applyAmendmentValues } from '../lib/field-store.js'
 import { recordRun, UNDO_DAYS } from '../lib/field-runs.js'
 import { createAuditEvent } from '../lib/audit.js'
-import { familyTree, effectiveView, amendmentSpecOf, nextFamilyNumber } from '../lib/family.js'
+import { familyTree, effectiveView, amendmentSpecOf, nextFamilyNumber, isSigned } from '../lib/family.js'
 import { recordRollUp, termHistory } from '../lib/term-history.js'
-import { amendmentRedlineItems, draftAmendmentLanguage, obligationsReplaced, proposedTextsFromHtml } from '../lib/amendments.js'
+import { amendmentRedlineItems, draftAmendmentLanguage, obligationsReplaced, proposedTextsFromDocument } from '../lib/amendments.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 
 const ParentSchema = z.object({
   parentContractId: z.string().min(1).max(64).nullable(),
   relationshipType: z.enum(RELATIONSHIP_TYPES).optional(),
 })
+
+/** "Amendment No. 2", or "this amendment" when it has no number. */
+const rollUpLabel = (c: { relationshipType: string | null; amendmentNumber: number | null }) =>
+  familyLabel(c.relationshipType, c.amendmentNumber) ?? `this ${c.relationshipType === 'sow' ? 'SOW' : c.relationshipType?.replace(/_/g, ' ') ?? 'amendment'}`
 
 export async function contractFamilyRoutes(app: FastifyInstance) {
   guardOwnScopeContractRoutes(app)
@@ -84,13 +88,15 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
     const { orgId } = req.user
     const c = await prisma.contract.findFirst({
       where: { id, orgId, deletedAt: null, ...ownContractWhere(req) },
-      select: { parentContractId: true, relationshipType: true, metadata: true },
+      select: { parentContractId: true, relationshipType: true, metadata: true, status: true, stage: true, amendmentNumber: true },
     })
     if (!c) return reply.status(404).send({ detail: 'Contract not found' })
+    // Only a signed amendment changes the agreement: until then the panel says so instead of offering the roll-up.
+    const gate = { signed: isSigned(c), label: rollUpLabel(c) }
     const parent = c.parentContractId
       ? await prisma.contract.findFirst({ where: { id: c.parentContractId, orgId, deletedAt: null, ...ownContractWhere(req) }, select: { id: true, title: true } })
       : null
-    if (!parent) return reply.send({ parent: null, relationshipType: c.relationshipType, changes: [], obligations: [], lastRun: null })
+    if (!parent) return reply.send({ parent: null, relationshipType: c.relationshipType, changes: [], obligations: [], lastRun: null, ...gate })
     // docs/41 Part 13 — the parent's obligations from the clauses this
     // amendment replaces or deletes: the person confirms which are no longer owed.
     const spec = amendmentSpecOf(c.metadata)
@@ -109,7 +115,7 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
          AND "createdAt" > ${new Date(Date.now() - UNDO_DAYS * 24 * 60 * 60 * 1000)} AND changes @> ${JSON.stringify([{ fromContractId: id }])}::jsonb
        ORDER BY "createdAt" DESC LIMIT 1`
     return reply.send({
-      parent, relationshipType: c.relationshipType, changes: await amendmentChanges(orgId, id, parent.id) ?? [], obligations,
+      parent, relationshipType: c.relationshipType, changes: await amendmentChanges(orgId, id, parent.id) ?? [], obligations, ...gate,
       lastRun: run ? { id: run.id, createdAt: run.createdAt.toISOString(), count: run.count } : null,
     })
   })
@@ -125,7 +131,7 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
     const { orgId, sub: userId } = req.user
     const c = await prisma.contract.findFirst({
       where: { id, orgId, deletedAt: null, ...ownContractWhere(req) },
-      select: { parentContractId: true, effectiveDate: true },
+      select: { parentContractId: true, effectiveDate: true, relationshipType: true, status: true, stage: true, amendmentNumber: true },
     })
     if (!c) return reply.status(404).send({ detail: 'Contract not found' })
     // The write is on the parent: the caller must be able to reach it too.
@@ -133,6 +139,9 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
       ? await prisma.contract.findFirst({ where: { id: c.parentContractId, orgId, deletedAt: null, ...ownContractWhere(req) }, select: { id: true, title: true } })
       : null
     if (!parent) return reply.status(400).send({ detail: 'This contract isn’t linked to the agreement it changes' })
+    // An unsigned amendment changes nothing yet: its terms and the obligations
+    // it replaces are set on the agreement once it is signed (fix-up 12).
+    if (!isSigned(c)) return reply.status(409).send({ detail: `Roll up once ${rollUpLabel(c)} is signed.`, code: 'AMENDMENT_NOT_SIGNED' })
     // The side-by-side as the person saw it: what each term was, and becomes.
     const before = keys.length ? await amendmentChanges(orgId, id, parent.id) ?? [] : []
     const r = keys.length
@@ -247,9 +256,11 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
       return !s || s.amendedBy.some(a => a.contractId === id) ? null : s.text
     }
     const version = c.currentVersionId
-      ? await prisma.contractVersion.findFirst({ where: { id: c.currentVersionId, contractId: c.id }, select: { htmlContent: true } })
+      ? await prisma.contractVersion.findFirst({ where: { id: c.currentVersionId, contractId: c.id }, select: { htmlContent: true, plainText: true } })
       : null
-    const items = amendmentRedlineItems(spec.changes, effectiveText, proposedTextsFromHtml(version?.htmlContent ?? ''))
+    // Fix-up 14 — found by the marker or, once an editor save dropped it, by the text.
+    const edited = proposedTextsFromDocument(spec.changes, version?.htmlContent, { plainText: version?.plainText, endsBefore: spec.endsBefore })
+    const items = amendmentRedlineItems(spec.changes, effectiveText, edited)
     return reply.send({ parent: view.contract, items })
   })
 }

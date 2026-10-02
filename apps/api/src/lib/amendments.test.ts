@@ -7,7 +7,8 @@ import { describe, it, expect, vi } from 'vitest'
 vi.mock('./prisma.js', () => ({ prisma: {} }))
 import { normaliseRelationshipType, familyLabel, familyShortLabel, type AmendmentChangeSpec } from '@clm/types'
 import {
-  amendmentHtml, amendmentRedlineItems, changeSentence, obligationsReplaced, proposedTextsFromHtml, redlineSegments, sectionName,
+  amendmentHtml, amendmentRedlineItems, changeSentence, closingAfterChanges, obligationsReplaced, proposedTextsFromDocument, proposedTextsFromHtml,
+  redlineSegments, sectionName,
 } from './amendments.js'
 import { assembleEffectiveView } from './family.js'
 
@@ -116,5 +117,44 @@ describe('obligations a replaced clause takes with it', () => {
     ]
     expect(obligationsReplaced(obs, [fees]).map(o => o.id)).toEqual(['o1'])
     expect(obligationsReplaced([{ id: 'o5', sectionRef: null, quote: 'Fees are $100 per month' }], [fees]).map(o => o.id)).toEqual(['o5'])
+  })
+})
+
+describe('the words being signed, after the editor saved (fix-up 14)', () => {
+  const term: AmendmentChangeSpec = { kind: 'term', key: 'expiryDate', label: 'Expiry date', from: '2025-12-31', to: '2027-12-31', source: 'user' }
+  const notice: AmendmentChangeSpec = { ...fees, clauseId: 'c9', clauseType: 'termination', sectionRef: '9', newText: 'Either party may end this on 60 days notice.' }
+  const drafted = amendmentHtml({ label: 'Amendment No. 1', parentTitle: 'MSA', parentEffectiveDate: null, counterpartyName: null, effectiveDate: null, changes: [fees, term, notice] })
+  // What a TipTap save leaves: the blockquote, without its data-* attributes.
+  const saved = (html: string) => html.replace(/ data-amendment-[a-z]+="\d+"/g, '').replace(/ data-ai-suggested="true"/g, '')
+
+  it('reads the marker while the document keeps it', () => {
+    expect(proposedTextsFromDocument([fees, term, notice], drafted).get(0)).toBe(fees.newText)
+  })
+  it('finds the words after the change’s own sentence once the marker is gone', () => {
+    const html = saved(drafted).replace('payable in 45 days', 'payable in 60 days')
+    expect(html).not.toContain('data-amendment-text')
+    const m = proposedTextsFromDocument([fees, term, notice], html)
+    expect(m.get(0)).toBe('Fees are $120 per month, payable in 60 days.')
+    expect(m.get(2)).toBe(notice.newText)
+    expect(m.has(1)).toBe(false)
+  })
+  it('reads suggestions as accepted, and a quote turned into paragraphs', () => {
+    const html = saved(drafted)
+      .replace('payable in 45 days', 'payable in <del data-change-id="s1">45</del><ins data-change-id="s1">50</ins> days')
+      .replace(/<\/?blockquote>/g, '')
+    const m = proposedTextsFromDocument([fees, term, notice], html)
+    expect(m.get(0)).toBe('Fees are $120 per month, payable in 50 days.')
+  })
+  it('stops at a reworded change and at the block that followed the changes in a template', () => {
+    const tpl = `<h1>Amendment</h1><p><strong>1.</strong> Section 5 of the Agreement is deleted in its entirety and replaced with the following:</p><p>New fees.</p><p>Second paragraph.</p><h2>Signatures</h2><p>Signed by the parties</p>`
+    const endsBefore = closingAfterChanges(tpl.replace('New fees.</p><p>Second paragraph.', 'X'), [{ ...fees, newText: 'X' }])
+    expect(endsBefore).toBe('signatures')
+    expect(proposedTextsFromDocument([fees], tpl, { endsBefore }).get(0)).toBe('New fees.\n\nSecond paragraph.')
+    const reworded = `<p>1. Section 5 of the Agreement is replaced by:</p><p>New fees.</p><p>2. The Expiry date is amended to read: 2028.</p>`
+    expect(proposedTextsFromDocument([fees, term], reworded).get(0)).toBe('New fees.')
+  })
+  it('reads a document that only has plain text', () => {
+    const plain = '1. Section 5 of the Agreement is deleted in its entirety and replaced with the following:\n\nNew fees.\n\nExcept as amended by this Amendment, the Agreement remains in force.'
+    expect(proposedTextsFromDocument([fees], null, { plainText: plain }).get(0)).toBe('New fees.')
   })
 })

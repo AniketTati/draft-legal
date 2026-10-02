@@ -22,6 +22,7 @@ import { redactJson, restorePii } from './pii-policy.js'
 import { modelFetch } from './model-boundary.js'
 import { effectiveView } from './family.js'
 import { diffSequences } from './ooxml/sequence-diff.js'
+import { acceptedHtml } from './suggestions.js'
 
 /**
  * What a person picked to change, as the create route takes it. A clause's
@@ -244,6 +245,94 @@ export function proposedTextsFromHtml(html: string): Map<number, string> {
   return out
 }
 
+// ─── Finding each change's words without the marker (fix-up 14) ──────────────
+//
+// The editor's save (working copy → version) keeps a blockquote but not its
+// data-amendment-text attribute, may turn it into plain paragraphs, and a
+// suggestion wraps words in <ins>/<del>. So the words are found from the
+// text as well: after the change's own operative sentence ("Section 5 of the
+// Agreement is deleted … and replaced with the following:"), which is built
+// from the stored change, up to the next change or the block that followed
+// the changes when it was drafted (kept on the record as `endsBefore`).
+
+const decodeEntities = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+  .replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+
+/** Pure: a document's blocks (paragraphs, quotes, list items, headings) as plain text, in order. */
+export function documentBlocks(html: string): string[] {
+  return decodeEntities(html.replace(/<\/(?:p|blockquote|li|h[1-6]|div|tr|td)>|<br\s*\/?>/gi, '\n\n').replace(/<[^>]+>/g, ''))
+    .split(/\n{2,}/).map(b => b.replace(/\s+/g, ' ').trim()).filter(Boolean)
+}
+
+/** "1. Section 5 of the Agreement … following:" → "section 5 of the agreement … following". */
+const normBlock = (s: string) => s.toLowerCase().replace(/^\s*\d+\s*[.)]\s*/, '').replace(/[“”"‘’']/g, '')
+  .replace(/\s+/g, ' ').replace(/[\s:.]+$/, '').trim()
+
+/** A numbered operative line ("2. The Expiry date is amended …"), even one a person reworded. */
+const looksLikeChange = (block: string) => /^\d+\s*[.)]\s/.test(block) && /of the agreement|is amended to read/i.test(block)
+
+/** Where each change's operative sentence is among the blocks (-1: not found). */
+function changeHeadings(changes: AmendmentChangeSpec[], norms: string[]): number[] {
+  return changes.map(ch => {
+    const head = normBlock(changeSentence(ch))
+    let k = norms.indexOf(head)
+    if (k < 0) k = norms.findIndex(n => n.includes(head))
+    if (k < 0 && ch.kind === 'clause' && ch.action === 'replace') {
+      // A reworded sentence still names the section and says it is replaced.
+      const where = `${normBlock(sectionName(ch.sectionRef, ch.clauseType))} of the agreement`
+      k = norms.findIndex(n => n.includes(where) && n.includes('replace'))
+    }
+    return k
+  })
+}
+
+/**
+ * Pure: the first words of the block after the changes as drafted, kept on
+ * the amendment's record so a later read knows where the last change's words
+ * end in a template that has no "Except as amended" closing.
+ */
+export function closingAfterChanges(html: string, changes: AmendmentChangeSpec[]): string | null {
+  const blocks = documentBlocks(html)
+  const at = changeHeadings(changes, blocks.map(normBlock))
+  const last = Math.max(...at, -1)
+  if (last < 0) return null
+  const ch = changes[at.indexOf(last)]
+  const body = ch.kind === 'clause' && ch.action === 'replace' ? ch.newText.split(/\n{2,}/).filter(p => p.trim()).length : 0
+  const next = blocks[last + 1 + body]
+  return next ? normBlock(next).slice(0, 80) : null
+}
+
+/**
+ * Pure: the words a person has since written for each replaced clause, read
+ * from the amendment's current document with every suggestion read as
+ * accepted — by the marker while the document keeps it, else by the text.
+ * A change found neither way is left out (the redline then shows the words
+ * as drafted).
+ */
+export function proposedTextsFromDocument(
+  changes: AmendmentChangeSpec[], html: string | null | undefined, opts: { plainText?: string | null; endsBefore?: string | null } = {},
+): Map<number, string> {
+  const accepted = acceptedHtml(html ?? '')
+  const out = proposedTextsFromHtml(accepted)
+  const blocks = accepted.trim()
+    ? documentBlocks(accepted)
+    : (opts.plainText ?? '').split(/\n{2,}/).map(b => b.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  const norms = blocks.map(normBlock)
+  const at = changeHeadings(changes, norms)
+  const stops = new Set(at.filter(k => k >= 0))
+  const closing = opts.endsBefore ? normBlock(opts.endsBefore) : null
+  const ends = (k: number) => stops.has(k) || looksLikeChange(blocks[k])
+    || (!!closing && norms[k].startsWith(closing))
+    || norms[k].startsWith('except as amended by this amendment') || norms[k].startsWith('in witness whereof')
+  changes.forEach((ch, i) => {
+    if (out.has(i) || ch.kind !== 'clause' || ch.action !== 'replace' || at[i] < 0) return
+    const body: string[] = []
+    for (let k = at[i] + 1; k < blocks.length && !ends(k); k++) body.push(blocks[k])
+    if (body.length) out.set(i, body.join('\n\n'))
+  })
+  return out
+}
+
 export interface AmendmentRedlineItem {
   index: number
   kind: 'clause' | 'term'
@@ -271,3 +360,27 @@ export function amendmentRedlineItems(
     return { index, kind: 'clause', name: name[0].toUpperCase() + name.slice(1), action: ch.action, current, proposed, segments: redlineSegments(current, proposed) }
   })
 }
+
+// ─── Obligations an amendment replaced ───────────────────────────────────────
+
+export interface ReplacedBy { contractId: string; label: string }
+
+/**
+ * Fix-up 13 — each superseded obligation with the amendment that replaced it
+ * ("Amendment No. 2"), so a list shows "Replaced by Amendment No. 2" rather
+ * than Open. Obligations still owed get `replacedBy: null`.
+ */
+export async function withReplacedBy<T extends { supersededById: string | null }>(orgId: string, items: T[]): Promise<Array<T & { replacedBy: ReplacedBy | null }>> {
+  const ids = [...new Set(items.map(o => o.supersededById).filter((x): x is string => !!x))]
+  const rows = ids.length
+    ? await prisma.contract.findMany({ where: { id: { in: ids }, orgId }, select: { id: true, relationshipType: true, amendmentNumber: true } })
+    : []
+  const label = new Map(rows.map(r => [r.id, familyLabel(r.relationshipType, r.amendmentNumber) ?? 'an amendment']))
+  return items.map(o => ({
+    ...o,
+    replacedBy: o.supersededById ? { contractId: o.supersededById, label: label.get(o.supersededById) ?? 'an amendment' } : null,
+  }))
+}
+
+/** Fix-up 13 — the status a list or export shows for an obligation an amendment replaced. */
+export const replacedStatus = (r: ReplacedBy | null, status: string) => r ? `Replaced by ${r.label}` : status

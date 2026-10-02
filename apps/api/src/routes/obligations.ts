@@ -30,6 +30,7 @@ import { s3, S3_BUCKET } from '../lib/storage.js'
 import { createAuditEvent } from '../lib/audit.js'
 import { AuditAction } from '@clm/types'
 import { buildCsv } from '../lib/csv.js'
+import { withReplacedBy, replacedStatus } from '../lib/amendments.js'
 import { fireWebhook } from '../lib/webhook-events.js'
 import { checkUpload, servableContentType, EVIDENCE_TYPES } from '../lib/file-type.js'
 import { guardOwnScopeRoutes, ownScopeGuard } from '../lib/own-scope-guard.js'
@@ -52,6 +53,15 @@ const ListSchema = z.object({
 })
 
 /** G4 — which review state a list shows: a dismissed suggestion is gone unless asked for. */
+/**
+ * Fix-up 13 — an obligation an amendment replaced stays on the record (the
+ * full list shows it as "Replaced by Amendment No. N") but isn't owed: the
+ * open, due-soon and overdue views and counts leave it out.
+ */
+function owedWhere(q: { bucket: string; status: string }): { supersededAt?: null } {
+  return ['open', 'due_soon', 'overdue'].includes(q.bucket) || ['OPEN', 'OVERDUE'].includes(q.status) ? { supersededAt: null } : {}
+}
+
 function reviewWhere(review: 'all' | 'suggested' | 'confirmed' | 'dismissed'): { reviewState: string | { not: string } } {
   if (review === 'suggested') return { reviewState: 'SUGGESTED' }
   if (review === 'confirmed') return { reviewState: 'CONFIRMED' }
@@ -130,6 +140,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     } else if (q.bucket === 'completed') {
       where.status = 'COMPLETED'
     }
+    Object.assign(where, owedWhere(q))
 
     if (q.dueWithin != null) {
       const horizon = new Date(now.getTime() + q.dueWithin * 24 * 60 * 60 * 1000)
@@ -173,7 +184,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     ])
 
     return reply.send({
-      data: items,
+      data: await withReplacedBy(orgId, items),
       total,
       limit: q.limit,
       offset: q.offset,
@@ -212,6 +223,7 @@ export async function obligationRoutes(app: FastifyInstance) {
     } else if (q.bucket === 'completed') {
       where.status = 'COMPLETED'
     }
+    Object.assign(where, owedWhere(q))
 
     const items = await prisma.obligation.findMany({
       where: where as never,
@@ -223,15 +235,16 @@ export async function obligationRoutes(app: FastifyInstance) {
       },
     })
 
+    const marked = await withReplacedBy(orgId, items)
     const headers = [
       'Type', 'Description', 'Owner', 'Severity', 'Recurrence', 'Section',
       'Due Date', 'Status', 'Contract', 'Counterparty', 'Contract Type',
       'Completed At', 'Completed By', 'Completion Note', 'Has Evidence',
     ]
-    const rows = items.map(o => [
+    const rows = marked.map(o => [
       o.type, o.description, o.owner, o.severity, o.recurrence, o.sectionRef ?? '',
       o.dueDate?.toISOString().slice(0, 10) ?? '',
-      o.status,
+      replacedStatus(o.replacedBy, o.status),
       o.contract?.title ?? '',
       o.contract?.counterpartyName ?? '',
       o.contract?.type ?? '',
@@ -257,7 +270,8 @@ export async function obligationRoutes(app: FastifyInstance) {
     const own = ownObligationWhere(req)
 
     // G4 — a dismissed suggestion isn't an obligation: it counts nowhere.
-    const live = { reviewState: { not: 'DISMISSED' } }
+    // Fix-up 13 — nor is one an amendment replaced: it is on the record, not owed.
+    const live = { reviewState: { not: 'DISMISSED' }, supersededAt: null }
     const [open, dueSoon, overdue, completedRecent, suggested, unread] = await Promise.all([
       prisma.obligation.count({ where: { orgId, ...own, ...live, status: 'OPEN' } }),
       prisma.obligation.count({
@@ -269,7 +283,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       prisma.obligation.count({
         where: { orgId, ...own, ...live, status: 'COMPLETED', completedAt: { gte: recentCompletedSince } },
       }),
-      prisma.obligation.count({ where: { orgId, ...own, reviewState: 'SUGGESTED', status: { in: ['OPEN', 'OVERDUE'] } } }),
+      prisma.obligation.count({ where: { orgId, ...own, reviewState: 'SUGGESTED', supersededAt: null, status: { in: ['OPEN', 'OVERDUE'] } } }),
       prisma.$queryRaw<Array<{ n: number }>>`SELECT COUNT(*)::int AS n FROM contracts c WHERE ${unreadSignedSql(orgId, req.permissionScope === 'own' ? req.user.sub : undefined)}`,
     ])
 
@@ -321,7 +335,7 @@ export async function obligationRoutes(app: FastifyInstance) {
       },
     })
     if (!o) return reply.status(404).send({ detail: 'Obligation not found' })
-    return reply.send(o)
+    return reply.send((await withReplacedBy(orgId, [o]))[0])
   })
 
   // ── POST /:id/complete (P8 Step 4) ────────────────────────────────────

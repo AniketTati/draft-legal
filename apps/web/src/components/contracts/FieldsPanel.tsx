@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, Calculator, Check, CircleCheck, FileDiff, FileSpreadsheet, FileText, Loader2, LocateFixed, Paperclip, Pencil, Quote, TextQuote,
+  AlertTriangle, Calculator, Check, CircleCheck, FileDiff, FileSpreadsheet, FileText, Loader2, LocateFixed, Paperclip, Pencil, Quote, RefreshCw, TextQuote,
 } from 'lucide-react'
 import {
   DEFAULT_CHECK_BELOW, VERIFICATION_LABELS, parseFieldValue,
@@ -93,7 +93,7 @@ export interface ContractField {
   unit?: string
   value: unknown
   display: string
-  source: 'ai' | 'calculated' | 'user' | 'highlight' | 'variable' | 'amendment' | 'import' | null
+  source: 'ai' | 'calculated' | 'user' | 'highlight' | 'variable' | 'amendment' | 'import' | 'renewal' | null
   confidence: number | null
   quote: string | null
   section: string | null
@@ -219,6 +219,14 @@ function SourceMark({ f }: { f: ContractField }) {
       </Link>
     ) : (
       <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-ink-700" title="Set from an amendment — a re-analysis won't change it" data-testid={`field-source-${f.key}`}>{label}</span>
+    )
+  }
+  if (f.source === 'renewal') {
+    // Fix-up 16 — an expiry date the contract's automatic renewal moved on.
+    return (
+      <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-ink-700" title="Moved on when the contract renewed automatically — a re-analysis won't change it" data-testid={`field-source-${f.key}`}>
+        <RefreshCw className="size-3" /> Renewed
+      </span>
     )
   }
   if (f.source === 'highlight') {
