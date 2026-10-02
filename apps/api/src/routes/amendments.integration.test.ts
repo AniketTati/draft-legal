@@ -64,6 +64,7 @@ describe('drafting an amendment from what changes', () => {
       changes: [
         { kind: 'clause', clauseId: feesClause, action: 'replace', newText: 'Payment is due within forty-five (45) days of invoice.', source: 'ai', instruction: '45 days' },
         { kind: 'term', key: 'expiryDate', label: 'Expiry date', from: '2025-12-31', to: '2027-12-31' },
+        { kind: 'term', key: 'value', label: 'Contract value', to: '300000' },
       ],
     })
     expect(r.statusCode).toBe(201)
@@ -76,7 +77,11 @@ describe('drafting an amendment from what changes', () => {
     const v = await prisma.contractVersion.findUniqueOrThrow({ where: { id: c.currentVersionId! } })
     expect(v.htmlContent).toContain('Section 5 of the Agreement is deleted in its entirety and replaced with the following:')
     expect(v.htmlContent).toContain('forty-five (45) days')
-    expect(v.plainText).toContain('The Expiry date is amended to read: 2027-12-31.')    // E2 step 0 — created through the lifecycle: its starting stage is on the record.
+    // 41 browser QA — dates and money as the document writes them, not as stored.
+    expect(v.plainText).toContain('The Expiry date is amended to read: December 31, 2027.')
+    expect(v.plainText).toContain('The Contract value is amended to read: USD 300,000.')
+    expect(v.plainText).toContain('made effective as of June 1, 2025')
+    // E2 step 0 — created through the lifecycle: its starting stage is on the record.
     const ev = await prisma.auditEvent.findFirst({ where: { orgId: org, resourceId: a1, action: 'STAGE_CHANGED' } })
     expect(ev?.metadata).toMatchObject({ created: true, toStage: 'draft', from: null, parentContractId: parent, relationshipType: 'amendment' })
   })
@@ -145,7 +150,7 @@ describe('once it is signed', () => {
     expect(r.parent).toMatchObject({ id: parent })
     expect(r.items[0]).toMatchObject({ kind: 'clause', name: 'Section 5', current: FEES, proposed: 'Payment is due within forty-five (45) days of invoice.' })
     expect(r.items[0].segments).toEqual(expect.arrayContaining([{ op: 'delete', text: 'thirty (30) ' }, { op: 'insert', text: 'forty-five (45) ' }]))
-    expect(r.items[1]).toMatchObject({ kind: 'term', name: 'Expiry date', current: '2025-12-31', proposed: '2027-12-31' })
+    expect(r.items[1]).toMatchObject({ kind: 'term', name: 'Expiry date', current: 'December 31, 2025', proposed: 'December 31, 2027' })
   })
 
   it('still finds the words being signed after an editor save drops the marker and adds a suggestion (fix-up 14)', async () => {

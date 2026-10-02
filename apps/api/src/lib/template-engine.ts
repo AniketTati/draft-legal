@@ -10,6 +10,7 @@
 
 import type { Template, TemplateSection, ClauseLibraryItem } from '@prisma/client'
 import { sectionFingerprint } from './fingerprint.js'
+import { documentVariables, type DocumentStyle } from './document-values.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -167,12 +168,20 @@ export interface GenerateOptions {
    * blank when nothing decided it. A slot section's own `content` is not used.
    */
   slotText?: Map<string, { html: string; source: string; familyId: string }>
+  /**
+   * docs/41 browser QA — how the document writes its values: money with its
+   * currency and grouping, dates as the org writes them. Without it, values
+   * are written as given.
+   */
+  style?: DocumentStyle
 }
 
 const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 
 export function generateDocument(options: GenerateOptions): GenerateResult {
   const { template, variables, clauseMap = new Map(), slotText = new Map() } = options
+  // What the text says; conditions still test the values as stored.
+  const shown = options.style ? documentVariables(variables, template.variables, options.style) as VariableMap : variables
 
   const sortedSections = [...template.sections].sort((a, b) => a.sortOrder - b.sortOrder)
 
@@ -216,7 +225,7 @@ export function generateDocument(options: GenerateOptions): GenerateResult {
     }
 
     // Interpolate variables
-    const { html: interpolated, unfilled } = interpolateVariables(inner, variables)
+    const { html: interpolated, unfilled } = interpolateVariables(inner, shown)
     allUnfilled.push(...unfilled)
 
     htmlParts.push(

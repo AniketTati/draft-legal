@@ -71,7 +71,8 @@ import {
   type AmendmentChangeSpec,
   type AmendmentSpec,
 } from '@clm/types'
-import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml, closingAfterChanges, withReplacedBy } from '../lib/amendments.js'
+import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml, closingAfterChanges, termChangeAsWritten, withReplacedBy } from '../lib/amendments.js'
+import { orgDateOrder } from '../lib/org-date-order.js'
 import { nextFamilyNumber, effectiveView } from '../lib/family.js'
 import { createChildContract } from '../lib/child-contract.js'
 import { modelFetch } from '../lib/model-boundary.js'
@@ -1994,8 +1995,10 @@ export async function contractRoutes(app: FastifyInstance) {
     // effect now (an earlier signed amendment's words, when one changed it).
     const changes: AmendmentChangeSpec[] = []
     const effective = parsedChanges.data.some(ch => ch.kind === 'clause') ? await effectiveView(orgId, parent.id) : null
+    // Money and dates as the document writes them ("USD 300,000", not "300000").
+    const style = { dateOrder: await orgDateOrder(orgId), currency: parent.currency }
     for (const ch of parsedChanges.data) {
-      if (ch.kind === 'term') { changes.push({ ...ch, from: ch.from ?? null, source: 'user' }); continue }
+      if (ch.kind === 'term') { changes.push({ ...termChangeAsWritten({ ...ch, from: ch.from ?? null }, style), source: 'user' }); continue }
       if (ch.action === 'replace' && !ch.newText?.trim()) return reply.status(400).send({ detail: 'Write the new words for each clause that is replaced' })
       const clause = await prisma.contractClause.findFirst({
         where: { id: ch.clauseId, version: { contractId: parent.id, contract: { orgId } } },
@@ -2049,10 +2052,10 @@ export async function contractRoutes(app: FastifyInstance) {
         ? amendmentFromTemplate(template as never, {
           parent_title: parent.title, counterparty_name: parent.counterpartyName, amendment_label: label ?? 'Amendment',
           effective_date: effectiveDay, parent_effective_date: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
-        }, changes)
+        }, changes, style)
         : amendmentHtml({
           label: label ?? 'Amendment', parentTitle: parent.title, parentEffectiveDate: parent.effectiveDate?.toISOString().slice(0, 10) ?? null,
-          counterpartyName: parent.counterpartyName, effectiveDate: effectiveDay, changes,
+          counterpartyName: parent.counterpartyName, effectiveDate: effectiveDay, changes, dateOrder: style.dateOrder,
         }))
       : null
     const draftedText = drafted ? htmlToText(drafted) : null

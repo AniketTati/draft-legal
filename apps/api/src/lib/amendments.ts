@@ -15,7 +15,8 @@
  *      the parent's effective view and the roll-up.
  */
 import { z } from 'zod'
-import { familyLabel, type AmendmentChangeSpec } from '@clm/types'
+import { familyLabel, type AmendmentChangeSpec, type DateOrder } from '@clm/types'
+import { documentDate, documentValue, type DocumentStyle } from './document-values.js'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
 import { redactJson, restorePii } from './pii-policy.js'
@@ -56,6 +57,15 @@ export function sectionName(sectionRef: string | null, clauseType: string): stri
   return `the ${clauseType.replace(/_/g, ' ')} clause`
 }
 
+/**
+ * A term's new (and old) value as the amendment writes it: "USD 300,000",
+ * not "300000" (lib/document-values.ts). Done once, when the amendment is
+ * made, so its sentence, its redline and the stored change say the same.
+ */
+export function termChangeAsWritten<T extends { key: string; to: string; from?: string | null }>(ch: T, style: DocumentStyle): T {
+  return { ...ch, to: documentValue(ch.key, ch.to, style), from: ch.from ? documentValue(ch.key, ch.from, style) : ch.from ?? null }
+}
+
 /** One change as operative words, plain text (pure). */
 export function changeSentence(ch: AmendmentChangeSpec): string {
   if (ch.kind === 'term') return `The ${ch.label} is amended to read: ${ch.to}.`
@@ -79,9 +89,7 @@ export function changesHtml(changes: AmendmentChangeSpec[]): string {
   return items.join('\n')
 }
 
-const fmtDate = (d: string | null) => d
-  ? new Date(`${d.slice(0, 10)}T00:00:00Z`).toLocaleDateString('en-US', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
-  : '[effective date]'
+const fmtDate = (d: string | null, order: DateOrder = 'MDY') => d ? documentDate(d.slice(0, 10), order) : '[effective date]'
 
 /**
  * The amendment's document (pure): recitals naming the agreement, the
@@ -90,11 +98,13 @@ const fmtDate = (d: string | null) => d
 export function amendmentHtml(input: {
   label: string; parentTitle: string; parentEffectiveDate: string | null; counterpartyName: string | null
   effectiveDate: string | null; changes: AmendmentChangeSpec[]
+  /** How the org writes dates. */
+  dateOrder?: DateOrder
 }): string {
   return [
     `<h1>${esc(input.label)} to ${esc(input.parentTitle)}</h1>`,
-    `<p>This ${esc(input.label)} (the “Amendment”) is made effective as of ${esc(fmtDate(input.effectiveDate))} and amends the ${esc(input.parentTitle)}`
-      + `${input.parentEffectiveDate ? ` dated ${esc(fmtDate(input.parentEffectiveDate))}` : ''}`
+    `<p>This ${esc(input.label)} (the “Amendment”) is made effective as of ${esc(fmtDate(input.effectiveDate, input.dateOrder))} and amends the ${esc(input.parentTitle)}`
+      + `${input.parentEffectiveDate ? ` dated ${esc(fmtDate(input.parentEffectiveDate, input.dateOrder))}` : ''}`
       + `${input.counterpartyName ? ` between the parties, including ${esc(input.counterpartyName)}` : ''} (the “Agreement”).</p>`,
     `<p>The parties agree to amend the Agreement as follows:</p>`,
     changesHtml(input.changes),
@@ -103,9 +113,9 @@ export function amendmentHtml(input: {
 }
 
 /** The amendment inside the org's template: its sections, with the changes where {{amendment_changes}} is. */
-export function amendmentFromTemplate(template: TemplateWithSections, vars: Record<string, string | null>, changes: AmendmentChangeSpec[]): string {
+export function amendmentFromTemplate(template: TemplateWithSections, vars: Record<string, string | null>, changes: AmendmentChangeSpec[], style?: DocumentStyle): string {
   const MARK = 'AMENDMENTCHANGESMARK'
-  const { html } = generateDocument({ template, variables: { ...vars, amendment_changes: MARK } })
+  const { html } = generateDocument({ template, variables: { ...vars, amendment_changes: MARK }, style })
   const list = changesHtml(changes)
   const placed = html.replace(new RegExp(`<span data-variable="amendment_changes">${MARK}</span>`, 'g'), list)
   // A template without the marker gets the changes after its last section.
