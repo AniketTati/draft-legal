@@ -68,9 +68,10 @@ describe('saving a contract\'s HTML', () => {
     const after = await prisma.contract.findUniqueOrThrow({ where: { id }, select: { status: true, currentVersionId: true } })
     expect(after).toEqual({ status: 'DRAFT', currentVersionId: res.json().id })
     // X47 follow-up — the edit, and the approval it undid, are on the record.
+    // Part 16 (C1) also records how the version was made and its note.
     const audit = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })
     expect(audit.userId).toBe(user)
-    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2, statusFrom: 'APPROVED', statusTo: 'DRAFT' })
+    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2, statusFrom: 'APPROVED', statusTo: 'DRAFT', via: 'editor', changeNote: 'Edited in-place' })
   })
 
   it('an edit to a draft records no status change it did not make', async () => {
@@ -79,7 +80,7 @@ describe('saving a contract\'s HTML', () => {
     await prisma.contract.update({ where: { id }, data: { currentVersionId: v.id } })
     expect((await save(id, '<p>New</p>')).statusCode).toBe(201)
     const audit = await prisma.auditEvent.findFirstOrThrow({ where: { orgId: org, resourceId: id, action: 'CONTRACT_UPDATED' } })
-    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2 })
+    expect(audit.metadata).toEqual({ action: 'document_edited', versionNumber: 2, via: 'editor', changeNote: 'Edited in-place' })
   })
 
   it('is judged against the version the contract stands on: after an undo, saving the latest again is a change', async () => {
