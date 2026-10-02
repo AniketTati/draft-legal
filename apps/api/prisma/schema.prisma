@@ -1362,6 +1362,12 @@ model ContractComment {
   parentId     String? // null = top-level thread; set = reply
   authorId     String // userId or "portal:<linkId>" for external commenters
   body         String
+  // docs/41 Part 16 — "internal" (our side only) or "external" (the
+  // counterparty sees it in the portal). Set on the thread; replies follow it.
+  visibility   String    @default("internal")
+  // { quote, start, end, versionId } — the words the thread was left on, as
+  // plain-text offsets in that version; re-found by quote in later versions.
+  anchor       Json?
   resolved     Boolean   @default(false)
   resolvedById String?
   resolvedAt   DateTime?
@@ -1377,6 +1383,7 @@ model ContractComment {
   @@index([orgId, contractId])
   @@index([contractId, clauseRef])
   @@index([contractId, parentId])
+  @@index([contractId, visibility])
   @@map("contract_comments")
 }
 

@@ -169,6 +169,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'GET /playbook/playbooks': { action: 'view', resource: 'playbook' },
   'GET /playbook/positions': { action: 'view', resource: 'playbook' },
   'GET /playbook/positions/:id': { action: 'view', resource: 'playbook' },
+  'GET /portal/:portalToken/comments': null,
   'GET /portal/:portalToken/contract': null,
   'GET /portal/:portalToken/download/docx': null,
   'GET /renewals': { action: 'view', resource: 'contract' },

@@ -3,7 +3,8 @@
  * Token-gated (no requireAuth). External reviewers/counterparties access contracts
  * via a signed portal JWT embedded in the URL (/portal/:portalToken on the frontend).
  *
- * Portal comments use authorId = "portal:<shareLinkId>"
+ * Portal comments use authorId = "portal:<shareLinkId>". The portal reads and
+ * writes external threads only; internal ones never leave our side (docs/41 Part 16).
  *
  * B.5.14 additions:
  *   - GET  /:portalToken/download/docx  — HTML→DOCX round-trip via Gotenberg
@@ -20,7 +21,9 @@ import { generatePlainDocx } from '../lib/docx-export.js'
 import { verifyPortalToken } from './share.js'
 import { s3, S3_BUCKET } from '../lib/storage.js'
 import { queueParseDocument, queueNotification } from '../lib/queue.js'
-import { AuditAction } from '@clm/types'
+import { AuditAction, parseCommentAnchor } from '@clm/types'
+import { Prisma } from '@prisma/client'
+import { withAnchors } from '../lib/comment-anchors.js'
 import { checkUpload, PDF_OR_DOCX } from '../lib/file-type.js'
 import { standingVersion } from '../lib/standing-version.js'
 import { onApprovalChange } from '../lib/approval-reset.js'
@@ -135,6 +138,40 @@ export async function portalRoutes(app: FastifyInstance) {
   })
 
 
+  // ── External comment threads ──────────────────────────────────────────────
+  // Only threads marked external. Authors are shown by name; our user ids stay
+  // ours. Anchors are placed in the version the portal shows.
+  app.get('/:portalToken/comments', async (req, reply) => {
+    const { portalToken } = req.params as { portalToken: string }
+    const resolved = await resolvePortalToken(portalToken)
+    if (!resolved) return reply.status(401).send({ error: 'Invalid or expired share link' })
+    const { payload, link } = resolved
+
+    const contract = await prisma.contract.findFirst({ where: { id: payload.contractId, orgId: payload.orgId, deletedAt: null }, include: { org: { select: { name: true } } } })
+    if (!contract) return reply.status(404).send({ error: 'Contract not found' })
+    const { shown } = await portalVersion(contract)
+
+    const threads = await prisma.contractComment.findMany({
+      where: { orgId: payload.orgId, contractId: payload.contractId, parentId: null, deletedAt: null, visibility: 'external' },
+      orderBy: { createdAt: 'asc' },
+      include: { replies: { where: { orgId: payload.orgId, contractId: payload.contractId, deletedAt: null, visibility: 'external' }, orderBy: { createdAt: 'asc' } } },
+    })
+    const userIds = [...new Set(threads.flatMap(t => [t, ...t.replies]).map(c => c.authorId).filter(a => !a.startsWith('portal:')))]
+    const users = userIds.length ? await prisma.user.findMany({ where: { id: { in: userIds }, orgId: payload.orgId }, select: { id: true, name: true } }) : []
+    const nameOf = new Map(users.map(u => [u.id, u.name]))
+    const view = (c: (typeof threads)[number] | (typeof threads)[number]['replies'][number]) => ({
+      id: c.id, body: c.body, createdAt: c.createdAt, resolved: c.resolved, visibility: c.visibility,
+      fromThisLink: c.authorId === `portal:${link.id}`,
+      fromCounterparty: c.authorId.startsWith('portal:'),
+      // A portal comment keeps its author's typed name in resolvedById (see POST).
+      authorName: c.authorId.startsWith('portal:') ? (c.resolved ? 'External reviewer' : c.resolvedById ?? 'External reviewer') : nameOf.get(c.authorId) ?? contract.org.name,
+    })
+    const placed = await withAnchors(payload.orgId, payload.contractId, threads, shown?.id ?? null)
+    return reply.send({
+      data: placed.map(t => ({ ...view(t), anchor: t.anchor, anchorState: t.anchorState, anchorStart: t.anchorStart, anchorEnd: t.anchorEnd, replies: t.replies.map(view) })),
+    })
+  })
+
   // ── Add comment via portal ────────────────────────────────────────────────
   app.post('/:portalToken/comments', async (req, reply) => {
     const { portalToken } = req.params as { portalToken: string }
@@ -148,14 +185,29 @@ export async function portalRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: 'This link does not allow comments' })
     }
 
-    const { body, clauseRef, authorName, authorEmail } = req.body as {
+    const { body, clauseRef, authorName, authorEmail, parentId, anchor: rawAnchor } = req.body as {
       body: string
       clauseRef?: string
       authorName?: string
       authorEmail?: string
+      parentId?: string
+      anchor?: unknown
     }
 
     if (!body?.trim()) return reply.status(400).send({ error: 'body is required' })
+
+    // A reply goes only into a thread the counterparty can see.
+    if (parentId) {
+      const parent = await prisma.contractComment.findFirst({
+        where: { id: parentId, orgId: payload.orgId, contractId: payload.contractId, parentId: null, deletedAt: null, visibility: 'external' },
+      })
+      if (!parent) return reply.status(404).send({ error: 'Comment not found' })
+    }
+    const anchor = parentId ? null : parseCommentAnchor(rawAnchor)
+    if (anchor?.versionId) {
+      const v = await prisma.contractVersion.findFirst({ where: { id: anchor.versionId, contractId: payload.contractId }, select: { id: true } })
+      if (!v) anchor.versionId = null
+    }
 
     const comment = await prisma.contractComment.create({
       data: {
@@ -164,6 +216,10 @@ export async function portalRoutes(app: FastifyInstance) {
         authorId: `portal:${link.id}`,
         body: body.trim(),
         clauseRef,
+        parentId: parentId ?? null,
+        // Everything the counterparty writes is, by definition, shared with them.
+        visibility: 'external',
+        anchor: anchor ? (anchor as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
         // Store portal user info in a structured way
         resolvedById: authorName ?? authorEmail ?? 'External reviewer',
       },
