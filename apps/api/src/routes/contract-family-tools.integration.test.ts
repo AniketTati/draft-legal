@@ -95,7 +95,7 @@ describe('the assistant sees a contract\'s amendments', () => {
     expect(body.relationshipType).toBeNull()
     expect(body.family.parent).toBeNull()
     expect(body.family.children.map((c: { id: string; relationshipType: string }) => [c.id, c.relationshipType]))
-      .toEqual([[amendment, 'amendment'], [exhibit, 'exhibit_only']])
+      .toEqual([[amendment, 'amendment'], [exhibit, 'exhibit']])
     expect(body.family.siblings).toEqual([])
     expect(body.familyNote).toMatch(/^A later contract changes this one's terms/)
   })
@@ -122,7 +122,7 @@ describe('the assistant sees a contract\'s amendments', () => {
 
   it('an exhibit changes no terms, so it gets no note', async () => {
     const body = (await tool('contract_get', { contractId: exhibit })).json()
-    expect(body.relationshipType).toBe('exhibit_only')
+    expect(body.relationshipType).toBe('exhibit')
     expect(body.family.parent?.id).toBe(base)
     expect(ids(body.family.siblings)).toEqual([amendment])
     expect(body.familyNote).toBeUndefined()
@@ -143,7 +143,7 @@ describe('the assistant sees a contract\'s amendments', () => {
     expect(deal(base)).toMatchObject({ parentContractId: null, relationshipType: null })
 
     const search = (await tool('contract_search', { query: 'Acme Family' })).json()
-    expect(search.results.find((r: { id: string }) => r.id === exhibit)).toMatchObject({ parentContractId: base, relationshipType: 'exhibit_only' })
+    expect(search.results.find((r: { id: string }) => r.id === exhibit)).toMatchObject({ parentContractId: base, relationshipType: 'exhibit' })
   })
 
   it('an own-scope caller sees only the relatives it owns', async () => {
@@ -234,7 +234,7 @@ describe('renewal_advice follows the amendments', () => {
     const window = { gte: new Date(), lte: new Date(Date.now() + 90 * DAY) }
     const inWindow = { orgId: org, deletedAt: null, status: 'EXECUTED', diligenceRoomId: null, expiryDate: window }
     const all = await prisma.contract.count({ where: inWindow })
-    const linked = await prisma.contract.count({ where: { ...inWindow, relationshipType: { in: ['amendment', 'exhibit_only'] } } })
+    const linked = await prisma.contract.count({ where: { ...inWindow, relationshipType: { in: ['amendment', 'exhibit'] } } })
     expect(linked).toBeGreaterThanOrEqual(1)
     const stats = (await app.inject({ method: 'GET', url: '/api/v1/renewals/stats', headers })).json()
     expect(stats.next90).toBe(all - linked)

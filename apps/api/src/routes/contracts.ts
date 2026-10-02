@@ -44,6 +44,7 @@ import { submitForApproval } from '../lib/approval-flow.js'
 import { recommendationGuard } from '../lib/recommendation-guard.js'
 import { openChoices } from '../lib/open-choices.js'
 import { htmlToText } from '../lib/html-text.js'
+import { onVersionCreated } from '../lib/analysis-trigger.js'
 import { guardOwnScopeContractRoutes, ownContractWhere } from '../lib/own-scope-guard.js'
 import {
   applyExtraction, extractedFieldsFromPatch, personFieldsFromPatch, setFieldValues,
@@ -64,7 +65,14 @@ import {
   typeFieldsFor,
   ContractType,
   readContractType,
+  normaliseRelationshipType,
+  familyLabel,
+  type RelationshipType,
+  type AmendmentChangeSpec,
+  type AmendmentSpec,
 } from '@clm/types'
+import { AmendmentChangesSchema, amendmentFromTemplate, amendmentHtml } from '../lib/amendments.js'
+import { nextFamilyNumber, effectiveView } from '../lib/family.js'
 import { modelFetch } from '../lib/model-boundary.js'
 
 // riskScore is served as 0-100 (RiskScoreSchema in @clm/types) whatever scale
@@ -1935,12 +1943,13 @@ export async function contractRoutes(app: FastifyInstance) {
         id: true,
         parentContractId: true,
         relationshipType: true,
+        amendmentNumber: true,
         parentContract: {
           select: { id: true, title: true, type: true, status: true, relationshipType: true, ownerId: true, orgId: true, deletedAt: true, metadata: true },
         },
         amendments: {
           where: { deletedAt: null, orgId, ...ownContractWhere(req) },
-          select: { id: true, title: true, type: true, status: true, relationshipType: true, createdAt: true },
+          select: { id: true, title: true, type: true, status: true, relationshipType: true, amendmentNumber: true, createdAt: true },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -1980,6 +1989,9 @@ export async function contractRoutes(app: FastifyInstance) {
       children: contract.amendments,
       siblings,
       relationshipType: contract.relationshipType,
+      // docs/41 Part 13 — "Amendment No. 2", for the banner.
+      amendmentNumber: contract.amendmentNumber,
+      label: familyLabel(contract.relationshipType, contract.amendmentNumber),
       splitFromParent,
     })
   })
@@ -2059,17 +2071,21 @@ export async function contractRoutes(app: FastifyInstance) {
     const amendmentNumber = body.amendmentNumber != null && Number.isInteger(Number(body.amendmentNumber)) && Number(body.amendmentNumber) > 0
       ? Number(body.amendmentNumber)
       : await nextFamilyNumber(orgId, parent.id, relationshipType)
-    // The parent's words for each clause that changes: the evidence, as in effect now.
+    // The parent's words for each clause that changes: the evidence, as in
+    // effect now (an earlier signed amendment's words, when one changed it).
     const changes: AmendmentChangeSpec[] = []
+    const effective = parsedChanges.data.some(ch => ch.kind === 'clause') ? await effectiveView(orgId, parent.id) : null
     for (const ch of parsedChanges.data) {
       if (ch.kind === 'term') { changes.push({ ...ch, from: ch.from ?? null, source: 'user' }); continue }
+      if (ch.action === 'replace' && !ch.newText?.trim()) return reply.status(400).send({ detail: 'Write the new words for each clause that is replaced' })
       const clause = await prisma.contractClause.findFirst({
-        where: { id: ch.clauseId, version: { contractId: parent.id } },
+        where: { id: ch.clauseId, version: { contractId: parent.id, contract: { orgId } } },
         select: { id: true, clauseType: true, sectionRef: true, content: true },
       })
       if (!clause) return reply.status(400).send({ detail: 'A clause picked to change isn’t in the agreement' })
+      const inEffect = effective?.sections.find(x => x.clauseId === clause.id)
       changes.push({
-        kind: 'clause', clauseId: clause.id, clauseType: clause.clauseType, sectionRef: clause.sectionRef, parentText: clause.content,
+        kind: 'clause', clauseId: clause.id, clauseType: clause.clauseType, sectionRef: clause.sectionRef, parentText: inEffect?.text || clause.content,
         newText: ch.action === 'delete' ? '' : ch.newText ?? '', action: ch.action, source: ch.source, instruction: ch.instruction ?? null,
       })
     }
@@ -2161,12 +2177,18 @@ export async function contractRoutes(app: FastifyInstance) {
       },
       include: { versions: true },
     })
-    // Set currentVersionId now that the version row has an id.
+    // Set currentVersionId now that the version row has an id. A drafted
+    // amendment is read like any draft (docs/41 P0.1): the playbook applies
+    // to the amended words.
     if (created.versions[0]) {
       await prisma.contract.update({
         where: { id: created.id },
         data:  { currentVersionId: created.versions[0].id },
       })
+      if (drafted) {
+        await onVersionCreated(created.id, created.versions[0].id, 'generated')
+          .catch(err => app.log.warn({ err }, 'analysis of a drafted amendment was not queued'))
+      }
     }
 
     // P81 audit (2026-05-02). Index amendments in ES so they

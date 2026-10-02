@@ -14,10 +14,35 @@
  *   4. Its changes are kept (metadata._amendment) for the amendment redline,
  *      the parent's effective view and the roll-up.
  */
+import { z } from 'zod'
 import { familyLabel, type AmendmentChangeSpec } from '@clm/types'
 import { prisma } from './prisma.js'
 import { generateDocument, type TemplateWithSections } from './template-engine.js'
 import { proposeClauseAlternatives } from './clause-propose.js'
+import { diffSequences } from './ooxml/sequence-diff.js'
+
+/**
+ * What a person picked to change, as the create route takes it. A clause's
+ * own words (parentText, type, section) are read from the parent, never
+ * taken from the request.
+ */
+export const AmendmentChangesSchema = z.array(z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('clause'),
+    clauseId: z.string().min(1).max(64),
+    action: z.enum(['replace', 'delete']),
+    newText: z.string().max(20000).optional(),
+    source: z.enum(['ai', 'user']).default('user'),
+    instruction: z.string().max(2000).nullable().optional(),
+  }),
+  z.object({
+    kind: z.literal('term'),
+    key: z.string().min(1).max(64),
+    label: z.string().min(1).max(200),
+    from: z.string().max(2000).nullable().optional(),
+    to: z.string().min(1).max(2000),
+  }),
+])).max(40)
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
@@ -149,4 +174,67 @@ export function obligationsReplaced<T extends { id: string; sectionRef: string |
   return obligations.filter(o => clauses.some(c =>
     (c.sectionRef && o.sectionRef && refKey(o.sectionRef) === refKey(c.sectionRef))
     || (o.quote.trim().length >= 20 && norm(c.parentText).includes(norm(o.quote)))))
+}
+
+// ─── Amendment redline ───────────────────────────────────────────────────────
+
+export interface RedlineSegment { op: 'equal' | 'delete' | 'insert'; text: string }
+
+/** Pure: word-level marks from the parent's words to the proposed ones, runs merged. */
+export function redlineSegments(from: string, to: string): RedlineSegment[] {
+  // A word keeps the space after it: a change reads "thirty (30) days" → "forty-five (45) days", not word by word.
+  const tok = (s: string) => s.match(/^\s+|\S+\s*/g) ?? []
+  const ops = diffSequences(tok(from), tok(to), x => x)
+  const out: RedlineSegment[] = []
+  for (const o of ops) {
+    const seg: RedlineSegment = o.kind === 'equal' ? { op: 'equal', text: o.b } : o.kind === 'delete' ? { op: 'delete', text: o.a } : { op: 'insert', text: o.b }
+    const last = out[out.length - 1]
+    if (last && last.op === seg.op) last.text += seg.text
+    else out.push(seg)
+  }
+  return out
+}
+
+/**
+ * Pure: the words a person has since written for each change, read from the
+ * amendment's current document (the blockquote the draft put each one in),
+ * so the redline shows what is being signed, not the first draft.
+ */
+export function proposedTextsFromHtml(html: string): Map<number, string> {
+  const out = new Map<number, string>()
+  const re = /<blockquote[^>]*data-amendment-text="(\d+)"[^>]*>([\s\S]*?)<\/blockquote>/g
+  for (let m = re.exec(html); m; m = re.exec(html)) {
+    const text = m[2].replace(/<\/p>\s*<p[^>]*>/g, '\n\n').replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    out.set(Number(m[1]), text.trim())
+  }
+  return out
+}
+
+export interface AmendmentRedlineItem {
+  index: number
+  kind: 'clause' | 'term'
+  /** "Section 5.1", or the term's name. */
+  name: string
+  action: 'replace' | 'delete' | 'set'
+  /** The parent's words (or value) in effect now, without this amendment. */
+  current: string
+  proposed: string
+  segments: RedlineSegment[]
+}
+
+/** Pure: each change as the parent's effective words against the proposed ones. */
+export function amendmentRedlineItems(
+  changes: AmendmentChangeSpec[], effectiveText: (clauseId: string, sectionRef: string | null) => string | null, edited: Map<number, string>,
+): AmendmentRedlineItem[] {
+  return changes.map((ch, index) => {
+    if (ch.kind === 'term') {
+      const current = ch.from ?? ''
+      return { index, kind: 'term', name: ch.label, action: 'set', current, proposed: ch.to, segments: redlineSegments(current, ch.to) }
+    }
+    const current = effectiveText(ch.clauseId, ch.sectionRef) ?? ch.parentText
+    const proposed = ch.action === 'delete' ? '' : edited.get(index) ?? ch.newText
+    const name = sectionName(ch.sectionRef, ch.clauseType)
+    return { index, kind: 'clause', name: name[0].toUpperCase() + name.slice(1), action: ch.action, current, proposed, segments: redlineSegments(current, proposed) }
+  })
 }

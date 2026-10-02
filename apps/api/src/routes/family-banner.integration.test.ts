@@ -29,13 +29,14 @@ describe('GET /contracts/:id/family — splitFromParent', () => {
     const split = await makeContract(org, user, { title: 'MSA (pages 1-4)' })
     const handExhibit = await makeContract(org, user, { title: 'Schedule A' })
     const amendment = await makeContract(org, user, { title: 'Amendment No. 1' })
-    await prisma.contract.update({ where: { id: split }, data: { parentContractId: bundle, relationshipType: 'exhibit_only' } })
+    // The binder split writes split_part; an older `exhibit_only` reads as an exhibit (docs/41 Part 13).
+    await prisma.contract.update({ where: { id: split }, data: { parentContractId: bundle, relationshipType: 'split_part' } })
     await prisma.contract.update({ where: { id: handExhibit }, data: { parentContractId: bundle, relationshipType: 'exhibit_only' } })
     await prisma.contract.update({ where: { id: amendment }, data: { parentContractId: bundle, relationshipType: 'amendment' } })
     await prisma.contract.update({ where: { id: bundle }, data: { metadata: { _splitInto: [split] } } })
 
-    expect(await family(split)).toMatchObject({ parent: { id: bundle }, relationshipType: 'exhibit_only', splitFromParent: true })
-    expect(await family(handExhibit)).toMatchObject({ relationshipType: 'exhibit_only', splitFromParent: false })
+    expect(await family(split)).toMatchObject({ parent: { id: bundle }, relationshipType: 'split_part', splitFromParent: true })
+    expect(await family(handExhibit)).toMatchObject({ relationshipType: 'exhibit', splitFromParent: false })
     expect(await family(amendment)).toMatchObject({ relationshipType: 'amendment', splitFromParent: false })
   })
 })
