@@ -24,7 +24,7 @@ import { Input } from '@/components/ui/input'
 import { toast } from '@/components/common/Toaster'
 import { RailSection } from './RailSection'
 
-type Relationship = 'amendment' | 'sow' | 'order_form' | 'renewal' | 'exhibit_only'
+type Relationship = 'amendment' | 'sow' | 'order_form' | 'renewal' | 'exhibit'
 
 interface Change {
   key: string
@@ -38,6 +38,8 @@ interface ChangesResponse {
   parent: { id: string; title: string } | null
   relationshipType: Relationship | null
   changes: Change[]
+  /** docs/41 Part 13 — the agreement's obligations from the sections this one replaces. */
+  obligations?: Array<{ id: string; description: string; quote: string; sectionRef: string | null; superseded: boolean }>
   /** The latest roll-up from this contract that can still be undone. */
   lastRun?: { id: string; createdAt: string; count: number } | null
 }
@@ -46,10 +48,10 @@ interface Suggestion { id: string; title: string; type: string; effectiveDate: s
 interface SuggestionsResponse { looksLike: Relationship | null; suggestions: Suggestion[] }
 
 const READS_AS: Record<Relationship, string> = {
-  amendment: 'an amendment', sow: 'a statement of work', order_form: 'an order form', renewal: 'a renewal', exhibit_only: 'an exhibit',
+  amendment: 'an amendment', sow: 'a statement of work', order_form: 'an order form', renewal: 'a renewal', exhibit: 'an exhibit',
 }
 const LINK_AS: Record<Relationship, string> = {
-  amendment: 'amendment', sow: 'SOW', order_form: 'order form', renewal: 'renewal', exhibit_only: 'exhibit',
+  amendment: 'amendment', sow: 'SOW', order_form: 'order form', renewal: 'renewal', exhibit: 'exhibit',
 }
 
 function detail(e: unknown): string {
@@ -60,6 +62,7 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
   const qc = useQueryClient()
   const canLink = useCanRequest('PUT /contracts/:id/parent')
   const [picked, setPicked] = useState<Set<string> | null>(null)
+  const [dropping, setDropping] = useState<Set<string> | null>(null)
   const [searching, setSearching] = useState(false)
   const [q, setQ] = useState('')
 
@@ -99,9 +102,13 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
   })
 
   const apply = useMutation({
-    mutationFn: async (keys: string[]) => (await api.post<{ parent: { id: string; title: string }; applied: string[]; runId: string | null }>(`/contracts/${contractId}/amendment-changes/apply`, { keys })).data,
+    mutationFn: async (a: { keys: string[]; obligations: string[] }) => (await api.post<{ parent: { id: string; title: string }; applied: string[]; runId: string | null; superseded: number }>(
+      `/contracts/${contractId}/amendment-changes/apply`, { keys: a.keys, supersedeObligationIds: a.obligations.length ? a.obligations : undefined },
+    )).data,
     onSuccess: r => {
-      setPicked(null)
+      setPicked(null); setDropping(null)
+      qc.invalidateQueries({ queryKey: ['contract-term-history', r.parent.id] })
+      qc.invalidateQueries({ queryKey: ['obligations'] })
       refresh()
       qc.invalidateQueries({ queryKey: ['contract-fields', r.parent.id] })
     },
@@ -128,7 +135,14 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
       if (next.has(key)) next.delete(key); else next.add(key)
       return next
     })
-    const rel = family.relationshipType ? LINK_AS[family.relationshipType] : 'related contract'
+    const rel = (family.relationshipType && LINK_AS[family.relationshipType]) || 'related contract'
+    const owed = (family.obligations ?? []).filter(o => !o.superseded)
+    const dropped = dropping ?? new Set(owed.map(o => o.id))
+    const toggleDrop = (id: string) => setDropping(() => {
+      const next = new Set(dropped)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
     return (
       <RailSection title="Changes to the agreement" count={pending.length || null} defaultOpen={pending.length > 0 || !!family.lastRun}>
         <div className="space-y-2.5" data-testid="agreement-panel">
@@ -166,12 +180,34 @@ export function AgreementPanel({ contractId, canEdit }: { contractId: string; ca
               ))}
             </ul>
           )}
-          {canEdit && pending.length > 0 && (
+          {(family.obligations ?? []).length > 0 && (
+            <div data-testid="agreement-obligations">
+              <p className="text-[12px] font-medium text-ink-950 mb-1">Obligations from the sections it replaces</p>
+              <ul className="divide-y divide-paper-100 border border-paper-200 rounded-md">
+                {(family.obligations ?? []).map(o => (
+                  <li key={o.id} className="px-2.5 py-2 flex items-start gap-2">
+                    {o.superseded ? (
+                      <CheckCircle2 className="size-3.5 mt-0.5 text-ink-400 shrink-0" aria-label="No longer owed" />
+                    ) : (
+                      <input type="checkbox" className="mt-0.5 accent-ink-950" checked={dropped.has(o.id)} disabled={!canEdit}
+                        onChange={() => toggleDrop(o.id)} aria-label={`Mark ${o.description} as no longer owed`} />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12px] text-ink-950">{o.description}{o.superseded && <span className="text-ink-500"> · no longer owed</span>}</p>
+                      <p className="text-[11px] text-ink-500 line-clamp-2" title={o.quote}>{o.sectionRef ? `§${o.sectionRef.replace(/^(section|§)\s*/i, '')} · ` : ''}“{o.quote}”</p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {canEdit && (pending.length > 0 || owed.length > 0) && (
             <>
-              <p className="text-[11px] text-ink-500">Tick what it changes. The agreement keeps them, marked as amended.</p>
+              <p className="text-[11px] text-ink-500">Tick what it changes. The agreement keeps them, marked as amended, and its original values stay one click away. Ticked obligations are kept on record but no longer owed.</p>
               <div className="flex justify-end">
-                <Button size="xs" disabled={!chosen.size || apply.isPending} onClick={() => apply.mutate([...chosen])} data-testid="agreement-apply">
-                  {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />} Set {chosen.size} on the agreement
+                <Button size="xs" disabled={(!chosen.size && !dropped.size) || apply.isPending}
+                  onClick={() => apply.mutate({ keys: [...chosen], obligations: [...dropped] })} data-testid="agreement-apply">
+                  {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />} Confirm on the agreement
                 </Button>
               </div>
             </>

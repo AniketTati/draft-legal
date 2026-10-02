@@ -8,14 +8,20 @@
  *
  * After creation the user is redirected to the new contract so they
  * can edit / draft via the agent / upload a file before signing.
+ *
+ * docs/41 Part 13 — an amendment is drafted from what changes: the
+ * agreement's sections and key terms picked (AmendmentChangesPicker), the
+ * org's amendment template or the changes on their own, and the date it
+ * takes effect. Its number is worked out per agreement unless given.
  */
 import { useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { GitBranch, X, Loader2 } from 'lucide-react'
+import { AmendmentChangesPicker, changesPayload, type ChangeDraft } from './AmendmentChangesPicker'
 
 interface Props {
   parentContractId: string
@@ -30,7 +36,7 @@ const REL_TYPES = [
   { key: 'sow',          label: 'Statement of Work', desc: 'Project-specific scope under an MSA.' },
   { key: 'order_form',   label: 'Order Form',   desc: 'Procurement / pricing addendum.' },
   { key: 'renewal',      label: 'Renewal',      desc: 'Extends the parent past its expiry.' },
-  { key: 'exhibit_only', label: 'Exhibit',      desc: 'Schedule, exhibit, or appendix.' },
+  { key: 'exhibit',      label: 'Exhibit',      desc: 'Schedule, exhibit, or appendix.' },
 ]
 
 export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onClose, onCreated }: Props) {
@@ -39,6 +45,18 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
   const [relationshipType, setRelationshipType]   = useState('amendment')
   const [description, setDescription]             = useState('')
   const [error, setError]                         = useState<string | null>(null)
+  const [changes, setChanges]                     = useState<ChangeDraft[]>([])
+  const [templateId, setTemplateId]               = useState('')
+  const [effectiveDate, setEffectiveDate]         = useState('')
+  const [number, setNumber]                       = useState('')
+  const isAmendment = relationshipType === 'amendment'
+  const payload = changesPayload(changes)
+
+  const templates = useQuery({
+    queryKey: ['templates', 'AMENDMENT'],
+    enabled: open && isAmendment,
+    queryFn: async () => (await api.get<{ data: Array<{ id: string; name: string }> }>('/templates', { params: { contractType: 'AMENDMENT', published: 'true' } })).data.data,
+  })
 
   const create = useMutation({
     mutationFn: async () => {
@@ -46,6 +64,9 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
         title:            title.trim() || undefined,
         relationshipType,
         description:      description.trim() || undefined,
+        effectiveDate:    effectiveDate || undefined,
+        amendmentNumber:  Number(number) > 0 ? Number(number) : undefined,
+        ...(isAmendment && { changes: payload ?? [], templateId: templateId || null }),
       })
       return r.data as { id: string; title: string }
     },
@@ -53,6 +74,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
       onCreated?.(data.id)
       onClose()
       setTitle(''); setDescription(''); setRelationshipType('amendment'); setError(null)
+      setChanges([]); setTemplateId(''); setEffectiveDate(''); setNumber('')
       navigate(`/contracts/${data.id}`)
     },
     onError: (err: { response?: { data?: { detail?: string } } }) => {
@@ -73,7 +95,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
       data-testid="create-amendment-dialog"
     >
       <div
-        className="bg-card rounded-card max-w-lg w-full shadow-e3 my-8"
+        className={`bg-card rounded-card ${isAmendment ? 'max-w-2xl' : 'max-w-lg'} w-full shadow-e3 my-8`}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -127,6 +149,35 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
             )}
           </div>
 
+          {isAmendment && (<>
+            <AmendmentChangesPicker parentContractId={parentContractId} value={changes} onChange={setChanges} />
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-body font-medium text-ink-700 mb-1">Drafted from</label>
+                <select
+                  value={templateId} onChange={e => setTemplateId(e.target.value)} data-testid="amendment-template"
+                  className="w-full text-[13px] bg-card border border-input rounded-md px-2 py-[7px] text-ink-950"
+                >
+                  <option value="">The changes on their own</option>
+                  {(templates.data ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-body font-medium text-ink-700 mb-1">Takes effect</label>
+                <Input type="date" value={effectiveDate} data-testid="amendment-effective-date"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEffectiveDate(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-body font-medium text-ink-700 mb-1">Number</label>
+                <Input type="number" min={1} value={number} placeholder="Next" data-testid="amendment-number"
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNumber(e.target.value)} />
+              </div>
+            </div>
+            {changes.length > 0 && !payload && (
+              <p className="text-dense text-ink-500">Write the new words for each section you replace, and a new value for each key term.</p>
+            )}
+          </>)}
+
           {/* Title */}
           <div>
             <label className="block text-body font-medium text-ink-700 mb-1">
@@ -141,8 +192,8 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
             <p className="text-dense text-ink-400 mt-1">Leave blank to auto-generate from the parent + type.</p>
           </div>
 
-          {/* Description */}
-          <div>
+          {/* Description: what changes, when nothing was picked above. */}
+          {!(isAmendment && changes.length > 0) && <div>
             <label className="block text-body font-medium text-ink-700 mb-1">
               Description <span className="text-ink-400 font-normal">(optional)</span>
             </label>
@@ -154,7 +205,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
               data-testid="amendment-description"
               className="w-full text-[13px] text-ink-950 bg-card border border-input rounded-md px-[11px] py-2 placeholder:text-ink-400 focus:border-brand-700 focus:outline-none focus:ring-[3px] focus:ring-brand-700/15 resize-y"
             />
-          </div>
+          </div>}
 
           {error && (
             <div className="text-body text-risk-700 bg-risk-50 border border-risk-200 rounded-md px-3 py-2">
@@ -170,7 +221,7 @@ export function CreateAmendmentDialog({ parentContractId, parentTitle, open, onC
           </Button>
           <Button
             onClick={() => create.mutate()}
-            disabled={create.isPending}
+            disabled={create.isPending || (isAmendment && changes.length > 0 && !payload)}
             data-testid="amendment-create-confirm"
           >
             {create.isPending ? (

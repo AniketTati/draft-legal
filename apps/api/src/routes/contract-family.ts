@@ -25,7 +25,7 @@ import { parentSuggestions, wouldLoop, RELATIONSHIP_TYPES } from '../lib/contrac
 import { amendmentChanges, applyAmendmentValues } from '../lib/field-store.js'
 import { recordRun, UNDO_DAYS } from '../lib/field-runs.js'
 import { createAuditEvent } from '../lib/audit.js'
-import { familyTree, effectiveView, amendmentSpecOf } from '../lib/family.js'
+import { familyTree, effectiveView, amendmentSpecOf, nextFamilyNumber } from '../lib/family.js'
 import { recordRollUp, termHistory } from '../lib/term-history.js'
 import { amendmentRedlineItems, draftAmendmentLanguage, obligationsReplaced, proposedTextsFromHtml } from '../lib/amendments.js'
 import { fireWebhook } from '../lib/webhook-events.js'
@@ -65,7 +65,11 @@ export async function contractFamilyRoutes(app: FastifyInstance) {
       if (await wouldLoop(orgId, id, parent.id)) return reply.status(400).send({ detail: 'That contract belongs to this one: it can’t be its parent too' })
     }
     const relationshipType = body.parentContractId ? body.relationshipType ?? c.relationshipType ?? 'amendment' : null
-    await prisma.contract.update({ where: { id }, data: { parentContractId: body.parentContractId, relationshipType } })
+    // docs/41 Part 13 — numbered per agreement when it joins one (or moves to another).
+    const amendmentNumber = body.parentContractId && body.parentContractId !== c.parentContractId
+      ? await nextFamilyNumber(orgId, body.parentContractId, relationshipType)
+      : body.parentContractId ? undefined : null
+    await prisma.contract.update({ where: { id }, data: { parentContractId: body.parentContractId, relationshipType, amendmentNumber } })
     await createAuditEvent({
       orgId, userId, action: AuditAction.CONTRACT_UPDATED, resourceType: 'contract', resourceId: id,
       metadata: { action: body.parentContractId ? 'linked_parent' : 'unlinked_parent', parentContractId: body.parentContractId, relationshipType, from: c.parentContractId },

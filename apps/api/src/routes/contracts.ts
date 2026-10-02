@@ -580,6 +580,8 @@ export async function contractRoutes(app: FastifyInstance) {
         counterpartyName: counterpartyName || undefined,
         parentContractId: parentContractId || undefined,
         relationshipType: relationshipType || undefined,
+        // docs/41 Part 13 — numbered per agreement ("Amendment No. 2").
+        amendmentNumber: parentContractId ? await nextFamilyNumber(orgId, parentContractId, relationshipType || null) ?? undefined : undefined,
         versions: {
           create: {
             versionNumber: 1,

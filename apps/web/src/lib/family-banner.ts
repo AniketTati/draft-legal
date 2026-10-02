@@ -17,6 +17,8 @@ export interface FamilyLine {
 export function familyLine(family: {
   parent?: { id: string; title: string } | null
   relationshipType?: string | null
+  /** docs/41 Part 13 — "Amendment No. 2", when it is numbered. */
+  label?: string | null
   splitFromParent?: boolean
   siblings?: unknown[]
 } | null | undefined): FamilyLine | null {
@@ -25,6 +27,7 @@ export function familyLine(family: {
     const n = (family.siblings?.length ?? 0) + 1
     return { kind: 'split', lead: 'Split from scanned file', note: `${n} agreement${n === 1 ? '' : 's'} were in that file` }
   }
-  if (family.relationshipType === 'amendment') return { kind: 'amendment', lead: 'Amendment to', note: null }
+  if (family.relationshipType === 'amendment') return { kind: 'amendment', lead: `${family.label ?? 'Amendment'} to`, note: null }
+  if (family.label) return { kind: 'linked', lead: `${family.label} under`, note: null }
   return { kind: 'linked', lead: 'Linked to', note: null }
 }
