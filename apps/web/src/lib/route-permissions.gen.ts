@@ -279,6 +279,7 @@ export const ROUTE_PERMISSIONS: Record<string, { action: string; resource: strin
   'POST /contracts/:id/amendments': { action: 'create', resource: 'contract' },
   'POST /contracts/:id/analyze': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/ask': { action: 'view', resource: 'contract' },
+  'POST /contracts/:id/ask-ai': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/attach': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/attachments/:index/read': { action: 'edit', resource: 'contract' },
   'POST /contracts/:id/cancel': { action: 'edit', resource: 'contract' },

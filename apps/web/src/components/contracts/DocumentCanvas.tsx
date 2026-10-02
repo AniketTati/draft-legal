@@ -12,7 +12,7 @@
  */
 import { useEffect, useRef } from 'react'
 import type { Editor } from '@tiptap/react'
-import { EditorContent, useEditor } from '@tiptap/react'
+import { EditorContent, useEditor, useEditorState } from '@tiptap/react'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Underline from '@tiptap/extension-underline'
@@ -42,7 +42,7 @@ import { MARGIN_CLASSIFIER_ENABLED } from '@/lib/feature-flags'
 import DefinedTermGuard from '../editor/DefinedTermGuard'
 import { SourceHighlight } from './SourceHighlight'
 import { Variable } from '../editor/VariableMark'
-import { selectionOf, type TextSelection } from './SelectionMenu'
+import { selectionIcon, selectionItems, selectionOf, type SelectionActionsProps, type TextSelection } from './SelectionMenu'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -80,6 +80,7 @@ export function DocumentCanvas({
   onAiAction,
   onSetField,
   onVariableClick,
+  selectionActions,
   className,
 }: {
   state: CanvasState
@@ -106,6 +107,10 @@ export function DocumentCanvas({
   onSetField?: (selection: TextSelection) => void
   /** docs/39 H2 — a draft's variable clicked while reading: the Variables panel shows it. */
   onVariableClick?: (key: string) => void
+  /** docs/41 Part 16 — the selection menu's actions while editing (Comment ·
+   *  Ask AI · Tag clause · Make variable · Request exception …). When given,
+   *  they replace the bubble's own Set-field and Ask-AI buttons. */
+  selectionActions?: SelectionActionsProps
   className?: string
 }) {
   const html = state.kind === 'ready' ? normalizeHtml(state.html) : ''
@@ -340,34 +345,40 @@ export function DocumentCanvas({
           >
             <Heading2 className="size-3.5" />
           </MenuButton>
-          {onSetField && (
+          {selectionActions ? (
+            <BubbleSelectionItems editor={editor} actions={selectionActions} />
+          ) : (
             <>
-              <MenuSeparator />
-              <MenuButton
-                onClick={() => { const sel = selectionOf(editor); if (sel) onSetField(sel) }}
-                title="Set as field value"
-                aria-label="Set as field value"
-                data-testid="bubble-menu-set-field"
-              >
-                <TextCursorInput className="size-3.5" />
-              </MenuButton>
+          {onSetField && (
+              <>
+                <MenuSeparator />
+                <MenuButton
+                  onClick={() => { const sel = selectionOf(editor); if (sel) onSetField(sel) }}
+                  title="Set as field value"
+                  aria-label="Set as field value"
+                  data-testid="bubble-menu-set-field"
+                >
+                  <TextCursorInput className="size-3.5" />
+                </MenuButton>
+              </>
+            )}
+            <MenuSeparator />
+            <MenuButton
+              onClick={() => {
+                const { from, to } = editor.state.selection
+                const selected = editor.state.doc.textBetween(from, to, '\n')
+                onAiAction?.(selected)
+              }}
+              // U.2.2 / decision 14a — icon-only ✨, indigo accent.
+              title="Ask about this selection · ⌘K"
+              className="text-assist-600 hover:bg-assist-50"
+              data-testid="bubble-menu-ai-btn"
+              aria-label="Ask AI about this selection"
+            >
+              <Sparkles className="size-3.5" />
+            </MenuButton>
             </>
           )}
-          <MenuSeparator />
-          <MenuButton
-            onClick={() => {
-              const { from, to } = editor.state.selection
-              const selected = editor.state.doc.textBetween(from, to, '\n')
-              onAiAction?.(selected)
-            }}
-            // U.2.2 / decision 14a — icon-only ✨, indigo accent.
-            title="Ask about this selection · ⌘K"
-            className="text-assist-600 hover:bg-assist-50"
-            data-testid="bubble-menu-ai-btn"
-            aria-label="Ask AI about this selection"
-          >
-            <Sparkles className="size-3.5" />
-          </MenuButton>
         </BubbleMenu>
       )}
     </div>
@@ -405,6 +416,37 @@ function MenuButton({
     >
       {children}
     </button>
+  )
+}
+
+/**
+ * The selection's actions in the bubble menu, re-read as the selection moves
+ * (whether Request exception applies depends on where the words are).
+ */
+function BubbleSelectionItems({ editor, actions }: { editor: Editor; actions: SelectionActionsProps }) {
+  useEditorState({ editor, selector: ({ editor: e }) => `${e.state.selection.from}:${e.state.selection.to}` })
+  const sel = selectionOf(editor)
+  if (!sel) return null
+  return (
+    <>
+      {selectionItems(sel, actions).map(it => {
+        const Icon = selectionIcon(it.id)
+        return (
+          <span key={it.id} className="inline-flex items-center">
+            <MenuSeparator />
+            <MenuButton
+              onClick={() => { const now = selectionOf(editor); if (now) it.run(now) }}
+              title={it.title ?? it.label}
+              aria-label={it.label}
+              className={it.id === 'ask-ai' ? 'text-assist-600 hover:bg-assist-50' : undefined}
+              data-testid={`bubble-menu-${it.id}`}
+            >
+              <Icon className="size-3.5" />
+            </MenuButton>
+          </span>
+        )
+      })}
+    </>
   )
 }
 

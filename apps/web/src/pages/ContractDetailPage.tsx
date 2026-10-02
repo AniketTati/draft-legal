@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { UploadModal } from '@/components/contracts/UploadModal'
 import { CommentsReadList } from '@/components/contracts/workspace/CommentsView'
+import { useSelectionActions } from '@/components/contracts/workspace/useSelectionActions'
 import { ShareLinkDialog } from '@/components/contracts/ShareLinkDialog'
 import { ContractMatterPicker } from '@/components/contracts/ContractMatterPicker'
 import { ObligationsRailSection } from '@/components/contracts/ObligationsRailSection'
@@ -1424,6 +1425,13 @@ export function ContractDetailPage() {
   useEffect(() => {
     if (!visibleTabs.includes(tab)) setTab('document')
   }, [visibleTabs, tab])
+
+  // docs/41 Part 16 — Comment and Request exception on selected words, in the
+  // document and over the original PDF (rewriting is the workspace's job).
+  const selectionExtras = useSelectionActions({
+    contractId: id ?? '', editor: canvasEditor, versionId: contract?.currentVersionId ?? null, canEdit,
+    clauses: ((clausesData?.data ?? []) as Array<{ id: string; content: string }>),
+  })
 
   // B.1 — auto-load the PDF when Document is active and we haven't yet.
   // Kills the "click Load Document to see your own contract" dance.
@@ -4334,6 +4342,7 @@ export function ContractDetailPage() {
         onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
         onTagClause={canTagClauses ? setClauseFrom : undefined}
         onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+        {...selectionExtras.pdfActions}
       />
       {/* …and over the original PDF, with the same actions. */}
       <PdfSelectionMenu
@@ -4344,7 +4353,9 @@ export function ContractDetailPage() {
         onNewField={canCreateFields || canSuggestFields ? setNewFieldFrom : undefined}
         onTagClause={canTagClauses ? setClauseFrom : undefined}
         onSaveToLibrary={canSaveWording ? setLibraryFrom : undefined}
+        {...selectionExtras.pdfActions}
       />
+      {selectionExtras.ui}
       {libraryFrom && id && (
         <SaveToLibraryPopover contractId={id} selection={libraryFrom} onClose={() => setLibraryFrom(null)} />
       )}

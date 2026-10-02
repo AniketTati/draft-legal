@@ -25,6 +25,7 @@ import { resolveBaseline, baselineWords, type BaselineReason } from '../lib/revi
 import { computeVersionDiff, DiffTooLargeError } from '../lib/diff.js'
 import { counterChange } from '../lib/change-advice.js'
 import { CostCapExceededError } from '../lib/costCap.js'
+import { askAiDrafts } from '../lib/ask-ai.js'
 
 const counterBody = z.object({
   ourText: z.string().max(20_000).default(''),
@@ -109,6 +110,23 @@ export async function workspaceChangesRoutes(app: FastifyInstance) {
       if (err instanceof CostCapExceededError) return reply.status(429).send({ detail: 'Today\'s AI budget is used up. Try again tomorrow.' })
       req.log.warn({ err }, 'counter draft failed')
       return reply.status(502).send({ detail: 'The counter could not be drafted. Try again.' })
+    }
+  })
+
+  // docs/41 Part 16 — "Ask AI" on selected words: three drafts, each with why.
+  // Nothing is written here; the workspace puts the chosen one in its draft.
+  app.post('/:id/ask-ai', { preHandler: requirePermission('edit', 'contract') }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const { selectedText, instruction } = (req.body ?? {}) as { selectedText?: unknown; instruction?: unknown }
+    if (typeof selectedText !== 'string' || typeof instruction !== 'string') return reply.status(400).send({ detail: 'Send the selected words and an instruction.' })
+    try {
+      const r = await askAiDrafts({ orgId: req.user.orgId, contractId: id, selectedText, instruction })
+      if (!r.ok) return reply.status(r.status).send({ detail: r.detail })
+      return reply.send(r.data)
+    } catch (err) {
+      if (err instanceof CostCapExceededError) return reply.status(429).send({ detail: 'Today\'s AI budget is used up. Try again tomorrow.' })
+      req.log.warn({ err }, 'ask-ai drafts failed')
+      return reply.status(502).send({ detail: 'No drafts could be made. Try again.' })
     }
   })
 }

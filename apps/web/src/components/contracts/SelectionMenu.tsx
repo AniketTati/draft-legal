@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/react'
-import { BookmarkPlus, ListPlus, Tags, TextCursorInput } from 'lucide-react'
+import { BookmarkPlus, Braces, ListPlus, MessageSquarePlus, ShieldQuestion, Sparkles, Tags, TextCursorInput } from 'lucide-react'
 import { occurrenceAt, viewOf } from './SourceHighlight'
 import { pdfSelectionOf } from './pdf-selection'
 
@@ -73,6 +73,19 @@ export interface SelectionActionsProps {
   onTagClause?: (selection: TextSelection) => void
   /** "Save to library" (E4); absent for someone who can't add clauses. */
   onSaveToLibrary?: (selection: TextSelection) => void
+  /** docs/41 Part 16 — "Comment" on the words (a margin thread). */
+  onComment?: (selection: TextSelection) => void
+  /** "Ask AI": drafts to replace the words. */
+  onAskAi?: (selection: TextSelection) => void
+  /** "Make variable": only in a draft from one of our own templates. */
+  onMakeVariable?: (selection: TextSelection) => void
+  /** "Request exception": the open finding of the clause the words lie in, if any. */
+  exceptionAt?: (selection: TextSelection) => { title: string; run: (selection: TextSelection) => void } | null
+}
+
+/** Whether any action could be offered (the menu listens for selections only then). */
+export function hasSelectionActions(a: SelectionActionsProps): boolean {
+  return !!(a.onSetField || a.onNewField || a.onTagClause || a.onSaveToLibrary || a.onComment || a.onAskAi || a.onMakeVariable || a.exceptionAt)
 }
 
 export function SelectionMenu({ editor, enabled, ...actions }: SelectionActionsProps & {
@@ -82,7 +95,7 @@ export function SelectionMenu({ editor, enabled, ...actions }: SelectionActionsP
 }) {
   const [sel, setSel] = useState<TextSelection | null>(null)
   const dragging = useRef(false)
-  const anyAction = !!(actions.onSetField || actions.onNewField || actions.onTagClause || actions.onSaveToLibrary)
+  const anyAction = hasSelectionActions(actions)
 
   useEffect(() => {
     setSel(null)
@@ -134,7 +147,7 @@ export function PdfSelectionMenu({ container, pageTexts, enabled, ...actions }: 
 }) {
   const [sel, setSel] = useState<TextSelection | null>(null)
   const dragging = useRef(false)
-  const anyAction = !!(actions.onSetField || actions.onNewField || actions.onTagClause || actions.onSaveToLibrary)
+  const anyAction = hasSelectionActions(actions)
 
   useEffect(() => {
     setSel(null)
@@ -169,18 +182,53 @@ export function PdfSelectionMenu({ container, pageTexts, enabled, ...actions }: 
   return <SelectionActions sel={sel} onDone={() => setSel(null)} {...actions} />
 }
 
+/** One action in the menu over a selection. */
+export interface SelectionItem {
+  id: 'comment' | 'ask-ai' | 'tag-clause' | 'make-variable' | 'request-exception' | 'set-field' | 'new-field' | 'save-to-library'
+  label: string
+  title?: string
+  run: (s: TextSelection) => void
+}
+
+/**
+ * docs/41 Part 16 — what the menu offers for this selection, in order:
+ * Comment · Ask AI · Tag clause · Make variable · Request exception, then the
+ * field actions (docs/39). An action someone may not take is absent; Request
+ * exception only when the words lie in a clause with an open finding.
+ */
+export function selectionItems(sel: TextSelection, a: SelectionActionsProps): SelectionItem[] {
+  const out: SelectionItem[] = []
+  if (a.onComment) out.push({ id: 'comment', label: 'Comment', run: a.onComment })
+  if (a.onAskAi) out.push({ id: 'ask-ai', label: 'Ask AI', title: 'Ask AI to rewrite these words', run: a.onAskAi })
+  if (a.onTagClause) out.push({ id: 'tag-clause', label: 'Tag clause', run: a.onTagClause })
+  if (a.onMakeVariable) out.push({ id: 'make-variable', label: 'Make variable', title: 'Mark these words as one of the template’s variables', run: a.onMakeVariable })
+  const exception = a.exceptionAt?.(sel)
+  if (exception) out.push({ id: 'request-exception', label: 'Request exception', title: `Ask for an exception: ${exception.title}`, run: exception.run })
+  if (a.onSetField) out.push({ id: 'set-field', label: 'Set as field value', run: a.onSetField })
+  if (a.onNewField) out.push({ id: 'new-field', label: 'New field', run: a.onNewField })
+  if (a.onSaveToLibrary && sel.text.length >= MIN_WORDING) out.push({ id: 'save-to-library', label: 'Save to library', title: 'Save this wording to the clause library', run: a.onSaveToLibrary })
+  return out
+}
+
+const ICONS: Record<SelectionItem['id'], typeof Tags> = {
+  'comment': MessageSquarePlus, 'ask-ai': Sparkles, 'tag-clause': Tags, 'make-variable': Braces,
+  'request-exception': ShieldQuestion, 'set-field': TextCursorInput, 'new-field': ListPlus, 'save-to-library': BookmarkPlus,
+}
+export const selectionIcon = (id: SelectionItem['id']) => ICONS[id]
+
 /** The toolbar over a selection, wherever it was made. */
-function SelectionActions({ sel, onDone, onSetField, onNewField, onTagClause, onSaveToLibrary }: SelectionActionsProps & {
+function SelectionActions({ sel, onDone, ...actions }: SelectionActionsProps & {
   sel: TextSelection
   onDone: () => void
 }) {
-  const saveWording = onSaveToLibrary && sel.text.length >= MIN_WORDING ? onSaveToLibrary : undefined
-  const act = (fn: ((s: TextSelection) => void) | undefined) => (e: React.MouseEvent | React.KeyboardEvent) => {
+  const items = selectionItems(sel, actions)
+  const act = (fn: (s: TextSelection) => void) => (e: React.MouseEvent | React.KeyboardEvent) => {
     if ('key' in e && e.key !== 'Enter' && e.key !== ' ') return
     e.preventDefault()
-    fn?.(sel)
+    fn(sel)
     onDone()
   }
+  if (!items.length) return null
   // Above the selection, or below it when it is at the top of the screen.
   const above = sel.rect.top > 56
   const left = Math.min(Math.max((sel.rect.left + sel.rect.right) / 2, 110), window.innerWidth - 110)
@@ -192,55 +240,25 @@ function SelectionActions({ sel, onDone, onSetField, onNewField, onTagClause, on
       className="fixed z-50 inline-flex items-center gap-0.5 rounded-md border border-paper-200 bg-popover p-1 shadow-e2"
       style={{ left, top: above ? sel.rect.top - 8 : sel.rect.bottom + 8, transform: `translate(-50%, ${above ? '-100%' : '0'})` }}
     >
-      {onSetField && (
-        <button
-          type="button"
-          // Mouse-down, and no default: a click would first clear the selection it acts on.
-          onMouseDown={act(onSetField)}
-          onKeyDown={act(onSetField)}
-          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950"
-          data-testid="selection-set-field"
-        >
-          <TextCursorInput className="size-3.5" /> Set as field value
-        </button>
-      )}
-      {onSetField && onNewField && <span className="mx-0.5 h-5 w-px bg-paper-200" aria-hidden />}
-      {onNewField && (
-        <button
-          type="button"
-          onMouseDown={act(onNewField)}
-          onKeyDown={act(onNewField)}
-          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950"
-          data-testid="selection-new-field"
-        >
-          <ListPlus className="size-3.5" /> New field
-        </button>
-      )}
-      {onTagClause && (onSetField || onNewField) && <span className="mx-0.5 h-5 w-px bg-paper-200" aria-hidden />}
-      {onTagClause && (
-        <button
-          type="button"
-          onMouseDown={act(onTagClause)}
-          onKeyDown={act(onTagClause)}
-          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950"
-          data-testid="selection-tag-clause"
-        >
-          <Tags className="size-3.5" /> Tag as clause
-        </button>
-      )}
-      {saveWording && (onSetField || onNewField || onTagClause) && <span className="mx-0.5 h-5 w-px bg-paper-200" aria-hidden />}
-      {saveWording && (
-        <button
-          type="button"
-          onMouseDown={act(saveWording)}
-          onKeyDown={act(saveWording)}
-          className="inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium text-ink-700 hover:bg-paper-100 hover:text-ink-950"
-          data-testid="selection-save-to-library"
-          title="Save this wording to the clause library"
-        >
-          <BookmarkPlus className="size-3.5" /> Save to library
-        </button>
-      )}
+      {items.map((it, i) => {
+        const Icon = ICONS[it.id]
+        return (
+          <span key={it.id} className="inline-flex items-center">
+            {i > 0 && <span className="mx-0.5 h-5 w-px bg-paper-200" aria-hidden />}
+            <button
+              type="button"
+              // Mouse-down, and no default: a click would first clear the selection it acts on.
+              onMouseDown={act(it.run)}
+              onKeyDown={act(it.run)}
+              title={it.title}
+              className={`inline-flex items-center gap-1.5 h-7 px-2 rounded-chip text-[12px] font-medium hover:bg-paper-100 hover:text-ink-950 ${it.id === 'ask-ai' ? 'text-assist-600' : 'text-ink-700'}`}
+              data-testid={`selection-${it.id}`}
+            >
+              <Icon className="size-3.5" /> {it.label}
+            </button>
+          </span>
+        )
+      })}
     </div>,
     document.body,
   )

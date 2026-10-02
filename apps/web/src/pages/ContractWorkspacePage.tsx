@@ -31,6 +31,8 @@ import { CommentsView } from '@/components/contracts/workspace/CommentsView'
 import { MarginComments } from '@/components/contracts/workspace/MarginComments'
 import type { CommentDraft } from '@/components/contracts/workspace/CommentComposer'
 import { useThreads, type CommentThreadData } from '@/lib/comments'
+import { useSelectionActions } from '@/components/contracts/workspace/useSelectionActions'
+import { SelectionMenu } from '@/components/contracts/SelectionMenu'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
 import { SendForSignatureDialog } from '@/components/contracts/SendForSignatureDialog'
 import { findInCanvas, revealInCanvas, revealRange } from '@/components/contracts/SourceHighlight'
@@ -184,6 +186,12 @@ export function ContractWorkspacePage() {
     }
   }
 
+  // docs/41 Part 16 — the selection menu: Comment · Ask AI · Tag clause · Make variable · Request exception.
+  const selection = useSelectionActions({
+    contractId: id ?? '', editor: editorReady, clauses, versionId: contract?.currentVersionId ?? null,
+    canEdit, onComment: startComment, tag: true,
+  })
+
   const showThread = (t: CommentThreadData) => {
     setActiveThread(t.id)
     const r = t.anchor ? findInCanvas(editorRef.current, t.anchor.quote, t.anchorStart ?? t.anchor.start) : null
@@ -244,6 +252,7 @@ export function ContractWorkspacePage() {
                   onReady={editor => { editorRef.current = editor; setEditorReady(editor) }}
                   onChange={next => { if (canvasState.kind === 'ready' && canEdit) draft.change(next) }}
                   riskClauses={clauses.map(c => ({ id: c.id, content: c.content, riskRating: c.riskRating ?? null }))}
+                  selectionActions={selection.editorActions}
                 />
               )}
             </div>
@@ -316,6 +325,9 @@ export function ContractWorkspacePage() {
         </aside>
       </div>
 
+      {/* While reading (no right to edit), the same menu over a selection. */}
+      <SelectionMenu editor={editorReady} enabled={!canEdit && !changesMode} {...selection.editorActions} />
+      {selection.ui}
       <HistoryDrawer
         contractId={id}
         open={historyOpen}
