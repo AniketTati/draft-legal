@@ -2,7 +2,8 @@
  * docs/41 Part 16 (C2) — the workspace's Details view: the contract page's
  * rail sections, as they are there (the key terms and fields with their
  * parties and dates, the agreement it amends, where the draft came from, its
- * matter), and the documents that go with it.
+ * matter), and the documents that go with it, and any deal changes from
+ * Salesforce held back on it.
  */
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
@@ -13,6 +14,7 @@ import { AgreementPanel } from '@/components/contracts/AgreementPanel'
 import { OriginRailSection } from '@/components/contracts/OriginRailSection'
 import { MatterRailSection } from '@/components/contracts/MatterRailSection'
 import { RailSection } from '@/components/contracts/RailSection'
+import { SalesforceConflictsSection } from '@/components/contracts/SalesforceConflictsSection'
 
 interface Family {
   parent?: { id: string; title: string } | null
@@ -38,6 +40,7 @@ export function WorkspaceDetails({ contractId, matterId, canEdit, canEditFields,
   ]
   return (
     <div className="space-y-1" data-testid="workspace-details">
+      <SalesforceConflictsSection contractId={contractId} canEdit={canEdit} />
       <RailSection title="Key terms and fields" defaultOpen>
         <FieldsPanel contractId={contractId} canEdit={canEditFields} variant="rail" onShowSource={onShowSource} />
       </RailSection>

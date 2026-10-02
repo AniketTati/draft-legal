@@ -43,6 +43,7 @@ import { BubbleAiPopover } from '@/components/contracts/BubbleAiPopover'
 import { DefinedTermsGlossary, useDefinedTerms } from '@/components/contracts/DefinedTermsGlossary'
 import { VariablesRailSection } from '@/components/contracts/VariablesRailSection'
 import { OriginRailSection } from '@/components/contracts/OriginRailSection'
+import { SalesforceConflictsSection } from '@/components/contracts/SalesforceConflictsSection'
 import { ClauseDeviationPopover } from '@/components/contracts/ClauseDeviationPopover'
 import { StatusPill } from '@/components/contracts/StatusPill'
 import { RailSection } from '@/components/contracts/RailSection'
@@ -3773,6 +3774,8 @@ export function ContractDetailPage() {
         )}
         {/* docs/41 Part 1 — the template and clause choices the draft was made with. */}
         {id && <OriginRailSection contractId={id} canEdit={canEdit} beforeChange={() => saveDocumentNow()} />}
+        {/* docs/41 fix-up 4 — deal changes from Salesforce held back on this contract. */}
+        {id && <SalesforceConflictsSection contractId={id} canEdit={mayEdit} />}
 
         {/* P5.1 — Obligations rail section. When metadata.obligations
             exists, show the list with a due-date indicator + an
