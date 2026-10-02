@@ -8,10 +8,13 @@
  *
  * After: button is always rendered. With 1 version it's disabled +
  * tooltip "Upload a second version to compare…". With ≥2 versions
- * the button is active and opens CompareMode.
+ * the button is active and opens the workspace's Changes mode
+ * (docs/41 Part 15: the Compare overlay was removed).
  *
  * Checks:
- *   (1) Open Zynga MSA (has multiple versions) → compare-btn enabled
+ *   (1) Open Zynga MSA (has multiple versions) → compare-btn enabled, and
+ *       clicking it opens /contracts/:id/workspace?mode=changes with the
+ *       Changes view and its baseline picker
  *   (2) Open a single-version contract → compare-btn disabled
  *   (3) Disabled tooltip mentions "second version"
  */
@@ -23,8 +26,9 @@ import fs from 'node:fs'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const OUT = path.join(__dirname, 'screenshots', 'desktop')
 fs.mkdirSync(OUT, { recursive: true })
-const BASE = 'http://localhost:5173'
-const API  = 'http://localhost:3001/api/v1'
+// A worktree's own stack: WEB_PORT / API_PORT (defaults: the shared stack).
+const BASE = `http://localhost:${process.env.WEB_PORT ?? 5173}`
+const API  = `http://localhost:${process.env.API_PORT ?? 3001}/api/v1`
 
 ;(async () => {
   let fail = 0
@@ -86,6 +90,17 @@ const API  = 'http://localhost:3001/api/v1'
     const disabled = await btn.getAttribute('disabled')
     check(disabled === null, `compare-btn NOT disabled (got disabled="${disabled}")`)
     await page.screenshot({ path: path.join(OUT, '230-p74-15-compare-enabled.png'), fullPage: false })
+
+    // Compare opens the workspace's Changes mode (no overlay any more).
+    await btn.click()
+    await page.waitForURL(/\/workspace\?mode=changes/, { timeout: 10000 }).catch(() => {})
+    check(/\/contracts\/[^/]+\/workspace\?mode=changes/.test(page.url()), `Compare opens the workspace in Changes mode (url ${page.url().replace(BASE, '')})`)
+    const view = page.getByTestId('changes-view')
+    await view.waitFor({ timeout: 10000 }).catch(() => {})
+    check(await view.count() === 1, `changes-view shown`)
+    check(await page.getByTestId('changes-baseline').count() === 1, `baseline picker shown`)
+    check(await page.getByTestId('workspace-changes-toggle').getAttribute('aria-pressed') === 'true', `Changes toggle is on`)
+    await page.screenshot({ path: path.join(OUT, '232-p74-15-workspace-changes.png'), fullPage: false })
   } else {
     console.log('\n=== (1) Skipped — no multi-version contract found ===')
   }
