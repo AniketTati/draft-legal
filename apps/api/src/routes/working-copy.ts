@@ -79,6 +79,10 @@ export async function workingCopyRoutes(app: FastifyInstance) {
     const { id } = req.params as { id: string }
     const { orgId, sub: userId } = req.user
     const body = (req.body ?? {}) as { note?: string; sendToCounterparty?: SendToCounterparty | null; resetApprovals?: boolean; overwriteNewer?: boolean }
+    // Not found, as the other routes say, rather than "no draft changes" for a contract the caller can't see.
+    if (!(await prisma.contract.findFirst({ where: { id, orgId, deletedAt: null }, select: { id: true } }))) {
+      return reply.status(404).send({ detail: 'Contract not found' })
+    }
     const refusal = noteRefusal(body.note)
     if (refusal) return reply.status(400).send({ code: 'NOTE_REQUIRED', detail: refusal })
     const send = body.sendToCounterparty ?? null
