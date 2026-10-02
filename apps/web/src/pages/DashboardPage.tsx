@@ -175,7 +175,7 @@ export function DashboardPage() {
       // else sees their personal queue ("what needs my decision?").
       // The `to` deep-link mirrors that — admins land on the All
       // approvals tab, others on My Queue.
-      label: isAdminLike ? 'Org Approvals' : 'Pending Approvals',
+      label: isAdminLike ? 'Org Approvals' : 'Needs my action',
       value: isAdminLike ? (stats?.orgPendingApprovals ?? 0) : stats?.pendingApprovals,
       icon: CheckSquare,
       color: 'text-ink-500',
@@ -489,8 +489,10 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
     key: 'approvals',
     icon: CheckSquare,
     count: yourDay.approvalsWaiting,
-    label: yourDay.approvalsWaiting === 1 ? 'approval' : 'approvals',
-    verb: 'waiting on your decision',
+    // The Inbox's count: approvals to decide, and also returned contracts to
+    // fix and resubmit, so it isn't called "approvals waiting on your decision".
+    label: yourDay.approvalsWaiting === 1 ? 'contract' : 'contracts',
+    verb: yourDay.approvalsWaiting === 1 ? 'needs your action in Inbox' : 'need your action in Inbox',
     to: '/approvals',
     meaning: 'turn',
   })
@@ -562,7 +564,7 @@ function YourDayBand({ yourDay }: YourDayBandProps) {
             {blockedOnYou > 0 ? (
               <>
                 <span className="font-medium text-ink-950">
-                  {blockedOnYou} {blockedOnYou === 1 ? 'item needs' : 'items need'} your decision
+                  {blockedOnYou} {blockedOnYou === 1 ? 'item needs' : 'items need'} you
                 </span>
                 {upcoming > 0 && ` · ${upcoming} more coming up`}
               </>
