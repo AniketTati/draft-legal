@@ -35,6 +35,7 @@ import { redactJson, restorePii, unresolvedPiiTokens } from '../lib/pii-policy.j
 import { htmlToText } from '../lib/html-text.js'
 import { assertCostCapNotExceeded, estimateCostUsd, recordUsage } from '../lib/costCap.js'
 import { modelFetch } from '../lib/model-boundary.js'
+import { internalWriteInit } from '../lib/internal-write.js'
 import { liabilityCaps } from '../lib/liability-cap.js'
 import { runExtractionJob, recordRunUsage, type ExtractionJobData, type RunUsage } from '../lib/extraction-job.js'
 import { callAgents } from '../lib/agents-call.js'
@@ -231,19 +232,7 @@ async function handleClassifyDocument(data: ClassifyDocumentJob): Promise<StepOu
 // service saved it when it ran in the background there.
 
 async function apiWrite(method: 'PATCH' | 'POST', path: string, orgId: string, body?: unknown): Promise<{ status: number; text: string }> {
-  const res = await fetch(`${API_INTERNAL_URL}${path}`, {
-    method,
-    headers: {
-      // Only with a body: Fastify refuses an empty JSON body with 400, which
-      // is what the bodiless chunk request got, so no analysis finished.
-      ...(body !== undefined && { 'content-type': 'application/json' }),
-      'x-internal-service': 'agents',
-      'x-internal-secret': INTERNAL_SECRET,
-      // Y1 — the write runs in the contract's tenant.
-      'x-org-id': orgId,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  const res = await fetch(`${API_INTERNAL_URL}${path}`, internalWriteInit(method, orgId, INTERNAL_SECRET, body))
   return { status: res.status, text: await res.text().catch(() => '') }
 }
 

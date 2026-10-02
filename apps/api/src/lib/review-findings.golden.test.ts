@@ -349,3 +349,27 @@ describe('pairing clauses', () => {
     expect(added).toEqual([])
   })
 })
+
+describe('browser QA (41): blanks and deletions', () => {
+  const GOV_BLANK = 'This Agreement is governed by the laws of [[Choose governing law: Delaware · New York · England and Wales]], without regard to its conflict-of-laws principles.'
+
+  it('a blank filled in since v1 is not deleted text (0e83fdd)', () => {
+    // The analysis reads the filled-in sentence with the next one, so v1's
+    // blank clause has no pair and looked deleted.
+    const v1 = [clause('confidentiality', CONF), clause('governing_law', GOV_BLANK), clause('miscellaneous', MISC)]
+    const v2 = [clause('confidentiality', CONF), clause('miscellaneous', `${GOV.replace('the State of New York', 'New York')} ${MISC}`)]
+    const { findings } = review(v2, v1)
+    expect(findings.filter(f => f.kind === 'deleted')).toEqual([])
+  })
+
+  it('a "Part of … deleted" carried from before is not shown beside the whole clause\'s deletion (8e6837e)', () => {
+    const v1 = [clause('confidentiality', CONF), clause('termination', TERM), clause('governing_law', GOV)]
+    const part: FindingDraft = {
+      kind: 'deleted', key: 'deleted|governing_law|abcd1234', clauseType: 'governing_law', clauseId: null, categoryId: 'cat-gov', positionId: null,
+      severity: 'medium', title: 'Part of Governing Law deleted since v1', explanation: 'These words were in v1 and are not in this version.',
+      evidence: { baselineQuote: 'without regard to its conflict-of-laws principles' }, source: 'deterministic',
+    }
+    const { findings } = review([clause('confidentiality', CONF), clause('termination', TERM)], v1, { carriedDeleted: [part] })
+    expect(findings.filter(f => f.kind === 'deleted').map(f => f.key)).toEqual(['deleted|governing_law'])
+  })
+})

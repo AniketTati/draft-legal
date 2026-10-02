@@ -93,7 +93,7 @@ export interface YourDayContractRow {
   daysToExpiry?: number | null
 }
 
-interface YourDay {
+export interface YourDay {
   approvalsWaiting: number
   requestsWaiting: number
   contractsExpiring: number
@@ -440,7 +440,7 @@ export function DashboardPage() {
 
 interface YourDayBandProps { yourDay: YourDay }
 
-function YourDayBand({ yourDay }: YourDayBandProps) {
+export function YourDayBand({ yourDay }: YourDayBandProps) {
   const navigate = useNavigate()
 
   // All-clear state — reassuring rather than empty. Brand green survives the

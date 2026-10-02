@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { getApp, closeApp, makeOrg, makeUser, makeContract, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
+import { internalWriteInit } from './internal-write.js'
 import { runExtractionJob, type ExtractionDeps, type ExtractionJobData, type ExtractionJobLike, type ReviewRun } from './extraction-job.js'
 
 let app: TestApp
@@ -66,10 +67,10 @@ function deps(run: ReviewRun | { status: number }, opts: { refuse?: RegExp } = {
     async api(method, path, orgId, body) {
       calls.writes.push(`${method} ${path.split('?')[0]}`)
       if (opts.refuse?.test(path)) return { status: 500, text: 'database unavailable' }
-      const res = await app.inject({
-        method, url: path, payload: body as never,
-        headers: { 'x-internal-service': 'agents', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string, 'x-org-id': orgId },
-      })
+      // The worker's own request (headers and body), so a bodiless write is
+      // sent as it really is: with a JSON type and no body it was refused (400).
+      const init = internalWriteInit(method, orgId, process.env.INTERNAL_SERVICE_SECRET as string, body)
+      const res = await app.inject({ method, url: path, payload: init.body as string | undefined, headers: init.headers as Record<string, string> })
       return { status: res.statusCode, text: res.body }
     },
   }
@@ -140,5 +141,34 @@ describe('the extraction job', () => {
     const { d, calls } = deps({ status: 404 })
     expect(await runExtractionJob(fakeJob({ contractId: id, versionId, orgId: org }), d)).toBe('handed_off')
     expect(calls).toMatchObject({ review: 1, legacy: 1, writes: [] })
+  })
+
+  it('saves a draft whose open blanks were read as values, and stores them as no value (41: browser QA)', async () => {
+    const { id, versionId } = await contractWithText()
+    const { d, calls } = deps({
+      ...RUN,
+      contract: {
+        ...RUN.contract, effectiveDate: '[[effectiveDate]]', jurisdiction: '[[Choose governing law: Delaware · New York]]',
+        keyTerms: { governingLaw: '[[Choose governing law: Delaware · New York]]', paymentTermsDays: 30 },
+      },
+    })
+    expect(await runExtractionJob(fakeJob({ contractId: id, versionId, orgId: org }), d)).toBe('saved')
+    // The chunk request, which has no body, went through too.
+    expect(calls.writes.at(-1)).toBe(`POST /api/v1/contracts/${id}/versions/${versionId}/chunk`)
+    const row = await prisma.contract.findUniqueOrThrow({ where: { id } })
+    expect(row.effectiveDate).toBeNull()
+    expect(row.jurisdiction).toBeNull()
+    expect(row.analysisStatus).toBe('DONE')
+    const law = await prisma.contractFieldValue.findFirst({ where: { contractId: id, fieldKey: 'governingLaw' } })
+    expect(law?.value ?? null).toBeNull()
+  })
+
+  it('a bodiless write with a JSON type is what was refused', async () => {
+    const { id, versionId } = await contractWithText()
+    const headers = { 'x-internal-service': 'agents', 'x-internal-secret': process.env.INTERNAL_SERVICE_SECRET as string, 'x-org-id': org }
+    const url = `/api/v1/contracts/${id}/versions/${versionId}/chunk`
+    expect((await app.inject({ method: 'POST', url, headers: { ...headers, 'content-type': 'application/json' } })).statusCode).toBe(400)
+    const init = internalWriteInit('POST', org, headers['x-internal-secret'])
+    expect((await app.inject({ method: 'POST', url, headers: init.headers as Record<string, string> })).statusCode).toBeLessThan(300)
   })
 })

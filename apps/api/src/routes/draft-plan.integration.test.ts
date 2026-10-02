@@ -11,6 +11,7 @@
  * is forwarded into the same in-process app, so the real path runs end to end.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { planDraft } from '../lib/draft-plan.js'
 import { getApp, closeApp, makeOrg, makeUser, auth, cleanupAll, prisma, type TestApp } from '../test-support/helpers.js'
 
 let app: TestApp
@@ -84,6 +85,22 @@ describe('CC5 — a template that names the parties by role', () => {
     expect(b.unfilledVariables).toEqual([])
     const s = (await plan({ userMessage: 'Draft an MSA for Initech', templateId: sell, counterpartyName: 'Initech' })).json()
     expect(s.variables).toMatchObject({ providerName: orgName, customerName: 'Initech' })
+  })
+})
+
+describe('41 browser QA — our side is never read from the request (ff9ece0)', () => {
+  it('fills our role from the org even when the extractor read the counterparty into it', async () => {
+    const orgName = (await prisma.organization.findUniqueOrThrow({ where: { id: org } })).name
+    const vars = [{ key: 'customerName', label: 'Customer Name' }, { key: 'providerName', label: 'Provider Name' }]
+    const nda = await template('QA party roles (Buy-Side)', null, '<p>{{customerName}} and {{providerName}} agree.</p>', vars)
+    const text = 'Please draft an NDA with Initech Solutions for a data-sharing pilot.'
+    const p = await planDraft({
+      orgId: org, userMessage: text, requestText: text, via: 'request', templateId: nda, counterpartyName: 'Initech Solutions',
+      extracted: [{ key: 'customerName', value: 'Initech Solutions', quote: 'an NDA with Initech Solutions' }, { key: 'providerName', value: 'Initech Solutions', quote: 'an NDA with Initech Solutions' }],
+    })
+    if (!p.ok) throw new Error('no plan')
+    expect(p.variables).toMatchObject({ customerName: orgName, providerName: 'Initech Solutions' })
+    expect(p.variableSources.customerName).not.toBe('request_text')
   })
 })
 

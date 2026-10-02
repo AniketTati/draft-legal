@@ -32,7 +32,7 @@ import { CountBadge, EmptyState, Chip } from '@/components/ui/primitives'
 
 type Tab = 'mine' | 'waiting' | 'team' | 'workflows'
 
-interface InboxAction {
+export interface InboxAction {
   kind: 'approve' | 'decide_exception' | 'sign' | 'fix_and_resubmit' | 'decide_declined' | 'respond_to_counterparty' | 'send_for_signature' | 'take_back_signature'
   label: string
   since: string
@@ -73,7 +73,7 @@ interface InboxResponse {
 }
 
 /** The queue's cards, for the approval steps (they carry the AI summary). */
-interface QueueItem {
+export interface QueueItem {
   stepId: string
   instanceId: string
   stepName: string
@@ -272,7 +272,7 @@ export function ApprovalsPage() {
 }
 
 /** One contract that needs me: what to do, why, and the way to do it. */
-function MineRow({ row, cardOf, onDone }: { row: InboxRow; cardOf: Map<string, QueueItem>; onDone: () => void }) {
+export function MineRow({ row, cardOf, onDone }: { row: InboxRow; cardOf: Map<string, QueueItem>; onDone: () => void }) {
   const [open, setOpen] = useState(false)
   const primary = row.primary!
   const approve = row.actions.find(a => a.kind === 'approve')

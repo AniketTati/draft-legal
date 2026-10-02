@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { randomBytes } from 'node:crypto'
 
-const found = vi.hoisted(() => ({ obligations: [] as Array<Record<string, unknown>> }))
+const found = vi.hoisted(() => ({ obligations: [] as Array<Record<string, unknown>>, during: null as null | (() => Promise<unknown>) }))
 
 vi.mock('../lib/storage.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../lib/storage.js')>()),
@@ -24,9 +24,11 @@ vi.mock('../lib/elasticsearch.js', async importOriginal => ({
 }))
 vi.mock('../lib/model-boundary.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../lib/model-boundary.js')>()),
-  modelFetch: vi.fn(async (url: string) => url.endsWith('/extract_obligations')
-    ? new Response(JSON.stringify({ obligations: found.obligations, summary: 'Pays monthly.' }), { status: 200, headers: { 'content-type': 'application/json' } })
-    : new Response('{}', { status: 404 })),
+  modelFetch: vi.fn(async (url: string) => {
+    if (!url.endsWith('/extract_obligations')) return new Response('{}', { status: 404 })
+    await found.during?.()
+    return new Response(JSON.stringify({ obligations: found.obligations, summary: 'Pays monthly.' }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }),
 }))
 
 import { queueExtractObligations } from '../lib/queue.js'
@@ -233,5 +235,23 @@ describe('a draft\'s obligations are proposed, and confirmed at signing (docs/41
     expect(await queueProposedObligations(org, id, { full: true })).toBe(true)
     expect(await queueProposedObligations(org, await withText('Signed one', 'EXECUTED'), { full: true })).toBe(false)
     expect(vi.mocked(queueExtractObligations).mock.calls.map(c => c[0].contractId)).toEqual([id])
+  })
+})
+
+describe('what other steps write meanwhile (41: browser QA)', () => {
+  it('keeps the analysis stamp written while the obligations were read', async () => {
+    const id = await withText('Stamped supply MSA')
+    await prisma.contract.update({ where: { id }, data: { metadata: { obligations: ['old'], keep: 1 } } })
+    found.obligations = [ob('Pay the monthly fee', 'The Customer shall pay monthly.')]
+    // The analysis finishes while the read takes its minute.
+    found.during = () => prisma.$executeRaw`UPDATE contracts SET metadata = metadata || '{"_analysis":{"versionId":"v1"}}'::jsonb WHERE id = ${id}`
+    try {
+      await extractObligationsForContract({ orgId: org, contractId: id, userId: 'system' })
+    } finally { found.during = null }
+    const meta = (await prisma.contract.findUniqueOrThrow({ where: { id } })).metadata as Record<string, unknown>
+    expect(meta._analysis).toEqual({ versionId: 'v1' })
+    expect(meta).toMatchObject({ keep: 1, obligationsSummary: 'Pays monthly.' })
+    expect(meta.obligations).toBeUndefined()
+    expect(meta.obligationsProposedVersionId).toBeTruthy()
   })
 })
