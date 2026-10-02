@@ -132,6 +132,10 @@ export async function contractRoutes(app: FastifyInstance) {
       })
     }
 
+    if (query.ids) {
+      andClauses.push({ id: { in: query.ids.split(',').map(s => s.trim()).filter(Boolean).slice(0, 300) } })
+    }
+
     // U12 audit (2026-04-29). Numeric metadata facets — OTD and uptime
     // SLA. We persist these as Contract.metadata.otdSlaPct /
     // .uptimeSlaPct on logistics + cloud contracts during seeding so

@@ -240,10 +240,11 @@ export function activeSince(step: ApprovalStepRow, siblings: ApprovalStepRow[], 
 }
 
 /** Decided steps' time to decide, by approver and by step name; steps still waiting are counted. */
-export function approvalTimes(steps: ApprovalStepRow[], submittedAt: Map<string, Date>, now: Date): Section {
+export function approvalTimes(steps: ApprovalStepRow[], submittedAt: Map<string, Date>, now: Date, measure: (s: ApprovalStepRow) => boolean = () => true): Section {
   const byInstance = new Map<string, ApprovalStepRow[]>()
   for (const s of steps) if (s.instanceId) byInstance.set(s.instanceId, [...(byInstance.get(s.instanceId) ?? []), s])
-  const timed = steps.map(s => {
+  // Every step of a request is needed to know when a later one became active; only the ones asked about are measured.
+  const timed = steps.filter(measure).map(s => {
     const since = activeSince(s, s.instanceId ? byInstance.get(s.instanceId)! : [], s.instanceId ? submittedAt.get(s.instanceId) ?? null : null)
     return { ...s, since, d: Math.max(0, days((s.decidedAt ?? now).getTime() - since.getTime())) }
   })
