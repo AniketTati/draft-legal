@@ -7,7 +7,7 @@
 import { useMemo, useState } from 'react'
 import { Loader2, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { filterThreads, peopleIn, useThreads, type CommentThreadData, type ThreadFilter } from '@/lib/comments'
+import { filterThreads, peopleIn, threadsBy, useThreads, type CommentThreadData, type ThreadFilter } from '@/lib/comments'
 import { CommentThreadCard } from './CommentThreadCard'
 import { CommentComposer, type CommentDraft } from './CommentComposer'
 
@@ -33,7 +33,7 @@ function Seg<T extends string>({ value, options, onChange, label }: {
   )
 }
 
-export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, onPerson, suggestionAuthors, activeId, onShow }: {
+export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, onPerson, onlyPerson = false, onOnlyPerson, suggestionAuthors, activeId, onShow }: {
   contractId: string
   canEdit: boolean
   /** A comment started from the document (a selection, a change, a finding). */
@@ -42,6 +42,9 @@ export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, 
   /** "Document discussion" by person: their comments are highlighted here and in the margin. */
   person: string | null
   onPerson: (p: string | null) => void
+  /** "Only this person": everyone else's threads and suggestions are hidden. */
+  onlyPerson?: boolean
+  onOnlyPerson?: (only: boolean) => void
   /** C4 — people with suggestions in the document: listed too, their suggestions highlighted. */
   suggestionAuthors?: Array<{ id: string; name: string; count: number }>
   activeId?: string | null
@@ -51,7 +54,7 @@ export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, 
   const [filter, setFilter] = useState<ThreadFilter>({ status: 'open', visibility: 'all' })
   const threads = useMemo(() => data?.data ?? [], [data])
   const people = useMemo(() => mergePeople(peopleIn(threads), suggestionAuthors ?? []), [threads, suggestionAuthors])
-  const shown = filterThreads(threads, filter)
+  const shown = filterThreads(onlyPerson ? threadsBy(threads, person) : threads, filter)
 
   return (
     <div className="flex flex-col gap-3" data-testid="comments-view">
@@ -73,6 +76,13 @@ export function CommentsView({ contractId, canEdit, draft, onDraftDone, person, 
             <option value="">Everyone</option>
             {people.map(p => <option key={p.id} value={p.id}>{p.name} ({p.count})</option>)}
           </select>
+        </label>
+      )}
+      {person && onOnlyPerson && (
+        <label className="flex items-center gap-2 text-[11.5px] text-ink-700 -mt-1.5">
+          <input type="checkbox" checked={onlyPerson} onChange={e => onOnlyPerson(e.target.checked)} data-testid="comments-only-person" />
+          Only this person
+          <span className="text-ink-500">· hides everyone else&rsquo;s comments and suggestions</span>
         </label>
       )}
 

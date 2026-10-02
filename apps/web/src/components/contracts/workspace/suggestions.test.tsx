@@ -155,3 +155,26 @@ describe("Changes mode's Counter as a suggestion (fix-up 20)", () => {
     editor.destroy()
   })
 })
+
+describe('"Only this person" in the document (fix-up 22)', () => {
+  it("mutes everyone else's suggestions and highlights the person's", () => {
+    const editor = new Editor({ extensions: [StarterKit, TrackChanges], content: '<p>Liability is unlimited.</p>' })
+    editor.commands.setSuggesting(true, { id: 'u1', name: 'Asha' })
+    const at = editor.state.doc.textContent.indexOf('unlimited') + 1
+    editor.chain().setTextSelection(at).insertContent('not ').run()
+    editor.commands.setSuggesting(true, { id: 'u2', name: 'Ravi' })
+    editor.chain().setTextSelection(editor.state.doc.content.size - 1).insertContent(' Ever').run()
+    editor.commands.setSuggestionFocus('u1', true)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(true)
+    expect(editor.view.dom.querySelectorAll('.suggestion--focus')).toHaveLength(1)
+    expect(editor.view.dom.querySelector('.suggestion--focus')?.textContent).toBe('not ')
+    // Highlighting without "only": everyone's suggestions keep their colours.
+    editor.commands.setSuggestionFocus('u1', false)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(false)
+    expect(editor.view.dom.querySelectorAll('.suggestion--focus')).toHaveLength(1)
+    // Nobody picked: "only" means nothing.
+    editor.commands.setSuggestionFocus(null, true)
+    expect(editor.view.dom.classList.contains('suggestions-only')).toBe(false)
+    editor.destroy()
+  })
+})

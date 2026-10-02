@@ -35,7 +35,7 @@ import { ReviewPanel } from '@/components/contracts/review/ReviewPanel'
 import { CommentsView } from '@/components/contracts/workspace/CommentsView'
 import { MarginComments } from '@/components/contracts/workspace/MarginComments'
 import type { CommentDraft } from '@/components/contracts/workspace/CommentComposer'
-import { useThreads, type CommentThreadData } from '@/lib/comments'
+import { threadsBy, useThreads, type CommentThreadData } from '@/lib/comments'
 import { useSelectionActions } from '@/components/contracts/workspace/useSelectionActions'
 import { SelectionMenu } from '@/components/contracts/SelectionMenu'
 import { SendForReviewDialog } from '@/components/contracts/SendForReviewDialog'
@@ -88,6 +88,8 @@ export function ContractWorkspacePage() {
   // picked in "Document discussion", and the thread last shown.
   const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null)
   const [person, setPerson] = useState<string | null>(null)
+  // "Only this person": the others' threads and suggestion colours hidden.
+  const [onlyPerson, setOnlyPerson] = useState(false)
   const [activeThread, setActiveThread] = useState<string | null>(null)
   const [marginBox, setMarginBox] = useState<HTMLDivElement | null>(null)
   const { data: threadsData } = useThreads(id ?? '')
@@ -237,8 +239,8 @@ export function ContractWorkspacePage() {
   const suggestions = useSuggestions(editorReady)
   const suggestionAuthors = useMemo(() => suggestionPeople(suggestions), [suggestions])
   useEffect(() => {
-    if (editorReady && !editorReady.isDestroyed) editorReady.commands.setSuggestionFocus(person)
-  }, [editorReady, person, suggestions.length])
+    if (editorReady && !editorReady.isDestroyed) editorReady.commands.setSuggestionFocus(person, onlyPerson)
+  }, [editorReady, person, onlyPerson, suggestions.length])
 
   const showThread = (t: CommentThreadData) => {
     setActiveThread(t.id)
@@ -322,7 +324,7 @@ export function ContractWorkspacePage() {
                   contractId={id}
                   editor={editorReady}
                   container={marginBox}
-                  threads={threadsData?.data ?? []}
+                  threads={onlyPerson ? threadsBy(threadsData?.data ?? [], person) : threadsData?.data ?? []}
                   canEdit={canEdit}
                   person={person}
                   activeId={activeThread}
@@ -381,7 +383,9 @@ export function ContractWorkspacePage() {
                 onDraftDone={() => setCommentDraft(null)}
                 person={person}
                 // C4: the person's suggestions are highlighted in the document too.
-                onPerson={setPerson}
+                onPerson={p => { setPerson(p); if (!p) setOnlyPerson(false) }}
+                onlyPerson={onlyPerson}
+                onOnlyPerson={setOnlyPerson}
                 suggestionAuthors={suggestionAuthors}
                 activeId={activeThread}
                 onShow={showThread}

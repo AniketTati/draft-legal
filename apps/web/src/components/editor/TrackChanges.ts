@@ -238,7 +238,8 @@ export function isByPerson(authorId: string | null | undefined, person: string |
   return person === 'portal' ? authorId.startsWith('portal:') : authorId === person
 }
 
-const focusKey = new PluginKey<{ person: string | null; set: DecorationSet }>('suggestionFocus')
+interface FocusState { person: string | null; only: boolean; set: DecorationSet }
+const focusKey = new PluginKey<FocusState>('suggestionFocus')
 
 function focusDecorations(doc: PMNode, person: string | null): DecorationSet {
   if (!person) return DecorationSet.empty
@@ -261,8 +262,8 @@ declare module '@tiptap/core' {
       rejectSuggestion: (id: string) => ReturnType
       acceptAllSuggestions: () => ReturnType
       rejectAllSuggestions: () => ReturnType
-      /** Highlight one person's suggestions (null: nobody's). */
-      setSuggestionFocus: (person: string | null) => ReturnType
+      /** Highlight one person's suggestions (null: nobody's); `only` mutes everyone else's. */
+      setSuggestionFocus: (person: string | null, only?: boolean) => ReturnType
     }
   }
   interface Storage {
@@ -297,8 +298,8 @@ export const TrackChanges = Extension.create<Record<string, never>, TrackChanges
       rejectSuggestion: id => decide(id, 'reject'),
       acceptAllSuggestions: () => decide(null, 'accept'),
       rejectAllSuggestions: () => decide(null, 'reject'),
-      setSuggestionFocus: person => ({ tr, dispatch }) => {
-        if (dispatch) tr.setMeta(focusKey, person).setMeta(SKIP_TRACKING, true).setMeta('addToHistory', false)
+      setSuggestionFocus: (person, only = false) => ({ tr, dispatch }) => {
+        if (dispatch) tr.setMeta(focusKey, { person, only }).setMeta(SKIP_TRACKING, true).setMeta('addToHistory', false)
         return true
       },
     }
@@ -321,15 +322,19 @@ export const TrackChanges = Extension.create<Record<string, never>, TrackChanges
       new Plugin({
         key: focusKey,
         state: {
-          init: (): { person: string | null; set: DecorationSet } => ({ person: null, set: DecorationSet.empty }),
+          init: (): FocusState => ({ person: null, only: false, set: DecorationSet.empty }),
           apply(tr, prev) {
-            const meta = tr.getMeta(focusKey) as string | null | undefined
-            const person = meta !== undefined ? meta : prev.person
+            const meta = tr.getMeta(focusKey) as { person: string | null; only: boolean } | undefined
             if (meta === undefined && !tr.docChanged) return prev
-            return { person, set: focusDecorations(tr.doc, person) }
+            const { person, only } = meta ?? prev
+            return { person, only: only && !!person, set: focusDecorations(tr.doc, person) }
           },
         },
-        props: { decorations: state => focusKey.getState(state)?.set },
+        props: {
+          decorations: state => focusKey.getState(state)?.set,
+          // "Only this person": everyone else's suggestions lose their colours (contract-paper.css).
+          attributes: (state): Record<string, string> => (focusKey.getState(state)?.only ? { class: 'suggestions-only' } : {}),
+        },
       }),
     ]
   },

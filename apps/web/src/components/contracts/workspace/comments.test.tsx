@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { filterThreads, isBy, peopleIn, threadsKey, type CommentThreadData } from '@/lib/comments'
+import { filterThreads, isBy, peopleIn, threadsBy, threadsKey, type CommentThreadData } from '@/lib/comments'
 import { CommentThreadCard } from './CommentThreadCard'
 import { CommentsView } from './CommentsView'
 import { stack } from './MarginComments'
@@ -52,6 +52,33 @@ describe('the Comments view', () => {
     expect(html).toContain('Counterparty (1)')
     expect(html.match(/<button[^>]*data-testid="composer-internal"[^>]*>/)?.[0]).toContain('aria-checked="true"')
     expect(html).toContain('data-testid="thread-a"')
+  })
+})
+
+describe('"Only this person" (fix-up 22)', () => {
+  const threads = [
+    t({ id: 'a' }),
+    t({ id: 'b', authorId: 'portal:x', authorName: 'Pat', visibility: 'external' }),
+    t({ id: 'c', authorId: 'u2', authorName: 'Ravi', replies: [{ id: 'r', authorId: 'portal:y', body: 'x', createdAt: '', visibility: 'external' }] }),
+  ]
+
+  it('keeps the threads the person started or replied in', () => {
+    expect(threadsBy(threads, 'portal').map(x => x.id)).toEqual(['b', 'c'])
+    expect(threadsBy(threads, 'u1').map(x => x.id)).toEqual(['a'])
+    expect(threadsBy(threads, null)).toHaveLength(3)
+  })
+
+  it('offers the toggle once a person is picked, and hides everyone else when it is on', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(threadsKey('k'), { data: threads, total: 3 })
+    expect(render(<CommentsView contractId="k" canEdit={false} person={null} onPerson={() => {}} onOnlyPerson={() => {}} />, qc)).not.toContain('comments-only-person')
+    const highlighted = render(<CommentsView contractId="k" canEdit={false} person="u1" onPerson={() => {}} onOnlyPerson={() => {}} />, qc)
+    expect(highlighted).toContain('Only this person')
+    for (const id of ['a', 'b', 'c']) expect(highlighted).toContain(`data-testid="thread-${id}"`)
+    const only = render(<CommentsView contractId="k" canEdit={false} person="u1" onPerson={() => {}} onlyPerson onOnlyPerson={() => {}} />, qc)
+    expect(only).toContain('data-testid="thread-a"')
+    expect(only).not.toContain('data-testid="thread-b"')
+    expect(only).not.toContain('data-testid="thread-c"')
   })
 })
 

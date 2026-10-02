@@ -78,6 +78,12 @@ export function isBy(c: Pick<CommentReply, 'authorId'>, person: string | null): 
   return person === 'portal' ? c.authorId.startsWith('portal:') : c.authorId === person
 }
 
+/** "Only this person": the threads they started or replied in (all of them when nobody is picked). */
+export function threadsBy(threads: CommentThreadData[], person: string | null): CommentThreadData[] {
+  if (!person) return threads
+  return threads.filter(t => [t, ...t.replies].some(c => isBy(c, person)))
+}
+
 export type ThreadFilter = { status: 'open' | 'resolved' | 'all'; visibility: 'all' | CommentVisibility }
 
 export function filterThreads(threads: CommentThreadData[], f: ThreadFilter): CommentThreadData[] {
